@@ -4,8 +4,8 @@ use anyhow::Result;
 
 use crate::protocol::{
     encode_command, encode_query, ClockSource, Command, DeviceMetadata, DeviceSnapshot, Frame,
-    MixerChannelState, MixerSurface, OutputMode, OutputState, OutputTarget, PreampMode,
-    PreampState, SampleRate, Snapshot73, Surface,
+    MixerAssignment, MixerChannelState, MixerSurface, OutputMode, OutputState, OutputTarget,
+    PanState, PreampMode, PreampState, SampleRate, Snapshot73, Surface,
 };
 use crate::transport::Transport;
 
@@ -85,8 +85,8 @@ impl Default for AppState {
             preamp: PreampState::default(),
             surface: Surface::MonitorHp1,
             mixer_channels: [
-                (1..=15).map(MixerChannelState::unknown).collect(),
-                (1..=15).map(MixerChannelState::unknown).collect(),
+                (1..=16).map(MixerChannelState::unknown).collect(),
+                (1..=16).map(MixerChannelState::unknown).collect(),
             ],
             connection: ConnectionState::default(),
             focus: FocusArea::Outputs,
@@ -202,11 +202,26 @@ enum PendingMutation {
         mixer: MixerSurface,
         channel: u8,
         level: u8,
+        pan: PanState,
     },
     MixerMute {
         mixer: MixerSurface,
         channel: u8,
         muted: bool,
+    },
+    MixerPan {
+        mixer: MixerSurface,
+        channel: u8,
+        pan: PanState,
+    },
+    MixerAssignment {
+        strip: u8,
+        assignment: MixerAssignment,
+    },
+    MixerLink {
+        mixer: MixerSurface,
+        selector: u8,
+        enabled: bool,
     },
     OutputVolume {
         target: OutputTarget,
@@ -294,12 +309,14 @@ impl Controller {
                 mixer,
                 channel,
                 level,
+                pan,
             }) => {
                 if let Some(slot) = self.state.mixer_channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
                     slot.level = Some(level);
                     slot.muted = Some(false);
+                    slot.pan = pan;
                 }
             }
             Some(PendingMutation::MixerMute {
@@ -311,6 +328,40 @@ impl Controller {
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
                     slot.muted = Some(muted);
+                }
+            }
+            Some(PendingMutation::MixerPan {
+                mixer,
+                channel,
+                pan,
+            }) => {
+                if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                    .get_mut(channel.saturating_sub(1) as usize)
+                {
+                    slot.pan = pan;
+                }
+            }
+            Some(PendingMutation::MixerAssignment { strip, assignment }) => {
+                let index = strip.saturating_sub(1) as usize;
+                for channels in &mut self.state.mixer_channels {
+                    if let Some(slot) = channels.get_mut(index) {
+                        slot.assignment = Some(assignment);
+                    }
+                }
+            }
+            Some(PendingMutation::MixerLink {
+                mixer,
+                selector,
+                enabled,
+            }) => {
+                if let Some((left, right)) = link_pair_from_selector(mixer, selector) {
+                    for channel in [left, right] {
+                        if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                            .get_mut(channel.saturating_sub(1) as usize)
+                        {
+                            slot.linked = Some(enabled);
+                        }
+                    }
                 }
             }
             Some(PendingMutation::OutputVolume { target, step }) => {
@@ -352,11 +403,12 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
             mixer,
             channel,
             level,
-            ..
+            pan_state,
         } => Some(PendingMutation::MixerLevel {
             mixer,
             channel,
             level,
+            pan: pan_state,
         }),
         Command::SetMixerMute {
             mixer,
@@ -367,6 +419,27 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
             mixer,
             channel,
             muted,
+        }),
+        Command::SetMixerPan {
+            mixer,
+            channel,
+            pan,
+        } => Some(PendingMutation::MixerPan {
+            mixer,
+            channel,
+            pan,
+        }),
+        Command::SetMixerAssignment { strip, assignment } => {
+            Some(PendingMutation::MixerAssignment { strip, assignment })
+        }
+        Command::SetLinkState {
+            selector,
+            enabled,
+            include_companion: false,
+        } => Some(PendingMutation::MixerLink {
+            mixer: MixerSurface::Mix2,
+            selector,
+            enabled,
         }),
         Command::SetOutputVolume { target, step } => {
             Some(PendingMutation::OutputVolume { target, step })
@@ -399,11 +472,21 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
     }
 }
 
+fn link_pair_from_selector(mixer: MixerSurface, selector: u8) -> Option<(u8, u8)> {
+    match (mixer, selector) {
+        (MixerSurface::Mix1, 0x00) => Some((1, 2)),
+        (MixerSurface::Mix1, 0x03) => Some((7, 8)),
+        (MixerSurface::Mix2, 0x01) => Some((1, 2)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::protocol::{
-        ClockSource, Command, DeviceSnapshot, MixerChannelState, MixerSurface, OutputMode,
-        OutputState, OutputTarget, PreampMode, PreampState, SampleRate, Snapshot73, Surface,
+        ClockSource, Command, DeviceSnapshot, MixerAssignment, MixerChannelState, MixerSurface,
+        OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState, SampleRate,
+        Snapshot73, Surface,
     };
     use crate::transport::MockTransport;
 
@@ -542,7 +625,7 @@ mod tests {
                 mixer: crate::protocol::MixerSurface::Mix1,
                 channel: 3,
                 level: 0x2c,
-                pan_state: crate::protocol::PanState::Left,
+                pan_state: crate::protocol::PanState::left(),
             })
             .expect("send mixer");
 
@@ -556,7 +639,104 @@ mod tests {
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][2],
-            MixerChannelState::known(3, Some(0x2c), Some(false))
+            MixerChannelState::known(3, Some(0x2c), Some(false), PanState::left(), None, None)
+        );
+    }
+
+    #[test]
+    fn app_state_starts_with_16_strips_per_surface() {
+        let state = AppState::default();
+
+        assert_eq!(state.mixer_channels[MixerSurface::Mix1.index()].len(), 16);
+        assert_eq!(state.mixer_channels[MixerSurface::Mix2.index()].len(), 16);
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][15].channel,
+            16
+        );
+    }
+
+    #[test]
+    fn mixer_assignment_is_shared_across_surfaces_but_link_is_not() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+
+        controller
+            .send(Command::SetMixerAssignment {
+                strip: 11,
+                assignment: MixerAssignment::Oscillator(2),
+            })
+            .expect("send assignment");
+        controller.confirm_pending_write(snapshot());
+
+        controller
+            .send(Command::SetLinkState {
+                selector: 0x01,
+                enabled: true,
+                include_companion: false,
+            })
+            .expect("send link");
+        controller.confirm_pending_write(snapshot());
+
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][10].assignment,
+            Some(MixerAssignment::Oscillator(2))
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][10].assignment,
+            Some(MixerAssignment::Oscillator(2))
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][0].linked,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][1].linked,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
+            None
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
+            None
+        );
+    }
+
+    #[test]
+    fn mixer_pan_updates_are_tracked_per_surface() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+
+        controller
+            .send(Command::SetMixerPan {
+                mixer: MixerSurface::Mix1,
+                channel: 4,
+                pan: PanState::from_raw(0x08),
+            })
+            .expect("mix1 pan");
+        controller.confirm_pending_write(snapshot());
+
+        controller
+            .send(Command::SetMixerPan {
+                mixer: MixerSurface::Mix2,
+                channel: 4,
+                pan: PanState::from_raw(0x36),
+            })
+            .expect("mix2 pan");
+        controller.confirm_pending_write(snapshot());
+
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][3]
+                .pan
+                .raw(),
+            0x08
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][3]
+                .pan
+                .raw(),
+            0x36
         );
     }
 
@@ -570,7 +750,7 @@ mod tests {
                 mixer: crate::protocol::MixerSurface::Mix1,
                 channel: 7,
                 muted: true,
-                pan_state: crate::protocol::PanState::Center,
+                pan_state: crate::protocol::PanState::center(),
             })
             .expect("send mute");
 
@@ -590,7 +770,7 @@ mod tests {
                 mixer: crate::protocol::MixerSurface::Mix1,
                 channel: 7,
                 muted: false,
-                pan_state: crate::protocol::PanState::Center,
+                pan_state: crate::protocol::PanState::center(),
             })
             .expect("send unmute");
 
@@ -616,7 +796,7 @@ mod tests {
                 mixer: MixerSurface::Mix1,
                 channel: 3,
                 level: 0x2c,
-                pan_state: crate::protocol::PanState::Center,
+                pan_state: crate::protocol::PanState::center(),
             })
             .expect("mix1 send");
         controller.confirm_pending_write(snapshot());
@@ -626,7 +806,7 @@ mod tests {
                 mixer: MixerSurface::Mix2,
                 channel: 3,
                 level: 0x10,
-                pan_state: crate::protocol::PanState::Center,
+                pan_state: crate::protocol::PanState::center(),
             })
             .expect("mix2 send");
         controller.confirm_pending_write(snapshot());
@@ -654,7 +834,7 @@ mod tests {
                 mixer: MixerSurface::from_surface(controller.state.surface),
                 channel,
                 level: 0x1f,
-                pan_state: crate::protocol::PanState::Center,
+                pan_state: crate::protocol::PanState::center(),
             })
             .expect("send first adjustment");
 

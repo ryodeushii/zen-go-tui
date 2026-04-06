@@ -44,6 +44,9 @@ The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device m
 - `+` / `-` — adjust selected output volume or mixer fader
 - `m` — toggle output mute or mixer mute
 - `d` — toggle output dim
+- `[` / `]` — adjust mixer pan left/right for the selected strip
+- `a` — cycle grounded ordinary-strip mixer assignments on strips `5..16`
+- `l` — toggle currently grounded mixer link selectors only
 - `3` — cycle preamp mode for the selected preamp input
 - `p` — toggle preamp phase for the selected preamp input
 - `s` — cycle sample rate
@@ -97,8 +100,9 @@ This is especially useful while continuing reverse-engineering of late `0x73` mi
   - output dim (`0x66`)
   - mixer level (`0xd4 04 mm cc ll pp`)
   - mixer mute (`0x40` bit in `pp`)
-  - mixer strip assignment (`0x70 / 0x53`, `d3 41`, ordinary strips documented)
-  - surface select (`0x49 00 ss`)
+- mixer strip assignment (`0x70 / 0x53`, `d3 41`, ordinary strips documented)
+- mixer pan (`0xd4 04 mm cc 00 pp` with scalar raw pan byte support)
+- surface select (`0x49 00 ss`)
 
 Preamp gain notes:
 
@@ -133,7 +137,9 @@ Mixer protocol notes:
 - the current dedicated mixer protocol summary lives in `docs/protocol/mixer-protocol.md`
 - strip source assignment is now documented as a separate `0x70 / 0x53` table-write family for ordinary strips
 - assignment is shared across mixer surfaces, while link state and level are treated as surface-local
-- mixer pan host encoding is now grounded as the final byte of `d4 04 <mixer> <channel> <level> <pan>`, but the app currently exposes only anchor pan states (`left`, `center`, `right`)
+- the app now tracks `16` strips per surface with shared assignment plus per-surface level, mute, pan, and link overlay state
+- mixer pan host encoding is now modeled as a scalar raw value over the grounded `0x02 .. 0x3e` range rather than only anchor states
+- ordinary-strip assignment cycling is intentionally limited to strips `5..16`; early AFX-adjacent strip assignment semantics remain deferred
 
 ## Experimental / intentionally limited areas
 
@@ -141,6 +147,7 @@ Mixer protocol notes:
 - **mixer state decode from `0x73`**: current captures confirm command families and mixer-related late-table movement, but the candidate late bytes also churn before the first host write and during pure idle. That means a safe passive per-strip startup decode is still unresolved, so the TUI intentionally shows only last confirmed command round-trip mixer state rather than inventing startup strip values. Tracked mixer overlays are kept per surface (`MIX 1` vs `MIX 2`) so writes on one surface do not pollute the other.
 - **preamp / DSP editing**: preamp gains, modes, phantom, and phase are now exposed from the newly isolated captures; richer DSP/preamp page behavior around `51 01 01`, `a2`, `d5`, and `d7` remains intentionally out of scope
 - **link / unlink controls**: the `0x70 / 0x14` family is documented, but selector semantics are not resolved enough to expose as a normal interactive control yet
+- **link / unlink controls**: the TUI now exposes only the currently grounded selector mappings (`MIX 1` pairs `1-2`, `7-8`, and `MIX 2` pair `1-2`); broader selector coverage remains deferred
 - **metering decode**: captures now ground that meter-related movement is device-originated and visible in late `0x73` rows rather than `0x83`, but exact strip/master meter parsing is still intentionally out of scope
 
 ## Verification expectations without hardware

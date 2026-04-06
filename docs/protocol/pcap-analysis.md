@@ -678,14 +678,23 @@ So the grounded claim is narrow:
 The metering captures (`capture_mixer_15_meter_single_strip_playback(ch1).pcapng`,
 `capture_mixer_16_meter_same_signal_different_strip(ch11).pcapng`,
 `capture_mixer_17_preamp_panel_and_strip(ch2).pcapng`,
-`capture_mixer_17_preamp_panel_only.pcapng`) narrow the meter boundary substantially.
+`capture_mixer_17_preamp_panel_only.pcapng`,
+`capture_mixer_20_mix1_master_and_chan2.pcapng`,
+`capture_mixer_20_mix2_master_and_chan2.pcapng`) narrow the meter boundary substantially.
 
 What is confirmed:
 
 - metering is device-originated traffic; the test captures contain no meter-driving host family
-- `0x83` remains fully stable in all four tested metering captures
+- `0x83` remains fully stable in all six tested metering captures
 - the moving device-side state is carried by `0x73` plus the existing 6-byte async packets on endpoint `0x81`
 - the visible, repeated meter-correlated movement in `0x73` is again concentrated in late payload rows rather than front global bytes
+
+New surface-isolated observations from `capture_mixer_20_*`:
+
+- both new files are passive meter recordings as intended: they contain no `0x70` host writes at all
+- `capture_mixer_20_mix1_master_and_chan2.pcapng` stays unusually narrow, with stable movement limited to `0x6e`, `0x8e`, `0xce`, `0xcf`, and `0xe2`
+- `capture_mixer_20_mix2_master_and_chan2.pcapng` stays broader but still late-row-only, moving `0x8e`, `0xce`, `0xcf`, `0xda..0xdd`, and `0xe2` while keeping `0x6e` fixed
+- together they reinforce the existing surface split (`0x6e` participates on the `0x6a = 0x0f` side but not on the `0x6a = 0x0c` side), yet they still do not isolate one clean master-only meter field
 
 Stable observations by capture family:
 
@@ -713,7 +722,7 @@ What remains unresolved:
 Important current boundary:
 
 - because strip assignment is shared across mixer surfaces, a single assigned source can light both visible master meters
-- a future master-meter isolation capture must therefore use per-surface strip mute/level differences rather than source assignment alone
+- the new `capture_mixer_20_*` files confirm that per-surface strip mute/level asymmetry is the right isolation strategy, but they still do not separate master-meter bytes cleanly enough for a parser-ready master-meter field map
 
 Current implementation consequence:
 

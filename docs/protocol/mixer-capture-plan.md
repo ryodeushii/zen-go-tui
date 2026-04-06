@@ -310,14 +310,15 @@ Notes:
 - preamp inputs are special because they may show both mixer-strip metering and separate direct preamp metering
 - do not try to decode meter values and durable strip settings from the same capture; metering is likely transient/noisy traffic
 
-Status after analyzing captures `15..17`:
+Status after analyzing captures `15..17` and the two new `capture_mixer_20_*` files:
 
 - existing metering captures are enough to ground the current documentation boundary:
   - metering lives in device-originated traffic, not host writes
   - stable `0x83` does not participate in the tested meter workflows
   - current evidence is still too noisy / under-labeled for a real parser-field map
+- the new `capture_mixer_20_mix1_master_and_chan2.pcapng` and `capture_mixer_20_mix2_master_and_chan2.pcapng` files confirm that per-surface strip mute/level asymmetry is the correct isolation method
+- they still do not provide enough UI-labeled evidence to identify master-only bytes confidently
 - no additional metering capture is required **yet** for documentation-only work
-- if parser work is attempted later, the next minimal capture should isolate one surface by using per-surface strip mute/level differences, because assignment is shared across mixes and both visible master meters can move from the same source
 
 Deferred only if parser work becomes the next task:
 
@@ -330,8 +331,9 @@ Goal:
 
 Recommended only if meter parsing becomes an implementation target.
 
-File:
-- `capture_mixer_20_surface_isolated_master_meter.pcapng`
+Files now obtained:
+- `capture_mixer_20_mix1_master_and_chan2.pcapng`
+- `capture_mixer_20_mix2_master_and_chan2.pcapng`
 
 Actions:
 - keep source assignment unchanged
@@ -347,6 +349,12 @@ Write down:
 - whether both master meters still moved despite the surface-local mute/level difference
 - whether any strip meter also moved on screen
 - which mixer surface and page were visible
+
+Status after the current `capture_mixer_20_*` pair:
+
+- the setup is now confirmed to be the right kind of experiment
+- passive traffic stays limited to `0x73` and `0x81`, with stable `0x83`
+- the candidate late-row window is narrower than before, but the captures still do not justify a master-only byte claim without better UI-side notes
 
 ### 9. Surface Duplication / Independence
 

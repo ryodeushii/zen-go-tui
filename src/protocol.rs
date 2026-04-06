@@ -349,21 +349,35 @@ impl MixerSurface {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PanState {
-    Left,
-    Center,
-    Right,
-    Unknown(u8),
-}
+pub struct PanState(u8);
 
 impl PanState {
+    pub const MIN: u8 = 0x02;
+    pub const CENTER: u8 = 0x20;
+    pub const MAX: u8 = 0x3e;
+
+    pub fn from_raw(raw: u8) -> Self {
+        Self(raw.clamp(Self::MIN, Self::MAX))
+    }
+
+    pub fn left() -> Self {
+        Self(Self::MIN)
+    }
+
+    pub fn center() -> Self {
+        Self(Self::CENTER)
+    }
+
+    pub fn right() -> Self {
+        Self(Self::MAX)
+    }
+
     pub fn code(self) -> u8 {
-        match self {
-            Self::Left => 0x02,
-            Self::Center => 0x20,
-            Self::Right => 0x3e,
-            Self::Unknown(value) => value,
-        }
+        self.0
+    }
+
+    pub fn raw(self) -> u8 {
+        self.0
     }
 
     pub fn muted_code(self, muted: bool) -> u8 {
@@ -372,6 +386,78 @@ impl PanState {
             base | 0x40
         } else {
             base
+        }
+    }
+
+    pub fn ratio(self) -> f64 {
+        (self.raw().saturating_sub(Self::MIN) as f64 / (Self::MAX - Self::MIN) as f64)
+            .clamp(0.0, 1.0)
+    }
+
+    pub fn display_percent(self) -> i16 {
+        let center = Self::CENTER as i16;
+        let span = (Self::MAX - Self::CENTER) as i16;
+        (((self.raw() as i16 - center) as f64 / span as f64) * 100.0).round() as i16
+    }
+}
+
+impl Default for PanState {
+    fn default() -> Self {
+        Self::center()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerAssignment {
+    Preamp(u8),
+    ComputerPlay(u8),
+    SpdifIn(u8),
+    Mute,
+    Oscillator(u8),
+    EmuMic(u8),
+}
+
+impl MixerAssignment {
+    pub fn from_ordinary_strip_bytes(bytes: [u8; 2]) -> Option<Self> {
+        match bytes {
+            [0x00, 0x00] => Some(Self::Preamp(1)),
+            [0x00, 0x01] => Some(Self::Preamp(2)),
+            [0x01, 0x00..=0x07] => Some(Self::ComputerPlay(bytes[1] + 1)),
+            [0x02, 0x00] => Some(Self::SpdifIn(1)),
+            [0x02, 0x01] => Some(Self::SpdifIn(2)),
+            [0x08, 0x00] => Some(Self::Mute),
+            [0x09, 0x00] => Some(Self::Oscillator(1)),
+            [0x09, 0x01] => Some(Self::Oscillator(2)),
+            [0x0a, 0x00] => Some(Self::EmuMic(1)),
+            [0x0a, 0x01] => Some(Self::EmuMic(2)),
+            _ => None,
+        }
+    }
+
+    pub fn ordinary_strip_bytes(self) -> [u8; 2] {
+        match self {
+            Self::Preamp(1) => [0x00, 0x00],
+            Self::Preamp(2) => [0x00, 0x01],
+            Self::ComputerPlay(channel @ 1..=8) => [0x01, channel - 1],
+            Self::SpdifIn(1) => [0x02, 0x00],
+            Self::SpdifIn(2) => [0x02, 0x01],
+            Self::Mute => [0x08, 0x00],
+            Self::Oscillator(1) => [0x09, 0x00],
+            Self::Oscillator(2) => [0x09, 0x01],
+            Self::EmuMic(1) => [0x0a, 0x00],
+            Self::EmuMic(2) => [0x0a, 0x01],
+            _ => panic!("unsupported grounded assignment variant"),
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Preamp(index) => format!("Preamp {}", index),
+            Self::ComputerPlay(index) => format!("Computer Play {}", index),
+            Self::SpdifIn(index) => format!("SPDIF In {}", index),
+            Self::Mute => "Mute".to_string(),
+            Self::Oscillator(index) => format!("Oscillator {}", index),
+            Self::EmuMic(index) => format!("Emu Mic {}", index),
         }
     }
 }
@@ -672,6 +758,15 @@ pub enum Command {
         muted: bool,
         pan_state: PanState,
     },
+    SetMixerPan {
+        mixer: MixerSurface,
+        channel: u8,
+        pan: PanState,
+    },
+    SetMixerAssignment {
+        strip: u8,
+        assignment: MixerAssignment,
+    },
     SetLinkState {
         selector: u8,
         enabled: bool,
@@ -684,7 +779,9 @@ pub struct MixerChannelState {
     pub channel: u8,
     pub level: Option<u8>,
     pub muted: Option<bool>,
-    pub pan_state: PanState,
+    pub pan: PanState,
+    pub assignment: Option<MixerAssignment>,
+    pub linked: Option<bool>,
 }
 
 impl MixerChannelState {
@@ -693,16 +790,27 @@ impl MixerChannelState {
             channel,
             level: None,
             muted: None,
-            pan_state: PanState::Center,
+            pan: PanState::center(),
+            assignment: None,
+            linked: None,
         }
     }
 
-    pub fn known(channel: u8, level: Option<u8>, muted: Option<bool>) -> Self {
+    pub fn known(
+        channel: u8,
+        level: Option<u8>,
+        muted: Option<bool>,
+        pan: PanState,
+        assignment: Option<MixerAssignment>,
+        linked: Option<bool>,
+    ) -> Self {
         Self {
             channel,
             level,
             muted,
-            pan_state: PanState::Center,
+            pan,
+            assignment,
+            linked,
         }
     }
 
@@ -773,6 +881,14 @@ pub fn encode_command(command: Command) -> Vec<u8> {
                 pan_state.muted_code(muted),
             ],
         ),
+        Command::SetMixerPan {
+            mixer,
+            channel,
+            pan,
+        } => host_frame(0x16, &[0xd4, 0x04, mixer.code(), channel, 0x00, pan.code()]),
+        Command::SetMixerAssignment { strip, assignment } => {
+            encode_mixer_assignment(strip, assignment)
+        }
         Command::SetLinkState {
             selector,
             enabled,
@@ -787,6 +903,19 @@ pub fn encode_command(command: Command) -> Vec<u8> {
     }
 }
 
+fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
+    let mut frame = vec![0_u8; HID_REPORT_SIZE];
+    frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
+    frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
+    frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, 0xbb]);
+    let entry_index = strip.saturating_sub(1) as usize;
+    let tuple_offset = 0x03 + 0x17 + entry_index * 2;
+    let [a, b] = assignment.ordinary_strip_bytes();
+    frame[0x10 + tuple_offset] = a;
+    frame[0x10 + tuple_offset + 1] = b;
+    frame
+}
+
 fn host_frame(length: u32, payload: &[u8]) -> Vec<u8> {
     let mut frame = vec![0_u8; HID_REPORT_SIZE];
     frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
@@ -798,6 +927,104 @@ fn host_frame(length: u32, payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pan_supports_scalar_raw_values_and_ui_ratio() {
+        let pan = PanState::from_raw(0x10);
+
+        assert_eq!(pan.code(), 0x10);
+        assert_eq!(pan.raw(), 0x10);
+        assert!((pan.ratio() - ((0x10 - 0x02) as f64 / (0x3e - 0x02) as f64)).abs() < 1e-9);
+        assert_eq!(PanState::center().raw(), 0x20);
+        assert_eq!(PanState::left().raw(), 0x02);
+        assert_eq!(PanState::right().raw(), 0x3e);
+    }
+
+    #[test]
+    fn mixer_channel_state_tracks_assignment_pan_and_link() {
+        let state = MixerChannelState::known(
+            16,
+            Some(0x22),
+            Some(true),
+            PanState::from_raw(0x3e),
+            Some(MixerAssignment::ComputerPlay(8)),
+            Some(false),
+        );
+
+        assert_eq!(state.channel, 16);
+        assert_eq!(state.assignment, Some(MixerAssignment::ComputerPlay(8)));
+        assert_eq!(state.pan, PanState::from_raw(0x3e));
+        assert_eq!(state.linked, Some(false));
+    }
+
+    #[test]
+    fn mixer_assignment_decodes_grounded_ordinary_strip_values() {
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x00, 0x00]),
+            Some(MixerAssignment::Preamp(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x00, 0x01]),
+            Some(MixerAssignment::Preamp(2))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x01, 0x00]),
+            Some(MixerAssignment::ComputerPlay(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x01, 0x06]),
+            Some(MixerAssignment::ComputerPlay(7))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x01, 0x07]),
+            Some(MixerAssignment::ComputerPlay(8))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x02, 0x00]),
+            Some(MixerAssignment::SpdifIn(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x02, 0x01]),
+            Some(MixerAssignment::SpdifIn(2))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x08, 0x00]),
+            Some(MixerAssignment::Mute)
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x09, 0x00]),
+            Some(MixerAssignment::Oscillator(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x09, 0x01]),
+            Some(MixerAssignment::Oscillator(2))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x0a, 0x00]),
+            Some(MixerAssignment::EmuMic(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x0a, 0x01]),
+            Some(MixerAssignment::EmuMic(2))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x03, 0x00]),
+            None
+        );
+    }
+
+    #[test]
+    fn encodes_ordinary_strip_assignment_write() {
+        let frame = encode_command(Command::SetMixerAssignment {
+            strip: 11,
+            assignment: MixerAssignment::EmuMic(2),
+        });
+
+        assert_eq!(&frame[0..4], &0x70_u32.to_le_bytes());
+        assert_eq!(&frame[4..8], &0x53_u32.to_le_bytes());
+        assert_eq!(&frame[0x10..0x13], &[0xd3, 0x41, 0xbb]);
+        assert_eq!(&frame[0x3e..0x40], &[0x0a, 0x01]);
+    }
 
     #[test]
     fn decodes_snapshot_global_fields_and_outputs() {
@@ -905,7 +1132,7 @@ mod tests {
             mixer: MixerSurface::Mix2,
             channel: 4,
             level: 0x28,
-            pan_state: PanState::Right,
+            pan_state: PanState::right(),
         });
         assert_eq!(mixer[4], 0x16);
         assert_eq!(&mixer[0x10..0x16], &[0xd4, 0x04, 0x01, 0x04, 0x28, 0x3e]);
@@ -976,8 +1203,10 @@ mod tests {
 
     #[test]
     fn mixer_level_display_uses_inverse_db_scale() {
-        let unity = MixerChannelState::known(1, Some(0x00), Some(false));
-        let silence = MixerChannelState::known(1, Some(0x60), Some(false));
+        let unity =
+            MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
+        let silence =
+            MixerChannelState::known(1, Some(0x60), Some(false), PanState::center(), None, None);
 
         assert_eq!(unity.display_db(), Some(0));
         assert_eq!(silence.display_db(), Some(-96));

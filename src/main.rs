@@ -13,7 +13,8 @@ use ratatui::Terminal;
 
 use zen_go_tui::app::{Controller, FocusArea};
 use zen_go_tui::protocol::{
-    ClockSource, Command, MixerSurface, OutputMode, OutputTarget, PreampMode, SampleRate, Surface,
+    ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, OutputTarget, PanState,
+    PreampMode, SampleRate, Surface,
 };
 use zen_go_tui::transport::{HidTransport, MockTransport, Transport};
 use zen_go_tui::ui;
@@ -75,7 +76,7 @@ fn app_loop(
                 KeyCode::Tab => controller.state.cycle_focus(),
                 KeyCode::Char('?') => {
                     controller.state.last_message =
-                        "Status: s/c. Outputs: +/- m d. Mixer: +/- m. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2.".to_string();
+                        "Status: s/c. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2.".to_string();
                 }
                 KeyCode::Left => move_selection(controller, false),
                 KeyCode::Right => move_selection(controller, true),
@@ -83,6 +84,10 @@ fn app_loop(
                 KeyCode::Char('-') => adjust_focused(controller, false)?,
                 KeyCode::Char('m') => toggle_mute(controller)?,
                 KeyCode::Char('d') => toggle_dim(controller)?,
+                KeyCode::Char('a') => cycle_mixer_assignment(controller)?,
+                KeyCode::Char('l') => toggle_mixer_link(controller)?,
+                KeyCode::Char('[') => adjust_mixer_pan(controller, false)?,
+                KeyCode::Char(']') => adjust_mixer_pan(controller, true)?,
                 KeyCode::Char('p') => toggle_preamp_phase(controller)?,
                 KeyCode::Char('3') => cycle_preamp_mode(controller)?,
                 KeyCode::Char('s') => cycle_sample_rate(controller)?,
@@ -169,7 +174,7 @@ fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
                 mixer: MixerSurface::from_surface(controller.state.surface),
                 channel,
                 level: next,
-                pan_state: zen_go_tui::protocol::PanState::Center,
+                pan_state: active_channel.pan,
             })?;
         }
         FocusArea::Preamp => {
@@ -206,7 +211,7 @@ fn toggle_mute(controller: &mut Controller) -> Result<()> {
                 mixer: MixerSurface::from_surface(controller.state.surface),
                 channel,
                 muted,
-                pan_state: zen_go_tui::protocol::PanState::Center,
+                pan_state: active_channel.pan,
             })?;
         }
         FocusArea::Preamp => {
@@ -236,6 +241,110 @@ fn toggle_dim(controller: &mut Controller) -> Result<()> {
         target: OutputTarget::from_index(index),
         enabled: output.mode != OutputMode::Dim,
     })?;
+    Ok(())
+}
+
+fn adjust_mixer_pan(controller: &mut Controller, right: bool) -> Result<()> {
+    if controller.state.focus != FocusArea::Mixer {
+        return Ok(());
+    }
+
+    let active_channel =
+        controller.state.active_mixer_channels()[controller.state.selected_channel];
+    let next = if right {
+        active_channel
+            .pan
+            .raw()
+            .saturating_add(1)
+            .min(PanState::MAX)
+    } else {
+        active_channel
+            .pan
+            .raw()
+            .saturating_sub(1)
+            .max(PanState::MIN)
+    };
+
+    controller.send(Command::SetMixerPan {
+        mixer: MixerSurface::from_surface(controller.state.surface),
+        channel: active_channel.channel,
+        pan: PanState::from_raw(next),
+    })?;
+    Ok(())
+}
+
+fn cycle_mixer_assignment(controller: &mut Controller) -> Result<()> {
+    if controller.state.focus != FocusArea::Mixer {
+        return Ok(());
+    }
+
+    let active_channel =
+        controller.state.active_mixer_channels()[controller.state.selected_channel];
+    if active_channel.channel <= 4 {
+        controller.state.last_message =
+            "Assignment cycling is limited to ordinary strips 5..16; early AFX-adjacent strips remain deferred.".to_string();
+        return Ok(());
+    }
+
+    let current = active_channel.assignment.unwrap_or(MixerAssignment::Mute);
+    let choices = [
+        MixerAssignment::Mute,
+        MixerAssignment::Preamp(1),
+        MixerAssignment::Preamp(2),
+        MixerAssignment::ComputerPlay(1),
+        MixerAssignment::ComputerPlay(2),
+        MixerAssignment::ComputerPlay(3),
+        MixerAssignment::ComputerPlay(4),
+        MixerAssignment::ComputerPlay(5),
+        MixerAssignment::ComputerPlay(6),
+        MixerAssignment::ComputerPlay(7),
+        MixerAssignment::ComputerPlay(8),
+        MixerAssignment::SpdifIn(1),
+        MixerAssignment::SpdifIn(2),
+        MixerAssignment::Oscillator(1),
+        MixerAssignment::Oscillator(2),
+        MixerAssignment::EmuMic(1),
+        MixerAssignment::EmuMic(2),
+    ];
+    let position = choices
+        .iter()
+        .position(|item| *item == current)
+        .unwrap_or(0);
+    let next = choices[(position + 1) % choices.len()];
+
+    controller.send(Command::SetMixerAssignment {
+        strip: active_channel.channel,
+        assignment: next,
+    })?;
+    Ok(())
+}
+
+fn toggle_mixer_link(controller: &mut Controller) -> Result<()> {
+    if controller.state.focus != FocusArea::Mixer {
+        return Ok(());
+    }
+
+    let active_channel =
+        controller.state.active_mixer_channels()[controller.state.selected_channel];
+    let mixer = MixerSurface::from_surface(controller.state.surface);
+    let selector = match (mixer, active_channel.channel) {
+        (MixerSurface::Mix1, 1 | 2) => Some(0x00),
+        (MixerSurface::Mix1, 7 | 8) => Some(0x03),
+        (MixerSurface::Mix2, 1 | 2) => Some(0x01),
+        _ => None,
+    };
+
+    if let Some(selector) = selector {
+        controller.send(Command::SetLinkState {
+            selector,
+            enabled: !active_channel.linked.unwrap_or(false),
+            include_companion: false,
+        })?;
+    } else {
+        controller.state.last_message =
+            "Link toggling is only exposed for currently grounded selector mappings.".to_string();
+    }
+
     Ok(())
 }
 

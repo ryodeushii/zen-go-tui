@@ -156,28 +156,7 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .active_mixer_channels()
         .iter()
         .enumerate()
-        .map(|(index, channel)| {
-            let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
-            let bar = channel
-                .gain_ratio()
-                .map(render_thin_bar)
-                .unwrap_or_else(|| "........".to_string());
-            let label = format!(
-                "CH {:02}  {:<8}  level={}  mute={}  {}",
-                channel.channel,
-                bar,
-                channel
-                    .display_db()
-                    .map(|value| format!("{} dB", value))
-                    .unwrap_or_else(|| "undecoded".to_string()),
-                channel
-                    .muted
-                    .map(|value| if value { "on" } else { "off" })
-                    .unwrap_or("undecoded"),
-                if selected { "←" } else { "" }
-            );
-            ListItem::new(label)
-        })
+        .map(|(index, channel)| ListItem::new(render_mixer_strip_line(state, index, channel)))
         .collect();
     let list = List::new(items).block(section_block(
         "Mixer Strips",
@@ -300,7 +279,51 @@ fn render_thin_bar(ratio: f64) -> String {
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab focus | ←/→ select | +/- adjust | m mute/phantom | d dim | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | ? help | q quit".to_string()
+    "Tab focus | ←/→ select | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | ? help | q quit".to_string()
+}
+
+fn render_mixer_strip_line(
+    state: &AppState,
+    index: usize,
+    channel: &crate::protocol::MixerChannelState,
+) -> String {
+    let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
+    let bar = channel
+        .gain_ratio()
+        .map(render_thin_bar)
+        .unwrap_or_else(|| "........".to_string());
+    let assignment = channel
+        .assignment
+        .map(|value| value.label())
+        .unwrap_or_else(|| "assignment?".to_string());
+    let pan = channel.pan.display_percent();
+    let pan_label = if pan < 0 {
+        format!("L{}", pan.unsigned_abs())
+    } else if pan > 0 {
+        format!("R{}", pan)
+    } else {
+        "C".to_string()
+    };
+    format!(
+        "CH {:02} {:<8} src={:<16} level={} mute={} pan={} link={} {}",
+        channel.channel,
+        bar,
+        assignment,
+        channel
+            .display_db()
+            .map(|value| format!("{} dB", value))
+            .unwrap_or_else(|| "undecoded".to_string()),
+        channel
+            .muted
+            .map(|value| if value { "on" } else { "off" })
+            .unwrap_or("undecoded"),
+        pan_label,
+        channel
+            .linked
+            .map(|value| if value { "on" } else { "off" })
+            .unwrap_or("unknown"),
+        if selected { "←" } else { "" }
+    )
 }
 
 fn draw_preamp_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -522,7 +545,8 @@ fn style_for_ascii_byte(byte: u8, changed: bool) -> Style {
 mod tests {
     use crate::app::AppState;
     use crate::protocol::{
-        ClockSource, OutputMode, OutputState, OutputTarget, SampleRate, Surface,
+        ClockSource, MixerAssignment, OutputMode, OutputState, OutputTarget, PanState, SampleRate,
+        Surface,
     };
 
     use super::*;
@@ -566,5 +590,31 @@ mod tests {
         let first = &dump.lines[0];
         assert!(first.spans[0].style.add_modifier.contains(Modifier::BOLD));
         assert!(first.spans[1].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn footer_mentions_assignment_pan_and_link_controls() {
+        let footer = render_footer_text(&AppState::default());
+
+        assert!(footer.contains("a assign"));
+        assert!(footer.contains("[ ] pan"));
+        assert!(footer.contains("l link"));
+    }
+
+    #[test]
+    fn mixer_strip_line_includes_assignment_pan_and_link() {
+        let mut state = AppState::default();
+        state.mixer_channels[0][10].assignment = Some(MixerAssignment::ComputerPlay(8));
+        state.mixer_channels[0][10].pan = PanState::from_raw(0x3e);
+        state.mixer_channels[0][10].linked = Some(true);
+        state.mixer_channels[0][10].level = Some(0x10);
+        state.mixer_channels[0][10].muted = Some(false);
+
+        let channel = &state.mixer_channels[0][10];
+        let line = render_mixer_strip_line(&state, 10, channel);
+
+        assert!(line.contains("Computer Play 8"));
+        assert!(line.contains("pan=R100"));
+        assert!(line.contains("link=on"));
     }
 }

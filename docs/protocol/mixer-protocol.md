@@ -251,10 +251,13 @@ The current meter captures are sufficient to document boundaries, but not enough
 What is grounded:
 
 - meter traffic is device-originated; the tested captures contain no dedicated meter host-write family
-- `0x83` remains stable in the tested meter captures
+- `0x83` remains stable in the tested meter captures, including the two new `capture_mixer_20_*` surface-isolated files
 - meter-correlated movement is visible in `0x73` late rows and in the 6-byte async packets on endpoint `0x81`
 - ordinary playback metering follows strip slot / row placement rather than source identity alone
 - preamp-panel metering is distinct from mixer-strip metering and can coexist with it when a preamp source is also assigned to a strip
+- the new `capture_mixer_20_mix1_master_and_chan2.pcapng` and `capture_mixer_20_mix2_master_and_chan2.pcapng` files narrow the passive meter window further, but only to late-row clusters:
+  - `MIX 1` file: `0x6e`, `0x8e`, `0xce`, `0xcf`, `0xe2`
+  - `MIX 2` file: `0x8e`, `0xce`, `0xcf`, `0xda..0xdd`, `0xe2`
 
 What is not grounded enough yet:
 
@@ -265,7 +268,7 @@ What is not grounded enough yet:
 Important current boundary:
 
 - because strip assignment is shared across `MIX 1` and `MIX 2`, the same source can legitimately drive both visible master meters
-- a future master-meter isolation capture therefore cannot rely on source selection alone; it needs per-surface strip mute/level asymmetry to isolate one mix from the other
+- the new `capture_mixer_20_*` files confirm that source selection alone was the wrong isolation strategy, but they still do not justify claiming that any one of those moving late-row bytes is the visible master meter rather than a mixed master/strip/surface meter state cluster
 
 ## What Is Not Yet Safe To Claim
 

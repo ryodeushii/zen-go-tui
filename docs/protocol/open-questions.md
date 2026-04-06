@@ -169,6 +169,9 @@ The metering captures now narrow this further than before:
 - stable meter-related changes are visible in `0x73`, not `0x83`
 - ordinary playback meter movement follows strip slot / row placement rather than source identity alone
 - preamp-panel metering is distinct from mixer-strip metering and can coexist with it
+- the new surface-isolated files are passive-only and keep `0x83` fully stable while narrowing the candidate `0x73` windows further:
+  - `capture_mixer_20_mix1_master_and_chan2.pcapng`: `0x6e`, `0x8e`, `0xce`, `0xcf`, `0xe2`
+  - `capture_mixer_20_mix2_master_and_chan2.pcapng`: `0x8e`, `0xce`, `0xcf`, `0xda..0xdd`, `0xe2`
 
 What remains unresolved:
 
@@ -176,9 +179,9 @@ What remains unresolved:
 - exact master-meter separation
 - whether `0x81` contributes compact meter-side timing/stream data or is only adjacent notification traffic
 
-Recommended follow-up capture only if parser work becomes the next target:
+Recommended follow-up only if parser work becomes the next target:
 
-- one surface-isolated master-meter recording that uses per-surface strip mute/level differences, because assignment is shared across mixes and both master meters may move from the same source
+- a better-labeled repeat of the same surface-isolated setup, with written UI notes stating exactly which visible master meter moved and whether any strip meter moved at the same time; the current `capture_mixer_20_*` pair improves the boundary but is still not enough to disambiguate master-only bytes
 
 ### DSP / preamp UI-label mapping
 
@@ -206,7 +209,7 @@ Recommended follow-up capture:
 
 1. Link-only / unlink-only on one stereo pair, no fader moves
 2. One output `DIM` capture with no volume changes
-3. One surface-isolated master-meter capture if meter parser work becomes necessary
+3. One better-labeled follow-up to the `capture_mixer_20_*` surface-isolated master-meter setup if meter parser work becomes necessary
 4. Signal type only: Mic -> Line -> Hi-Z -> Mic
 5. Phase only
 6. Phantom only
