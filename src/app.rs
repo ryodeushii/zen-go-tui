@@ -169,6 +169,8 @@ pub struct Controller {
     pending_mutation: Option<PendingMutation>,
 }
 
+const MAX_FRAMES_PER_POLL: usize = 128;
+
 impl Controller {
     pub fn new(transport: Box<dyn Transport>) -> Self {
         Self {
@@ -193,7 +195,15 @@ impl Controller {
     }
 
     pub fn poll_device(&mut self, timeout: Duration) -> Result<()> {
-        if let Some(bytes) = self.transport.read(timeout)? {
+        let mut next_timeout = timeout;
+
+        for _ in 0..MAX_FRAMES_PER_POLL {
+            let Some(bytes) = self.transport.read(next_timeout)? else {
+                break;
+            };
+
+            next_timeout = Duration::ZERO;
+
             if let Ok(frame) = Frame::parse(&bytes) {
                 let snapshot = DeviceSnapshot::from(frame);
                 if let DeviceSnapshot::Snapshot(snapshot73) = &snapshot {
@@ -202,6 +212,7 @@ impl Controller {
                 self.state.observe_frame(snapshot);
             }
         }
+
         Ok(())
     }
 
@@ -395,5 +406,38 @@ mod tests {
 
         assert!(state.connection.connected);
         assert!(state.connection.last_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn poll_device_drains_backlog_to_latest_snapshot() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        let mut first = vec![0_u8; 320];
+        first[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        first[4..8].copy_from_slice(&0x20_u32.to_le_bytes());
+        let first_payload = &mut first[0x10..];
+        first_payload[0x02] = SampleRate::Hz44100.code();
+        first_payload[0x03] = ClockSource::Internal.code();
+        first_payload[0x04..0x08].copy_from_slice(&44_100_u32.to_be_bytes());
+
+        let mut second = vec![0_u8; 320];
+        second[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        second[4..8].copy_from_slice(&0x20_u32.to_le_bytes());
+        let second_payload = &mut second[0x10..];
+        second_payload[0x02] = SampleRate::Hz48000.code();
+        second_payload[0x03] = ClockSource::Usb.code();
+        second_payload[0x04..0x08].copy_from_slice(&48_000_u32.to_be_bytes());
+
+        transport.push_read(first);
+        transport.push_read(second);
+
+        controller.poll_device(Duration::ZERO).expect("poll");
+
+        assert_eq!(
+            controller.state.device.sample_rate,
+            Some(SampleRate::Hz48000)
+        );
+        assert_eq!(controller.state.device.clock_source, Some(ClockSource::Usb));
     }
 }

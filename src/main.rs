@@ -61,7 +61,7 @@ fn app_loop(
         controller.poll_device(Duration::from_millis(5))?;
         terminal.draw(|frame| ui::draw(frame, &controller.state))?;
 
-        if !event::poll(Duration::from_millis(50))? {
+        if !event::poll(Duration::from_millis(10))? {
             continue;
         }
 
