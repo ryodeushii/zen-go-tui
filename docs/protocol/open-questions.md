@@ -162,6 +162,11 @@ What remains unresolved:
 - which exact late `0x73` byte or tuple is the durable passive pan field for a given strip
 - whether a cleaner passive pan decode needs a slower one-step-per-capture workflow to avoid late-row churn
 
+What is no longer fully open:
+
+- the app now uses a narrow passive decoder for the active-surface strip-1 cluster, but only for grounded center/near-center anchors
+- this does **not** promote passive pan to solved status for arbitrary strips or arbitrary raw pan positions
+
 ### Exact meter-field mapping
 
 The metering captures now narrow this further than before:

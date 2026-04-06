@@ -76,7 +76,7 @@ fn app_loop(
                 KeyCode::Tab => controller.state.cycle_focus(),
                 KeyCode::Char('?') => {
                     controller.state.last_message =
-                        "Status: s/c. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2.".to_string();
+                        "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: b/x baseline for 0x73/0x83/0x75/0x81.".to_string();
                 }
                 KeyCode::Left => move_selection(controller, false),
                 KeyCode::Right => move_selection(controller, true),
@@ -99,7 +99,7 @@ fn app_loop(
                 KeyCode::Char('b') if controller.state.focus == FocusArea::Raw => {
                     controller.state.capture_raw_baseline();
                     controller.state.last_message =
-                        "Captured raw baseline for 0x73/0x83".to_string();
+                        "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
                 }
                 KeyCode::Char('x') if controller.state.focus == FocusArea::Raw => {
                     controller.state.clear_raw_baseline();

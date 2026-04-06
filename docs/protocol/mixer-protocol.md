@@ -226,6 +226,7 @@ What is safely grounded for mixer work:
 - durable assignment effects do reach `0x73`
 - durable link/unlink and mute/level workflows also reach `0x73`
 - the meaningful mixer activity remains concentrated in the late payload region rather than the front global field area
+- for the currently grounded strip `1` / pair `1-2` workflows, the active-surface late-row cluster is decodable enough for passive state reconstruction in app code
 
 Most useful currently-observed mixer-related `0x73` offsets:
 
@@ -243,6 +244,33 @@ Assignment-specific stable `0x73` movement currently clusters around:
 - `0xda`, `0xdc`, `0xde`
 - sometimes `0xdf`
 - oscillator assignment changes can additionally move `0x6e`, `0x8e`, `0xce`, `0xdb`, `0xdd`, `0xe2`
+
+## Grounded Passive Decode Implemented In Code
+
+The current code now passively reconstructs a **narrow grounded subset** of mixer state from a single `0x73` snapshot.
+
+Implemented passive subset:
+
+- `MIX 1` / `MIX 2` strip `1` level, from the active-surface late-row cluster
+- `MIX 1` / `MIX 2` strip `1` mute/unmute state, from the same cluster
+- `MIX 1` / `MIX 2` strip `1` pan, but only at the currently grounded center/near-center anchors
+- link state for the active `1-2` pair on the active surface when the late-row cluster matches the dedicated link/unlink captures strongly enough
+
+Grounded evidence pattern used by the passive decoder:
+
+- active surface still comes from payload `0x6a`
+- `MIX 1` active strip-1 workflows are best reflected by `0x6f`, `0x8f`, `0xcf`, `0xda..0xdf`
+- `MIX 2` active strip-1 workflows hold the active surface row at `0x6e/0x6f = 0x60`, while the same stable state still appears in `0x8f`, `0xcf`, `0xda..0xdf`
+- level captures in `capture_mixer_19_surface_independence_level(...)` show a repeatable tier set around `0x43`, `0x47`, `0x49` that is safe to collapse to coarse passive steps for the tested strip
+- mute captures in `capture_mixer_11_mute_unlinked(...)` show `0x51` as the muted anchor for the main strip cluster, with unmuted states remaining in the `0x4c/0x4e` family
+- link captures in `capture_mixer_05_link_pair_1_2_only.pcapng` and `capture_mixer_18_surface_independence_link.pcapng` keep the linked state in the `0x5a/0x4c/0x51` family and unlink in the `0x4e/0x51` family
+
+Important boundary of the implementation:
+
+- this is **not** a full per-strip passive mixer decoder
+- it currently updates only the grounded strip/pair subset above
+- passive pan remains intentionally narrow; the captures do not yet justify a continuous one-frame pan-value decoder over the full `0x02 .. 0x3e` command range
+- links are still only grounded for the tested `1-2` pair target on each surface; broader selector coverage remains deferred
 
 ## Metering Boundary
 
@@ -275,7 +303,7 @@ Important current boundary:
 Still not safely grounded from the current capture set:
 
 - a passive exact-source decoder from one startup `0x73` frame
-- a one-offset-per-strip level decoder from `0x73` alone
+- a general one-offset-per-strip level decoder from `0x73` alone
 - a complete strip table layout for all mixer channels
 - an exact passive per-strip pan decoder from one `0x73` frame, even though the host-side pan byte range is now grounded
 - complete solo-state semantics

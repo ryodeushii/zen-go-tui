@@ -4,8 +4,8 @@ use anyhow::Result;
 
 use crate::protocol::{
     encode_command, encode_query, ClockSource, Command, DeviceMetadata, DeviceSnapshot, Frame,
-    MixerAssignment, MixerChannelState, MixerSurface, OutputMode, OutputState, OutputTarget,
-    PanState, PreampMode, PreampState, SampleRate, Snapshot73, Surface,
+    MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode, OutputState,
+    OutputTarget, PanState, PreampMode, PreampState, QueryReply75, SampleRate, Snapshot73, Surface,
 };
 use crate::transport::Transport;
 
@@ -16,6 +16,7 @@ pub struct DeviceStatus {
     pub lock_known: bool,
     pub locked: Option<bool>,
     pub metadata: Option<DeviceMetadata>,
+    pub startup_query_summaries: [Option<String>; 3],
     pub last_refresh_summary: String,
 }
 
@@ -27,6 +28,7 @@ impl Default for DeviceStatus {
             lock_known: false,
             locked: None,
             metadata: None,
+            startup_query_summaries: [None, None, None],
             last_refresh_summary: "waiting for device snapshot".to_string(),
         }
     }
@@ -111,6 +113,11 @@ impl Default for AppState {
 }
 
 impl AppState {
+    pub fn startup_query_summary(&self, query_id: u8) -> Option<&str> {
+        startup_query_slot(query_id)
+            .and_then(|index| self.device.startup_query_summaries[index].as_deref())
+    }
+
     pub fn active_mixer_surface(&self) -> MixerSurface {
         MixerSurface::from_surface(self.surface)
     }
@@ -132,6 +139,41 @@ impl AppState {
         self.dsp_cluster = snapshot.dsp_cluster;
         self.preamp = PreampState::from_cluster(snapshot.dsp_cluster);
         self.surface = snapshot.surface;
+        self.apply_passive_mixer_decode(&snapshot);
+    }
+
+    fn apply_passive_mixer_decode(&mut self, snapshot: &Snapshot73) {
+        for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
+            for channel in 1..=16 {
+                let Some(decoded) = snapshot.mixer_decode.strip(mixer, channel) else {
+                    continue;
+                };
+                let Some(slot) = self.state_slot_mut(mixer, channel) else {
+                    continue;
+                };
+
+                if let Some(level) = decoded.level {
+                    slot.level = Some(level);
+                }
+                if let Some(muted) = decoded.muted {
+                    slot.muted = Some(muted);
+                }
+                if let Some(pan) = decoded.pan {
+                    slot.pan = pan;
+                }
+                if let Some(linked) = decoded.linked {
+                    slot.linked = Some(linked);
+                }
+            }
+        }
+    }
+
+    fn state_slot_mut(
+        &mut self,
+        mixer: MixerSurface,
+        channel: u8,
+    ) -> Option<&mut MixerChannelState> {
+        self.mixer_channels[mixer.index()].get_mut(channel.checked_sub(1)? as usize)
     }
 
     pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: Vec<u8>) {
@@ -151,6 +193,7 @@ impl AppState {
             DeviceSnapshot::QueryReply(reply) => {
                 self.connection.last_frame_type = Some("0x75 query reply");
                 self.latest_raw_75 = Some(raw);
+                self.store_startup_query_summary(&reply);
                 if let Some(metadata) = reply.metadata() {
                     self.last_message = format!(
                         "Connected to {} ({})",
@@ -163,6 +206,12 @@ impl AppState {
                 self.connection.last_frame_type = Some("0x81 notification");
                 self.latest_raw_81 = Some(raw);
             }
+        }
+    }
+
+    fn store_startup_query_summary(&mut self, reply: &QueryReply75) {
+        if let Some(index) = startup_query_slot(reply.query_id) {
+            self.device.startup_query_summaries[index] = Some(reply.summary_label());
         }
     }
 
@@ -193,6 +242,15 @@ impl AppState {
         self.baseline_raw_83 = None;
         self.baseline_raw_75 = None;
         self.baseline_raw_81 = None;
+    }
+}
+
+fn startup_query_slot(query_id: u8) -> Option<usize> {
+    match query_id {
+        0x01 => Some(0),
+        0x00 => Some(1),
+        0x11 => Some(2),
+        _ => None,
     }
 }
 
@@ -436,11 +494,21 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
             selector,
             enabled,
             include_companion: false,
-        } => Some(PendingMutation::MixerLink {
-            mixer: MixerSurface::Mix2,
-            selector,
-            enabled,
-        }),
+        } => {
+            let mixer = if MixerLinkTarget::from_selector(MixerSurface::Mix1, selector).is_some() {
+                MixerSurface::Mix1
+            } else if MixerLinkTarget::from_selector(MixerSurface::Mix2, selector).is_some() {
+                MixerSurface::Mix2
+            } else {
+                return None;
+            };
+
+            Some(PendingMutation::MixerLink {
+                mixer,
+                selector,
+                enabled,
+            })
+        }
         Command::SetOutputVolume { target, step } => {
             Some(PendingMutation::OutputVolume { target, step })
         }
@@ -473,20 +541,16 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
 }
 
 fn link_pair_from_selector(mixer: MixerSurface, selector: u8) -> Option<(u8, u8)> {
-    match (mixer, selector) {
-        (MixerSurface::Mix1, 0x00) => Some((1, 2)),
-        (MixerSurface::Mix1, 0x03) => Some((7, 8)),
-        (MixerSurface::Mix2, 0x01) => Some((1, 2)),
-        _ => None,
-    }
+    MixerLinkTarget::from_selector(mixer, selector)
+        .map(|target| (target.left_channel, target.right_channel))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::protocol::{
-        ClockSource, Command, DeviceSnapshot, MixerAssignment, MixerChannelState, MixerSurface,
-        OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState, SampleRate,
-        Snapshot73, Surface,
+        ClockSource, Command, DeviceSnapshot, MixerAssignment, MixerChannelState, MixerStrip,
+        MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState,
+        SampleRate, Snapshot73, Surface,
     };
     use crate::transport::MockTransport;
 
@@ -507,6 +571,7 @@ mod tests {
             dsp_cluster: [0x2f, 0x34, 0x50, 0x10],
             preamp: PreampState::from_cluster([0x2f, 0x34, 0x50, 0x10]),
             surface: Surface::MonitorHp1,
+            mixer_decode: Default::default(),
             late_shadow: [0; 12],
         }
     }
@@ -537,6 +602,41 @@ mod tests {
         assert_eq!(state.preamp.input2.mode, PreampMode::Mic);
         assert_eq!(state.preamp.input2.gain_raw, 0x2a);
         assert!(!state.preamp.input2.phantom_on);
+    }
+
+    #[test]
+    fn reducer_applies_grounded_passive_mixer_decode_from_snapshot() {
+        let mut state = AppState::default();
+        let mut device_snapshot = snapshot();
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].level = Some(0x30);
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].muted = Some(false);
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].pan =
+            Some(PanState::center());
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].linked = Some(true);
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][1].linked = Some(true);
+
+        state.apply_snapshot(device_snapshot);
+
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][0].level,
+            Some(0x30)
+        );
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][0].muted,
+            Some(false)
+        );
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][0].pan,
+            PanState::center()
+        );
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
+            Some(true)
+        );
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
+            Some(true)
+        );
     }
 
     #[test]
@@ -701,6 +801,70 @@ mod tests {
             controller.state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
             None
         );
+    }
+
+    #[test]
+    fn ordinary_assignment_overlay_supports_full_grounded_strip_range() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+
+        for channel in 5..=16 {
+            controller
+                .send(Command::SetMixerAssignment {
+                    strip: channel,
+                    assignment: MixerAssignment::Mute,
+                })
+                .expect("send assignment");
+            controller.confirm_pending_write(snapshot());
+
+            assert_eq!(
+                controller.state.mixer_channels[MixerSurface::Mix1.index()][channel as usize - 1]
+                    .assignment,
+                Some(MixerAssignment::Mute)
+            );
+            assert_eq!(
+                controller.state.mixer_channels[MixerSurface::Mix2.index()][channel as usize - 1]
+                    .assignment,
+                Some(MixerAssignment::Mute)
+            );
+        }
+    }
+
+    #[test]
+    fn link_overlay_respects_grounded_target_mapping_only() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+
+        for target in [
+            MixerLinkTarget::from_channel(MixerSurface::Mix1, 1).expect("mix1 1-2"),
+            MixerLinkTarget::from_channel(MixerSurface::Mix1, 7).expect("mix1 7-8"),
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 1).expect("mix2 1-2"),
+        ] {
+            controller
+                .send(Command::SetLinkState {
+                    selector: target.selector,
+                    enabled: true,
+                    include_companion: false,
+                })
+                .expect("send grounded link");
+            controller.confirm_pending_write(snapshot());
+
+            assert_eq!(
+                controller.state.mixer_channels[target.mixer.index()]
+                    [target.left_channel as usize - 1]
+                    .linked,
+                Some(true)
+            );
+            assert_eq!(
+                controller.state.mixer_channels[target.mixer.index()]
+                    [target.right_channel as usize - 1]
+                    .linked,
+                Some(true)
+            );
+        }
+
+        assert!(MixerLinkTarget::from_channel(MixerSurface::Mix1, 5).is_none());
+        assert!(MixerStrip::ordinary(4).is_none());
     }
 
     #[test]
@@ -939,6 +1103,10 @@ mod tests {
 
         assert_eq!(state.latest_raw_75, Some(raw75));
         assert_eq!(state.latest_raw_81, Some(raw81));
+        assert_eq!(
+            state.startup_query_summary(0x01),
+            Some("Metadata: undecoded")
+        );
     }
 
     #[test]
@@ -974,5 +1142,34 @@ mod tests {
         assert!(state.baseline_raw_83.is_none());
         assert!(state.baseline_raw_75.is_none());
         assert!(state.baseline_raw_81.is_none());
+    }
+
+    #[test]
+    fn stores_grounded_startup_query_summaries_for_all_bootstrap_replies() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x00,
+                body: vec![0xaa, 0xbb, 0xcc],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x11,
+                body: vec![0x12],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        assert_eq!(
+            state.startup_query_summary(0x00),
+            Some("Capability/default block: 3 bytes [aa bb cc]")
+        );
+        assert_eq!(
+            state.startup_query_summary(0x11),
+            Some("Status/capability value: 1 bytes [12]")
+        );
     }
 }

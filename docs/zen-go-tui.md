@@ -75,6 +75,10 @@ This is especially useful while continuing reverse-engineering of late `0x73` mi
 ## Confirmed protocol support exposed in the app
 
 - startup `0x74` queries and `0x75` metadata parsing
+- grounded startup `0x75` query classification and summary surfacing for:
+  - `query 0x01` = product metadata
+  - `query 0x00` = short capability/default block (surfaced conservatively as raw-byte summary only)
+  - `query 0x11` = small capability/status value (surfaced conservatively as raw-byte summary only)
 - `0x73` snapshot parsing for:
   - sample-rate code and numeric sample rate
   - clock source
@@ -140,6 +144,8 @@ Mixer protocol notes:
 - the app now tracks `16` strips per surface with shared assignment plus per-surface level, mute, pan, and link overlay state
 - mixer pan host encoding is now modeled as a scalar raw value over the grounded `0x02 .. 0x3e` range rather than only anchor states
 - ordinary-strip assignment cycling is intentionally limited to strips `5..16`; early AFX-adjacent strip assignment semantics remain deferred
+- the ordinary-strip assignment write path now explicitly covers the grounded strip range `5..16`
+- the status pane now shows the grounded non-metadata startup `0x75` replies as conservative summaries instead of ignoring them
 
 ## Experimental / intentionally limited areas
 
@@ -147,7 +153,8 @@ Mixer protocol notes:
 - **mixer state decode from `0x73`**: current captures confirm command families and mixer-related late-table movement, but the candidate late bytes also churn before the first host write and during pure idle. That means a safe passive per-strip startup decode is still unresolved, so the TUI intentionally shows only last confirmed command round-trip mixer state rather than inventing startup strip values. Tracked mixer overlays are kept per surface (`MIX 1` vs `MIX 2`) so writes on one surface do not pollute the other.
 - **preamp / DSP editing**: preamp gains, modes, phantom, and phase are now exposed from the newly isolated captures; richer DSP/preamp page behavior around `51 01 01`, `a2`, `d5`, and `d7` remains intentionally out of scope
 - **link / unlink controls**: the `0x70 / 0x14` family is documented, but selector semantics are not resolved enough to expose as a normal interactive control yet
-- **link / unlink controls**: the TUI now exposes only the currently grounded selector mappings (`MIX 1` pairs `1-2`, `7-8`, and `MIX 2` pair `1-2`); broader selector coverage remains deferred
+- **link / unlink controls**: the TUI now exposes only the currently grounded selector mappings (`MIX 1` pairs `1-2`, `7-8`, and `MIX 2` pair `1-2`); ungrounded ordinary-pair selectors remain deferred
+- **startup `0x75` blocks**: the app now classifies all three grounded startup query reply kinds, but it still intentionally does **not** decode the inner meaning of the `0x00` capability/default block or `0x11` status/capability value beyond conservative byte summaries
 - **metering decode**: captures now ground that meter-related movement is device-originated and visible in late `0x73` rows rather than `0x83`, but exact strip/master meter parsing is still intentionally out of scope
 
 ## Verification expectations without hardware

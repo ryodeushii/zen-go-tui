@@ -61,6 +61,12 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .as_ref()
         .map(|m| format!("{} v{}", m.product_name, m.version))
         .unwrap_or_else(|| "metadata pending".to_string());
+    let query00 = state
+        .startup_query_summary(0x00)
+        .unwrap_or("Capability/default block pending");
+    let query11 = state
+        .startup_query_summary(0x11)
+        .unwrap_or("Status/capability value pending");
     let text = Paragraph::new(vec![
         Line::from(vec![Span::raw(format!("Device: {}", meta))]),
         Line::from(vec![Span::raw(format!(
@@ -74,6 +80,8 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             "Connection: {}   Last: {}",
             connected, state.device.last_refresh_summary
         ))]),
+        Line::from(vec![Span::raw(format!("Startup: {}", query00))]),
+        Line::from(vec![Span::raw(format!("         {}", query11))]),
     ])
     .block(block)
     .wrap(Wrap { trim: true });
@@ -279,7 +287,7 @@ fn render_thin_bar(ratio: f64) -> String {
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab focus | ←/→ select | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | ? help | q quit".to_string()
+    "Tab focus | ←/→ select | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
 
 fn render_mixer_strip_line(
@@ -545,8 +553,8 @@ fn style_for_ascii_byte(byte: u8, changed: bool) -> Style {
 mod tests {
     use crate::app::AppState;
     use crate::protocol::{
-        ClockSource, MixerAssignment, OutputMode, OutputState, OutputTarget, PanState, SampleRate,
-        Surface,
+        ClockSource, MixerAssignment, MixerLinkTarget, MixerSurface, OutputMode, OutputState,
+        OutputTarget, PanState, SampleRate, Surface,
     };
 
     use super::*;
@@ -567,6 +575,7 @@ mod tests {
         assert!(footer.contains("Tab"));
         assert!(footer.contains("m mute"));
         assert!(footer.contains("d dim"));
+        assert!(footer.contains("0x75/0x81"));
         assert!(footer.contains("q quit"));
     }
 
@@ -599,6 +608,35 @@ mod tests {
         assert!(footer.contains("a assign"));
         assert!(footer.contains("[ ] pan"));
         assert!(footer.contains("l link"));
+        assert!(footer.contains("Raw shows 0x73/0x83/0x75/0x81"));
+    }
+
+    #[test]
+    fn status_panel_surfaces_grounded_non_metadata_startup_queries() {
+        let mut state = AppState::default();
+        state.device.startup_query_summaries[1] =
+            Some("Capability/default block: 3 bytes [aa bb cc]".to_string());
+        state.device.startup_query_summaries[2] =
+            Some("Status/capability value: 1 bytes [12]".to_string());
+
+        let lines = vec![
+            Line::from(format!(
+                "Startup: {}",
+                state.startup_query_summary(0x00).unwrap_or_default()
+            )),
+            Line::from(format!(
+                "         {}",
+                state.startup_query_summary(0x11).unwrap_or_default()
+            )),
+        ];
+        let rendered = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(rendered.contains("Capability/default block: 3 bytes [aa bb cc]"));
+        assert!(rendered.contains("Status/capability value: 1 bytes [12]"));
     }
 
     #[test]
@@ -615,6 +653,26 @@ mod tests {
 
         assert!(line.contains("Computer Play 8"));
         assert!(line.contains("pan=R100"));
+        assert!(line.contains("link=on"));
+    }
+
+    #[test]
+    fn mixer_strip_line_renders_newly_grounded_pair_link() {
+        let mut state = AppState::default();
+        let target = MixerLinkTarget::from_channel(MixerSurface::Mix1, 7).expect("grounded pair");
+        state.mixer_channels[target.mixer.index()][target.left_channel as usize - 1].linked =
+            Some(true);
+        state.mixer_channels[target.mixer.index()][target.left_channel as usize - 1].assignment =
+            Some(MixerAssignment::SpdifIn(1));
+
+        let line = render_mixer_strip_line(
+            &state,
+            target.left_channel as usize - 1,
+            &state.mixer_channels[target.mixer.index()][target.left_channel as usize - 1],
+        );
+
+        assert!(line.contains("CH 07"));
+        assert!(line.contains("SPDIF In 1"));
         assert!(line.contains("link=on"));
     }
 }

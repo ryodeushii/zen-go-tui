@@ -89,6 +89,19 @@ Observed fields:
 - Serial-like identifier: `4502721001300`
 - Firmware/software version string: `6.6`
 
+### Other grounded startup replies
+
+The remaining startup `0x75` replies are grounded at the *classification* level but not yet at the inner field-decoding level:
+
+- `query = 0x00` returns a short capability/default block
+- `query = 0x11` returns a small capability/status value
+
+Current implementation boundary:
+
+- it is safe to classify and surface these replies separately from metadata
+- it is **not** safe yet to assign specific semantic meaning to their inner bytes
+- UI/protocol code should therefore expose them conservatively as query-kind + raw-byte summaries only
+
 ## Stable-State Rule
 
 The device usually emits multiple `0x73` frames after a host write.
@@ -246,6 +259,30 @@ Confirmed mutable regions include the following `0x73` payload offsets:
 - late shadow cluster: `0xda..0xe5`
 
 The exact field-by-field layout of those tables is not fully decoded yet, but the stable state changes are device-originated and consistent.
+
+### Newly grounded passive mixer subset
+
+Re-analysis of the newer isolated mixer captures supports a limited passive decode from the late `0x73` rows.
+
+What is now grounded strongly enough to implement:
+
+- active-surface strip `1` level can be reconstructed coarsely from the stable cluster around `0x8f`, `0xcf`, and `0xda..0xdf`
+- active-surface strip `1` mute/unmute can be reconstructed from the same cluster
+- active-surface strip `1` pan can be reconstructed only for the currently grounded center/near-center anchors
+- active-surface pair `1-2` link state can be reconstructed in the tested link captures
+
+Evidence boundaries that matter:
+
+- `capture_mixer_19_surface_independence_level(...)` is the strongest level anchor because it shows different durable tier values for `MIX 1` vs `MIX 2` while keeping assignment shared
+- `capture_mixer_11_mute_unlinked(...)` isolates the mute transition cleanly enough to separate the muted `0x51` cluster from the unmuted `0x4c/0x4e` family
+- `capture_mixer_07_pan_mono_strip(...)` confirms that the same late cluster moves with pan, but the one-frame passive evidence is only strong enough for narrow anchors, not the full continuous range
+- `capture_mixer_05_link_pair_1_2_only.pcapng` and `capture_mixer_18_surface_independence_link.pcapng` are strong enough for the tested pair-local link state only
+
+What remains unresolved:
+
+- a full per-strip passive table covering all `16` strips
+- a continuous passive pan decoder over the full host-side raw range
+- meter extraction from the late rows or `0x81`
 
 ## Auxiliary Device State: `0x83`
 

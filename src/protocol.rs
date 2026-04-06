@@ -417,6 +417,90 @@ pub enum MixerAssignment {
     EmuMic(u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerStripKind {
+    EarlyAfxAdjacent,
+    Ordinary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixerStrip {
+    pub channel: u8,
+    pub kind: MixerStripKind,
+}
+
+impl MixerStrip {
+    pub fn new(channel: u8) -> Option<Self> {
+        if !(1..=16).contains(&channel) {
+            return None;
+        }
+
+        Some(Self {
+            channel,
+            kind: if channel <= 4 {
+                MixerStripKind::EarlyAfxAdjacent
+            } else {
+                MixerStripKind::Ordinary
+            },
+        })
+    }
+
+    pub fn ordinary(channel: u8) -> Option<Self> {
+        let strip = Self::new(channel)?;
+        matches!(strip.kind, MixerStripKind::Ordinary).then_some(strip)
+    }
+
+    pub fn assignment_entry_index(self) -> Option<usize> {
+        match self.kind {
+            MixerStripKind::Ordinary => Some((self.channel - 1) as usize),
+            MixerStripKind::EarlyAfxAdjacent => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixerLinkTarget {
+    pub mixer: MixerSurface,
+    pub left_channel: u8,
+    pub right_channel: u8,
+    pub selector: u8,
+}
+
+impl MixerLinkTarget {
+    pub fn from_selector(mixer: MixerSurface, selector: u8) -> Option<Self> {
+        match (mixer, selector) {
+            (MixerSurface::Mix1, 0x00) => Some(Self {
+                mixer,
+                left_channel: 1,
+                right_channel: 2,
+                selector,
+            }),
+            (MixerSurface::Mix1, 0x03) => Some(Self {
+                mixer,
+                left_channel: 7,
+                right_channel: 8,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x01) => Some(Self {
+                mixer,
+                left_channel: 1,
+                right_channel: 2,
+                selector,
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn from_channel(mixer: MixerSurface, channel: u8) -> Option<Self> {
+        match (mixer, channel) {
+            (MixerSurface::Mix1, 1 | 2) => Self::from_selector(mixer, 0x00),
+            (MixerSurface::Mix1, 7 | 8) => Self::from_selector(mixer, 0x03),
+            (MixerSurface::Mix2, 1 | 2) => Self::from_selector(mixer, 0x01),
+            _ => None,
+        }
+    }
+}
+
 impl MixerAssignment {
     pub fn from_ordinary_strip_bytes(bytes: [u8; 2]) -> Option<Self> {
         match bytes {
@@ -503,6 +587,7 @@ pub struct Snapshot73 {
     pub dsp_cluster: [u8; 4],
     pub preamp: PreampState,
     pub surface: Surface,
+    pub mixer_decode: MixerPassiveDecode,
     pub late_shadow: [u8; 12],
 }
 
@@ -519,6 +604,34 @@ pub struct DeviceMetadata {
     pub version: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupQueryKind {
+    Metadata,
+    CapabilityDefaults,
+    StatusValue,
+    Unknown(u8),
+}
+
+impl StartupQueryKind {
+    pub fn from_query_id(query_id: u8) -> Self {
+        match query_id {
+            0x01 => Self::Metadata,
+            0x00 => Self::CapabilityDefaults,
+            0x11 => Self::StatusValue,
+            value => Self::Unknown(value),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Metadata => "Metadata",
+            Self::CapabilityDefaults => "Capability/default block",
+            Self::StatusValue => "Status/capability value",
+            Self::Unknown(_) => "Unknown query reply",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryReply75 {
     pub query_id: u8,
@@ -526,6 +639,10 @@ pub struct QueryReply75 {
 }
 
 impl QueryReply75 {
+    pub fn kind(&self) -> StartupQueryKind {
+        StartupQueryKind::from_query_id(self.query_id)
+    }
+
     pub fn metadata(&self) -> Option<DeviceMetadata> {
         if self.query_id != 0x01 {
             return None;
@@ -548,6 +665,39 @@ impl QueryReply75 {
             serial: parts[1].clone(),
             version: parts[2].clone(),
         })
+    }
+
+    pub fn summary_label(&self) -> String {
+        match self.kind() {
+            StartupQueryKind::Metadata => self
+                .metadata()
+                .map(|metadata| {
+                    format!(
+                        "{}: {} ({}, serial {})",
+                        self.kind().label(),
+                        metadata.product_name,
+                        metadata.version,
+                        metadata.serial
+                    )
+                })
+                .unwrap_or_else(|| format!("{}: undecoded", self.kind().label())),
+            StartupQueryKind::CapabilityDefaults | StartupQueryKind::StatusValue => format!(
+                "{}: {} bytes [{}]",
+                self.kind().label(),
+                self.body.len(),
+                self.body
+                    .iter()
+                    .take(8)
+                    .map(|byte| format!("{:02x}", byte))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            StartupQueryKind::Unknown(id) => format!(
+                "{} 0x{id:02x}: {} bytes",
+                self.kind().label(),
+                self.body.len()
+            ),
+        }
     }
 }
 
@@ -677,6 +827,7 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<Snapshot73, ProtocolError> {
             payload[0x1b],
         ]),
         surface: Surface::from_code(payload[0x6a]),
+        mixer_decode: decode_passive_mixer_state(payload),
         late_shadow: [
             payload[0xda],
             payload[0xdb],
@@ -692,6 +843,143 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<Snapshot73, ProtocolError> {
             payload[0xe5],
         ],
     })
+}
+
+fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
+    let mut decode = MixerPassiveDecode::default();
+
+    let shared_level = decode_level_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf)
+        .or_else(|| decode_level_from_group(payload, 0x6f, 0x8f, 0xda, 0xdd, 0xde, 0xdf));
+    let shared_mute = decode_mute_from_group(payload, 0x8f, 0xcf, 0xda, 0xdb, 0xdc, 0xdd);
+    let shared_pan = decode_pan_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf);
+
+    let active_mixer = MixerSurface::from_surface(Surface::from_code(payload[0x6a]));
+    if let Some(slot) = decode.surfaces[active_mixer.index()].get_mut(0) {
+        slot.level = shared_level;
+        slot.muted = shared_mute;
+        slot.pan = shared_pan;
+    }
+
+    if let Some(linked) = decode_link_state(payload) {
+        let targets: &[(MixerSurface, u8)] = match active_mixer {
+            MixerSurface::Mix1 => &[(MixerSurface::Mix1, 1), (MixerSurface::Mix1, 2)],
+            MixerSurface::Mix2 => &[(MixerSurface::Mix2, 1), (MixerSurface::Mix2, 2)],
+        };
+        for (mixer, channel) in targets {
+            if let Some(slot) = decode.surfaces[mixer.index()].get_mut(*channel as usize - 1) {
+                slot.linked = Some(linked);
+            }
+        }
+    }
+
+    decode
+}
+
+fn decode_level_from_group(
+    payload: &[u8],
+    primary_a: usize,
+    primary_b: usize,
+    shadow_a: usize,
+    shadow_b: usize,
+    tail_a: usize,
+    tail_b: usize,
+) -> Option<u8> {
+    let samples = [
+        payload.get(primary_a).copied()?,
+        payload.get(primary_b).copied()?,
+        payload.get(shadow_a).copied()?,
+        payload.get(shadow_b).copied()?,
+        payload.get(tail_a).copied()?,
+        payload.get(tail_b).copied()?,
+    ];
+
+    let value =
+        (samples.iter().map(|&sample| sample as u16).sum::<u16>() / samples.len() as u16) as u8;
+    match value {
+        0x43..=0x4e => Some((value - 0x43) * 8),
+        _ => None,
+    }
+}
+
+fn decode_mute_from_group(
+    payload: &[u8],
+    primary_a: usize,
+    primary_b: usize,
+    shadow_a: usize,
+    shadow_b: usize,
+    shadow_c: usize,
+    shadow_d: usize,
+) -> Option<bool> {
+    let values = [
+        payload.get(primary_a).copied()?,
+        payload.get(primary_b).copied()?,
+        payload.get(shadow_a).copied()?,
+        payload.get(shadow_b).copied()?,
+        payload.get(shadow_c).copied()?,
+        payload.get(shadow_d).copied()?,
+    ];
+
+    let all_51 = values.iter().all(|value| *value == 0x51);
+    let all_active = values
+        .iter()
+        .all(|value| matches!(*value, 0x49 | 0x4b | 0x4c | 0x4e | 0x51));
+    if all_51 {
+        Some(true)
+    } else if all_active {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn decode_pan_from_group(
+    payload: &[u8],
+    primary_a: usize,
+    primary_b: usize,
+    shadow_a: usize,
+    shadow_b: usize,
+    tail_a: usize,
+    tail_b: usize,
+) -> Option<PanState> {
+    let samples = [
+        payload.get(primary_a).copied()?,
+        payload.get(primary_b).copied()?,
+        payload.get(shadow_a).copied()?,
+        payload.get(shadow_b).copied()?,
+        payload.get(tail_a).copied()?,
+        payload.get(tail_b).copied()?,
+    ];
+    let value =
+        (samples.iter().map(|&sample| sample as u16).sum::<u16>() / samples.len() as u16) as u8;
+    let centered = match value {
+        0x49..=0x4c => 0x20,
+        0x4d..=0x4e => 0x1e,
+        _ => return None,
+    };
+    Some(PanState::from_raw(centered))
+}
+
+fn decode_link_state(payload: &[u8]) -> Option<bool> {
+    let values = [
+        payload.get(0x8f).copied()?,
+        payload.get(0xcf).copied()?,
+        payload.get(0xda).copied()?,
+        payload.get(0xdb).copied()?,
+        payload.get(0xdc).copied()?,
+        payload.get(0xdd).copied()?,
+        payload.get(0xde).copied()?,
+        payload.get(0xdf).copied()?,
+    ];
+    if values
+        .iter()
+        .all(|value| matches!(*value, 0x4c | 0x5a | 0x51))
+    {
+        Some(true)
+    } else if values.iter().all(|value| matches!(*value, 0x4e | 0x51)) {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -782,6 +1070,48 @@ pub struct MixerChannelState {
     pub pan: PanState,
     pub assignment: Option<MixerAssignment>,
     pub linked: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixerPassiveStripState {
+    pub level: Option<u8>,
+    pub muted: Option<bool>,
+    pub pan: Option<PanState>,
+    pub linked: Option<bool>,
+}
+
+impl MixerPassiveStripState {
+    pub const fn unresolved() -> Self {
+        Self {
+            level: None,
+            muted: None,
+            pan: None,
+            linked: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MixerPassiveDecode {
+    pub surfaces: [[MixerPassiveStripState; 16]; 2],
+}
+
+impl Default for MixerPassiveDecode {
+    fn default() -> Self {
+        Self {
+            surfaces: [[MixerPassiveStripState::unresolved(); 16]; 2],
+        }
+    }
+}
+
+impl MixerPassiveDecode {
+    pub fn strip(&self, mixer: MixerSurface, channel: u8) -> Option<MixerPassiveStripState> {
+        let index = channel.checked_sub(1)? as usize;
+        self.surfaces
+            .get(mixer.index())
+            .and_then(|surface| surface.get(index))
+            .copied()
+    }
 }
 
 impl MixerChannelState {
@@ -908,7 +1238,9 @@ fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
     frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
     frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, 0xbb]);
-    let entry_index = strip.saturating_sub(1) as usize;
+    let entry_index = MixerStrip::ordinary(strip)
+        .and_then(|value| value.assignment_entry_index())
+        .expect("ordinary strip assignment write requires grounded strip 5..16 mapping");
     let tuple_offset = 0x03 + 0x17 + entry_index * 2;
     let [a, b] = assignment.ordinary_strip_bytes();
     frame[0x10 + tuple_offset] = a;
@@ -938,6 +1270,41 @@ mod tests {
         assert_eq!(PanState::center().raw(), 0x20);
         assert_eq!(PanState::left().raw(), 0x02);
         assert_eq!(PanState::right().raw(), 0x3e);
+    }
+
+    #[test]
+    fn ordinary_strip_index_map_stays_out_of_early_afx_range() {
+        assert_eq!(MixerStrip::ordinary(4), None);
+        assert_eq!(
+            MixerStrip::ordinary(5).map(|strip| strip.assignment_entry_index()),
+            Some(Some(4))
+        );
+        assert_eq!(
+            MixerStrip::ordinary(16).map(|strip| strip.assignment_entry_index()),
+            Some(Some(15))
+        );
+    }
+
+    #[test]
+    fn link_target_mapping_stays_limited_to_grounded_selectors() {
+        assert_eq!(
+            MixerLinkTarget::from_selector(MixerSurface::Mix1, 0x03),
+            Some(MixerLinkTarget {
+                mixer: MixerSurface::Mix1,
+                left_channel: 7,
+                right_channel: 8,
+                selector: 0x03,
+            })
+        );
+        assert_eq!(
+            MixerLinkTarget::from_selector(MixerSurface::Mix1, 0x01),
+            None
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 2).map(|target| target.selector),
+            Some(0x01)
+        );
+        assert_eq!(MixerLinkTarget::from_channel(MixerSurface::Mix2, 7), None);
     }
 
     #[test]
@@ -1057,6 +1424,14 @@ mod tests {
         assert_eq!(snapshot.output(OutputTarget::Hp1).mode, OutputMode::Mute);
         assert_eq!(snapshot.output(OutputTarget::Hp2).mode, OutputMode::Normal);
         assert_eq!(snapshot.dsp_cluster, [0x2f, 0x34, 0x50, 0x10]);
+        assert_eq!(
+            snapshot
+                .mixer_decode
+                .strip(MixerSurface::Mix2, 1)
+                .unwrap()
+                .level,
+            None
+        );
     }
 
     #[test]
@@ -1191,6 +1566,47 @@ mod tests {
     }
 
     #[test]
+    fn classifies_grounded_startup_query_reply_kinds() {
+        assert_eq!(
+            StartupQueryKind::from_query_id(0x01),
+            StartupQueryKind::Metadata
+        );
+        assert_eq!(
+            StartupQueryKind::from_query_id(0x00),
+            StartupQueryKind::CapabilityDefaults
+        );
+        assert_eq!(
+            StartupQueryKind::from_query_id(0x11),
+            StartupQueryKind::StatusValue
+        );
+        assert_eq!(
+            StartupQueryKind::from_query_id(0x7f),
+            StartupQueryKind::Unknown(0x7f)
+        );
+    }
+
+    #[test]
+    fn summarizes_non_metadata_query_replies_without_over_decoding() {
+        let defaults = QueryReply75 {
+            query_id: 0x00,
+            body: vec![0xaa, 0xbb, 0xcc],
+        };
+        let status = QueryReply75 {
+            query_id: 0x11,
+            body: vec![0x12],
+        };
+
+        assert_eq!(
+            defaults.summary_label(),
+            "Capability/default block: 3 bytes [aa bb cc]"
+        );
+        assert_eq!(
+            status.summary_label(),
+            "Status/capability value: 1 bytes [12]"
+        );
+    }
+
+    #[test]
     fn output_volume_display_uses_inverse_db_scale() {
         let unity = OutputState::new(OutputTarget::Monitor, 0x00, OutputMode::Normal);
         let silence = OutputState::new(OutputTarget::Monitor, 0x60, OutputMode::Normal);
@@ -1212,5 +1628,103 @@ mod tests {
         assert_eq!(silence.display_db(), Some(-96));
         assert_eq!(unity.gain_ratio(), Some(1.0));
         assert_eq!(silence.gain_ratio(), Some(0.0));
+    }
+
+    #[test]
+    fn decodes_passive_mix1_strip1_level_from_late_row_cluster() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0f;
+        payload[0x6f] = 0x49;
+        payload[0x8f] = 0x49;
+        payload[0xcf] = 0x49;
+        payload[0xda] = 0x49;
+        payload[0xdd] = 0x49;
+        payload[0xde] = 0x49;
+        payload[0xdf] = 0x49;
+
+        let snapshot = Frame::parse(&frame)
+            .expect("frame should parse")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone();
+
+        let strip = snapshot
+            .mixer_decode
+            .strip(MixerSurface::Mix1, 1)
+            .expect("mix1 strip 1");
+        assert_eq!(strip.level, Some(0x30));
+        assert_eq!(strip.pan, Some(PanState::center()));
+    }
+
+    #[test]
+    fn decodes_passive_mix1_strip1_mute_from_late_row_cluster() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0f;
+        payload[0x8f] = 0x51;
+        payload[0xcf] = 0x51;
+        payload[0xda] = 0x51;
+        payload[0xdb] = 0x51;
+        payload[0xdc] = 0x51;
+        payload[0xdd] = 0x51;
+        payload[0xde] = 0x4e;
+        payload[0xdf] = 0x4e;
+
+        let snapshot = Frame::parse(&frame)
+            .expect("frame should parse")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone();
+
+        let strip = snapshot
+            .mixer_decode
+            .strip(MixerSurface::Mix1, 1)
+            .expect("mix1 strip 1");
+        assert_eq!(strip.muted, Some(true));
+    }
+
+    #[test]
+    fn decodes_passive_mix1_link_pair_from_late_row_cluster() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0f;
+        payload[0x8f] = 0x5a;
+        payload[0xcf] = 0x4c;
+        payload[0xda] = 0x51;
+        payload[0xdb] = 0x51;
+        payload[0xdc] = 0x51;
+        payload[0xdd] = 0x51;
+        payload[0xde] = 0x51;
+        payload[0xdf] = 0x51;
+
+        let snapshot = Frame::parse(&frame)
+            .expect("frame should parse")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone();
+
+        assert_eq!(
+            snapshot
+                .mixer_decode
+                .strip(MixerSurface::Mix1, 1)
+                .unwrap()
+                .linked,
+            Some(true)
+        );
+        assert_eq!(
+            snapshot
+                .mixer_decode
+                .strip(MixerSurface::Mix1, 2)
+                .unwrap()
+                .linked,
+            Some(true)
+        );
     }
 }
