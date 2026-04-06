@@ -192,6 +192,107 @@ pub enum Surface {
     Unknown(u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreampMode {
+    Mic,
+    Line,
+    HiZ,
+    Unknown(u8),
+}
+
+impl PreampMode {
+    pub fn from_raw(mode: u8) -> Self {
+        match mode & 0x0f {
+            0x00 => Self::Mic,
+            0x01 => Self::Line,
+            0x02 => Self::HiZ,
+            value => Self::Unknown(value),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mic => "Mic",
+            Self::Line => "Line",
+            Self::HiZ => "Hi-Z",
+            Self::Unknown(_) => "Unknown",
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Mic => 0x00,
+            Self::Line => 0x01,
+            Self::HiZ => 0x02,
+            Self::Unknown(value) => value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreampInputState {
+    pub gain_raw: u8,
+    pub mode: PreampMode,
+    pub phantom_on: bool,
+    pub mode_raw: u8,
+}
+
+impl PreampInputState {
+    pub fn from_raw(gain_raw: u8, mode_raw: u8) -> Self {
+        let mode = PreampMode::from_raw(mode_raw);
+        Self {
+            gain_raw,
+            mode,
+            phantom_on: matches!(mode, PreampMode::Mic) && mode_raw & 0x10 != 0,
+            mode_raw,
+        }
+    }
+
+    pub fn gain_db_label(self) -> String {
+        match self.mode {
+            PreampMode::Mic => format!("{} dB", self.gain_raw.min(0x41)),
+            PreampMode::Line => format!("{:+} dB", i8::from_ne_bytes([self.gain_raw])),
+            PreampMode::HiZ => format!("{} dB", self.gain_raw.min(0x2d)),
+            PreampMode::Unknown(_) => format!("raw {:02x}", self.gain_raw),
+        }
+    }
+
+    pub fn gain_ratio(self) -> f64 {
+        match self.mode {
+            PreampMode::Mic => (self.gain_raw.min(0x41) as f64 / 65.0).clamp(0.0, 1.0),
+            PreampMode::Line => {
+                let db = i8::from_ne_bytes([self.gain_raw]).clamp(-6, 20) as f64;
+                ((db + 6.0) / 26.0).clamp(0.0, 1.0)
+            }
+            PreampMode::HiZ => (self.gain_raw.min(0x2d) as f64 / 45.0).clamp(0.0, 1.0),
+            PreampMode::Unknown(_) => 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreampState {
+    pub input1: PreampInputState,
+    pub input2: PreampInputState,
+    pub cluster: [u8; 4],
+}
+
+impl Default for PreampState {
+    fn default() -> Self {
+        Self::from_cluster([0; 4])
+    }
+}
+
+impl PreampState {
+    pub fn from_cluster(cluster: [u8; 4]) -> Self {
+        Self {
+            input1: PreampInputState::from_raw(cluster[0], cluster[2]),
+            input2: PreampInputState::from_raw(cluster[1], cluster[3]),
+            cluster,
+        }
+    }
+}
+
 impl Surface {
     pub fn from_code(code: u8) -> Self {
         match code {
@@ -314,6 +415,7 @@ pub struct Snapshot73 {
     pub front_panel_bytes: [u8; 3],
     pub outputs: [OutputState; 3],
     pub dsp_cluster: [u8; 4],
+    pub preamp: PreampState,
     pub surface: Surface,
     pub late_shadow: [u8; 12],
 }
@@ -370,10 +472,22 @@ pub struct Notification81 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
-    Snapshot(Snapshot73),
-    QueryReply(QueryReply75),
-    Auxiliary83(Vec<u8>),
-    Notification(Notification81),
+    Snapshot {
+        snapshot: Snapshot73,
+        raw: Vec<u8>,
+    },
+    QueryReply {
+        reply: QueryReply75,
+        raw: Vec<u8>,
+    },
+    Auxiliary83 {
+        bytes: Vec<u8>,
+        raw: Vec<u8>,
+    },
+    Notification {
+        notification: Notification81,
+        raw: Vec<u8>,
+    },
 }
 
 impl Frame {
@@ -385,7 +499,10 @@ impl Frame {
         if bytes.len() == 6 {
             let mut raw = [0_u8; 6];
             raw.copy_from_slice(bytes);
-            return Ok(Self::Notification(Notification81 { bytes: raw }));
+            return Ok(Self::Notification {
+                notification: Notification81 { bytes: raw },
+                raw: bytes.to_vec(),
+            });
         }
 
         if bytes.len() < 0x12 {
@@ -394,27 +511,45 @@ impl Frame {
 
         let frame_type = u32::from_le_bytes(bytes[0..4].try_into().expect("type header"));
         match frame_type {
-            0x73 => Ok(Self::Snapshot(parse_snapshot73(bytes)?)),
-            0x75 => Ok(Self::QueryReply(QueryReply75 {
-                query_id: bytes[0x08],
-                body: bytes[0x10..].to_vec(),
-            })),
-            0x83 => Ok(Self::Auxiliary83(bytes[0x10..].to_vec())),
+            0x73 => Ok(Self::Snapshot {
+                snapshot: parse_snapshot73(bytes)?,
+                raw: bytes.to_vec(),
+            }),
+            0x75 => Ok(Self::QueryReply {
+                reply: QueryReply75 {
+                    query_id: bytes[0x08],
+                    body: bytes[0x10..].to_vec(),
+                },
+                raw: bytes.to_vec(),
+            }),
+            0x83 => Ok(Self::Auxiliary83 {
+                bytes: bytes[0x10..].to_vec(),
+                raw: bytes.to_vec(),
+            }),
             other => Err(ProtocolError::UnsupportedFrame(other)),
         }
     }
 
     pub fn as_snapshot(&self) -> Option<&Snapshot73> {
         match self {
-            Self::Snapshot(snapshot) => Some(snapshot),
+            Self::Snapshot { snapshot, .. } => Some(snapshot),
             _ => None,
         }
     }
 
     pub fn as_query_reply(&self) -> Option<&QueryReply75> {
         match self {
-            Self::QueryReply(reply) => Some(reply),
+            Self::QueryReply { reply, .. } => Some(reply),
             _ => None,
+        }
+    }
+
+    pub fn raw_bytes(&self) -> &[u8] {
+        match self {
+            Self::Snapshot { raw, .. } => raw,
+            Self::QueryReply { raw, .. } => raw,
+            Self::Auxiliary83 { raw, .. } => raw,
+            Self::Notification { raw, .. } => raw,
         }
     }
 }
@@ -449,6 +584,12 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<Snapshot73, ProtocolError> {
             ),
         ],
         dsp_cluster: [payload[0x18], payload[0x19], payload[0x1a], payload[0x1b]],
+        preamp: PreampState::from_cluster([
+            payload[0x18],
+            payload[0x19],
+            payload[0x1a],
+            payload[0x1b],
+        ]),
         surface: Surface::from_code(payload[0x6a]),
         late_shadow: [
             payload[0xda],
@@ -478,10 +619,10 @@ pub enum DeviceSnapshot {
 impl From<Frame> for DeviceSnapshot {
     fn from(frame: Frame) -> Self {
         match frame {
-            Frame::Snapshot(snapshot) => Self::Snapshot(snapshot),
-            Frame::Auxiliary83(bytes) => Self::Auxiliary83(bytes),
-            Frame::QueryReply(reply) => Self::QueryReply(reply),
-            Frame::Notification(notification) => Self::Notification(notification),
+            Frame::Snapshot { snapshot, .. } => Self::Snapshot(snapshot),
+            Frame::Auxiliary83 { bytes, .. } => Self::Auxiliary83(bytes),
+            Frame::QueryReply { reply, .. } => Self::QueryReply(reply),
+            Frame::Notification { notification, .. } => Self::Notification(notification),
         }
     }
 }
@@ -491,6 +632,22 @@ pub enum Command {
     SetSampleRate(SampleRate),
     SetClockSource(ClockSource),
     SelectSurface(Surface),
+    SetPreampMode {
+        input: u8,
+        mode: PreampMode,
+    },
+    SetPreampGain {
+        input: u8,
+        raw: u8,
+    },
+    SetPreampPhantom {
+        input: u8,
+        enabled: bool,
+    },
+    SetPreampPhase {
+        input: u8,
+        enabled: bool,
+    },
     SetOutputVolume {
         target: OutputTarget,
         step: u8,
@@ -572,6 +729,16 @@ pub fn encode_command(command: Command) -> Vec<u8> {
         Command::SetSampleRate(rate) => host_frame(0x12, &[0x03, rate.code()]),
         Command::SetClockSource(source) => host_frame(0x12, &[0x04, source.code()]),
         Command::SelectSurface(surface) => host_frame(0x13, &[0x49, 0x00, surface.code()]),
+        Command::SetPreampMode { input, mode } => {
+            host_frame(0x13, &[0x4f, input.min(1), mode.code()])
+        }
+        Command::SetPreampGain { input, raw } => host_frame(0x13, &[0x50, input.min(1), raw]),
+        Command::SetPreampPhantom { input, enabled } => {
+            host_frame(0x13, &[0x51, input.min(1), u8::from(enabled)])
+        }
+        Command::SetPreampPhase { input, enabled } => {
+            host_frame(0x13, &[0x52, input.min(1), u8::from(enabled)])
+        }
         Command::SetOutputVolume { target, step } => {
             host_frame(0x13, &[0x47, target.index(), step])
         }
@@ -666,6 +833,61 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_frame_preserves_raw_bytes() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        frame[0x10 + 0x8e] = 0x5a;
+        frame[0x10 + 0xcf] = 0x4c;
+        frame[0x10 + 0xde] = 0x11;
+
+        let parsed = Frame::parse(&frame).expect("frame should parse");
+        assert_eq!(parsed.raw_bytes()[0x10 + 0x8e], 0x5a);
+        assert_eq!(parsed.raw_bytes()[0x10 + 0xcf], 0x4c);
+        assert_eq!(parsed.raw_bytes()[0x10 + 0xde], 0x11);
+    }
+
+    #[test]
+    fn decodes_preamp_cluster_for_both_inputs() {
+        let state = PreampState::from_cluster([0x41, 0x2a, 0x10, 0x00]);
+
+        assert_eq!(state.input1.gain_raw, 0x41);
+        assert_eq!(state.input1.mode, PreampMode::Mic);
+        assert!(state.input1.phantom_on);
+
+        assert_eq!(state.input2.gain_raw, 0x2a);
+        assert_eq!(state.input2.mode, PreampMode::Mic);
+        assert!(!state.input2.phantom_on);
+    }
+
+    #[test]
+    fn decodes_preamp_line_and_hiz_modes() {
+        let state = PreampState::from_cluster([0x14, 0x2d, 0x11, 0x02]);
+
+        assert_eq!(state.input1.mode, PreampMode::Line);
+        assert!(!state.input1.phantom_on);
+        assert_eq!(state.input1.gain_raw, 0x14);
+
+        assert_eq!(state.input2.mode, PreampMode::HiZ);
+        assert!(!state.input2.phantom_on);
+        assert_eq!(state.input2.gain_raw, 0x2d);
+    }
+
+    #[test]
+    fn preamp_gain_db_ranges_follow_mode() {
+        let mic = PreampInputState::from_raw(0x41, 0x10);
+        let line_negative = PreampInputState::from_raw(0xfa, 0x11);
+        let line = PreampInputState::from_raw(0x14, 0x11);
+        let hiz = PreampInputState::from_raw(0x2d, 0x12);
+
+        assert_eq!(mic.gain_db_label(), "65 dB");
+        assert_eq!(line_negative.gain_db_label(), "-6 dB");
+        assert_eq!(line.gain_db_label(), "+20 dB");
+        assert_eq!(hiz.gain_db_label(), "45 dB");
+        assert_eq!(mic.gain_ratio(), 1.0);
+    }
+
+    #[test]
     fn encodes_confirmed_commands() {
         let sample = encode_command(Command::SetSampleRate(SampleRate::Hz44100));
         assert_eq!(&sample[0..4], &0x70_u32.to_le_bytes());
@@ -687,6 +909,34 @@ mod tests {
         });
         assert_eq!(mixer[4], 0x16);
         assert_eq!(&mixer[0x10..0x16], &[0xd4, 0x04, 0x01, 0x04, 0x28, 0x3e]);
+
+        let preamp_mode = encode_command(Command::SetPreampMode {
+            input: 1,
+            mode: PreampMode::HiZ,
+        });
+        assert_eq!(preamp_mode[4], 0x13);
+        assert_eq!(&preamp_mode[0x10..0x13], &[0x4f, 0x01, 0x02]);
+
+        let preamp_gain = encode_command(Command::SetPreampGain {
+            input: 0,
+            raw: 0x2d,
+        });
+        assert_eq!(preamp_gain[4], 0x13);
+        assert_eq!(&preamp_gain[0x10..0x13], &[0x50, 0x00, 0x2d]);
+
+        let preamp_phantom = encode_command(Command::SetPreampPhantom {
+            input: 1,
+            enabled: true,
+        });
+        assert_eq!(preamp_phantom[4], 0x13);
+        assert_eq!(&preamp_phantom[0x10..0x13], &[0x51, 0x01, 0x01]);
+
+        let preamp_phase = encode_command(Command::SetPreampPhase {
+            input: 0,
+            enabled: false,
+        });
+        assert_eq!(preamp_phase[4], 0x13);
+        assert_eq!(&preamp_phase[0x10..0x13], &[0x52, 0x00, 0x00]);
     }
 
     #[test]

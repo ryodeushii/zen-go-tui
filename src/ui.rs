@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs, W
 use ratatui::Frame;
 
 use crate::app::{AppState, FocusArea};
-use crate::protocol::{MixerSurface, OutputMode};
+use crate::protocol::{MixerSurface, OutputMode, PreampInputState, PreampMode};
 
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     if state.focus == FocusArea::Raw {
@@ -185,22 +185,7 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     ));
     frame.render_widget(list, mixer_layout[1]);
 
-    let preamp = Paragraph::new(vec![
-        Line::from("Preamp / DSP"),
-        Line::from(format!("Front bytes: {:02x?}", state.dsp_cluster)),
-        Line::from("Read-only unless protocol confidence is strong."),
-        Line::from("Extended DSP/preamp bytes are shown as experimental."),
-        Line::from(
-            "Startup strip decode is still unresolved; confirmed writes populate per-surface mixer state.",
-        ),
-        Line::from(state.last_message.clone()),
-    ])
-    .block(section_block(
-        "Preamp / DSP (experimental)",
-        state.focus == FocusArea::Preamp,
-    ))
-    .wrap(Wrap { trim: true });
-    frame.render_widget(preamp, sections[1]);
+    draw_preamp_panel(frame, sections[1], state);
 }
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -221,7 +206,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     let header = Paragraph::new(vec![
         Line::from("Live Raw State View"),
-        Line::from("Latest full `0x73` and `0x83` state packets. Tab cycles back."),
+        Line::from("Latest full `0x73` and `0x83` state packets. `b` capture baseline, `x` clear."),
     ])
     .block(section_block("Raw", true));
     frame.render_widget(header, layout[0]);
@@ -234,7 +219,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let dump_73 = state
         .latest_raw_73
         .as_deref()
-        .map(render_full_packet_dump)
+        .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_73.as_deref()))
         .unwrap_or_else(|| Text::from("Waiting for first 0x73 snapshot..."));
     frame.render_widget(
         Paragraph::new(dump_73)
@@ -246,7 +231,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let dump_83 = state
         .latest_raw_83
         .as_deref()
-        .map(render_full_packet_dump)
+        .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_83.as_deref()))
         .unwrap_or_else(|| Text::from("Waiting for first 0x83 auxiliary packet..."));
     frame.render_widget(
         Paragraph::new(dump_83)
@@ -286,20 +271,137 @@ fn render_thin_bar(ratio: f64) -> String {
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab focus | ←/→ select | +/- adjust | m mute | d dim | s sample-rate | c clock | 1/2 surface | ? help | q quit".to_string()
+    "Tab focus | ←/→ select | +/- adjust | m mute/phantom | d dim | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | ? help | q quit".to_string()
 }
 
-fn render_full_packet_dump(bytes: &[u8]) -> Text<'static> {
+fn draw_preamp_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(7),
+            Constraint::Length(7),
+            Constraint::Length(4),
+            Constraint::Min(3),
+        ])
+        .split(area);
+
+    let input1_title = if state.focus == FocusArea::Preamp && state.selected_preamp_input == 0 {
+        "A1 ←"
+    } else {
+        "A1"
+    };
+    let input2_title = if state.focus == FocusArea::Preamp && state.selected_preamp_input == 1 {
+        "A2 ←"
+    } else {
+        "A2"
+    };
+
+    frame.render_widget(
+        render_preamp_gauge(
+            input1_title,
+            state.preamp.input1,
+            state.focus == FocusArea::Preamp && state.selected_preamp_input == 0,
+        ),
+        layout[0],
+    );
+    frame.render_widget(
+        render_preamp_gauge(
+            input2_title,
+            state.preamp.input2,
+            state.focus == FocusArea::Preamp && state.selected_preamp_input == 1,
+        ),
+        layout[1],
+    );
+
+    let status = Paragraph::new(vec![
+        Line::from("Preamp Controls"),
+        Line::from("Left/Right select input   +/- gain   3 mode   m phantom   p phase"),
+        Line::from(format!("Raw cluster: {:02x?}", state.dsp_cluster)),
+    ])
+    .block(section_block("Preamp", state.focus == FocusArea::Preamp))
+    .wrap(Wrap { trim: true });
+    frame.render_widget(status, layout[2]);
+
+    frame.render_widget(
+        Paragraph::new(state.last_message.clone())
+            .block(Block::default().borders(Borders::ALL).title("Status"))
+            .wrap(Wrap { trim: true }),
+        layout[3],
+    );
+}
+
+fn render_preamp_gauge<'a>(title: &'a str, input: PreampInputState, focused: bool) -> Gauge<'a> {
+    let phase_on = input.mode_raw & 0x40 != 0;
+    let phantom = if matches!(input.mode, PreampMode::Mic) {
+        if input.phantom_on {
+            "48V"
+        } else {
+            "48v off"
+        }
+    } else {
+        "n/a"
+    };
+
+    let block = if input.phantom_on {
+        warning_section_block(title, focused)
+    } else {
+        section_block(title, focused)
+    };
+
+    Gauge::default()
+        .block(block)
+        .gauge_style(Style::default().fg(style_for_preamp_mode(input.mode)))
+        .label(format!(
+            "{}  {}  phantom:{}  phase:{}  raw {:02x}",
+            input.mode.label(),
+            input.gain_db_label(),
+            phantom,
+            if phase_on { "inv" } else { "norm" },
+            input.gain_raw,
+        ))
+        .ratio(input.gain_ratio())
+}
+
+fn style_for_preamp_mode(mode: PreampMode) -> Color {
+    match mode {
+        PreampMode::Mic => Color::Green,
+        PreampMode::Line => Color::Yellow,
+        PreampMode::HiZ => Color::Magenta,
+        PreampMode::Unknown(_) => Color::Gray,
+    }
+}
+
+fn warning_section_block(title: &str, focused: bool) -> Block<'_> {
+    let style = if focused {
+        Style::default()
+            .fg(Color::LightRed)
+            .bg(Color::Rgb(60, 20, 0))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::LightRed)
+    };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::LightRed))
+        .title(Span::styled(title, style))
+}
+
+fn render_full_packet_dump(bytes: &[u8], baseline: Option<&[u8]>) -> Text<'static> {
     Text::from(
         bytes
             .chunks(16)
             .enumerate()
-            .map(|(row, chunk)| render_dump_line(row * 16, chunk))
+            .map(|(row, chunk)| {
+                let offset = row * 16;
+                let baseline_chunk =
+                    baseline.and_then(|all| all.get(offset..usize::min(offset + 16, all.len())));
+                render_dump_line(offset, chunk, baseline_chunk)
+            })
             .collect::<Vec<_>>(),
     )
 }
 
-fn render_dump_line(offset: usize, chunk: &[u8]) -> Line<'static> {
+fn render_dump_line(offset: usize, chunk: &[u8], baseline: Option<&[u8]>) -> Line<'static> {
     let mut spans = vec![Span::styled(
         format!("{:04x}: ", offset),
         Style::default()
@@ -313,9 +415,12 @@ fn render_dump_line(offset: usize, chunk: &[u8]) -> Line<'static> {
         }
 
         if let Some(byte) = chunk.get(index) {
+            let changed = baseline
+                .and_then(|base| base.get(index))
+                .is_some_and(|base_byte| *base_byte != *byte);
             spans.push(Span::styled(
                 format!("{:02x} ", byte),
-                style_for_hex_byte(*byte, index == 0),
+                style_for_hex_byte(*byte, index == 0, changed),
             ));
         } else {
             spans.push(Span::raw("   "));
@@ -323,20 +428,26 @@ fn render_dump_line(offset: usize, chunk: &[u8]) -> Line<'static> {
     }
 
     spans.push(Span::raw(" |"));
-    for byte in chunk {
+    for (index, byte) in chunk.iter().enumerate() {
         let ch = if byte.is_ascii_graphic() || *byte == b' ' {
             *byte as char
         } else {
             '.'
         };
-        spans.push(Span::styled(ch.to_string(), style_for_ascii_byte(*byte)));
+        let changed = baseline
+            .and_then(|base| base.get(index))
+            .is_some_and(|base_byte| *base_byte != *byte);
+        spans.push(Span::styled(
+            ch.to_string(),
+            style_for_ascii_byte(*byte, changed),
+        ));
     }
     spans.push(Span::raw("|"));
 
     Line::from(spans)
 }
 
-fn style_for_hex_byte(byte: u8, first_in_row: bool) -> Style {
+fn style_for_hex_byte(byte: u8, first_in_row: bool, changed: bool) -> Style {
     let mut style = match byte {
         0x00 => Style::default()
             .fg(Color::DarkGray)
@@ -353,11 +464,15 @@ fn style_for_hex_byte(byte: u8, first_in_row: bool) -> Style {
         style = style.add_modifier(Modifier::BOLD);
     }
 
+    if changed {
+        style = style.bg(Color::DarkGray).add_modifier(Modifier::UNDERLINED);
+    }
+
     style
 }
 
-fn style_for_ascii_byte(byte: u8) -> Style {
-    match byte {
+fn style_for_ascii_byte(byte: u8, changed: bool) -> Style {
+    let style = match byte {
         0x00 => Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM | Modifier::ITALIC),
@@ -365,6 +480,12 @@ fn style_for_ascii_byte(byte: u8) -> Style {
         _ => Style::default()
             .fg(Color::Gray)
             .add_modifier(Modifier::ITALIC),
+    };
+
+    if changed {
+        style.bg(Color::DarkGray).add_modifier(Modifier::UNDERLINED)
+    } else {
+        style
     }
 }
 
@@ -398,7 +519,7 @@ mod tests {
 
     #[test]
     fn hex_dump_renders_offset_and_ascii() {
-        let dump = render_full_packet_dump(&[0x83, 0x00, 0x41, 0x42, 0x0a]);
+        let dump = render_full_packet_dump(&[0x83, 0x00, 0x41, 0x42, 0x0a], None);
         let first = &dump.lines[0];
         let rendered: String = first
             .spans
@@ -412,7 +533,7 @@ mod tests {
 
     #[test]
     fn zero_bytes_are_dimmed_and_offsets_are_bold() {
-        let dump = render_full_packet_dump(&[0x00]);
+        let dump = render_full_packet_dump(&[0x00], None);
         let first = &dump.lines[0];
         assert!(first.spans[0].style.add_modifier.contains(Modifier::BOLD));
         assert!(first.spans[1].style.add_modifier.contains(Modifier::DIM));

@@ -126,7 +126,6 @@ What is narrowed further:
 
 Still-open mappings include:
 
-- the exact control behind the `4f 00 xx` 3-state selector
 - the user-facing meaning of the extended `51 01 01` mode
 - the actual feature changed by `d5 0a ...`
 - whether `d7 11 ...` is preset/application/commit traffic or a hidden control family

@@ -4,8 +4,8 @@ use anyhow::Result;
 
 use crate::protocol::{
     encode_command, encode_query, ClockSource, Command, DeviceMetadata, DeviceSnapshot, Frame,
-    MixerChannelState, MixerSurface, OutputMode, OutputState, OutputTarget, SampleRate, Snapshot73,
-    Surface,
+    MixerChannelState, MixerSurface, OutputMode, OutputState, OutputTarget, PreampMode,
+    PreampState, SampleRate, Snapshot73, Surface,
 };
 use crate::transport::Transport;
 
@@ -52,17 +52,21 @@ pub enum FocusArea {
 pub struct AppState {
     pub device: DeviceStatus,
     pub outputs: [OutputState; 3],
+    pub preamp: PreampState,
     pub surface: Surface,
     pub mixer_channels: [Vec<MixerChannelState>; 2],
     pub connection: ConnectionState,
     pub focus: FocusArea,
     pub selected_output: usize,
     pub selected_channel: usize,
+    pub selected_preamp_input: usize,
     pub last_message: String,
     pub last_auxiliary_len: Option<usize>,
     pub dsp_cluster: [u8; 4],
     pub latest_raw_73: Option<Vec<u8>>,
     pub latest_raw_83: Option<Vec<u8>>,
+    pub baseline_raw_73: Option<Vec<u8>>,
+    pub baseline_raw_83: Option<Vec<u8>>,
 }
 
 impl Default for AppState {
@@ -74,6 +78,7 @@ impl Default for AppState {
                 OutputState::new(OutputTarget::Hp1, 0, OutputMode::Normal),
                 OutputState::new(OutputTarget::Hp2, 0, OutputMode::Normal),
             ],
+            preamp: PreampState::default(),
             surface: Surface::MonitorHp1,
             mixer_channels: [
                 (1..=15).map(MixerChannelState::unknown).collect(),
@@ -83,6 +88,7 @@ impl Default for AppState {
             focus: FocusArea::Outputs,
             selected_output: 0,
             selected_channel: 0,
+            selected_preamp_input: 0,
             last_message:
                 "Press ? for help. Device state is authoritative where decoding is confirmed."
                     .to_string(),
@@ -90,6 +96,8 @@ impl Default for AppState {
             dsp_cluster: [0; 4],
             latest_raw_73: None,
             latest_raw_83: None,
+            baseline_raw_73: None,
+            baseline_raw_83: None,
         }
     }
 }
@@ -113,27 +121,24 @@ impl AppState {
             snapshot.surface.label()
         );
         self.outputs = snapshot.outputs;
-        self.surface = snapshot.surface;
         self.dsp_cluster = snapshot.dsp_cluster;
+        self.preamp = PreampState::from_cluster(snapshot.dsp_cluster);
+        self.surface = snapshot.surface;
     }
 
-    pub fn observe_frame(&mut self, frame: DeviceSnapshot) {
+    pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: Vec<u8>) {
         self.connection.connected = true;
         self.connection.last_snapshot_at = Some(Instant::now());
         match frame {
             DeviceSnapshot::Snapshot(snapshot) => {
                 self.connection.last_frame_type = Some("0x73 snapshot");
-                self.latest_raw_73 = Some(encode_debug_snapshot(&snapshot));
+                self.latest_raw_73 = Some(raw);
                 self.apply_snapshot(snapshot);
             }
             DeviceSnapshot::Auxiliary83(bytes) => {
                 self.connection.last_frame_type = Some("0x83 auxiliary");
                 self.last_auxiliary_len = Some(bytes.len());
-                let mut frame = vec![0_u8; 0x10 + bytes.len()];
-                frame[0..4].copy_from_slice(&0x83_u32.to_le_bytes());
-                frame[4..8].copy_from_slice(&((0x10 + bytes.len()) as u32).to_le_bytes());
-                frame[0x10..0x10 + bytes.len()].copy_from_slice(&bytes);
-                self.latest_raw_83 = Some(frame);
+                self.latest_raw_83 = Some(raw);
             }
             DeviceSnapshot::QueryReply(reply) => {
                 self.connection.last_frame_type = Some("0x75 query reply");
@@ -165,45 +170,16 @@ impl AppState {
             FocusArea::Raw => FocusArea::Status,
         };
     }
-}
 
-fn encode_debug_snapshot(snapshot: &Snapshot73) -> Vec<u8> {
-    let mut frame = vec![0_u8; 0x10 + 0xe6];
-    let frame_len = frame.len() as u32;
-    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&frame_len.to_le_bytes());
-    let payload = &mut frame[0x10..];
-    payload[0x00] = snapshot.status_flags[0];
-    payload[0x01] = snapshot.status_flags[1];
-    payload[0x02] = snapshot.sample_rate.code();
-    payload[0x03] = snapshot.clock_source.code();
-    payload[0x04..0x08].copy_from_slice(&snapshot.sample_rate_hz.to_be_bytes());
-    payload[0x08..0x0b].copy_from_slice(&snapshot.front_panel_bytes);
-    payload[0x0c] = snapshot.outputs[0].volume;
-    payload[0x0d] = match snapshot.outputs[0].mode {
-        OutputMode::Normal => 0x00,
-        OutputMode::Mute => 0x01,
-        OutputMode::Dim => 0x02,
-        OutputMode::Unknown(value) => value,
-    };
-    payload[0x0e] = snapshot.outputs[1].volume;
-    payload[0x0f] = match snapshot.outputs[1].mode {
-        OutputMode::Normal => 0x00,
-        OutputMode::Mute => 0x01,
-        OutputMode::Dim => 0x02,
-        OutputMode::Unknown(value) => value,
-    };
-    payload[0x10] = snapshot.outputs[2].volume;
-    payload[0x11] = match snapshot.outputs[2].mode {
-        OutputMode::Normal => 0x00,
-        OutputMode::Mute => 0x01,
-        OutputMode::Dim => 0x02,
-        OutputMode::Unknown(value) => value,
-    };
-    payload[0x18..0x1c].copy_from_slice(&snapshot.dsp_cluster);
-    payload[0x6a] = snapshot.surface.code();
-    payload[0xda..0xe6].copy_from_slice(&snapshot.late_shadow);
-    frame
+    pub fn capture_raw_baseline(&mut self) {
+        self.baseline_raw_73 = self.latest_raw_73.clone();
+        self.baseline_raw_83 = self.latest_raw_83.clone();
+    }
+
+    pub fn clear_raw_baseline(&mut self) {
+        self.baseline_raw_73 = None;
+        self.baseline_raw_83 = None;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -225,6 +201,22 @@ enum PendingMutation {
     OutputMode {
         target: OutputTarget,
         mode: OutputMode,
+    },
+    PreampGain {
+        input: u8,
+        raw: u8,
+    },
+    PreampMode {
+        input: u8,
+        mode: PreampMode,
+    },
+    PreampPhantom {
+        input: u8,
+        enabled: bool,
+    },
+    PreampPhase {
+        input: u8,
+        enabled: bool,
     },
 }
 
@@ -270,11 +262,12 @@ impl Controller {
             next_timeout = Duration::ZERO;
 
             if let Ok(frame) = Frame::parse(&bytes) {
+                let raw = frame.raw_bytes().to_vec();
                 let snapshot = DeviceSnapshot::from(frame);
                 if let DeviceSnapshot::Snapshot(snapshot73) = &snapshot {
                     self.confirm_pending_write(snapshot73.clone());
                 }
-                self.state.observe_frame(snapshot);
+                self.state.observe_frame(snapshot, raw);
             }
         }
 
@@ -311,6 +304,28 @@ impl Controller {
             }
             Some(PendingMutation::OutputMode { target, mode }) => {
                 self.state.outputs[target.index() as usize].mode = mode;
+            }
+            Some(PendingMutation::PreampGain { input, raw }) => {
+                self.state.dsp_cluster[input.min(1) as usize] = raw;
+                self.state.preamp = PreampState::from_cluster(self.state.dsp_cluster);
+            }
+            Some(PendingMutation::PreampMode { input, mode }) => {
+                let offset = 2 + input.min(1) as usize;
+                let preserved_bits = self.state.dsp_cluster[offset] & 0xf0;
+                self.state.dsp_cluster[offset] = preserved_bits | mode.code();
+                self.state.preamp = PreampState::from_cluster(self.state.dsp_cluster);
+            }
+            Some(PendingMutation::PreampPhantom { input, enabled }) => {
+                let offset = 2 + input.min(1) as usize;
+                let low = self.state.dsp_cluster[offset] & 0x0f;
+                self.state.dsp_cluster[offset] = low | if enabled { 0x10 } else { 0x00 };
+                self.state.preamp = PreampState::from_cluster(self.state.dsp_cluster);
+            }
+            Some(PendingMutation::PreampPhase { input, enabled }) => {
+                let offset = 2 + input.min(1) as usize;
+                let low = self.state.dsp_cluster[offset] & 0x1f;
+                self.state.dsp_cluster[offset] = low | if enabled { 0x40 } else { 0x00 };
+                self.state.preamp = PreampState::from_cluster(self.state.dsp_cluster);
             }
             None => {}
         }
@@ -358,6 +373,14 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
                 OutputMode::Normal
             },
         }),
+        Command::SetPreampGain { input, raw } => Some(PendingMutation::PreampGain { input, raw }),
+        Command::SetPreampMode { input, mode } => Some(PendingMutation::PreampMode { input, mode }),
+        Command::SetPreampPhantom { input, enabled } => {
+            Some(PendingMutation::PreampPhantom { input, enabled })
+        }
+        Command::SetPreampPhase { input, enabled } => {
+            Some(PendingMutation::PreampPhase { input, enabled })
+        }
         _ => None,
     }
 }
@@ -366,7 +389,7 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
 mod tests {
     use crate::protocol::{
         ClockSource, Command, DeviceSnapshot, MixerChannelState, MixerSurface, OutputMode,
-        OutputState, OutputTarget, SampleRate, Snapshot73, Surface,
+        OutputState, OutputTarget, PreampMode, PreampState, SampleRate, Snapshot73, Surface,
     };
     use crate::transport::MockTransport;
 
@@ -385,6 +408,7 @@ mod tests {
                 OutputState::new(OutputTarget::Hp2, 0x30, OutputMode::Dim),
             ],
             dsp_cluster: [0x2f, 0x34, 0x50, 0x10],
+            preamp: PreampState::from_cluster([0x2f, 0x34, 0x50, 0x10]),
             surface: Surface::MonitorHp1,
             late_shadow: [0; 12],
         }
@@ -401,6 +425,79 @@ mod tests {
         assert_eq!(state.outputs[0].volume, 0x50);
         assert_eq!(state.outputs[1].mode, OutputMode::Mute);
         assert_eq!(state.surface, Surface::MonitorHp1);
+    }
+
+    #[test]
+    fn reducer_updates_preamp_state_from_snapshot() {
+        let mut state = AppState::default();
+        let mut device_snapshot = snapshot();
+        device_snapshot.dsp_cluster = [0x14, 0x2a, 0x11, 0x00];
+
+        state.apply_snapshot(device_snapshot);
+
+        assert_eq!(state.preamp.input1.mode, PreampMode::Line);
+        assert_eq!(state.preamp.input1.gain_raw, 0x14);
+        assert_eq!(state.preamp.input2.mode, PreampMode::Mic);
+        assert_eq!(state.preamp.input2.gain_raw, 0x2a);
+        assert!(!state.preamp.input2.phantom_on);
+    }
+
+    #[test]
+    fn preamp_pending_gain_updates_authoritative_cluster() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
+        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+
+        controller
+            .send(Command::SetPreampGain {
+                input: 1,
+                raw: 0x2d,
+            })
+            .expect("send preamp gain");
+        controller.confirm_pending_write(snapshot());
+
+        assert_eq!(controller.state.preamp.input2.gain_raw, 0x2d);
+        assert_eq!(controller.state.dsp_cluster[1], 0x2d);
+    }
+
+    #[test]
+    fn preamp_pending_mode_phantom_and_phase_update_state() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
+        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+
+        controller
+            .send(Command::SetPreampMode {
+                input: 0,
+                mode: PreampMode::Line,
+            })
+            .expect("send preamp mode");
+        controller.confirm_pending_write(snapshot());
+        assert_eq!(controller.state.preamp.input1.mode, PreampMode::Line);
+
+        controller.state.dsp_cluster[3] = 0x00;
+        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+        controller
+            .send(Command::SetPreampPhantom {
+                input: 1,
+                enabled: true,
+            })
+            .expect("send preamp phantom");
+        controller.confirm_pending_write(snapshot());
+        assert!(controller.state.preamp.input2.phantom_on);
+
+        controller.state.dsp_cluster[3] = 0x00;
+        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+        controller
+            .send(Command::SetPreampPhase {
+                input: 1,
+                enabled: true,
+            })
+            .expect("send preamp phase");
+        controller.confirm_pending_write(snapshot());
+        assert_eq!(controller.state.dsp_cluster[3], 0x40);
     }
 
     #[test]
@@ -561,7 +658,7 @@ mod tests {
         state.mark_disconnected();
         assert!(!state.connection.connected);
 
-        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()));
+        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 0]);
 
         assert!(state.connection.connected);
         assert!(state.connection.last_snapshot_at.is_some());
@@ -603,14 +700,40 @@ mod tests {
     #[test]
     fn raw_state_tracks_latest_snapshot_and_auxiliary_frames() {
         let mut state = AppState::default();
-        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()));
-        state.observe_frame(DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]));
+        let mut raw73 = vec![0_u8; 320];
+        raw73[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        raw73[0x10 + 0xcf] = 0x4c;
+        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw73.clone());
+
+        let mut raw83 = vec![0_u8; 0x14];
+        raw83[0..4].copy_from_slice(&0x83_u32.to_le_bytes());
+        raw83[0x10..0x14].copy_from_slice(&[0x60, 0xc0, 0x60, 0x00]);
+        state.observe_frame(
+            DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
+            raw83.clone(),
+        );
 
         assert!(state.latest_raw_73.is_some());
         assert!(state.latest_raw_83.is_some());
-        assert_eq!(
-            &state.latest_raw_83.expect("0x83")[0..4],
-            &0x83_u32.to_le_bytes()
+        assert_eq!(state.latest_raw_73.expect("0x73")[0x10 + 0xcf], 0x4c);
+        assert_eq!(&state.latest_raw_83.expect("0x83")[0..4], &raw83[0..4]);
+    }
+
+    #[test]
+    fn raw_baseline_captures_latest_packets() {
+        let mut state = AppState::default();
+        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 0]);
+        state.observe_frame(
+            DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
+            vec![0x83, 0, 0, 0],
         );
+
+        state.capture_raw_baseline();
+        assert_eq!(state.baseline_raw_73, state.latest_raw_73);
+        assert_eq!(state.baseline_raw_83, state.latest_raw_83);
+
+        state.clear_raw_baseline();
+        assert!(state.baseline_raw_73.is_none());
+        assert!(state.baseline_raw_83.is_none());
     }
 }

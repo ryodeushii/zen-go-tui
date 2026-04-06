@@ -13,7 +13,7 @@ use ratatui::Terminal;
 
 use zen_go_tui::app::{Controller, FocusArea};
 use zen_go_tui::protocol::{
-    ClockSource, Command, MixerSurface, OutputMode, OutputTarget, SampleRate, Surface,
+    ClockSource, Command, MixerSurface, OutputMode, OutputTarget, PreampMode, SampleRate, Surface,
 };
 use zen_go_tui::transport::{HidTransport, MockTransport, Transport};
 use zen_go_tui::ui;
@@ -75,7 +75,7 @@ fn app_loop(
                 KeyCode::Tab => controller.state.cycle_focus(),
                 KeyCode::Char('?') => {
                     controller.state.last_message =
-                        "Status: s/c. Outputs: +/- m d. Mixer: +/- m. Surface: 1/2.".to_string();
+                        "Status: s/c. Outputs: +/- m d. Mixer: +/- m. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2.".to_string();
                 }
                 KeyCode::Left => move_selection(controller, false),
                 KeyCode::Right => move_selection(controller, true),
@@ -83,12 +83,23 @@ fn app_loop(
                 KeyCode::Char('-') => adjust_focused(controller, false)?,
                 KeyCode::Char('m') => toggle_mute(controller)?,
                 KeyCode::Char('d') => toggle_dim(controller)?,
+                KeyCode::Char('p') => toggle_preamp_phase(controller)?,
+                KeyCode::Char('3') => cycle_preamp_mode(controller)?,
                 KeyCode::Char('s') => cycle_sample_rate(controller)?,
                 KeyCode::Char('c') => cycle_clock_source(controller)?,
                 KeyCode::Char('1') => {
                     controller.send(Command::SelectSurface(Surface::MonitorHp1))?
                 }
                 KeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2))?,
+                KeyCode::Char('b') if controller.state.focus == FocusArea::Raw => {
+                    controller.state.capture_raw_baseline();
+                    controller.state.last_message =
+                        "Captured raw baseline for 0x73/0x83".to_string();
+                }
+                KeyCode::Char('x') if controller.state.focus == FocusArea::Raw => {
+                    controller.state.clear_raw_baseline();
+                    controller.state.last_message = "Cleared raw baseline".to_string();
+                }
                 _ => {}
             }
         }
@@ -121,6 +132,9 @@ fn move_selection(controller: &mut Controller, right: bool) {
                     .checked_sub(1)
                     .unwrap_or(channels_len - 1)
             };
+        }
+        FocusArea::Preamp => {
+            controller.state.selected_preamp_input = if right { 1 } else { 0 };
         }
         _ => {}
     }
@@ -158,6 +172,16 @@ fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
                 pan_state: zen_go_tui::protocol::PanState::Center,
             })?;
         }
+        FocusArea::Preamp => {
+            let input = controller.state.selected_preamp_input as u8;
+            let current = if input == 0 {
+                controller.state.preamp.input1
+            } else {
+                controller.state.preamp.input2
+            };
+            let next = next_preamp_gain_raw(current, up);
+            controller.send(Command::SetPreampGain { input, raw: next })?;
+        }
         _ => {}
     }
     Ok(())
@@ -183,6 +207,18 @@ fn toggle_mute(controller: &mut Controller) -> Result<()> {
                 channel,
                 muted,
                 pan_state: zen_go_tui::protocol::PanState::Center,
+            })?;
+        }
+        FocusArea::Preamp => {
+            let input = controller.state.selected_preamp_input as u8;
+            let current = if input == 0 {
+                controller.state.preamp.input1
+            } else {
+                controller.state.preamp.input2
+            };
+            controller.send(Command::SetPreampPhantom {
+                input,
+                enabled: !current.phantom_on,
             })?;
         }
         _ => {}
@@ -230,4 +266,71 @@ fn cycle_clock_source(controller: &mut Controller) -> Result<()> {
     let next = all[(position + 1) % all.len()];
     controller.send(Command::SetClockSource(next))?;
     Ok(())
+}
+
+fn cycle_preamp_mode(controller: &mut Controller) -> Result<()> {
+    if controller.state.focus != FocusArea::Preamp {
+        return Ok(());
+    }
+
+    let input = controller.state.selected_preamp_input as u8;
+    let current = if input == 0 {
+        controller.state.preamp.input1.mode
+    } else {
+        controller.state.preamp.input2.mode
+    };
+    let next = match current {
+        PreampMode::Mic => PreampMode::Line,
+        PreampMode::Line => PreampMode::HiZ,
+        PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
+    };
+    controller.send(Command::SetPreampMode { input, mode: next })?;
+    Ok(())
+}
+
+fn toggle_preamp_phase(controller: &mut Controller) -> Result<()> {
+    if controller.state.focus != FocusArea::Preamp {
+        return Ok(());
+    }
+
+    let input = controller.state.selected_preamp_input as u8;
+    let mode_raw = if input == 0 {
+        controller.state.preamp.input1.mode_raw
+    } else {
+        controller.state.preamp.input2.mode_raw
+    };
+    controller.send(Command::SetPreampPhase {
+        input,
+        enabled: mode_raw & 0x40 == 0,
+    })?;
+    Ok(())
+}
+
+fn next_preamp_gain_raw(input: zen_go_tui::protocol::PreampInputState, up: bool) -> u8 {
+    match input.mode {
+        PreampMode::Mic => {
+            if up {
+                input.gain_raw.saturating_add(1).min(0x41)
+            } else {
+                input.gain_raw.saturating_sub(1)
+            }
+        }
+        PreampMode::Line => {
+            let current = i8::from_ne_bytes([input.gain_raw]);
+            let next = if up {
+                (current + 1).min(20)
+            } else {
+                (current - 1).max(-6)
+            };
+            next as u8
+        }
+        PreampMode::HiZ => {
+            if up {
+                input.gain_raw.saturating_add(1).min(0x2d)
+            } else {
+                input.gain_raw.saturating_sub(1)
+            }
+        }
+        PreampMode::Unknown(_) => input.gain_raw,
+    }
 }
