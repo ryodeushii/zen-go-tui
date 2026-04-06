@@ -537,6 +537,81 @@ Still unresolved:
 - the exact difference between the `a203` and `a204` subfamilies, although `a204` is only seen with selector `0x01`
 - the precise UI labels behind selector values `0x11` and DSP-side `0x12..0x17`
 
+### `0x70 / length 0x53`: mixer strip assignment table writes
+
+The assignment captures (`capture_mixer_03_assignment_core.pcapng`,
+`capture_mixer_04_assignment_extended.pcapng`) introduce a distinct host write family:
+
+```text
+70 00 00 00 53 00 00 00 00 00 00 00 00 00 00 00 d3 41 bb ...
+```
+
+What is confirmed from the current evidence:
+
+- the logical assignment family marker is `d3 41`
+- the third payload byte (`bb`) behaves like a bank/subwrite selector rather than the source id itself
+- strip `11` assignment sweeps emit four near-identical writes with `bb = 0x06`, `0x07`, `0x08`, `0x09`
+- `capture_mixer_18_surface_independence_assignment.pcapng` also contains a `d3 41` write, but with `bb = 0x05` and an early-strip payload shape; that aligns with the current decision to keep strips `1..4` / AFX-adjacent assignment encoding out of scope for this pass
+
+For the ordinary-strip sweeps on strip `11`, the only changing table entry is the zero-based entry `10` inside the `d3 41` payload body.
+That entry sits at payload offsets `0x17..0x18` relative to the start of the `d3 41` payload (after bytes `d3 41 bb`).
+This is the strongest current evidence that the assignment target is encoded as a table-entry position, with strip `11` mapped to entry `10`.
+
+Observed strip-11 entry values from the action-ordered sweeps:
+
+| Entry bytes | Mapping status | Source | Evidence |
+|---|---|---|---|
+| `00 00` | Confirmed | `Preamp 1` | `capture_mixer_03`, host frames `18716..18728` |
+| `00 01` | Confirmed | `Preamp 2` | `capture_mixer_03`, host frames `22308..22320` |
+| `01 00` | Confirmed | `Computer Play 1` | `capture_mixer_03`, host frames `25832..25844` |
+| `01 01` | Confirmed | `Computer Play 2` | `capture_mixer_03`, host frames `29298..29310` |
+| `01 07` | Confirmed | `Computer Play 8` | `capture_mixer_04`, host frames `14635..14648` |
+| `02 00` | Confirmed | `SPDIF In 1` | `capture_mixer_04`, host frames `27456..27468` |
+| `02 01` | Confirmed | `SPDIF In 2` | `capture_mixer_04`, host frames `31214..31226` |
+| `08 00` | Confirmed | `Mute` | `capture_mixer_03`, host frames `32574..32586`; `capture_mixer_04`, host frames `42258..42270` |
+| `09 00` | Confirmed | `Oscillator 1` | `capture_mixer_04`, host frames `35062..35074` |
+| `09 01` | Confirmed | `Oscillator 2` | `capture_mixer_04`, host frames `38842..38854` |
+| `0a 00` | Confirmed | `Emu Mic 1` | `capture_mixer_04`, host frames `19228..19242` |
+| `0a 01` | Confirmed | `Emu Mic 2` | `capture_mixer_04`, host frames `23962..23974` |
+
+Strong candidate interpolation from the unchanged ordinary-strip entries that appear in the same `d3 41` tables:
+
+| Entry bytes | Status | Likely source | Why |
+|---|---|---|---|
+| `01 02` .. `01 06` | Candidate | `Computer Play 3` .. `Computer Play 7` | Present as stable ordinary-strip table entries in the same assignment writes, and `01 00`, `01 01`, `01 07` are action-confirmed as `Computer Play 1`, `2`, `8` |
+
+Important boundary:
+
+- the early-strip entries visible in the same tables include `03 00`, `03 01`, `03 02`, `03 03`
+- those values likely belong to the special strips `1..4` / AFX-capable area and should **not** be merged into the ordinary-strip enum yet
+
+#### Stable device state after assignment writes
+
+The repo's existing stable-state rule continues to hold here: use the **last** `0x73` before the next host write as the settled device-side result.
+
+What the assignment captures show:
+
+- stable assignment changes are reflected in `0x73`, not in `0x83`
+- there is **no** stable `0x83` delta in any confirmed assignment step from captures `03`, `04`, or `18`
+- the assignment-related `0x73` deltas remain in the late payload region rather than the front global bytes
+
+Most repeatable changing `0x73` offsets across the confirmed assignment transitions:
+
+- `0x98`
+- `0xcf`
+- `0xda`, `0xdc`, `0xde`
+- sometimes `0xdf`
+- oscillator transitions additionally move `0x6e`, `0x8e`, `0xce`, `0xdb`, `0xdd`, `0xe2`
+
+Examples:
+
+- `capture_mixer_03`, `00 00 -> 00 01` (`Preamp 1 -> Preamp 2`) changes the stable `0x73` tuple at `0x98`, `0xda`, `0xdc`, `0xde`
+- `capture_mixer_03`, `01 00 -> 01 01` (`Computer Play 1 -> Computer Play 2`) does **not** produce an additional stable `0x73` delta in the current idle capture
+- `capture_mixer_04`, `09 00 -> 09 01` (`Oscillator 1 -> Oscillator 2`) changes `0xdb`, `0xdd`, `0xdf`
+
+This is enough to say that durable assignment state does reach `0x73`, but not enough to claim a complete passive exact-source decoder from `0x73` alone yet.
+The host-side `d3 41` table is the cleanest reusable representation currently available for parser/model work.
+
 ### Candidate mixer-state region inside `0x73`
 
 The captures support a narrower candidate region for mixer-derived state than the earlier broad byte-range note.
@@ -627,6 +702,8 @@ If this protocol is reimplemented, the safest model is:
 | Linked stereo-pair propagation | Confirmed | `capture_10_2` |
 | Unlinked independent channel control | Confirmed | `capture_10` |
 | Link/unlink command family (`0x70/0x14`) | Confirmed at family level | `capture_10`, `capture_10_2` plus user-confirmed action order |
+| Mixer strip assignment writes (`0x70/0x53`, `d3 41`) | Confirmed for ordinary strips | `capture_mixer_03`, `capture_mixer_04`, `capture_mixer_18` |
+| Ordinary-strip assignment enum map | Confirmed for `Preamp 1..2`, `Computer Play 1..2,8`, `Emu Mic 1..2`, `SPDIF In 1..2`, `Mute`, `Oscillator 1..2`; candidate for `Computer Play 3..7` | `capture_mixer_03`, `capture_mixer_04` |
 | Output mute (`0x48`) | Confirmed | `capture_11` plus user-confirmed action order |
 | Output dim (`0x66`) | Confirmed | `capture_11` plus user-confirmed action order |
 | Output volume bytes in `0x73` | Confirmed | `capture_11` correlation of `0x47` to payload offsets `0x0c`, `0x0e`, `0x10` |

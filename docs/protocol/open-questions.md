@@ -4,6 +4,26 @@ This file tracks the remaining gaps after the current capture set.
 
 ## Confirmed Unknowns
 
+### Full strip-index map for `0x70 / 0x53` assignment writes
+
+The assignment captures now ground the command family well enough to narrow the remaining gap precisely:
+
+- ordinary strip assignment writes use `0x70 / length 0x53` with payload prefix `d3 41`
+- in the strip-11 enum sweeps, the changing source tuple sits in table entry `10`, carried at payload offsets `0x17..0x18` relative to the `d3 41` payload body
+- `capture_mixer_18_surface_independence_assignment.pcapng` shows a related `d3 41 05 ...` write for an early strip, confirming the family but also confirming that early-strip encoding differs from the ordinary strip-11 sweeps
+- stable assignment effects appear in `0x73` only; current evidence still shows no stable `0x83` delta for assignment changes
+
+What remains unresolved:
+
+- exact table-entry-to-strip mapping for **all** `16` strip slots
+- whether strips `1..4` use a different enum bank because of AFX-capable source families or only a different table segment/indexing scheme
+- whether there is any surface-dependent wrapper around `d3 41` for assignment, even though the current evidence still supports assignment itself being shared across surfaces
+
+What is already safe:
+
+- the ordinary-strip enum/value map for `Preamp 1..2`, `Computer Play 1..2,8`, `Emu Mic 1..2`, `SPDIF In 1..2`, `Mute`, and `Oscillator 1..2`
+- the candidate interpolation `01 02 .. 01 06 => Computer Play 3 .. 7`
+
 ### Exact semantics inside the late `0x73` table rows
 
 The currently available captures support a stronger structural claim than before:

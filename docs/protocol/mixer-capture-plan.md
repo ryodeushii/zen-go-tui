@@ -254,7 +254,8 @@ Goal:
 Files:
 - `capture_mixer_15_meter_single_strip_playback.pcapng`
 - `capture_mixer_16_meter_same_signal_different_strip.pcapng`
-- `capture_mixer_17_meter_preamp_strip_vs_preamp_panel.pcapng`
+- `capture_mixer_17_preamp_panel_and_strip.pcapng`
+- `capture_mixer_17_preamp_panel_only.pcapng`
 
 Setup:
 - use one stable signal source at a time
@@ -278,12 +279,21 @@ Capture 16 actions:
 - record `5-10` seconds idle
 - stop signal
 
-Capture 17 setup:
+Capture 17a setup:
 - feed stable signal into one preamp input
 - assign that preamp source to one mixer strip
 - keep the preamp panel visible in notes if the UI shows separate input metering there
 
-Capture 17 actions:
+Capture 17a actions:
+- start signal
+- record `5-10` seconds idle
+- stop signal
+
+Capture 17b setup:
+- feed stable signal into one preamp input
+- keep focus on the preamp-only metering path without the mixer strip view changing
+
+Capture 17b actions:
 - start signal
 - record `5-10` seconds idle
 - stop signal

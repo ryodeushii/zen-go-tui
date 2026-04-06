@@ -8,6 +8,8 @@ It uses `ratatui` for the interface and a HID transport abstraction for device I
 The implementation follows the reverse-engineered USB HID protocol documented in:
 
 - `docs/protocol/pcap-analysis.md`
+- `docs/protocol/mixer-protocol.md`
+- `docs/protocol/preamp-protocol.md`
 - `docs/protocol/open-questions.md`
 - `cpl.md`
 
@@ -59,8 +61,8 @@ The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device m
 The TUI now includes a raw-data page for live protocol inspection.
 
 - keep pressing `Tab` until the raw page is focused
-- the page shows only the latest live `0x73` packet and the latest live `0x83` packet
-- both panes render a full hex + ASCII dump of the current packet state
+- the page shows the latest live `0x73`, `0x83`, `0x75`, and `0x81` packets
+- each pane renders a full hex + ASCII dump of the current packet state
 - press `b` on the raw page to capture a baseline
 - press `x` to clear the baseline
 - bytes that changed relative to the baseline are highlighted, which is useful when isolating mixer-strip-related changes in late `0x73`
@@ -95,6 +97,7 @@ This is especially useful while continuing reverse-engineering of late `0x73` mi
   - output dim (`0x66`)
   - mixer level (`0xd4 04 mm cc ll pp`)
   - mixer mute (`0x40` bit in `pp`)
+  - mixer strip assignment (`0x70 / 0x53`, `d3 41`, ordinary strips documented)
   - surface select (`0x49 00 ss`)
 
 Preamp gain notes:
@@ -124,6 +127,12 @@ Mixer level notes:
 - raw `0x00` = `0 dB`
 - raw `0x60` = `-96 dB` / effectively minimum
 - the TUI now displays known mixer-strip levels in dB rather than raw hex
+
+Mixer protocol notes:
+
+- the current dedicated mixer protocol summary lives in `docs/protocol/mixer-protocol.md`
+- strip source assignment is now documented as a separate `0x70 / 0x53` table-write family for ordinary strips
+- assignment is shared across mixer surfaces, while link state and level are treated as surface-local
 
 ## Experimental / intentionally limited areas
 
