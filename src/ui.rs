@@ -213,7 +213,12 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     let content = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(35),
+            Constraint::Percentage(15),
+            Constraint::Percentage(15),
+        ])
         .split(layout[1]);
 
     let dump_73 = state
@@ -238,6 +243,30 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .block(section_block("0x83 State", true))
             .wrap(Wrap { trim: false }),
         content[1],
+    );
+
+    let dump_75 = state
+        .latest_raw_75
+        .as_deref()
+        .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_75.as_deref()))
+        .unwrap_or_else(|| Text::from("Waiting for first 0x75 query reply..."));
+    frame.render_widget(
+        Paragraph::new(dump_75)
+            .block(section_block("0x75 Query Reply", true))
+            .wrap(Wrap { trim: false }),
+        content[2],
+    );
+
+    let dump_81 = state
+        .latest_raw_81
+        .as_deref()
+        .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_81.as_deref()))
+        .unwrap_or_else(|| Text::from("Waiting for first 0x81 notification..."));
+    frame.render_widget(
+        Paragraph::new(dump_81)
+            .block(section_block("0x81 Notification", true))
+            .wrap(Wrap { trim: false }),
+        content[3],
     );
 
     frame.render_widget(

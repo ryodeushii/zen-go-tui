@@ -65,8 +65,12 @@ pub struct AppState {
     pub dsp_cluster: [u8; 4],
     pub latest_raw_73: Option<Vec<u8>>,
     pub latest_raw_83: Option<Vec<u8>>,
+    pub latest_raw_75: Option<Vec<u8>>,
+    pub latest_raw_81: Option<Vec<u8>>,
     pub baseline_raw_73: Option<Vec<u8>>,
     pub baseline_raw_83: Option<Vec<u8>>,
+    pub baseline_raw_75: Option<Vec<u8>>,
+    pub baseline_raw_81: Option<Vec<u8>>,
 }
 
 impl Default for AppState {
@@ -96,8 +100,12 @@ impl Default for AppState {
             dsp_cluster: [0; 4],
             latest_raw_73: None,
             latest_raw_83: None,
+            latest_raw_75: None,
+            latest_raw_81: None,
             baseline_raw_73: None,
             baseline_raw_83: None,
+            baseline_raw_75: None,
+            baseline_raw_81: None,
         }
     }
 }
@@ -142,6 +150,7 @@ impl AppState {
             }
             DeviceSnapshot::QueryReply(reply) => {
                 self.connection.last_frame_type = Some("0x75 query reply");
+                self.latest_raw_75 = Some(raw);
                 if let Some(metadata) = reply.metadata() {
                     self.last_message = format!(
                         "Connected to {} ({})",
@@ -152,6 +161,7 @@ impl AppState {
             }
             DeviceSnapshot::Notification(_) => {
                 self.connection.last_frame_type = Some("0x81 notification");
+                self.latest_raw_81 = Some(raw);
             }
         }
     }
@@ -174,11 +184,15 @@ impl AppState {
     pub fn capture_raw_baseline(&mut self) {
         self.baseline_raw_73 = self.latest_raw_73.clone();
         self.baseline_raw_83 = self.latest_raw_83.clone();
+        self.baseline_raw_75 = self.latest_raw_75.clone();
+        self.baseline_raw_81 = self.latest_raw_81.clone();
     }
 
     pub fn clear_raw_baseline(&mut self) {
         self.baseline_raw_73 = None;
         self.baseline_raw_83 = None;
+        self.baseline_raw_75 = None;
+        self.baseline_raw_81 = None;
     }
 }
 
@@ -715,8 +729,36 @@ mod tests {
 
         assert!(state.latest_raw_73.is_some());
         assert!(state.latest_raw_83.is_some());
-        assert_eq!(state.latest_raw_73.expect("0x73")[0x10 + 0xcf], 0x4c);
-        assert_eq!(&state.latest_raw_83.expect("0x83")[0..4], &raw83[0..4]);
+        assert_eq!(
+            state.latest_raw_73.as_ref().expect("0x73")[0x10 + 0xcf],
+            0x4c
+        );
+        assert_eq!(
+            &state.latest_raw_83.as_ref().expect("0x83")[0..4],
+            &raw83[0..4]
+        );
+
+        let raw75 = vec![
+            0x75, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0, b'Z',
+        ];
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x01,
+                body: vec![b'Z'],
+            }),
+            raw75.clone(),
+        );
+
+        let raw81 = vec![0x81, 0x10, 0x20, 0x30, 0x40, 0x50];
+        state.observe_frame(
+            DeviceSnapshot::Notification(crate::protocol::Notification81 {
+                bytes: [0x81, 0x10, 0x20, 0x30, 0x40, 0x50],
+            }),
+            raw81.clone(),
+        );
+
+        assert_eq!(state.latest_raw_75, Some(raw75));
+        assert_eq!(state.latest_raw_81, Some(raw81));
     }
 
     #[test]
@@ -727,13 +769,30 @@ mod tests {
             DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
             vec![0x83, 0, 0, 0],
         );
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x11,
+                body: vec![0xaa, 0xbb],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+        state.observe_frame(
+            DeviceSnapshot::Notification(crate::protocol::Notification81 {
+                bytes: [1, 2, 3, 4, 5, 6],
+            }),
+            vec![1, 2, 3, 4, 5, 6],
+        );
 
         state.capture_raw_baseline();
         assert_eq!(state.baseline_raw_73, state.latest_raw_73);
         assert_eq!(state.baseline_raw_83, state.latest_raw_83);
+        assert_eq!(state.baseline_raw_75, state.latest_raw_75);
+        assert_eq!(state.baseline_raw_81, state.latest_raw_81);
 
         state.clear_raw_baseline();
         assert!(state.baseline_raw_73.is_none());
         assert!(state.baseline_raw_83.is_none());
+        assert!(state.baseline_raw_75.is_none());
+        assert!(state.baseline_raw_81.is_none());
     }
 }
