@@ -710,6 +710,11 @@ What remains unresolved:
 - whether the 6-byte `0x81` packets contain a meter-side clock, sequence, or compact meter stream
 - exact separation of visible master-meter movement from strip meters
 
+Important current boundary:
+
+- because strip assignment is shared across mixer surfaces, a single assigned source can light both visible master meters
+- a future master-meter isolation capture must therefore use per-surface strip mute/level differences rather than source assignment alone
+
 Current implementation consequence:
 
 - the capture set is sufficient to document metering boundaries

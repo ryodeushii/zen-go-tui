@@ -262,6 +262,11 @@ What is not grounded enough yet:
 - exact master-meter field separation
 - a trustworthy parser for strip meters or master meters
 
+Important current boundary:
+
+- because strip assignment is shared across `MIX 1` and `MIX 2`, the same source can legitimately drive both visible master meters
+- a future master-meter isolation capture therefore cannot rely on source selection alone; it needs per-surface strip mute/level asymmetry to isolate one mix from the other
+
 ## What Is Not Yet Safe To Claim
 
 Still not safely grounded from the current capture set:
@@ -290,7 +295,7 @@ Best next protocol-doc targets once the corresponding captures are analyzed:
 
 1. full mixer pan-value mapping
 2. solo command/state documentation
-3. master-meter isolation if meter parsing becomes an implementation goal
+3. surface-isolated master-meter capture if meter parsing becomes an implementation goal
 4. dedicated ordinary-strip vs early-strip assignment index map
 
 ## Code References

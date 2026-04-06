@@ -317,29 +317,34 @@ Status after analyzing captures `15..17`:
   - stable `0x83` does not participate in the tested meter workflows
   - current evidence is still too noisy / under-labeled for a real parser-field map
 - no additional metering capture is required **yet** for documentation-only work
-- if parser work is attempted later, the next minimal capture should be one explicitly labeled master-meter-only recording so strip and master movement can be separated without guessing
+- if parser work is attempted later, the next minimal capture should isolate one surface by using per-surface strip mute/level differences, because assignment is shared across mixes and both visible master meters can move from the same source
 
 Deferred only if parser work becomes the next task:
 
-### 10. Master Meter Isolation
+### 10. Surface-Isolated Master Meter Capture
 
 Goal:
 - isolate master-meter movement from strip-meter movement
 - decide whether any device-side meter bytes are dedicated to the visible master meter rather than strip-local paths
+- separate `MIX 1` vs `MIX 2` master movement even though source assignment is shared across surfaces
 
 Recommended only if meter parsing becomes an implementation target.
 
 File:
-- `capture_mixer_20_master_meter_only.pcapng`
+- `capture_mixer_20_surface_isolated_master_meter.pcapng`
 
 Actions:
-- feed one steady signal that clearly hits the visible master meter
-- keep strip assignments and mixer controls unchanged during recording
+- keep source assignment unchanged
+- set one surface to pass the test strip clearly
+- set the other surface to suppress the same strip via level at minimum or mute
+- feed one steady signal that clearly hits the assigned strip
 - record `5-10` seconds idle with signal present
+- swap the per-surface mute/level roles and repeat if possible in the same session notes
 - stop signal
 
 Write down:
 - which master meter moved
+- whether both master meters still moved despite the surface-local mute/level difference
 - whether any strip meter also moved on screen
 - which mixer surface and page were visible
 

@@ -178,7 +178,7 @@ What remains unresolved:
 
 Recommended follow-up capture only if parser work becomes the next target:
 
-- one master-meter-only recording with explicit notes about visible strip vs master movement
+- one surface-isolated master-meter recording that uses per-surface strip mute/level differences, because assignment is shared across mixes and both master meters may move from the same source
 
 ### DSP / preamp UI-label mapping
 
@@ -206,7 +206,7 @@ Recommended follow-up capture:
 
 1. Link-only / unlink-only on one stereo pair, no fader moves
 2. One output `DIM` capture with no volume changes
-3. One master-meter-only capture if meter parser work becomes necessary
+3. One surface-isolated master-meter capture if meter parser work becomes necessary
 4. Signal type only: Mic -> Line -> Hi-Z -> Mic
 5. Phase only
 6. Phantom only
