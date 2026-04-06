@@ -134,6 +134,52 @@ Recommended follow-up capture:
 - Do not move any faders in the same capture
 - Use both mixer surfaces separately if possible
 
+What is now grounded enough to remove from the unknown bucket:
+
+- tested mixer-pair selectors are now partially mapped:
+  - `a203000x` = tested `MIX 1` pair `1-2`
+  - `a203030x` = tested `MIX 1` pair `7-8`
+  - `a2030101` = tested `MIX 2` link target in the surface-independence capture
+- `a204010x` is better bounded as a helper/companion write because it shows no stable `0x73`/`0x83` delta by itself in the tested captures
+
+What remains unresolved:
+
+- the complete selector map for all adjacent pairs across both surfaces
+- whether selector numbering is row-local, surface-banked, or follows another internal table order
+
+### Exact passive `0x73` pan-field decode
+
+The dedicated pan captures now ground the host encoding well enough to narrow this precisely:
+
+- pan uses the ordinary `d4 04 <mixer> <channel> <level> <pan>` host family
+- the final byte is a scalar pan value over the observed range `0x02 .. 0x3e`
+- `0x20` is the grounded center value
+- the same raw encoding is used for the tested mono strip and playback-pair members
+
+What remains unresolved:
+
+- exact mapping from intermediate raw values to UI labels/steps
+- which exact late `0x73` byte or tuple is the durable passive pan field for a given strip
+- whether a cleaner passive pan decode needs a slower one-step-per-capture workflow to avoid late-row churn
+
+### Exact meter-field mapping
+
+The metering captures now narrow this further than before:
+
+- stable meter-related changes are visible in `0x73`, not `0x83`
+- ordinary playback meter movement follows strip slot / row placement rather than source identity alone
+- preamp-panel metering is distinct from mixer-strip metering and can coexist with it
+
+What remains unresolved:
+
+- exact strip-meter bytes and scale
+- exact master-meter separation
+- whether `0x81` contributes compact meter-side timing/stream data or is only adjacent notification traffic
+
+Recommended follow-up capture only if parser work becomes the next target:
+
+- one master-meter-only recording with explicit notes about visible strip vs master movement
+
 ### DSP / preamp UI-label mapping
 
 The DSP capture now gives stable field effects for several command families, but some UI-level labels are still unresolved.
@@ -160,7 +206,7 @@ Recommended follow-up capture:
 
 1. Link-only / unlink-only on one stereo pair, no fader moves
 2. One output `DIM` capture with no volume changes
-3. One mixer pan-only capture
+3. One master-meter-only capture if meter parser work becomes necessary
 4. Signal type only: Mic -> Line -> Hi-Z -> Mic
 5. Phase only
 6. Phantom only

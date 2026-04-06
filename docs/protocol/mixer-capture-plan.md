@@ -310,6 +310,39 @@ Notes:
 - preamp inputs are special because they may show both mixer-strip metering and separate direct preamp metering
 - do not try to decode meter values and durable strip settings from the same capture; metering is likely transient/noisy traffic
 
+Status after analyzing captures `15..17`:
+
+- existing metering captures are enough to ground the current documentation boundary:
+  - metering lives in device-originated traffic, not host writes
+  - stable `0x83` does not participate in the tested meter workflows
+  - current evidence is still too noisy / under-labeled for a real parser-field map
+- no additional metering capture is required **yet** for documentation-only work
+- if parser work is attempted later, the next minimal capture should be one explicitly labeled master-meter-only recording so strip and master movement can be separated without guessing
+
+Deferred only if parser work becomes the next task:
+
+### 10. Master Meter Isolation
+
+Goal:
+- isolate master-meter movement from strip-meter movement
+- decide whether any device-side meter bytes are dedicated to the visible master meter rather than strip-local paths
+
+Recommended only if meter parsing becomes an implementation target.
+
+File:
+- `capture_mixer_20_master_meter_only.pcapng`
+
+Actions:
+- feed one steady signal that clearly hits the visible master meter
+- keep strip assignments and mixer controls unchanged during recording
+- record `5-10` seconds idle with signal present
+- stop signal
+
+Write down:
+- which master meter moved
+- whether any strip meter also moved on screen
+- which mixer surface and page were visible
+
 ### 9. Surface Duplication / Independence
 
 Goal:

@@ -133,6 +133,7 @@ Mixer protocol notes:
 - the current dedicated mixer protocol summary lives in `docs/protocol/mixer-protocol.md`
 - strip source assignment is now documented as a separate `0x70 / 0x53` table-write family for ordinary strips
 - assignment is shared across mixer surfaces, while link state and level are treated as surface-local
+- mixer pan host encoding is now grounded as the final byte of `d4 04 <mixer> <channel> <level> <pan>`, but the app currently exposes only anchor pan states (`left`, `center`, `right`)
 
 ## Experimental / intentionally limited areas
 
@@ -140,6 +141,7 @@ Mixer protocol notes:
 - **mixer state decode from `0x73`**: current captures confirm command families and mixer-related late-table movement, but the candidate late bytes also churn before the first host write and during pure idle. That means a safe passive per-strip startup decode is still unresolved, so the TUI intentionally shows only last confirmed command round-trip mixer state rather than inventing startup strip values. Tracked mixer overlays are kept per surface (`MIX 1` vs `MIX 2`) so writes on one surface do not pollute the other.
 - **preamp / DSP editing**: preamp gains, modes, phantom, and phase are now exposed from the newly isolated captures; richer DSP/preamp page behavior around `51 01 01`, `a2`, `d5`, and `d7` remains intentionally out of scope
 - **link / unlink controls**: the `0x70 / 0x14` family is documented, but selector semantics are not resolved enough to expose as a normal interactive control yet
+- **metering decode**: captures now ground that meter-related movement is device-originated and visible in late `0x73` rows rather than `0x83`, but exact strip/master meter parsing is still intentionally out of scope
 
 ## Verification expectations without hardware
 

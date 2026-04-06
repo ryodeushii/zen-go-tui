@@ -612,6 +612,109 @@ Examples:
 This is enough to say that durable assignment state does reach `0x73`, but not enough to claim a complete passive exact-source decoder from `0x73` alone yet.
 The host-side `d3 41` table is the cleanest reusable representation currently available for parser/model work.
 
+### `0x70 / length 0x16`: mixer pan writes
+
+The dedicated pan captures (`capture_mixer_07_pan_mono_strip(ch1,preamp1).pcapng`,
+`capture_mixer_08_pan_oaur_Strip(ch3,ch4 - cp1,cp2).pcapng`) confirm that pan uses the same
+host family as ordinary mixer level writes:
+
+```text
+d4 04 <mixer> <channel> <level> <pan>
+```
+
+What is confirmed from the host side:
+
+- the tested pan sweeps keep `<mixer> = 0x00` (`MIX 1`)
+- the tested mono strip uses `<channel> = 0x01`
+- the tested playback-pair members use `<channel> = 0x03` and `<channel> = 0x04`
+- the pan sweep varies the final byte while keeping `<level> = 0x00`
+- the observed pan byte domain is the contiguous range `0x02 .. 0x3e`
+- `0x20` is the grounded center value
+- the currently implemented app constants are confirmed by capture:
+  - `0x02` = hard-left edge
+  - `0x20` = center
+  - `0x3e` = hard-right edge
+
+The mono-strip capture shows a full sweep across that range:
+
+- center -> left reaches `0x20 -> 0x02`
+- left -> center climbs back to `0x03 .. 0x20`
+- center -> right continues through `0x21 .. 0x3e`
+- right -> center returns through `0x3d .. 0x20`
+
+The playback-pair capture grounds the same encoding on two different selectors:
+
+- left pair member (`channel = 0x03`) sweeps from `0x02` up to `0x3e`
+- right pair member (`channel = 0x04`) also sweeps from `0x3e` down to `0x02` and back
+- there is no separate playback-pair-only pan family in the current evidence
+
+This is the strongest current encoding model:
+
+- pan is one scalar byte shared by mono strips and playback-pair members
+- the UI range is asymmetric in raw form because it includes both endpoints plus center (`0x02 .. 0x3e`, center `0x20`)
+- current `PanState` in code is therefore only a partial enum of grounded anchor values, not a full pan model
+
+#### Stable device-side state after pan writes
+
+The device-side evidence is weaker than the host-side write mapping.
+
+What is confirmed:
+
+- pan writes do not produce stable `0x83` changes in the tested captures
+- stable pan-related `0x73` effects, when visible, remain in the late mixer rows rather than the front global bytes
+- the clearest mono-strip leftward edge transition (`0x20 -> 0x02`) changes late row-local bytes at payload offsets:
+  - `0x8f` (`0x4e -> 0x4c`)
+  - `0xcf` (`0x4e -> 0x4c`)
+  - `0xdb` and `0xdd` also retune in the same step
+- later mono-pan anchor transitions and the tested playback-pair anchor transitions often show no clean one-frame stable delta because the late rows continue their usual churn
+
+So the grounded claim is narrow:
+
+- durable pan state reaches the same late `0x73` mixer cluster already used by other mixer workflows
+- current captures are still **not** strong enough to assign one exact passive `0x73` byte as “the pan field” for each strip
+
+### Metering in mixer captures
+
+The metering captures (`capture_mixer_15_meter_single_strip_playback(ch1).pcapng`,
+`capture_mixer_16_meter_same_signal_different_strip(ch11).pcapng`,
+`capture_mixer_17_preamp_panel_and_strip(ch2).pcapng`,
+`capture_mixer_17_preamp_panel_only.pcapng`) narrow the meter boundary substantially.
+
+What is confirmed:
+
+- metering is device-originated traffic; the test captures contain no meter-driving host family
+- `0x83` remains fully stable in all four tested metering captures
+- the moving device-side state is carried by `0x73` plus the existing 6-byte async packets on endpoint `0x81`
+- the visible, repeated meter-correlated movement in `0x73` is again concentrated in late payload rows rather than front global bytes
+
+Stable observations by capture family:
+
+- playback on strip `1` (`capture_15`) is dominated by movement at `0xce` / `0xcf`, especially `0xcf`
+- moving the same playback signal to strip `11` (`capture_16`) shifts the stable baseline between row slots:
+  - `0x8e: 0x00 -> 0x60`
+  - `0x98: 0x60 -> 0x00`
+  - `0xce: 0x46 -> 0x4b`
+  - `0xcf: 0x3d -> 0x3e`
+  - shadow bytes `0xdb`, `0xdd`, `0xdf`, and row-local `0xe2` move with that reassignment
+- this is strong evidence that ordinary mixer metering follows the **strip slot / row position**, not the abstract source class alone
+
+Preamp-related captures add a second distinction:
+
+- `capture_17_preamp_panel_and_strip(ch2)` changes both the ordinary late mixer row (`0xcf` and neighbors) **and** a broader band around `0xae..0xb1`
+- `capture_17_preamp_panel_only.pcapng` changes the broader preamp-related band without turning on the strip-local repeated bytes `0xda..0xdf`, `0xe2`, `0xe3`
+- the cleanest current interpretation is that preamp-panel metering and mixer-strip metering are distinct views that can coexist when the same preamp source is also assigned to a mixer strip
+
+What remains unresolved:
+
+- exact per-byte meter scaling
+- whether the 6-byte `0x81` packets contain a meter-side clock, sequence, or compact meter stream
+- exact separation of visible master-meter movement from strip meters
+
+Current implementation consequence:
+
+- the capture set is sufficient to document metering boundaries
+- it is **not** yet sufficient for a trustworthy parser that claims exact strip or master meter fields
+
 ### Candidate mixer-state region inside `0x73`
 
 The captures support a narrower candidate region for mixer-derived state than the earlier broad byte-range note.
