@@ -152,8 +152,8 @@ impl AppState {
                     continue;
                 };
 
-                if let Some(level) = decoded.level {
-                    slot.level = Some(level);
+                if let Some(meter) = decoded.meter {
+                    slot.meter = Some(meter);
                 }
                 if let Some(muted) = decoded.muted {
                     slot.muted = Some(muted);
@@ -608,7 +608,7 @@ mod tests {
     fn reducer_applies_grounded_passive_mixer_decode_from_snapshot() {
         let mut state = AppState::default();
         let mut device_snapshot = snapshot();
-        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].level = Some(0x30);
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].meter = Some(0x30);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].muted = Some(false);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].pan =
             Some(PanState::center());
@@ -618,8 +618,12 @@ mod tests {
         state.apply_snapshot(device_snapshot);
 
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].level,
+            state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
             Some(0x30)
+        );
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][0].level,
+            None
         );
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].muted,
@@ -636,6 +640,26 @@ mod tests {
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
             Some(true)
+        );
+    }
+
+    #[test]
+    fn passive_meter_does_not_override_known_level_value() {
+        let mut state = AppState::default();
+        state.mixer_channels[MixerSurface::Mix1.index()][0].level = Some(0x00);
+
+        let mut device_snapshot = snapshot();
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].meter = Some(0x30);
+
+        state.apply_snapshot(device_snapshot);
+
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][0].level,
+            Some(0x00)
+        );
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
+            Some(0x30)
         );
     }
 

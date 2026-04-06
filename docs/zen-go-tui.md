@@ -150,12 +150,12 @@ Mixer protocol notes:
 ## Experimental / intentionally limited areas
 
 - **lock indicator**: not safely decoded from current captures, so the UI marks it as experimental/unknown
-- **mixer state decode from `0x73`**: current captures confirm command families and mixer-related late-table movement, but the candidate late bytes also churn before the first host write and during pure idle. That means a safe passive per-strip startup decode is still unresolved, so the TUI intentionally shows only last confirmed command round-trip mixer state rather than inventing startup strip values. Tracked mixer overlays are kept per surface (`MIX 1` vs `MIX 2`) so writes on one surface do not pollute the other.
+- **mixer state decode from `0x73`**: full passive per-strip startup decode is still unresolved. The app now keeps assigned fader level separate from the narrow passive meter-related subset so live activity does not overwrite the stored level display.
 - **preamp / DSP editing**: preamp gains, modes, phantom, and phase are now exposed from the newly isolated captures; richer DSP/preamp page behavior around `51 01 01`, `a2`, `d5`, and `d7` remains intentionally out of scope
 - **link / unlink controls**: the `0x70 / 0x14` family is documented, but selector semantics are not resolved enough to expose as a normal interactive control yet
 - **link / unlink controls**: the TUI now exposes only the currently grounded selector mappings (`MIX 1` pairs `1-2`, `7-8`, and `MIX 2` pair `1-2`); ungrounded ordinary-pair selectors remain deferred
 - **startup `0x75` blocks**: the app now classifies all three grounded startup query reply kinds, but it still intentionally does **not** decode the inner meaning of the `0x00` capability/default block or `0x11` status/capability value beyond conservative byte summaries
-- **metering decode**: captures now ground that meter-related movement is device-originated and visible in late `0x73` rows rather than `0x83`, but exact strip/master meter parsing is still intentionally out of scope
+- **metering decode**: captures now ground that meter-related movement is device-originated and visible in late `0x73` rows rather than `0x83`. The UI now keeps that live meter subset separate from stored level, but exact strip/master meter parsing is still intentionally out of scope
 
 ## Verification expectations without hardware
 

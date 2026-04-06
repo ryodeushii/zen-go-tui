@@ -848,14 +848,14 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<Snapshot73, ProtocolError> {
 fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
     let mut decode = MixerPassiveDecode::default();
 
-    let shared_level = decode_level_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf)
-        .or_else(|| decode_level_from_group(payload, 0x6f, 0x8f, 0xda, 0xdd, 0xde, 0xdf));
+    let shared_meter = decode_meter_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf)
+        .or_else(|| decode_meter_from_group(payload, 0x6f, 0x8f, 0xda, 0xdd, 0xde, 0xdf));
     let shared_mute = decode_mute_from_group(payload, 0x8f, 0xcf, 0xda, 0xdb, 0xdc, 0xdd);
     let shared_pan = decode_pan_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf);
 
     let active_mixer = MixerSurface::from_surface(Surface::from_code(payload[0x6a]));
     if let Some(slot) = decode.surfaces[active_mixer.index()].get_mut(0) {
-        slot.level = shared_level;
+        slot.meter = shared_meter;
         slot.muted = shared_mute;
         slot.pan = shared_pan;
     }
@@ -875,7 +875,7 @@ fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
     decode
 }
 
-fn decode_level_from_group(
+fn decode_meter_from_group(
     payload: &[u8],
     primary_a: usize,
     primary_b: usize,
@@ -1066,6 +1066,7 @@ pub enum Command {
 pub struct MixerChannelState {
     pub channel: u8,
     pub level: Option<u8>,
+    pub meter: Option<u8>,
     pub muted: Option<bool>,
     pub pan: PanState,
     pub assignment: Option<MixerAssignment>,
@@ -1074,7 +1075,7 @@ pub struct MixerChannelState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MixerPassiveStripState {
-    pub level: Option<u8>,
+    pub meter: Option<u8>,
     pub muted: Option<bool>,
     pub pan: Option<PanState>,
     pub linked: Option<bool>,
@@ -1083,7 +1084,7 @@ pub struct MixerPassiveStripState {
 impl MixerPassiveStripState {
     pub const fn unresolved() -> Self {
         Self {
-            level: None,
+            meter: None,
             muted: None,
             pan: None,
             linked: None,
@@ -1119,6 +1120,7 @@ impl MixerChannelState {
         Self {
             channel,
             level: None,
+            meter: None,
             muted: None,
             pan: PanState::center(),
             assignment: None,
@@ -1137,6 +1139,7 @@ impl MixerChannelState {
         Self {
             channel,
             level,
+            meter: None,
             muted,
             pan,
             assignment,
@@ -1150,6 +1153,11 @@ impl MixerChannelState {
 
     pub fn gain_ratio(self) -> Option<f64> {
         self.level
+            .map(|raw| (1.0 - (raw.min(0x60) as f64 / 96.0)).clamp(0.0, 1.0))
+    }
+
+    pub fn meter_ratio(self) -> Option<f64> {
+        self.meter
             .map(|raw| (1.0 - (raw.min(0x60) as f64 / 96.0)).clamp(0.0, 1.0))
     }
 }
@@ -1429,7 +1437,7 @@ mod tests {
                 .mixer_decode
                 .strip(MixerSurface::Mix2, 1)
                 .unwrap()
-                .level,
+                .meter,
             None
         );
     }
@@ -1631,7 +1639,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_passive_mix1_strip1_level_from_late_row_cluster() {
+    fn decodes_passive_mix1_strip1_meter_from_late_row_cluster() {
         let mut frame = vec![0_u8; 320];
         frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
@@ -1655,7 +1663,7 @@ mod tests {
             .mixer_decode
             .strip(MixerSurface::Mix1, 1)
             .expect("mix1 strip 1");
-        assert_eq!(strip.level, Some(0x30));
+        assert_eq!(strip.meter, Some(0x30));
         assert_eq!(strip.pan, Some(PanState::center()));
     }
 

@@ -297,7 +297,8 @@ fn render_mixer_strip_line(
 ) -> String {
     let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
     let bar = channel
-        .gain_ratio()
+        .meter_ratio()
+        .or_else(|| channel.gain_ratio())
         .map(render_thin_bar)
         .unwrap_or_else(|| "........".to_string());
     let assignment = channel
@@ -313,13 +314,17 @@ fn render_mixer_strip_line(
         "C".to_string()
     };
     format!(
-        "CH {:02} {:<8} src={:<16} level={} mute={} pan={} link={} {}",
+        "CH {:02} {:<8} src={:<16} level={} meter={} mute={} pan={} link={} {}",
         channel.channel,
         bar,
         assignment,
         channel
             .display_db()
             .map(|value| format!("{} dB", value))
+            .unwrap_or_else(|| "undecoded".to_string()),
+        channel
+            .meter
+            .map(|value| format!("raw {:02x}", value))
             .unwrap_or_else(|| "undecoded".to_string()),
         channel
             .muted
@@ -646,6 +651,7 @@ mod tests {
         state.mixer_channels[0][10].pan = PanState::from_raw(0x3e);
         state.mixer_channels[0][10].linked = Some(true);
         state.mixer_channels[0][10].level = Some(0x10);
+        state.mixer_channels[0][10].meter = Some(0x08);
         state.mixer_channels[0][10].muted = Some(false);
 
         let channel = &state.mixer_channels[0][10];
@@ -654,6 +660,20 @@ mod tests {
         assert!(line.contains("Computer Play 8"));
         assert!(line.contains("pan=R100"));
         assert!(line.contains("link=on"));
+        assert!(line.contains("meter="));
+    }
+
+    #[test]
+    fn mixer_strip_line_renders_meter_separately_from_level_value() {
+        let mut state = AppState::default();
+        state.mixer_channels[0][0].level = Some(0x00);
+        state.mixer_channels[0][0].meter = Some(0x30);
+        state.mixer_channels[0][0].muted = Some(false);
+
+        let line = render_mixer_strip_line(&state, 0, &state.mixer_channels[0][0]);
+
+        assert!(line.contains("level=0 dB"));
+        assert!(line.contains("meter="));
     }
 
     #[test]
