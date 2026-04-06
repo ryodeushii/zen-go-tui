@@ -76,10 +76,17 @@ Output volume notes:
 - raw `0x60` = `-96 dB` / effectively minimum
 - the TUI now displays output volume in dB while still showing the raw step for reference
 
+Mixer level notes:
+
+- mixer strip levels follow the same inverse scale as outputs in the current app
+- raw `0x00` = `0 dB`
+- raw `0x60` = `-96 dB` / effectively minimum
+- the TUI now displays known mixer-strip levels in dB rather than raw hex
+
 ## Experimental / intentionally limited areas
 
 - **lock indicator**: not safely decoded from current captures, so the UI marks it as experimental/unknown
-- **mixer state decode from `0x73`**: current captures confirm command families and stable late-table movement, but not a safe per-channel table decode; the UI therefore shows mixer control capability plus last confirmed command round-trip state rather than claiming full snapshot-derived channel state
+- **mixer state decode from `0x73`**: current captures confirm command families and mixer-related late-table movement, but the candidate late bytes also churn before the first host write and during pure idle. That means a safe passive per-strip startup decode is still unresolved, so the TUI intentionally shows only last confirmed command round-trip mixer state rather than inventing startup strip values. Tracked mixer overlays are kept per surface (`MIX 1` vs `MIX 2`) so writes on one surface do not pollute the other.
 - **preamp / DSP editing**: current protocol understanding is only partial; the TUI exposes the front DSP byte cluster read-only and labels it experimental
 - **link / unlink controls**: the `0x70 / 0x14` family is documented, but selector semantics are not resolved enough to expose as a normal interactive control yet
 

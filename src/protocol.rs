@@ -225,6 +225,13 @@ pub enum MixerSurface {
 }
 
 impl MixerSurface {
+    pub fn index(self) -> usize {
+        match self {
+            Self::Mix1 => 0,
+            Self::Mix2 => 1,
+        }
+    }
+
     pub fn code(self) -> u8 {
         match self {
             Self::Mix1 => 0x00,
@@ -541,6 +548,15 @@ impl MixerChannelState {
             pan_state: PanState::Center,
         }
     }
+
+    pub fn display_db(self) -> Option<i16> {
+        self.level.map(|raw| -(raw.min(0x60) as i16))
+    }
+
+    pub fn gain_ratio(self) -> Option<f64> {
+        self.level
+            .map(|raw| (1.0 - (raw.min(0x60) as f64 / 96.0)).clamp(0.0, 1.0))
+    }
 }
 
 pub fn encode_query(query_id: u8) -> Vec<u8> {
@@ -706,5 +722,16 @@ mod tests {
         assert_eq!(silence.display_db(), -96);
         assert_eq!(unity.gain_ratio(), 1.0);
         assert_eq!(silence.gain_ratio(), 0.0);
+    }
+
+    #[test]
+    fn mixer_level_display_uses_inverse_db_scale() {
+        let unity = MixerChannelState::known(1, Some(0x00), Some(false));
+        let silence = MixerChannelState::known(1, Some(0x60), Some(false));
+
+        assert_eq!(unity.display_db(), Some(0));
+        assert_eq!(silence.display_db(), Some(-96));
+        assert_eq!(unity.gain_ratio(), Some(1.0));
+        assert_eq!(silence.gain_ratio(), Some(0.0));
     }
 }

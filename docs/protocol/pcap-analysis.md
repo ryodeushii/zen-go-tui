@@ -559,11 +559,15 @@ What is confirmed:
 - stronger mixer state changes also retune coarse row-head bytes `0x8e` and `0xce` together with shadow bytes `0xda..0xdd`, `0xde..0xdf`, and `0xe2`
 - row `0x6e` participates mainly when the current surface/context is the Monitor/HP1 side; it is much less active once the workflow is on the `0x6a = 0x0c` HP2 surface
 - linked/unlinked transitions also change the same late cluster, confirming that mixer topology is published by the device
+- the startup / pre-command `0x73` stream is not a single stable strip table: before the first host write, `capture_08`, `capture_10`, and `capture_10_2` already walk through many distinct late-row states while the front output bytes and `0x6a` surface byte remain unchanged
+- `capture_09_idle_polling.pcapng` shows the same kind of late-row churn during pure idle, so the changing tuple around `0x6e`, `0x8e`, `0xce`, and `0xda..0xe5` is not by itself a trustworthy one-shot encoding of saved mixer strip levels/mutes
+- current evidence therefore supports these late rows as dynamic mixer-page state that includes focus/selection/scan-like behavior in addition to durable mixer settings; a passive decoder cannot safely treat one startup `0x73` frame as a full per-strip strip snapshot
 
 What is not yet safe to claim:
 
 - a one-offset-per-fader-level map for each mixer channel
 - a complete per-channel table layout
+- a safe passive startup decode of mixer strip level/mute from the currently available `0x73` captures alone
 
 ### DSP / preamp-specific families observed in `capture_07_dsp.pcapng`
 

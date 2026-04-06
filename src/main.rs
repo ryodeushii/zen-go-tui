@@ -111,14 +111,15 @@ fn move_selection(controller: &mut Controller, right: bool) {
             };
         }
         FocusArea::Mixer => {
+            let channels_len = controller.state.active_mixer_channels().len();
             controller.state.selected_channel = if right {
-                (controller.state.selected_channel + 1) % controller.state.mixer_channels.len()
+                (controller.state.selected_channel + 1) % channels_len
             } else {
                 controller
                     .state
                     .selected_channel
                     .checked_sub(1)
-                    .unwrap_or(controller.state.mixer_channels.len() - 1)
+                    .unwrap_or(channels_len - 1)
             };
         }
         _ => {}
@@ -141,15 +142,14 @@ fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
             })?;
         }
         FocusArea::Mixer => {
-            let channel =
-                controller.state.mixer_channels[controller.state.selected_channel].channel;
-            let current = controller.state.mixer_channels[controller.state.selected_channel]
-                .level
-                .unwrap_or(0x20);
+            let active_channel =
+                controller.state.active_mixer_channels()[controller.state.selected_channel];
+            let channel = active_channel.channel;
+            let current = active_channel.level.unwrap_or(0x20);
             let next = if up {
-                current.saturating_add(1).min(0x58)
-            } else {
                 current.saturating_sub(1)
+            } else {
+                current.saturating_add(1).min(0x60)
             };
             controller.send(Command::SetMixerLevel {
                 mixer: MixerSurface::from_surface(controller.state.surface),
@@ -174,11 +174,10 @@ fn toggle_mute(controller: &mut Controller) -> Result<()> {
             })?;
         }
         FocusArea::Mixer => {
-            let channel =
-                controller.state.mixer_channels[controller.state.selected_channel].channel;
-            let muted = !controller.state.mixer_channels[controller.state.selected_channel]
-                .muted
-                .unwrap_or(false);
+            let active_channel =
+                controller.state.active_mixer_channels()[controller.state.selected_channel];
+            let channel = active_channel.channel;
+            let muted = !active_channel.muted.unwrap_or(false);
             controller.send(Command::SetMixerMute {
                 mixer: MixerSurface::from_surface(controller.state.surface),
                 channel,

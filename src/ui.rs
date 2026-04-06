@@ -148,17 +148,22 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(tabs, mixer_layout[0]);
 
     let items: Vec<ListItem<'_>> = state
-        .mixer_channels
+        .active_mixer_channels()
         .iter()
         .enumerate()
         .map(|(index, channel)| {
             let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
+            let bar = channel
+                .gain_ratio()
+                .map(render_thin_bar)
+                .unwrap_or_else(|| "........".to_string());
             let label = format!(
-                "CH {:02}  level={}  mute={}  {}",
+                "CH {:02}  {:<8}  level={}  mute={}  {}",
                 channel.channel,
+                bar,
                 channel
-                    .level
-                    .map(|value| format!("0x{:02x}", value))
+                    .display_db()
+                    .map(|value| format!("{} dB", value))
                     .unwrap_or_else(|| "undecoded".to_string()),
                 channel
                     .muted
@@ -180,6 +185,9 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Line::from(format!("Front bytes: {:02x?}", state.dsp_cluster)),
         Line::from("Read-only unless protocol confidence is strong."),
         Line::from("Extended DSP/preamp bytes are shown as experimental."),
+        Line::from(
+            "Startup strip decode is still unresolved; confirmed writes populate per-surface mixer state.",
+        ),
         Line::from(state.last_message.clone()),
     ])
     .block(section_block(
@@ -207,6 +215,16 @@ fn section_block(title: &str, focused: bool) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(title, style))
+}
+
+fn render_thin_bar(ratio: f64) -> String {
+    const WIDTH: usize = 8;
+    let filled = (ratio.clamp(0.0, 1.0) * WIDTH as f64).round() as usize;
+    let mut out = String::with_capacity(WIDTH);
+    for index in 0..WIDTH {
+        out.push(if index < filled { '|' } else { '.' });
+    }
+    out
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {

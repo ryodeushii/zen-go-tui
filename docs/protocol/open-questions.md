@@ -18,6 +18,11 @@ The currently available captures support a stronger structural claim than before
 
 What is still unresolved is the exact meaning of each byte inside those rows.
 
+Additional confirmed boundary from the startup/idle traces:
+
+- the candidate mixer late rows do not settle to one static per-strip table before user interaction; `capture_08`, `capture_10`, and `capture_10_2` show dozens to hundreds of distinct pre-command `0x73` late-row states, and `capture_09` shows the same kind of churn during idle
+- because the front output bytes and current-surface byte can remain constant while those late bytes keep moving, the existing captures are not strong enough to justify a real passive startup per-strip level/mute decoder yet
+
 Examples of still-open byte-level questions:
 
 - what exact user-facing concept maps onto the already-better-bounded `0x54` alternate-engaged tier in each workflow
@@ -26,6 +31,7 @@ Examples of still-open byte-level questions:
 - the exact per-byte meaning inside the now-better-supported split where `0x0da..0x0dd` plus `0x0e2` follow coarse row-head state while `0x0de..0x0df` behave as a second local shadow pair (`0x0de` more latch-like, `0x0df` more substate-like)
 - which exact DSP/preamp page or submode the DSP-only `0x0ae` band represents during the extended `510101` mode; current evidence supports it as page-level state, not an ordinary output/mixer row
 - what exact coarse meaning `0x6e` / `0x6f` encode for the current Monitor/HP1 vs HP2 surface group now that the captures support UI-surface partitioning better than output-group or hardware-path partitioning
+- which part of the late-row churn is durable mixer state versus transient focus/selection/scan state in the passive startup stream
 
 What is now better supported than before:
 
@@ -40,6 +46,7 @@ Recommended follow-up capture:
 - Pause 2-3 seconds between actions
 - One capture per control family
 - Note the exact channel and target output used
+- Add one passive-only capture that opens directly onto the mixer page and then records 5-10 seconds with no user writes, plus a spoken/written note of the visible selected strip and saved strip values
 
 ### Exact role of the front bytes in `0x83`
 
