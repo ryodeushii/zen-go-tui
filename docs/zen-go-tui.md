@@ -49,6 +49,16 @@ The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device m
 - `?` — show quick help
 - `q` — quit
 
+## Raw frame view
+
+The TUI now includes a raw-data page for live protocol inspection.
+
+- keep pressing `Tab` until the raw page is focused
+- the page shows only the latest live `0x73` packet and the latest live `0x83` packet
+- both panes render a full hex + ASCII dump of the current packet state
+
+This is especially useful while continuing reverse-engineering of late `0x73` mixer state and auxiliary traffic.
+
 ## Confirmed protocol support exposed in the app
 
 - startup `0x74` queries and `0x75` metadata parsing

@@ -45,6 +45,7 @@ pub enum FocusArea {
     Outputs,
     Mixer,
     Preamp,
+    Raw,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +61,8 @@ pub struct AppState {
     pub last_message: String,
     pub last_auxiliary_len: Option<usize>,
     pub dsp_cluster: [u8; 4],
+    pub latest_raw_73: Option<Vec<u8>>,
+    pub latest_raw_83: Option<Vec<u8>>,
 }
 
 impl Default for AppState {
@@ -85,6 +88,8 @@ impl Default for AppState {
                     .to_string(),
             last_auxiliary_len: None,
             dsp_cluster: [0; 4],
+            latest_raw_73: None,
+            latest_raw_83: None,
         }
     }
 }
@@ -118,11 +123,17 @@ impl AppState {
         match frame {
             DeviceSnapshot::Snapshot(snapshot) => {
                 self.connection.last_frame_type = Some("0x73 snapshot");
+                self.latest_raw_73 = Some(encode_debug_snapshot(&snapshot));
                 self.apply_snapshot(snapshot);
             }
             DeviceSnapshot::Auxiliary83(bytes) => {
                 self.connection.last_frame_type = Some("0x83 auxiliary");
                 self.last_auxiliary_len = Some(bytes.len());
+                let mut frame = vec![0_u8; 0x10 + bytes.len()];
+                frame[0..4].copy_from_slice(&0x83_u32.to_le_bytes());
+                frame[4..8].copy_from_slice(&((0x10 + bytes.len()) as u32).to_le_bytes());
+                frame[0x10..0x10 + bytes.len()].copy_from_slice(&bytes);
+                self.latest_raw_83 = Some(frame);
             }
             DeviceSnapshot::QueryReply(reply) => {
                 self.connection.last_frame_type = Some("0x75 query reply");
@@ -150,9 +161,49 @@ impl AppState {
             FocusArea::Status => FocusArea::Outputs,
             FocusArea::Outputs => FocusArea::Mixer,
             FocusArea::Mixer => FocusArea::Preamp,
-            FocusArea::Preamp => FocusArea::Status,
+            FocusArea::Preamp => FocusArea::Raw,
+            FocusArea::Raw => FocusArea::Status,
         };
     }
+}
+
+fn encode_debug_snapshot(snapshot: &Snapshot73) -> Vec<u8> {
+    let mut frame = vec![0_u8; 0x10 + 0xe6];
+    let frame_len = frame.len() as u32;
+    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+    frame[4..8].copy_from_slice(&frame_len.to_le_bytes());
+    let payload = &mut frame[0x10..];
+    payload[0x00] = snapshot.status_flags[0];
+    payload[0x01] = snapshot.status_flags[1];
+    payload[0x02] = snapshot.sample_rate.code();
+    payload[0x03] = snapshot.clock_source.code();
+    payload[0x04..0x08].copy_from_slice(&snapshot.sample_rate_hz.to_be_bytes());
+    payload[0x08..0x0b].copy_from_slice(&snapshot.front_panel_bytes);
+    payload[0x0c] = snapshot.outputs[0].volume;
+    payload[0x0d] = match snapshot.outputs[0].mode {
+        OutputMode::Normal => 0x00,
+        OutputMode::Mute => 0x01,
+        OutputMode::Dim => 0x02,
+        OutputMode::Unknown(value) => value,
+    };
+    payload[0x0e] = snapshot.outputs[1].volume;
+    payload[0x0f] = match snapshot.outputs[1].mode {
+        OutputMode::Normal => 0x00,
+        OutputMode::Mute => 0x01,
+        OutputMode::Dim => 0x02,
+        OutputMode::Unknown(value) => value,
+    };
+    payload[0x10] = snapshot.outputs[2].volume;
+    payload[0x11] = match snapshot.outputs[2].mode {
+        OutputMode::Normal => 0x00,
+        OutputMode::Mute => 0x01,
+        OutputMode::Dim => 0x02,
+        OutputMode::Unknown(value) => value,
+    };
+    payload[0x18..0x1c].copy_from_slice(&snapshot.dsp_cluster);
+    payload[0x6a] = snapshot.surface.code();
+    payload[0xda..0xe6].copy_from_slice(&snapshot.late_shadow);
+    frame
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -547,5 +598,19 @@ mod tests {
             Some(SampleRate::Hz48000)
         );
         assert_eq!(controller.state.device.clock_source, Some(ClockSource::Usb));
+    }
+
+    #[test]
+    fn raw_state_tracks_latest_snapshot_and_auxiliary_frames() {
+        let mut state = AppState::default();
+        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()));
+        state.observe_frame(DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]));
+
+        assert!(state.latest_raw_73.is_some());
+        assert!(state.latest_raw_83.is_some());
+        assert_eq!(
+            &state.latest_raw_83.expect("0x83")[0..4],
+            &0x83_u32.to_le_bytes()
+        );
     }
 }
