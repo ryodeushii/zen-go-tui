@@ -986,6 +986,9 @@ fn draw_preamp_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .wrap(Wrap { trim: true }),
         input2_layout[1],
     );
+    if let Some(area) = inner_bottom_line(input1_layout[0]) {
+        frame.render_widget(render_preamp_observed_meter(state.preamp.input1), area);
+    }
     if let Some(area) = inner_bottom_line(input2_layout[0]) {
         frame.render_widget(render_preamp_observed_meter(state.preamp.input2), area);
     }

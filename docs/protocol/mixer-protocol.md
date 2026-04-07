@@ -313,9 +313,10 @@ Important boundary of the implementation:
 - the mixer view can now surface the active mix raw meter lanes directly from the late-row pair bytes:
   - active `MIX 1`: `0xda/0xdb` (mirrored at `0xdc/0xdd`)
   - active `MIX 2`: `0xde/0xdf`
-- a narrow observed preamp-meter indicator remains grounded enough for app use on `A2` at `0xcf`
+- narrow observed preamp-meter indicators remain grounded enough for app use on both preamps:
+  - `A1` at `0xce`
+  - `A2` at `0xcf`
 - full master/output separation is still not grounded enough for a parser-ready claim
-- `A1` still does not have a trustworthy passive preamp-meter byte in the current implementation
 - passive pan remains intentionally narrow; the captures do not yet justify a continuous one-frame pan-value decoder over the full `0x02 .. 0x3e` command range
 - links are still only grounded for the tested `1-2` pair target on each surface; broader selector coverage remains deferred
 
@@ -330,7 +331,8 @@ What is grounded:
 - meter-correlated movement is visible in `0x73` late rows and in the 6-byte async packets on endpoint `0x81`
 - the shared per-channel strip meter now has a grounded raw-byte lane at `0x8e..0x9d`, mapping directly to `CH1..16`
 - the mixer view can now surface the active mix raw meter lanes from `0xda/0xdb` / `0xdc/0xdd` (`MIX 1`) and `0xde/0xdf` (`MIX 2`)
-- the preamp panel can now surface the narrow observed `A2` input meter from `0xcf`
+- the preamp panel can now surface narrow observed input meters from `0xce` (`A1`) and `0xcf` (`A2`)
+- app code only treats the lower raw range as plausible direct-preamp metering on those lanes, which avoids promoting late-row status values like `0x4b/0x4c/0x4e/0x51/0x54/0x5a/0x60` into fake meters
 - ordinary playback metering follows strip slot / row placement rather than source identity alone
 - preamp-panel metering is distinct from mixer-strip metering and can coexist with it when a preamp source is also assigned to a strip
 - `0x81` behaves like an activity side channel rather than a second canonical snapshot: packet rate and byte diversity rise with some passive meter setups, but the byte patterns do not stay stable enough to map directly to strip/master meter values
@@ -343,7 +345,7 @@ Current implementation boundary:
 
 - app code now decodes raw strip meter bytes from `0x8e..0x9d` and applies them as shared `CH1..16` meter state across both visible mixes
 - app code no longer surfaces separate output meters under the outputs panel; instead the mixer view shows the active mix raw late-row meter lanes directly
-- app code now surfaces the narrow observed `A2` preamp meter at `0xcf`; `A1` remains unresolved
+- app code now surfaces narrow observed preamp meters at `0xce` (`A1`) and `0xcf` (`A2`)
 
 What is not grounded enough yet:
 

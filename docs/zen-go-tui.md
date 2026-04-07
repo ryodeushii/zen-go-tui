@@ -178,7 +178,7 @@ Mixer protocol notes:
 - **link / unlink controls**: the TUI now exposes link toggles across all visible adjacent pairs using the grounded selector pattern currently validated in captures; the directly observed selectors are fully grounded, and the remaining pairs align with the same now-promoted map
 - **startup `0x75` blocks**: the app now reads back the grounded assignment subset from `0x03`, but it still intentionally does **not** decode the inner meaning of the `0x00` capability/default block or `0x11` status/capability value beyond conservative byte summaries, and it does not trust `0x18/00` for startup level/pan/mute yet
 - **`0x04/*` and `0x0b/03`**: `0x0b/03` is now grounded for startup visible link state on `CH1..16`, and `0x04/00` plus `0x04/01` are grounded for startup level/pan/mute state
-- **metering decode**: per-channel strip metering is now passively decoded from the shared `0x73` strip-lane window `0x8e..0x9d` and stays separate from stored level. The mixer view now shows the active mix raw meter lanes directly, and the preamp panel still surfaces the narrow observed `A2` input meter from `0xcf`. Separate output-panel metering and `A1` passive preamp metering are still intentionally unresolved
+- **metering decode**: per-channel strip metering is now passively decoded from the shared `0x73` strip-lane window `0x8e..0x9d` and stays separate from stored level. The mixer view now shows the active mix raw meter lanes directly, and the preamp panel surfaces narrow observed input meters for `A1` from `0xce` and `A2` from `0xcf`. Separate output-panel metering is still intentionally unresolved
 
 ## Verification expectations without hardware
 

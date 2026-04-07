@@ -227,7 +227,7 @@ What is better bounded now:
 
 - the shared strip-meter raw lane is now grounded at `0x8e..0x9d`, mapping directly to `CH1..16`
 - the active mix raw meter lanes are now narrow enough for app use in the mixer view at `0xda/0xdb` / `0xdc/0xdd` (`MIX 1`) and `0xde/0xdf` (`MIX 2`)
-- the direct `A2` observed preamp lane is still narrow enough for app use at `0xcf`; `A1` remains unresolved
+- the direct observed preamp lanes are now narrow enough for app use at `0xce` (`A1`) and `0xcf` (`A2`)
 - `0x83` remains fully stable in the dedicated passive meter captures, so it is not the missing mixer meter/state plane
 - `0x81` clearly reacts to activity level, but the current passive meter captures do not give a stable strip-addressable mapping from its six bytes to visible meter values
 

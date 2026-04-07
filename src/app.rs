@@ -1097,6 +1097,7 @@ mod tests {
     fn reducer_applies_grounded_passive_mixer_decode_from_snapshot() {
         let mut state = AppState::default();
         let mut device_snapshot = snapshot();
+        device_snapshot.mixer_decode.observed_preamp1_meter = Some(0x28);
         device_snapshot.mixer_decode.observed_preamp2_meter = Some(0x30);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].meter = Some(0x30);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix2.index()][0].meter = Some(0x30);
@@ -1106,7 +1107,7 @@ mod tests {
 
         state.apply_snapshot(device_snapshot);
 
-        assert_eq!(state.preamp.input1.observed_meter, None);
+        assert_eq!(state.preamp.input1.observed_meter, Some(0x28));
         assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
