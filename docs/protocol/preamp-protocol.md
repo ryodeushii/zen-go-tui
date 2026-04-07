@@ -3,7 +3,7 @@
 This document collects the parts of the Zen Go preamp/front-end protocol that are grounded well enough to back the current TUI implementation.
 
 It is intentionally narrower than `docs/protocol/pcap-analysis.md`.
-This file focuses on the implemented preamp path: gain, source/type mode, phantom, phase, and the `0x73` front-cluster decode that reflects those settings.
+This file focuses on the implemented preamp path: gain, source/type mode, phantom, phase, observed input metering, and the `0x73` decode that reflects those states.
 
 ## Scope
 
@@ -14,6 +14,7 @@ Covered here:
 - phantom-power toggle
 - phase-invert toggle
 - the authoritative `0x73` bytes that reflect those states
+- narrow observed preamp metering used by the TUI
 - the host write commands currently used by the TUI
 
 Not covered here:
@@ -99,6 +100,23 @@ The TUI currently uses the following grounded gain interpretation from the captu
 
 These rules are implemented in `PreampInputState::gain_db_label()` and `gain_ratio()` in `src/protocol.rs`.
 
+## Observed Metering
+
+The current TUI also surfaces a narrow observed input meter for each preamp directly from the passive `0x73` snapshot.
+
+| `0x73` payload offset | Meaning |
+|---|---|
+| `0xce` | observed `A1` meter raw |
+| `0xcf` | observed `A2` meter raw |
+
+Implementation boundary:
+
+- these lanes are treated as narrow observed meter indicators for app use, not as a full parser-ready preamp metering model
+- the app only accepts the lower plausible meter range on these lanes (`0x01..0x49`) so late-row status values such as `0x4b`, `0x4c`, `0x4e`, `0x51`, `0x54`, `0x5a`, and `0x60` are not promoted into fake meters
+- this observed preamp metering is distinct from the shared strip-meter lane at `0x8e..0x9d` and can coexist with strip metering when the same input is also assigned to a mixer strip
+
+This is implemented in `src/protocol.rs` via `decode_passive_mixer_state()` and `decode_preamp_meter()`, then surfaced in app/UI state through `src/app.rs` and `src/ui.rs`.
+
 ## Stable-State Model
 
 The device remains authoritative.
@@ -119,6 +137,7 @@ Confirmed enough for the current app:
 - `Mic` / `Line` / `Hi-Z` mode decode
 - phantom toggle bit for the implemented path
 - phase toggle bit for the implemented path
+- observed `A1` / `A2` preamp meter lanes at `0xce` / `0xcf`
 - `4f`, `50`, `51 00`, `52 00` command families
 
 Deferred / intentionally not claimed here:
@@ -130,9 +149,9 @@ Deferred / intentionally not claimed here:
 
 ## Code References
 
-- `src/protocol.rs`: `PreampMode`, `PreampInputState`, `PreampState`, `Snapshot73`, `encode_command()`
-- `src/app.rs`: pending mutation handling for gain, mode, phantom, phase
-- `src/ui.rs`: preamp gauges and state rendering
+- `src/protocol.rs`: `PreampMode`, `PreampInputState`, `PreampState`, `Snapshot73`, `decode_passive_mixer_state()`, `decode_preamp_meter()`, `encode_command()`
+- `src/app.rs`: pending mutation handling for gain, mode, phantom, phase, and observed-meter preservation
+- `src/ui.rs`: preamp gauges and observed meter rendering
 
 ## Related Analysis
 
