@@ -416,7 +416,9 @@ impl Controller {
 
     pub fn bootstrap(&mut self) -> Result<()> {
         for query in [0x01_u8, 0x00, 0x11] {
-            self.transport.write(&encode_query(query))?;
+            let frame = encode_query(query);
+            self.state.observe_query_request(frame.clone());
+            self.transport.write(&frame)?;
         }
         Ok(())
     }

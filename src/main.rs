@@ -83,7 +83,7 @@ fn app_loop(
                     KeyCode::Tab => controller.state.cycle_focus(),
                     KeyCode::Char('?') => {
                         controller.state.last_message =
-                            "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: b/x baseline for 0x73/0x83/0x75/0x81.".to_string();
+                            "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ switch tabs, b/x baseline for 0x74/0x73/0x83/0x75/0x81.".to_string();
                     }
                     KeyCode::Left if controller.state.raw_view_open => {
                         controller.state.cycle_raw_packet(false)

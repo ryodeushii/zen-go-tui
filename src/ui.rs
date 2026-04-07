@@ -713,7 +713,7 @@ fn render_thin_bar(ratio: f64) -> String {
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab focus | mouse: preamp buttons, mixer mute/link/src, tabs | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
+    "Tab focus | mouse: preamp buttons, mixer mute/link/src, tabs | r raw view | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
 
 fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
@@ -1238,10 +1238,11 @@ mod tests {
         let footer = render_footer_text(&AppState::default());
 
         assert!(footer.contains("mouse:"));
+        assert!(footer.contains("r raw view"));
         assert!(footer.contains("a assign"));
         assert!(footer.contains("[ ] pan"));
         assert!(footer.contains("l link"));
-        assert!(footer.contains("Raw shows 0x73/0x83/0x75/0x81"));
+        assert!(footer.contains("Raw shows 0x74/0x73/0x83/0x75/0x81"));
     }
 
     #[test]
