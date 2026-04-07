@@ -716,6 +716,23 @@ pub struct QueriedMixerSurfaceReadback {
     pub surfaces: [[QueriedMixerStripState; 16]; 2],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupPanCategory {
+    Center,
+    Left,
+    Right,
+}
+
+impl StartupPanCategory {
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Center => "C",
+            Self::Left => "L",
+            Self::Right => "R",
+        }
+    }
+}
+
 impl Default for QueriedMixerStripState {
     fn default() -> Self {
         Self {
@@ -757,6 +774,15 @@ impl QueryReply75 {
     }
 
     pub fn summary_label(&self) -> String {
+        if let Some((surface, categories)) = self.startup_pan_category_readback() {
+            let preview = categories
+                .iter()
+                .map(|category| category.map(|value| value.short_label()).unwrap_or("?"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return format!("Startup {:?} pan categories [{}]", surface, preview);
+        }
+
         if let Some(bitmap) = self.selector_bitmap() {
             let asserted = bitmap
                 .iter()
@@ -870,8 +896,8 @@ impl QueryReply75 {
 
     pub fn startup_link_readback(&self) -> Option<(MixerSurface, [Option<bool>; 16])> {
         let surface = match self.sub_id {
-            0x01 => MixerSurface::Mix1,
-            0x02 => MixerSurface::Mix2,
+            0x00 | 0x01 => MixerSurface::Mix1,
+            0x02 | 0x03 => MixerSurface::Mix2,
             _ => return None,
         };
         let pairs = self.selector_pair_bank()?;
@@ -893,10 +919,46 @@ impl QueryReply75 {
             if left == 0x02 && right == 0x3e {
                 linked[pair_start] = Some(true);
                 linked[pair_start + 1] = Some(true);
+            } else if matches!(left, 0x20 | 0x60) && matches!(right, 0x20 | 0x60) {
+                linked[pair_start] = Some(false);
+                linked[pair_start + 1] = Some(false);
             }
         }
 
+        let first_left = visible_codes[0];
+        let first_right = visible_codes[1];
+        if matches!(first_left, 0x20 | 0x60) && matches!(first_right, 0x20 | 0x60) {
+            linked[0] = Some(false);
+            linked[1] = Some(false);
+        }
+
         Some((surface, linked))
+    }
+
+    pub fn startup_pan_category_readback(
+        &self,
+    ) -> Option<(MixerSurface, [Option<StartupPanCategory>; 16])> {
+        let surface = match self.sub_id {
+            0x00 | 0x01 => MixerSurface::Mix1,
+            0x02 | 0x03 => MixerSurface::Mix2,
+            _ => return None,
+        };
+        let pairs = self.selector_pair_bank()?;
+        if pairs.len() < 17 {
+            return None;
+        }
+
+        let mut categories = [None; 16];
+        for (index, (_, code)) in pairs.iter().skip(1).take(16).enumerate() {
+            categories[index] = match *code {
+                0x20 | 0x60 => Some(StartupPanCategory::Center),
+                0x02 => Some(StartupPanCategory::Left),
+                0x3e => Some(StartupPanCategory::Right),
+                _ => None,
+            };
+        }
+
+        Some((surface, categories))
     }
 
     pub fn mixer_strip_readback(&self) -> Option<QueriedMixerSurfaceReadback> {
@@ -2042,12 +2104,23 @@ mod tests {
         assert_eq!(pairs[3], (0x00, 0x02));
         assert_eq!(
             reply.summary_label(),
-            "Selector pair bank 0x01: 32 pairs [00/20 00/60 00/60 00/02 00/3e 00/02 00/3e 00/02]"
+            "Startup Mix1 pan categories [C C L R L R L R L R L R L R L R]"
         );
     }
 
     #[test]
     fn decodes_startup_link_pairs_from_grounded_0x75_04_mix_banks() {
+        let mix1_alt = QueryReply75 {
+            query_id: 0x04,
+            sub_id: 0x00,
+            body: vec![
+                0x00, 0x20, 0x00, 0x20, 0x10, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+            ],
+        };
         let mix1 = QueryReply75 {
             query_id: 0x04,
             sub_id: 0x01,
@@ -2071,20 +2144,69 @@ mod tests {
             ],
         };
 
+        let (surface1_alt, links1_alt) = mix1_alt.startup_link_readback().expect("mix1 alt links");
         let (surface1, links1) = mix1.startup_link_readback().expect("mix1 links");
         let (surface2, links2) = mix2.startup_link_readback().expect("mix2 links");
+        assert_eq!(surface1_alt, MixerSurface::Mix1);
         assert_eq!(surface1, MixerSurface::Mix1);
         assert_eq!(surface2, MixerSurface::Mix2);
-        assert_eq!(links1[0], None);
-        assert_eq!(links1[1], None);
-        assert_eq!(links2[0], None);
-        assert_eq!(links2[1], None);
+        assert_eq!(links1_alt[0], Some(false));
+        assert_eq!(links1_alt[1], Some(false));
+        assert_eq!(links1[0], Some(false));
+        assert_eq!(links1[1], Some(false));
+        assert_eq!(links2[0], Some(false));
+        assert_eq!(links2[1], Some(false));
         for index in (2..16).step_by(2) {
+            assert_eq!(links1_alt[index], Some(true));
+            assert_eq!(links1_alt[index + 1], Some(true));
             assert_eq!(links1[index], Some(true));
             assert_eq!(links1[index + 1], Some(true));
             assert_eq!(links2[index], Some(true));
             assert_eq!(links2[index + 1], Some(true));
         }
+    }
+
+    #[test]
+    fn decodes_startup_pan_categories_from_grounded_0x75_04_mix_banks() {
+        let mix1 = QueryReply75 {
+            query_id: 0x04,
+            sub_id: 0x01,
+            body: vec![
+                0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+            ],
+        };
+        let mix2 = QueryReply75 {
+            query_id: 0x04,
+            sub_id: 0x02,
+            body: vec![
+                0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x60, 0x02, 0x60, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+            ],
+        };
+
+        let (surface1, pans1) = mix1.startup_pan_category_readback().expect("mix1 pans");
+        let (surface2, pans2) = mix2.startup_pan_category_readback().expect("mix2 pans");
+        assert_eq!(surface1, MixerSurface::Mix1);
+        assert_eq!(surface2, MixerSurface::Mix2);
+        assert_eq!(pans1[0], Some(StartupPanCategory::Center));
+        assert_eq!(pans1[1], Some(StartupPanCategory::Center));
+        assert_eq!(pans1[2], Some(StartupPanCategory::Left));
+        assert_eq!(pans1[3], Some(StartupPanCategory::Right));
+        assert_eq!(pans2[0], Some(StartupPanCategory::Center));
+        assert_eq!(pans2[1], Some(StartupPanCategory::Center));
+        assert_eq!(pans2[2], Some(StartupPanCategory::Left));
+        assert_eq!(pans2[3], Some(StartupPanCategory::Right));
+        assert_eq!(
+            mix1.summary_label(),
+            "Startup Mix1 pan categories [C C L R L R L R L R L R L R L R]"
+        );
     }
 
     #[test]

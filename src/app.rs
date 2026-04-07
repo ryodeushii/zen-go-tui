@@ -199,9 +199,6 @@ impl AppState {
                 if let Some(muted) = decoded.muted {
                     slot.muted = Some(muted);
                 }
-                if let Some(pan) = decoded.pan {
-                    slot.pan = pan;
-                }
                 if let Some(linked) = decoded.linked {
                     slot.linked = Some(linked);
                 }
@@ -794,8 +791,6 @@ mod tests {
         let mut device_snapshot = snapshot();
         device_snapshot.mixer_decode.observed_preamp2_meter = Some(0x30);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].muted = Some(false);
-        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].pan =
-            Some(PanState::center());
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].linked = Some(true);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][1].linked = Some(true);
 
@@ -825,6 +820,23 @@ mod tests {
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
             Some(true)
+        );
+    }
+
+    #[test]
+    fn passive_snapshot_pan_decode_does_not_override_channel_pan() {
+        let mut state = AppState::default();
+        state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+
+        let mut device_snapshot = snapshot();
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].pan =
+            Some(PanState::from_raw(0x1e));
+
+        state.apply_snapshot(device_snapshot);
+
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix1.index()][0].pan,
+            PanState::center()
         );
     }
 
@@ -886,9 +898,9 @@ mod tests {
         state.observe_frame(
             DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
                 query_id: 0x04,
-                sub_id: 0x01,
+                sub_id: 0x00,
                 body: vec![
-                    0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00,
+                    0x00, 0x20, 0x00, 0x20, 0x10, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00,
                     0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
                     0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00,
                     0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
@@ -914,8 +926,8 @@ mod tests {
 
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
             let channels = &state.mixer_channels[mixer.index()];
-            assert_eq!(channels[0].linked, None);
-            assert_eq!(channels[1].linked, None);
+            assert_eq!(channels[0].linked, Some(false));
+            assert_eq!(channels[1].linked, Some(false));
             for index in (2..16).step_by(2) {
                 assert_eq!(channels[index].linked, Some(true));
                 assert_eq!(channels[index + 1].linked, Some(true));
@@ -1685,7 +1697,7 @@ mod tests {
         );
 
         assert!(state.recent_query_reply_log[0].contains("Selector bitmap"));
-        assert!(state.recent_query_reply_log[1].contains("Selector pair bank 0x01"));
+        assert!(state.recent_query_reply_log[1].contains("Startup Mix1 pan categories"));
     }
 
     #[test]
