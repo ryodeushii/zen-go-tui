@@ -811,14 +811,15 @@ impl QueryReply75 {
     }
 
     pub fn mixer_strip_readback(&self) -> Option<[QueriedMixerStripState; 16]> {
-        if self.query_id != 0x18 || self.sub_id != 0x00 || self.body.len() < 32 {
+        if self.query_id != 0x18 || self.sub_id != 0x00 || self.body.len() < 34 {
             return None;
         }
 
         let mut strips = [QueriedMixerStripState::default(); 16];
-        for (index, chunk) in self.body[..32].chunks_exact(2).enumerate() {
+        // The startup reply begins with one leading non-strip tuple before the visible mixer strips.
+        for (index, chunk) in self.body[2..34].chunks_exact(2).enumerate() {
             strips[index] = QueriedMixerStripState {
-                level: chunk[0],
+                level: 0x60_u8.saturating_sub(chunk[0].min(0x60)),
                 pan: PanState::from_state_code(chunk[1]),
                 muted: PanState::state_code_is_muted(chunk[1]),
                 soloed: PanState::state_code_is_soloed(chunk[1]),
@@ -1276,12 +1277,12 @@ impl MixerChannelState {
     }
 
     pub fn display_db(self) -> Option<i16> {
-        self.level.map(|raw| -(raw.min(0x60) as i16))
+        self.level.map(|raw| -(raw.min(0x5a) as i16))
     }
 
     pub fn gain_ratio(self) -> Option<f64> {
         self.level
-            .map(|raw| (1.0 - (raw.min(0x60) as f64 / 96.0)).clamp(0.0, 1.0))
+            .map(|raw| (1.0 - (raw.min(0x5a) as f64 / 90.0)).clamp(0.0, 1.0))
     }
 
     pub fn meter_ratio(self) -> Option<f64> {
@@ -1951,7 +1952,7 @@ mod tests {
             body: vec![
                 0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x02, 0x60, 0x3e, 0x2e, 0x02, 0x60, 0x3e,
                 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
-                0x60, 0x3e, 0x60, 0x02,
+                0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e,
             ],
         };
 
@@ -1959,14 +1960,37 @@ mod tests {
         assert_eq!(strips[0].level, 0x00);
         assert_eq!(strips[0].pan, PanState::center());
         assert!(!strips[0].muted);
-        assert_eq!(strips[3].level, 0x60);
-        assert_eq!(strips[3].pan, PanState::left());
+        assert_eq!(strips[1].level, 0x00);
+        assert_eq!(strips[1].pan, PanState::center());
+        assert_eq!(strips[2].level, 0x00);
+        assert_eq!(strips[2].pan, PanState::left());
+        assert_eq!(strips[3].level, 0x00);
+        assert_eq!(strips[3].pan, PanState::right());
         assert!(!strips[3].muted);
-        assert_eq!(strips[4].level, 0x60);
-        assert_eq!(strips[4].pan, PanState::right());
-        assert_eq!(strips[5].level, 0x2e);
-        assert_eq!(strips[5].pan, PanState::left());
+        assert_eq!(strips[4].level, 0x32);
+        assert_eq!(strips[4].pan, PanState::left());
         assert!(strips.iter().all(|strip| !strip.soloed));
+    }
+
+    #[test]
+    fn mixer_strip_readback_skips_leading_non_strip_tuple() {
+        let reply = QueryReply75 {
+            query_id: 0x18,
+            sub_id: 0x00,
+            body: vec![
+                0x12, 0x3e, 0x60, 0x60, 0x60, 0x60, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x20, 0x60, 0x20,
+                0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
+                0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
+            ],
+        };
+
+        let strips = reply.mixer_strip_readback().expect("strip state readback");
+        assert_eq!(strips[0].pan, PanState::center());
+        assert!(strips[0].muted);
+        assert_eq!(strips[1].pan, PanState::center());
+        assert!(strips[1].muted);
+        assert_eq!(strips[2].pan, PanState::left());
+        assert!(!strips[2].muted);
     }
 
     #[test]
@@ -1988,7 +2012,7 @@ mod tests {
             MixerChannelState::known(1, Some(0x60), Some(false), PanState::center(), None, None);
 
         assert_eq!(unity.display_db(), Some(0));
-        assert_eq!(silence.display_db(), Some(-96));
+        assert_eq!(silence.display_db(), Some(-90));
         assert_eq!(unity.gain_ratio(), Some(1.0));
         assert_eq!(silence.gain_ratio(), Some(0.0));
     }

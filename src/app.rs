@@ -888,7 +888,7 @@ mod tests {
                 body: vec![
                     0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x02, 0x60, 0x3e, 0x2e, 0x02, 0x60,
                     0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e,
-                    0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
+                    0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e,
                 ],
             }),
             vec![0x75, 0, 0, 0],
@@ -899,11 +899,41 @@ mod tests {
         assert_eq!(mix1[0].level, Some(0x00));
         assert_eq!(mix1[0].pan, PanState::center());
         assert_eq!(mix1[0].muted, Some(false));
-        assert_eq!(mix1[3].level, Some(0x60));
-        assert_eq!(mix1[3].pan, PanState::left());
-        assert_eq!(mix1[4].pan, PanState::right());
-        assert_eq!(mix1[5].level, Some(0x2e));
+        assert_eq!(mix1[1].level, Some(0x00));
+        assert_eq!(mix1[1].pan, PanState::center());
+        assert_eq!(mix1[2].level, Some(0x00));
+        assert_eq!(mix1[2].pan, PanState::left());
+        assert_eq!(mix1[3].level, Some(0x00));
+        assert_eq!(mix1[3].pan, PanState::right());
+        assert_eq!(mix1[4].level, Some(0x32));
+        assert_eq!(mix1[4].pan, PanState::left());
         assert!(mix2.iter().all(|slot| slot.level.is_none()));
+    }
+
+    #[test]
+    fn query_reply_strip_readback_can_mark_leading_channels_muted() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x18,
+                sub_id: 0x00,
+                body: vec![
+                    0x12, 0x3e, 0x60, 0x60, 0x60, 0x60, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x20, 0x60,
+                    0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
+                    0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
+        assert_eq!(mix1[0].muted, Some(true));
+        assert_eq!(mix1[0].pan, PanState::center());
+        assert_eq!(mix1[1].muted, Some(true));
+        assert_eq!(mix1[1].pan, PanState::center());
+        assert_eq!(mix1[2].muted, Some(false));
+        assert_eq!(mix1[2].pan, PanState::left());
     }
 
     #[test]
