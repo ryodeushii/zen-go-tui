@@ -235,6 +235,7 @@ pub struct PreampInputState {
     pub mode: PreampMode,
     pub phantom_on: bool,
     pub mode_raw: u8,
+    pub observed_meter: Option<u8>,
 }
 
 impl PreampInputState {
@@ -245,6 +246,7 @@ impl PreampInputState {
             mode,
             phantom_on: matches!(mode, PreampMode::Mic) && mode_raw & 0x10 != 0,
             mode_raw,
+            observed_meter: None,
         }
     }
 
@@ -267,6 +269,11 @@ impl PreampInputState {
             PreampMode::HiZ => (self.gain_raw.min(0x2d) as f64 / 45.0).clamp(0.0, 1.0),
             PreampMode::Unknown(_) => 0.0,
         }
+    }
+
+    pub fn observed_meter_ratio(self) -> Option<f64> {
+        self.observed_meter
+            .map(|raw| (1.0 - (raw.min(0x60) as f64 / 96.0)).clamp(0.0, 1.0))
     }
 }
 
@@ -355,9 +362,16 @@ impl PanState {
     pub const MIN: u8 = 0x02;
     pub const CENTER: u8 = 0x20;
     pub const MAX: u8 = 0x3e;
+    const PAN_MASK: u8 = 0x3f;
+    const MUTE_FLAG: u8 = 0x40;
+    const SOLO_FLAG: u8 = 0x80;
 
     pub fn from_raw(raw: u8) -> Self {
         Self(raw.clamp(Self::MIN, Self::MAX))
+    }
+
+    pub fn from_state_code(code: u8) -> Self {
+        Self::from_raw(code & Self::PAN_MASK)
     }
 
     pub fn left() -> Self {
@@ -381,12 +395,15 @@ impl PanState {
     }
 
     pub fn muted_code(self, muted: bool) -> u8 {
-        let base = self.code();
-        if muted {
-            base | 0x40
-        } else {
-            base
-        }
+        self.code() | if muted { Self::MUTE_FLAG } else { 0x00 }
+    }
+
+    pub fn state_code_is_muted(code: u8) -> bool {
+        code & Self::MUTE_FLAG != 0
+    }
+
+    pub fn state_code_is_soloed(code: u8) -> bool {
+        code & Self::SOLO_FLAG != 0
     }
 
     pub fn ratio(self) -> f64 {
@@ -496,6 +513,14 @@ impl MixerLinkTarget {
             (MixerSurface::Mix1, 1 | 2) => Self::from_selector(mixer, 0x00),
             (MixerSurface::Mix1, 7 | 8) => Self::from_selector(mixer, 0x03),
             (MixerSurface::Mix2, 1 | 2) => Self::from_selector(mixer, 0x01),
+            _ => None,
+        }
+    }
+
+    pub fn companion_bank(self) -> Option<u8> {
+        match (self.mixer, self.selector) {
+            (MixerSurface::Mix1, 0x00) => Some(0x00),
+            (MixerSurface::Mix2, 0x01) => Some(0x01),
             _ => None,
         }
     }
@@ -848,14 +873,14 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<Snapshot73, ProtocolError> {
 fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
     let mut decode = MixerPassiveDecode::default();
 
-    let shared_meter = decode_meter_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf)
-        .or_else(|| decode_meter_from_group(payload, 0x6f, 0x8f, 0xda, 0xdd, 0xde, 0xdf));
+    let shared_meter = observe_meter_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf)
+        .or_else(|| observe_meter_from_group(payload, 0x6f, 0x8f, 0xda, 0xdd, 0xde, 0xdf));
     let shared_mute = decode_mute_from_group(payload, 0x8f, 0xcf, 0xda, 0xdb, 0xdc, 0xdd);
     let shared_pan = decode_pan_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf);
 
     let active_mixer = MixerSurface::from_surface(Surface::from_code(payload[0x6a]));
+    decode.observed_preamp2_meter = shared_meter;
     if let Some(slot) = decode.surfaces[active_mixer.index()].get_mut(0) {
-        slot.meter = shared_meter;
         slot.muted = shared_mute;
         slot.pan = shared_pan;
     }
@@ -875,7 +900,7 @@ fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
     decode
 }
 
-fn decode_meter_from_group(
+fn observe_meter_from_group(
     payload: &[u8],
     primary_a: usize,
     primary_b: usize,
@@ -895,10 +920,7 @@ fn decode_meter_from_group(
 
     let value =
         (samples.iter().map(|&sample| sample as u16).sum::<u16>() / samples.len() as u16) as u8;
-    match value {
-        0x43..=0x4e => Some((value - 0x43) * 8),
-        _ => None,
-    }
+    matches!(value, 0x43..=0x4e).then_some(value)
 }
 
 fn decode_mute_from_group(
@@ -1058,7 +1080,7 @@ pub enum Command {
     SetLinkState {
         selector: u8,
         enabled: bool,
-        include_companion: bool,
+        companion_bank: Option<u8>,
     },
 }
 
@@ -1095,12 +1117,14 @@ impl MixerPassiveStripState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MixerPassiveDecode {
     pub surfaces: [[MixerPassiveStripState; 16]; 2],
+    pub observed_preamp2_meter: Option<u8>,
 }
 
 impl Default for MixerPassiveDecode {
     fn default() -> Self {
         Self {
             surfaces: [[MixerPassiveStripState::unresolved(); 16]; 2],
+            observed_preamp2_meter: None,
         }
     }
 }
@@ -1230,15 +1254,13 @@ pub fn encode_command(command: Command) -> Vec<u8> {
         Command::SetLinkState {
             selector,
             enabled,
-            include_companion,
-        } => {
-            if include_companion {
-                host_frame(0x14, &[0xa2, 0x04, 0x01, u8::from(enabled)])
-            } else {
-                host_frame(0x14, &[0xa2, 0x03, selector, u8::from(enabled)])
-            }
-        }
+            companion_bank: _,
+        } => host_frame(0x14, &[0xa2, 0x03, selector, u8::from(enabled)]),
     }
+}
+
+pub fn encode_link_companion(bank: u8, enabled: bool) -> Vec<u8> {
+    host_frame(0x14, &[0xa2, 0x04, bank, u8::from(enabled)])
 }
 
 fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
@@ -1268,6 +1290,48 @@ fn host_frame(length: u32, payload: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct ExperimentalSurfacePairLanes {
+        mixer: MixerSurface,
+        lane_a: u8,
+        lane_b: u8,
+        mirrored: bool,
+    }
+
+    fn experimental_surface_pair_lanes(payload: &[u8]) -> Option<ExperimentalSurfacePairLanes> {
+        let mixer = MixerSurface::from_surface(Surface::from_code(*payload.get(0x6a)?));
+        match mixer {
+            MixerSurface::Mix1 => {
+                let lane_a = *payload.get(0xda)?;
+                let lane_b = *payload.get(0xdb)?;
+                Some(ExperimentalSurfacePairLanes {
+                    mixer,
+                    lane_a,
+                    lane_b,
+                    mirrored: payload.get(0xdc) == Some(&lane_a)
+                        && payload.get(0xdd) == Some(&lane_b),
+                })
+            }
+            MixerSurface::Mix2 => Some(ExperimentalSurfacePairLanes {
+                mixer,
+                lane_a: *payload.get(0xde)?,
+                lane_b: *payload.get(0xdf)?,
+                mirrored: false,
+            }),
+        }
+    }
+
+    fn snapshot_payload(frame: &[u8]) -> &[u8] {
+        &frame[0x10..]
+    }
+
+    fn empty_snapshot_frame() -> Vec<u8> {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        frame
+    }
+
     #[test]
     fn pan_supports_scalar_raw_values_and_ui_ratio() {
         let pan = PanState::from_raw(0x10);
@@ -1278,6 +1342,21 @@ mod tests {
         assert_eq!(PanState::center().raw(), 0x20);
         assert_eq!(PanState::left().raw(), 0x02);
         assert_eq!(PanState::right().raw(), 0x3e);
+    }
+
+    #[test]
+    fn pan_state_decodes_mute_and_solo_flags_from_state_code() {
+        assert_eq!(PanState::from_state_code(0x42), PanState::left());
+        assert!(PanState::state_code_is_muted(0x42));
+        assert!(!PanState::state_code_is_soloed(0x42));
+
+        assert_eq!(PanState::from_state_code(0x60), PanState::center());
+        assert!(PanState::state_code_is_muted(0x60));
+        assert!(!PanState::state_code_is_soloed(0x60));
+
+        assert_eq!(PanState::from_state_code(0xe0), PanState::center());
+        assert!(PanState::state_code_is_muted(0xe0));
+        assert!(PanState::state_code_is_soloed(0xe0));
     }
 
     #[test]
@@ -1313,6 +1392,21 @@ mod tests {
             Some(0x01)
         );
         assert_eq!(MixerLinkTarget::from_channel(MixerSurface::Mix2, 7), None);
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix1, 1)
+                .and_then(|target| target.companion_bank()),
+            Some(0x00)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix1, 7)
+                .and_then(|target| target.companion_bank()),
+            None
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 1)
+                .and_then(|target| target.companion_bank()),
+            Some(0x01)
+        );
     }
 
     #[test]
@@ -1399,6 +1493,28 @@ mod tests {
         assert_eq!(&frame[4..8], &0x53_u32.to_le_bytes());
         assert_eq!(&frame[0x10..0x13], &[0xd3, 0x41, 0xbb]);
         assert_eq!(&frame[0x3e..0x40], &[0x0a, 0x01]);
+    }
+
+    #[test]
+    fn encodes_grounded_link_selector_write() {
+        let frame = encode_command(Command::SetLinkState {
+            selector: 0x00,
+            enabled: true,
+            companion_bank: Some(0x00),
+        });
+
+        assert_eq!(&frame[0..4], &0x70_u32.to_le_bytes());
+        assert_eq!(&frame[4..8], &0x14_u32.to_le_bytes());
+        assert_eq!(&frame[0x10..0x14], &[0xa2, 0x03, 0x00, 0x01]);
+    }
+
+    #[test]
+    fn encodes_grounded_link_companion_write() {
+        let frame = encode_link_companion(0x01, true);
+
+        assert_eq!(&frame[0..4], &0x70_u32.to_le_bytes());
+        assert_eq!(&frame[4..8], &0x14_u32.to_le_bytes());
+        assert_eq!(&frame[0x10..0x14], &[0xa2, 0x04, 0x01, 0x01]);
     }
 
     #[test]
@@ -1663,7 +1779,8 @@ mod tests {
             .mixer_decode
             .strip(MixerSurface::Mix1, 1)
             .expect("mix1 strip 1");
-        assert_eq!(strip.meter, Some(0x30));
+        assert_eq!(strip.meter, None);
+        assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, Some(0x49));
         assert_eq!(strip.pan, Some(PanState::center()));
     }
 
@@ -1733,6 +1850,69 @@ mod tests {
                 .unwrap()
                 .linked,
             Some(true)
+        );
+    }
+
+    #[test]
+    fn experimental_pair_state_lanes_extract_mix1_mirrored_codebook() {
+        let mut frame = empty_snapshot_frame();
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0f;
+        payload[0xda] = 0x0a;
+        payload[0xdb] = 0x05;
+        payload[0xdc] = 0x0a;
+        payload[0xdd] = 0x05;
+        payload[0xe0] = 0x60;
+        payload[0xe1] = 0x60;
+
+        assert_eq!(
+            experimental_surface_pair_lanes(snapshot_payload(&frame)),
+            Some(ExperimentalSurfacePairLanes {
+                mixer: MixerSurface::Mix1,
+                lane_a: 0x0a,
+                lane_b: 0x05,
+                mirrored: true,
+            })
+        );
+    }
+
+    #[test]
+    fn experimental_pair_state_lanes_extract_mix2_compact_codebook() {
+        let mut frame = empty_snapshot_frame();
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0c;
+        payload[0xde] = 0x00;
+        payload[0xdf] = 0x06;
+        payload[0xe0] = 0x60;
+        payload[0xe1] = 0x60;
+
+        assert_eq!(
+            experimental_surface_pair_lanes(snapshot_payload(&frame)),
+            Some(ExperimentalSurfacePairLanes {
+                mixer: MixerSurface::Mix2,
+                lane_a: 0x00,
+                lane_b: 0x06,
+                mirrored: false,
+            })
+        );
+    }
+
+    #[test]
+    fn experimental_pair_state_lanes_preserve_both_mute_idle_form() {
+        let mut frame = empty_snapshot_frame();
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0c;
+        payload[0xde] = 0x60;
+        payload[0xdf] = 0x60;
+
+        assert_eq!(
+            experimental_surface_pair_lanes(snapshot_payload(&frame)),
+            Some(ExperimentalSurfacePairLanes {
+                mixer: MixerSurface::Mix2,
+                lane_a: 0x60,
+                lane_b: 0x60,
+                mirrored: false,
+            })
         );
     }
 }

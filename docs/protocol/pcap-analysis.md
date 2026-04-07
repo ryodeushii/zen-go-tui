@@ -266,7 +266,7 @@ Re-analysis of the newer isolated mixer captures supports a limited passive deco
 
 What is now grounded strongly enough to implement:
 
-- active-surface strip `1` level can be reconstructed coarsely from the stable cluster around `0x8f`, `0xcf`, and `0xda..0xdf`
+- the moving late-cluster value around `0x8f`, `0xcf`, and `0xda..0xdf` is strong enough to surface as an observed meter in the TUI, but not strong enough to claim as passive strip-1 level
 - active-surface strip `1` mute/unmute can be reconstructed from the same cluster
 - active-surface strip `1` pan can be reconstructed only for the currently grounded center/near-center anchors
 - active-surface pair `1-2` link state can be reconstructed in the tested link captures
@@ -282,7 +282,7 @@ What remains unresolved:
 
 - a full per-strip passive table covering all `16` strips
 - a continuous passive pan decoder over the full host-side raw range
-- meter extraction from the late rows or `0x81`
+- a trustworthy strip-meter or master-meter extraction from the late rows or `0x81`
 
 ## Auxiliary Device State: `0x83`
 
@@ -293,6 +293,7 @@ Observed behavior:
 - It is emitted continuously alongside `0x73`, typically in a strict `0x83`/`0x73` alternation on endpoint `0x82`.
 - During pure idle (`capture_09`) it is completely constant while `0x73` still jitters in a few late-table bytes.
 - In the output and mixer captures (`capture_10`, `capture_10_2`, `capture_11`), there is no stable `0x83` delta at all after host writes once transient inter-frame jitter is ignored.
+- The stricter stable-before-next-write pass across the dedicated mixer captures (`capture_mixer_03`, `04`, `05`, `06`, `07`, `08`, `09`, `10`, `11`, `12`, `13`, `14`, `18`, `19`) also yields zero writes with any stable `0x83` delta.
 - Stable `0x83` changes also appear during the sample-rate sweep (`capture_05`), but not during the clock-source sweep (`capture_06`).
 - Across the captures that do show stable `0x83` movement (`capture_05`, `capture_07`), the deltas stay concentrated in the first `14` payload bytes, with the strongest repeatable activity at payload offsets `0x00`, `0x02`, `0x04`, `0x05`, `0x06`, `0x08`, `0x09`, and `0x0a`.
 - The repeating front pattern in those moving captures is strongly pair-structured: bytes `(0,1)`, `(2,3)`, and `(4,5)` often behave like three little-endian 16-bit selector/code fields, while bytes `0x06..0x0a` look like a smaller auxiliary sub-block rather than mixer/output state.
@@ -318,8 +319,16 @@ Observed properties:
 - Bytes `0x01..0x04` are not a simple monotonic counter in either little-endian or big-endian interpretation, and they also do not split cleanly into two monotonic 16-bit counters
 - Does not by itself expose the full control-panel state
 
+Additional narrowing from the dedicated mixer and meter captures:
+
+- passive metering captures and mixer-idle captures still emit `0x81` at high rate, but the rate varies widely by capture setup (`~47-67 Hz` in the dedicated mixer idle files, `~95-154 Hz` in the passive meter files), which makes packet density an activity clue rather than a stable state field
+- in the dedicated passive meter captures, byte `0x05` stays fixed at `0x00` throughout all tested files
+- repeated nonzero byte-`0x00` pulses are **not** a stable meter marker: `capture_mixer_15` shows many `0x01` pulses, but the other passive meter captures show only one rare nonzero pulse or none
+- the varying bytes `0x01..0x04` remain non-monotonic in the passive meter captures just as they do in idle, so they still do not behave like a clean sequence counter or one compact meter value
+
 Treat it as async notification, sequencing, or heartbeat data.
 It is useful for event timing, but not sufficient as a standalone state source.
+For mixer work, current evidence supports `0x81` as an activity-adjacent side channel, not the place where exact strip/master state is encoded.
 
 ## Confirmed Host Command Families
 
@@ -501,7 +510,7 @@ Confirmed flag bits:
 | Bit | Meaning |
 |---|---|
 | `0x40` | Mute flag |
-| `0x80` | Additional channel flag seen in DSP capture, semantic unresolved |
+| `0x80` | Solo flag |
 
 Examples:
 
@@ -510,7 +519,8 @@ Examples:
 - `d4 04 00 04 2c 3e` -> MIX1, channel 4, level `0x2c`, right-panned, unmuted
 - `d4 04 00 04 00 7e` -> same channel, muted (`0x3e + 0x40`)
 - `d4 04 01 01 00 60` -> MIX2, channel 1, centered and muted (`0x20 + 0x40`)
-- `d4 04 01 01 00 e0` -> same channel with the additional `0x80` flag asserted
+- `d4 04 00 01 00 a0` -> MIX1, channel 1, centered and soloed (`0x20 + 0x80`)
+- `d4 04 01 01 00 e0` -> MIX2, channel 1, centered, muted, and soloed (`0x20 + 0x40 + 0x80`)
 
 #### Linked-channel behavior
 
@@ -525,53 +535,78 @@ Observed pattern in `capture_10_2_mixers_linked_comp12_fades_mute_unmute.pcapng`
 
 After unlinking in `capture_10_...onc1andc2.pcapng`, the paired writes stop and channels are controlled independently.
 
+#### Solo behavior
+
+The dedicated solo captures (`capture_mixer_13_solo_single(...)` and
+`capture_mixer_14_solo_pair_interaction(...)`) do not introduce a new host family.
+They reuse the same `d4 04 <mixer> <channel> <level> <pan/state>` write used by level,
+mute, and pan.
+
+What is grounded from the host side:
+
+- solo assert uses the `0x80` flag on top of the ordinary pan/state byte
+- the dedicated solo captures use centered pan as the base state:
+  - `d4 04 00 01 00 a0` = channel `1` solo on
+  - `d4 04 00 01 00 20` = channel `1` solo off
+  - `d4 04 00 02 00 a0` = channel `2` solo on
+  - `d4 04 00 02 00 20` = channel `2` solo off
+- no separate global "clear all solos" family appears in the tested captures; clear operations are ordinary per-strip writes
+
+Current passive boundary:
+
+- solo also perturbs the same late `0x73` mixer cluster used by mute/pan/link
+- the device-side effect is not isolated cleanly enough yet for a trustworthy passive solo decoder from one `0x73` frame
+
 ### `0x70 / length 0x14`: short channel/selection commands
 
 Observed payloads include:
 
+- `a2 03 00 01`
+- `a2 03 00 00`
+- `a2 03 03 01`
+- `a2 03 03 00`
 - `a2 03 01 01`
-- `a2 03 01 00`
+- `a2 04 00 01`
+- `a2 04 00 00`
 - `a2 04 01 01`
-- `a2 04 01 00`
-- `a2 03 11 00`
-- `a2 03 11 01`
 
 This family appears in mixer and DSP-oriented captures and is strongly associated with link/unlink state rather than level data.
 
-What is confirmed from `capture_10`, `capture_10_2`, `capture_07`, and the capture notes:
+What is confirmed most strongly from the dedicated mixer captures plus the earlier mixed captures:
 
-- `a2030101` appears immediately before the linked `COMP 1/2` fade and mute/unmute sequence in `capture_10_2`.
-- `a2040100` followed by `a2030100` appears immediately before the unlinked `COMP 1` / `COMP 2` individual control sequence in `capture_10`.
-- `a2040101` followed by `a2030101` appears before relinking on the first mixer surface in `capture_10`.
-- After switching surfaces with `49000c`, `a2031100` and later `a2040101 + a2031101` appear around the corresponding `COMP` workflow on the other mixer surface.
-- In `capture_07`, `a2040101 + a2031101` is followed by a run of `a2031201` through `a2031701` selector-like writes while the DSP/preamp front-byte cluster at `0x18..0x1b` stays unchanged.
+- `capture_mixer_05_link_pair_1_2_only.pcapng` grounds `a204000x + a203000x` for the tested `MIX 1` pair `1-2`
+- `capture_mixer_06_link_pair_7_8_only.pcapng` grounds `a203030x` for the tested `MIX 1` pair `7-8`
+- `capture_mixer_18_surface_independence_link.pcapng` grounds `a2040101 + a2030101` for the corresponding tested `MIX 2` pair `1-2`
+- the older mixed captures (`capture_10`, `capture_10_2`, `capture_07`) also contain `a20311xx` and `a20312..17xx`, but those are no longer the strongest evidence for the pure mixer link selector map because they are interleaved with broader DSP/local-selection traffic
 
 Current best decomposition:
 
 - byte `0` = family marker `0xa2`
 - byte `1` = subfamily (`0x03` and `0x04` both observed)
-- byte `2` = selector / target id (`0x01`, `0x11`, and in DSP capture `0x12..0x17`)
-- byte `3` = state byte; `0x01` means linked / asserted, `0x00` means unlinked / cleared in the confirmed `COMP1/2` workflows
+- `a203`: byte `2` = selector / target id, byte `3` = asserted / cleared state
+- `a204`: byte `2` = companion bank/context byte (`0x00` on the tested `MIX 1` pair-`1-2` capture, `0x01` on the tested `MIX 2` pair-`1-2` capture), byte `3` = asserted / cleared state
 
 Additional narrowing from command adjacency:
 
-- `a2 04 01 xx` appears only as a companion write immediately adjacent to `a2 03 ss xx`
-- in the current captures, `a204` is seen only with selector `0x01`; there is no observed `a20411xx` or `a20412..17xx`
-- confirmed paired forms are `a2040100 + a2030100`, `a2040101 + a2030101`, and `a2040101 + a2031101`
-- `a2030101` can also appear by itself at the start of an already-linked workflow (`capture_10_2`)
-- when `a204010x` is compared in isolation against the last stable `0x73` before the next host write, it shows no stable `0x73` or `0x83` delta by itself in the current captures
+- `a2 04 <bank> xx` appears only as a companion write immediately adjacent to `a2 03 ss xx`
+- the dedicated mixer captures ground `a204000x` and `a204010x`; `a204` is therefore no longer best described as a fixed `a20401xx` form
+- confirmed paired forms from the dedicated link captures are `a2040000 + a2030000`, `a2040001 + a2030001`, and `a2040101 + a2030101`
+- `a203030x` appears without a companion `a204` in the tested `MIX 1` pair-`7-8` capture
+- when `a204` is compared in isolation against the last stable `0x73` before the next host write, it shows no stable `0x73` or `0x83` delta by itself in the current captures
 - the stable topology/selection delta appears on the following `a203...` write, usually at `0x73` payload byte `0x0cf` and, for some relink cases, also at `0x8e`, `0xce`, `0xda..0xdf`, and `0xe2`
 - this makes `a204` look like a helper/master latch for the same topology family rather than an unrelated target selector
 
 Selector-level interpretation that is supported by current evidence:
 
-- selector `0x01` is the first mixer-surface `COMP1/2` link target used in `capture_10` and `capture_10_2`
-- selector `0x11` is the corresponding target on the other mixer surface after `49000c` switches to the `HP2` / `MIX2` context
-- selectors `0x12..0x17` are not link toggles in the current evidence; in `capture_07` they behave like DSP/preamp local selectors because they do not change the packed DSP mode bytes at `0x18..0x1b` or `0x83`, and mostly only retune row-local late byte `0x0cf`
+- selector `0x00` = tested `MIX 1` pair `1-2`
+- selector `0x03` = tested `MIX 1` pair `7-8`
+- selector `0x01` = tested `MIX 2` pair `1-2`
+- selectors `0x11` and `0x12..0x17` still appear in the older mixed captures, but they are no longer safe to treat as part of the grounded pure-mixer link selector map without more isolation
 
 Still unresolved:
 
-- the exact difference between the `a203` and `a204` subfamilies, although `a204` is only seen with selector `0x01`
+- the exact difference between the `a203` and `a204` subfamilies
+- the complete selector map for all adjacent pairs across both mixer surfaces
 - the precise UI labels behind selector values `0x11` and DSP-side `0x12..0x17`
 
 ### `0x70 / length 0x53`: mixer strip assignment table writes
@@ -750,6 +785,25 @@ Preamp-related captures add a second distinction:
 - `capture_17_preamp_panel_only.pcapng` changes the broader preamp-related band without turning on the strip-local repeated bytes `0xda..0xdf`, `0xe2`, `0xe3`
 - the cleanest current interpretation is that preamp-panel metering and mixer-strip metering are distinct views that can coexist when the same preamp source is also assigned to a mixer strip
 
+Additional narrowing from the newer dedicated mute-matrix captures in `antelope_pcap/mutes/`:
+
+- `0xe0` and `0xe1` are **not** the sought mute/state bytes; they remain pinned at `0x60` in every tested silent and signal-present file
+- the active-surface pair-local state instead shows up one row earlier:
+  - active `MIX 1` (`0x6a = 0x0f`): `0xda..0xdd`
+  - active `MIX 2` (`0x6a = 0x0c`): `0xde..0xdf`
+- with signal present, those bytes separate the four tested `CH1/CH2` mute combinations strongly enough to prove they carry pair-local state, but the values are activity-contaminated and therefore not yet safe as a durable mute-only decoder:
+  - `MIX 1`: `60` (both mute), `01` (ch1 mute/ch2 unmute), `00/06` (ch1 unmute/ch2 mute), `0a/05` (both unmute)
+  - `MIX 2`: `60` (both mute), `01` (ch1 mute/ch2 unmute), `00/06` (ch1 unmute/ch2 mute), `0a/05` (both unmute)
+- the bitwise/XOR view makes the structure look like a real packed pair-state code rather than random churn:
+  - active `MIX 1` duplicates the same two-lane code across `0xda/0xdc` and `0xdb/0xdd`
+  - active `MIX 2` carries the same two-lane code once in `0xde/0xdf`
+  - strongest repeated XORs from the signal-present files:
+    - `both_unmute ^ ch1_mute` => even lane `0x0b`, odd lane `0x04`
+    - `both_unmute ^ ch2_mute` => even lane `0x0a`, odd lane `0x03`
+    - `ch1_mute ^ ch2_mute` => even lane `0x01`, odd lane `0x07`
+  - this strongly supports a compact pair-state field with lane-local meaning, but not yet a stable mute-only parser
+- the silent variants do **not** yield an equally clean 4-state static enum, which keeps these bytes in the mixed state/meter bucket rather than promoting them to a parser-ready mute field
+
 What remains unresolved:
 
 - exact per-byte meter scaling
@@ -765,6 +819,7 @@ Current implementation consequence:
 
 - the capture set is sufficient to document metering boundaries
 - it is **not** yet sufficient for a trustworthy parser that claims exact strip or master meter fields
+- adding `0x81` and `0x83` to the analysis does not change that boundary: `0x83` stays fully stable in the tested meter files, and `0x81` changes with activity but does not expose a stable strip-addressable meter/state encoding
 
 ### Candidate mixer-state region inside `0x73`
 
@@ -797,6 +852,7 @@ What is not yet safe to claim:
 - a one-offset-per-fader-level map for each mixer channel
 - a complete per-channel table layout
 - a safe passive startup decode of mixer strip level/mute from the currently available `0x73` captures alone
+- a durable mute-only interpretation for `0xda..0xdd` / `0xde..0xdf`, even though the new mute-matrix captures prove those bytes are surface-local pair-state carriers
 
 ### DSP / preamp-specific families observed in `capture_07_dsp.pcapng`
 

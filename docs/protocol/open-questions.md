@@ -59,6 +59,21 @@ What is now better supported than before:
 - `0x51` is no longer best treated as a generic DSP-only enum option; the strongest stable evidence is specifically the extended DSP/preamp enter/exit pair, where `0x8e` and `0x0ce` go `0x54 <-> 0x51` while the DSP-only `0x0ae` row goes `0x60 <-> 0x5a`
 - `0x0cf` is no longer best treated as a mysterious noisy byte in general; the strongest current evidence supports it as a dense row-local status code that mixes local context/progression rather than a scalar level or direct event marker
 - `0x0ae` is now better bounded as DSP/preamp editor-page state rather than as a direct parameter row
+- the newer `antelope_pcap/mutes/` captures rule out `0x0e0/0x0e1` as mute-state bytes; they stay pinned at `0x60`, while active-surface pair-local state appears instead in `0x0da..0x0dd` (`MIX 1`) or `0x0de..0x0df` (`MIX 2`)
+
+New boundary from the mute-matrix captures:
+
+- with signal present, those pair-local bytes clearly carry `CH1/CH2` pair state, but the values are mixed with activity/meter behavior and do not yet form a trustworthy mute-only parser
+- without signal, the same captures do not produce a clean 4-way static enum either
+- the signal-present XOR/codebook view is strong enough to justify a test-only experimental model:
+  - `MIX 1`: treat `0x0da/0x0db` as the canonical pair lanes and `0x0dc/0x0dd` as mirrors
+  - `MIX 2`: treat `0x0de/0x0df` as the canonical pair lanes
+  - current repeated lane codebook:
+    - `60/60` both mute
+    - `01/01` ch1 mute, ch2 unmute
+    - `00/06` ch1 unmute, ch2 mute
+    - `0a/05` both unmute
+- what remains unresolved is whether those lane codes are direct state values or state-plus-activity overlays that only collapse to this codebook under the tested signal conditions
 
 Recommended follow-up capture:
 
@@ -116,16 +131,16 @@ What remains unresolved is the exact encoding of bytes `0..4`:
 This family is now narrowed to a clean byte split:
 
 - byte `1` = subfamily (`0x03` / `0x04`)
-- byte `2` = selector/target id (`0x01`, `0x11`, `0x12..0x17` observed)
-- byte `3` = asserted/cleared state in the confirmed link workflows
-- `a204010x` is a companion write seen only adjacent to `a203...`
+- `a203`: byte `2` = selector/target id, byte `3` = asserted/cleared state in the confirmed link workflows
+- `a204`: byte `2` = companion bank/context byte (`0x00` and `0x01` observed in the dedicated mixer link captures), byte `3` = asserted/cleared state
+- `a204<bank><x>` is a companion write seen only adjacent to `a203...`
 
 What remains unresolved:
 
 - exact difference between `a203` and `a204`
-- exact UI/control target represented by selector `0x01` vs `0x11`
+- exact UI/control target represented by selector `0x01` vs older mixed-capture selector `0x11`
 - whether DSP-only selectors `0x12..0x17` are channel selectors, tabs, or feature toggles
-- whether `a204010x` is a master-pair latch while `a203ssx` selects the surface-local target, or whether the split is instead topology-vs-view state
+- whether `a204<bank><x>` is a master-pair latch while `a203ssx` selects the surface-local target, or whether the split is instead topology-vs-view state
 
 Recommended follow-up capture:
 
@@ -140,12 +155,30 @@ What is now grounded enough to remove from the unknown bucket:
   - `a203000x` = tested `MIX 1` pair `1-2`
   - `a203030x` = tested `MIX 1` pair `7-8`
   - `a2030101` = tested `MIX 2` link target in the surface-independence capture
-- `a204010x` is better bounded as a helper/companion write because it shows no stable `0x73`/`0x83` delta by itself in the tested captures
+- `a204000x` and `a204010x` are better bounded as helper/companion writes because they show no stable `0x73`/`0x83` delta by themselves in the tested captures
 
 What remains unresolved:
 
 - the complete selector map for all adjacent pairs across both surfaces
 - whether selector numbering is row-local, surface-banked, or follows another internal table order
+
+### Passive solo-state decode
+
+The dedicated solo captures narrow the write-side encoding enough to remove that part from the unknown bucket:
+
+- solo uses the ordinary mixer `d4 04 <mixer> <channel> <level> <pan/state>` host family
+- the final byte carries a solo bit `0x80` on top of the ordinary pan/state byte
+- grounded examples:
+  - `d4 04 00 01 00 a0` = centered strip-1 solo on
+  - `d4 04 00 01 00 20` = centered strip-1 solo off
+  - `d4 04 00 02 00 a0` = centered strip-2 solo on
+  - `d4 04 00 02 00 20` = centered strip-2 solo off
+
+What remains unresolved:
+
+- which exact late `0x73` byte or tuple is the durable passive solo field for a given strip
+- whether the same passive pattern generalizes cleanly beyond the tested strip-`1` / strip-`2` solo captures
+- whether any late-row changes seen in the solo captures are pure solo state versus selection/focus churn in the same cluster
 
 ### Exact passive `0x73` pan-field decode
 
@@ -182,7 +215,12 @@ What remains unresolved:
 
 - exact strip-meter bytes and scale
 - exact master-meter separation
-- whether `0x81` contributes compact meter-side timing/stream data or is only adjacent notification traffic
+- whether `0x81` contributes compact meter-side timing/stream data or is only adjacent notification traffic; the current broader cross-plane pass still does not justify treating it as a parser-ready meter source
+
+What is better bounded now:
+
+- `0x83` remains fully stable in the dedicated passive meter captures, so it is not the missing mixer meter/state plane
+- `0x81` clearly reacts to activity level, but the current passive meter captures do not give a stable strip-addressable mapping from its six bytes to visible meter values
 
 Recommended follow-up only if parser work becomes the next target:
 

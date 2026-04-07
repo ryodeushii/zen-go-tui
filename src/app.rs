@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 
 use crate::protocol::{
-    encode_command, encode_query, ClockSource, Command, DeviceMetadata, DeviceSnapshot, Frame,
-    MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode, OutputState,
-    OutputTarget, PanState, PreampMode, PreampState, QueryReply75, SampleRate, Snapshot73, Surface,
+    encode_command, encode_link_companion, encode_query, ClockSource, Command, DeviceMetadata,
+    DeviceSnapshot, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface,
+    OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState, QueryReply75,
+    SampleRate, Snapshot73, Surface,
 };
 use crate::transport::Transport;
 
@@ -138,6 +139,7 @@ impl AppState {
         self.outputs = snapshot.outputs;
         self.dsp_cluster = snapshot.dsp_cluster;
         self.preamp = PreampState::from_cluster(snapshot.dsp_cluster);
+        self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
         self.surface = snapshot.surface;
         self.apply_passive_mixer_decode(&snapshot);
     }
@@ -152,9 +154,6 @@ impl AppState {
                     continue;
                 };
 
-                if let Some(meter) = decoded.meter {
-                    slot.meter = Some(meter);
-                }
                 if let Some(muted) = decoded.muted {
                     slot.muted = Some(muted);
                 }
@@ -174,6 +173,12 @@ impl AppState {
         channel: u8,
     ) -> Option<&mut MixerChannelState> {
         self.mixer_channels[mixer.index()].get_mut(channel.checked_sub(1)? as usize)
+    }
+
+    fn refresh_preamp_from_cluster_preserving_observed_meter(&mut self) {
+        let observed_meter = self.preamp.input2.observed_meter;
+        self.preamp = PreampState::from_cluster(self.dsp_cluster);
+        self.preamp.input2.observed_meter = observed_meter;
     }
 
     pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: Vec<u8>) {
@@ -333,6 +338,15 @@ impl Controller {
 
     pub fn send(&mut self, command: Command) -> Result<()> {
         self.pending_mutation = pending_from_command(command);
+        if let Command::SetLinkState {
+            enabled,
+            companion_bank: Some(bank),
+            ..
+        } = command
+        {
+            self.transport
+                .write(&encode_link_companion(bank, enabled))?;
+        }
         self.transport.write(&encode_command(command))?;
         self.state.last_message = format!("Sent {:?}", command);
         Ok(())
@@ -430,25 +444,29 @@ impl Controller {
             }
             Some(PendingMutation::PreampGain { input, raw }) => {
                 self.state.dsp_cluster[input.min(1) as usize] = raw;
-                self.state.preamp = PreampState::from_cluster(self.state.dsp_cluster);
+                self.state
+                    .refresh_preamp_from_cluster_preserving_observed_meter();
             }
             Some(PendingMutation::PreampMode { input, mode }) => {
                 let offset = 2 + input.min(1) as usize;
                 let preserved_bits = self.state.dsp_cluster[offset] & 0xf0;
                 self.state.dsp_cluster[offset] = preserved_bits | mode.code();
-                self.state.preamp = PreampState::from_cluster(self.state.dsp_cluster);
+                self.state
+                    .refresh_preamp_from_cluster_preserving_observed_meter();
             }
             Some(PendingMutation::PreampPhantom { input, enabled }) => {
                 let offset = 2 + input.min(1) as usize;
                 let low = self.state.dsp_cluster[offset] & 0x0f;
                 self.state.dsp_cluster[offset] = low | if enabled { 0x10 } else { 0x00 };
-                self.state.preamp = PreampState::from_cluster(self.state.dsp_cluster);
+                self.state
+                    .refresh_preamp_from_cluster_preserving_observed_meter();
             }
             Some(PendingMutation::PreampPhase { input, enabled }) => {
                 let offset = 2 + input.min(1) as usize;
                 let low = self.state.dsp_cluster[offset] & 0x1f;
                 self.state.dsp_cluster[offset] = low | if enabled { 0x40 } else { 0x00 };
-                self.state.preamp = PreampState::from_cluster(self.state.dsp_cluster);
+                self.state
+                    .refresh_preamp_from_cluster_preserving_observed_meter();
             }
             None => {}
         }
@@ -493,7 +511,7 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
         Command::SetLinkState {
             selector,
             enabled,
-            include_companion: false,
+            companion_bank: _,
         } => {
             let mixer = if MixerLinkTarget::from_selector(MixerSurface::Mix1, selector).is_some() {
                 MixerSurface::Mix1
@@ -608,7 +626,7 @@ mod tests {
     fn reducer_applies_grounded_passive_mixer_decode_from_snapshot() {
         let mut state = AppState::default();
         let mut device_snapshot = snapshot();
-        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].meter = Some(0x30);
+        device_snapshot.mixer_decode.observed_preamp2_meter = Some(0x30);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].muted = Some(false);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].pan =
             Some(PanState::center());
@@ -617,9 +635,10 @@ mod tests {
 
         state.apply_snapshot(device_snapshot);
 
+        assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
-            Some(0x30)
+            None
         );
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].level,
@@ -649,17 +668,18 @@ mod tests {
         state.mixer_channels[MixerSurface::Mix1.index()][0].level = Some(0x00);
 
         let mut device_snapshot = snapshot();
-        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].meter = Some(0x30);
+        device_snapshot.mixer_decode.observed_preamp2_meter = Some(0x30);
 
         state.apply_snapshot(device_snapshot);
 
+        assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].level,
             Some(0x00)
         );
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
-            Some(0x30)
+            None
         );
     }
 
@@ -680,6 +700,26 @@ mod tests {
 
         assert_eq!(controller.state.preamp.input2.gain_raw, 0x2d);
         assert_eq!(controller.state.dsp_cluster[1], 0x2d);
+    }
+
+    #[test]
+    fn preamp_pending_updates_preserve_observed_input2_meter() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
+        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+        controller.state.preamp.input2.observed_meter = Some(0x30);
+
+        controller
+            .send(Command::SetPreampGain {
+                input: 1,
+                raw: 0x2d,
+            })
+            .expect("send preamp gain");
+        controller.confirm_pending_write(snapshot());
+
+        assert_eq!(controller.state.preamp.input2.gain_raw, 0x2d);
+        assert_eq!(controller.state.preamp.input2.observed_meter, Some(0x30));
     }
 
     #[test]
@@ -796,7 +836,7 @@ mod tests {
             .send(Command::SetLinkState {
                 selector: 0x01,
                 enabled: true,
-                include_companion: false,
+                companion_bank: None,
             })
             .expect("send link");
         controller.confirm_pending_write(snapshot());
@@ -868,7 +908,7 @@ mod tests {
                 .send(Command::SetLinkState {
                     selector: target.selector,
                     enabled: true,
-                    include_companion: false,
+                    companion_bank: target.companion_bank(),
                 })
                 .expect("send grounded link");
             controller.confirm_pending_write(snapshot());
@@ -889,6 +929,36 @@ mod tests {
 
         assert!(MixerLinkTarget::from_channel(MixerSurface::Mix1, 5).is_none());
         assert!(MixerStrip::ordinary(4).is_none());
+    }
+
+    #[test]
+    fn grounded_link_with_companion_writes_helper_before_selector_write() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        let target = MixerLinkTarget::from_channel(MixerSurface::Mix1, 1).expect("mix1 1-2");
+
+        controller
+            .send(Command::SetLinkState {
+                selector: target.selector,
+                enabled: true,
+                companion_bank: target.companion_bank(),
+            })
+            .expect("send link with companion");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x04, 0x00, 0x01]);
+        assert_eq!(&writes[1][0x10..0x14], &[0xa2, 0x03, 0x00, 0x01]);
+
+        controller.confirm_pending_write(snapshot());
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
+            Some(true)
+        );
     }
 
     #[test]

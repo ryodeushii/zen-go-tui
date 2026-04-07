@@ -13,8 +13,8 @@ use ratatui::Terminal;
 
 use zen_go_tui::app::{Controller, FocusArea};
 use zen_go_tui::protocol::{
-    ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, OutputTarget, PanState,
-    PreampMode, SampleRate, Surface,
+    ClockSource, Command, MixerAssignment, MixerLinkTarget, MixerSurface, OutputMode, OutputTarget,
+    PanState, PreampMode, SampleRate, Surface,
 };
 use zen_go_tui::transport::{HidTransport, MockTransport, Transport};
 use zen_go_tui::ui;
@@ -327,18 +327,11 @@ fn toggle_mixer_link(controller: &mut Controller) -> Result<()> {
     let active_channel =
         controller.state.active_mixer_channels()[controller.state.selected_channel];
     let mixer = MixerSurface::from_surface(controller.state.surface);
-    let selector = match (mixer, active_channel.channel) {
-        (MixerSurface::Mix1, 1 | 2) => Some(0x00),
-        (MixerSurface::Mix1, 7 | 8) => Some(0x03),
-        (MixerSurface::Mix2, 1 | 2) => Some(0x01),
-        _ => None,
-    };
-
-    if let Some(selector) = selector {
+    if let Some(target) = MixerLinkTarget::from_channel(mixer, active_channel.channel) {
         controller.send(Command::SetLinkState {
-            selector,
+            selector: target.selector,
             enabled: !active_channel.linked.unwrap_or(false),
-            include_companion: false,
+            companion_bank: target.companion_bank(),
         })?;
     } else {
         controller.state.last_message =

@@ -133,6 +133,24 @@ Important boundary:
 - current captures do **not** yet justify a passive per-strip pan-field decoder from one `0x73` frame
 - many anchor transitions, especially on the playback-pair capture, are obscured by the same late-row churn already seen in other mixer workflows
 
+### Solo
+
+The dedicated solo captures confirm that solo does **not** use a separate host family.
+It rides on the same `d4 04 <mixer> <channel> <level> <pan/state>` write used for level,
+mute, and pan.
+
+Grounded host-side model:
+
+- solo is carried by setting bit `0x80` in the final pan/state byte
+- centered unsolo is `0x20`
+- centered solo is `0xa0`
+- the tested clear operations are ordinary per-strip writes back to the unsolo state; no dedicated global clear-solos family appears in the current captures
+
+Current boundary:
+
+- the write-side encoding is grounded
+- passive solo state is **not** grounded enough yet for a trustworthy `0x73` decoder from one snapshot
+
 ## Link / Unlink Family
 
 The currently grounded link family is `0x70 / length 0x14` with `a2` payloads.
@@ -141,16 +159,19 @@ Observed host forms:
 
 ```text
 a2 03 <selector> <0|1>
-a2 04 01 <0|1>
+a2 04 <bank> <0|1>
 ```
 
 Current evidence supports:
 
 - `a203` as the selector-bearing durable link write
-- `a204010x` as a companion/helper write, seen only for selector family `0x01`
+- `a204<bank><x>` as a companion/helper write rather than the durable state carrier
+- companion bank `0x00` for the tested `MIX 1` pair `1-2`
+- companion bank `0x01` for the tested `MIX 2` pair `1-2`
 - selector `0x00` for the tested `MIX 1` pair `1-2`
 - selector `0x03` for the tested `MIX 1` pair `7-8`
 - selector `0x01` for the corresponding `MIX 2` link target observed after switching surface in `capture_mixer_18_surface_independence_link.pcapng`
+- no companion `a204` write was needed in the tested `MIX 1` pair `7-8` capture
 
 Current boundary:
 
@@ -251,8 +272,8 @@ The current code now passively reconstructs a **narrow grounded subset** of mixe
 
 Implemented passive subset:
 
-- `MIX 1` / `MIX 2` strip `1` level, from the active-surface late-row cluster
-- `MIX 1` / `MIX 2` strip `1` mute/unmute state, from the same cluster
+- an observed late-cluster meter value surfaced on `A2` in the TUI, because the current captures do not justify claiming it as decoded strip state yet
+- `MIX 1` / `MIX 2` strip `1` mute/unmute state, from the active-surface late-row cluster
 - `MIX 1` / `MIX 2` strip `1` pan, but only at the currently grounded center/near-center anchors
 - link state for the active `1-2` pair on the active surface when the late-row cluster matches the dedicated link/unlink captures strongly enough
 
@@ -262,13 +283,26 @@ Grounded evidence pattern used by the passive decoder:
 - `MIX 1` active strip-1 workflows are best reflected by `0x6f`, `0x8f`, `0xcf`, `0xda..0xdf`
 - `MIX 2` active strip-1 workflows hold the active surface row at `0x6e/0x6f = 0x60`, while the same stable state still appears in `0x8f`, `0xcf`, `0xda..0xdf`
 - level captures in `capture_mixer_19_surface_independence_level(...)` show a repeatable tier set around `0x43`, `0x47`, `0x49` that is safe to collapse to coarse passive steps for the tested strip
-- mute captures in `capture_mixer_11_mute_unlinked(...)` show `0x51` as the muted anchor for the main strip cluster, with unmuted states remaining in the `0x4c/0x4e` family
+- mute captures in `capture_mixer_11_mute_unlinked(...)` still ground the narrow strip-1 passive decoder (`0x51` muted vs `0x4c/0x4e` unmuted in the main strip cluster)
+- the newer dedicated pair-state captures under `antelope_pcap/mutes/` rule out `0xe0/0xe1` as mute bytes: they stay fixed at `0x60` in every tested file
+- those same captures instead narrow the surface-local pair-state region further:
+  - active `MIX 1` (`0x6a = 0x0f`): pair-local state shows up in `0xda..0xdd`
+  - active `MIX 2` (`0x6a = 0x0c`): pair-local state shows up in `0xde..0xdf`
+- with signal present, those pair-local bytes separate the four tested `CH1/CH2` mute combinations strongly enough to show they carry pair state, but the values are mixed with meter/activity and are therefore not yet safe as a durable mute-only decoder:
+  - `MIX 1`: `both mute = 60`, `ch1 mute/ch2 unmute = 01`, `ch1 unmute/ch2 mute = 00/06`, `both unmute = 0a/05` across `0xda..0xdd`
+  - `MIX 2`: `both mute = 60`, `ch1 mute/ch2 unmute = 01`, `ch1 unmute/ch2 mute = 00/06`, `both unmute = 0a/05` across `0xde..0xdf`
+- the signal-present XOR view is consistent across surfaces and supports a test-only experimental model:
+  - `MIX 1` duplicates the two-lane code across `0xda/0xdc` and `0xdb/0xdd`
+  - `MIX 2` carries the same two-lane code once in `0xde/0xdf`
+  - repeated lane XORs: `0x0b/0x04` (`both_unmute ^ ch1_mute`), `0x0a/0x03` (`both_unmute ^ ch2_mute`), `0x01/0x07` (`ch1_mute ^ ch2_mute`)
 - link captures in `capture_mixer_05_link_pair_1_2_only.pcapng` and `capture_mixer_18_surface_independence_link.pcapng` keep the linked state in the `0x5a/0x4c/0x51` family and unlink in the `0x4e/0x51` family
 
 Important boundary of the implementation:
 
 - this is **not** a full per-strip passive mixer decoder
 - it currently updates only the grounded strip/pair subset above
+- the newer `antelope_pcap/mutes/` captures show promising surface-local pair-state bytes, but they are still not clean mute-only fields and should not yet be promoted into a broader passive mute decoder
+- the moving late-cluster meter bytes are still not grounded enough to call a strip meter or master meter parser; the current TUI only exposes the observed value on `A2` as a temporary operator aid
 - passive pan remains intentionally narrow; the captures do not yet justify a continuous one-frame pan-value decoder over the full `0x02 .. 0x3e` command range
 - links are still only grounded for the tested `1-2` pair target on each surface; broader selector coverage remains deferred
 
@@ -283,15 +317,17 @@ What is grounded:
 - meter-correlated movement is visible in `0x73` late rows and in the 6-byte async packets on endpoint `0x81`
 - ordinary playback metering follows strip slot / row placement rather than source identity alone
 - preamp-panel metering is distinct from mixer-strip metering and can coexist with it when a preamp source is also assigned to a strip
+- `0x81` behaves like an activity side channel rather than a second canonical snapshot: packet rate and byte diversity rise with some passive meter setups, but the byte patterns do not stay stable enough to map directly to strip/master meter values
 - the new `capture_mixer_20_mix1_master_and_chan2.pcapng` and `capture_mixer_20_mix2_master_and_chan2.pcapng` files narrow the passive meter window further, but only to late-row clusters:
   - `MIX 1` file: `0x6e`, `0x8e`, `0xce`, `0xcf`, `0xe2`
   - `MIX 2` file: `0x8e`, `0xce`, `0xcf`, `0xda..0xdd`, `0xe2`
+- the newer `antelope_pcap/mutes/with signal/` files reinforce that `0xda..0xdd` (`MIX 1`) and `0xde..0xdf` (`MIX 2`) are pair-local mixed state/activity bytes rather than static mute-only fields, while `0xe0/0xe1` remain pinned at `0x60`
 
 What is not grounded enough yet:
 
 - exact meter-value scaling
 - exact master-meter field separation
-- a trustworthy parser for strip meters or master meters
+- a trustworthy parser for strip meters or master meters, whether from `0x73` alone or from `0x73 + 0x81 + 0x83`
 
 Important current boundary:
 
@@ -306,7 +342,7 @@ Still not safely grounded from the current capture set:
 - a general one-offset-per-strip level decoder from `0x73` alone
 - a complete strip table layout for all mixer channels
 - an exact passive per-strip pan decoder from one `0x73` frame, even though the host-side pan byte range is now grounded
-- complete solo-state semantics
+- a trustworthy passive solo-state decoder from one `0x73` frame
 - exact metering packet/offset mapping
 
 The late `0x73` rows churn before the first host write and also during pure idle, so one passive startup frame should not yet be treated as a full saved-strip snapshot.
@@ -325,7 +361,7 @@ That is why the mixer UI can show confirmed level/mute values after writes witho
 Best next protocol-doc targets once the corresponding captures are analyzed:
 
 1. full mixer pan-value mapping
-2. solo command/state documentation
+2. passive solo-state mapping in `0x73`, if solo needs to be shown from snapshots rather than command overlays
 3. surface-isolated master-meter capture if meter parsing becomes an implementation goal
 4. dedicated ordinary-strip vs early-strip assignment index map
 

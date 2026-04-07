@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Borders, Gauge, LineGauge, List, ListItem, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
 
 use crate::app::{AppState, FocusArea};
@@ -139,7 +139,11 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     };
     let mixer_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(7)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(7),
+        ])
         .split(sections[0]);
 
     let tabs = Tabs::new(
@@ -160,6 +164,17 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     );
     frame.render_widget(tabs, mixer_layout[0]);
 
+    frame.render_widget(
+        Paragraph::new(render_experimental_pair_state_line(state))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Exp Pair State"),
+            )
+            .wrap(Wrap { trim: true }),
+        mixer_layout[1],
+    );
+
     let items: Vec<ListItem<'_>> = state
         .active_mixer_channels()
         .iter()
@@ -170,7 +185,7 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         "Mixer Strips",
         state.focus == FocusArea::Mixer,
     ));
-    frame.render_widget(list, mixer_layout[1]);
+    frame.render_widget(list, mixer_layout[2]);
 
     draw_preamp_panel(frame, sections[1], state);
 }
@@ -290,6 +305,36 @@ pub fn render_footer_text(_state: &AppState) -> String {
     "Tab focus | ←/→ select | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
 
+fn render_experimental_pair_state_line(state: &AppState) -> String {
+    let Some(bytes) = state.latest_raw_73.as_deref() else {
+        return "exp pair pending: waiting for 0x73 snapshot".to_string();
+    };
+    let Some(payload) = bytes.get(0x10..) else {
+        return "exp pair pending: short 0x73 snapshot".to_string();
+    };
+
+    match payload.get(0x6a).copied() {
+        Some(0x0f) => format!(
+            "MIX 1 exp lanes={:02x}/{:02x} mirror={:02x}/{:02x} e0/e1={:02x}/{:02x}",
+            payload.get(0xda).copied().unwrap_or(0),
+            payload.get(0xdb).copied().unwrap_or(0),
+            payload.get(0xdc).copied().unwrap_or(0),
+            payload.get(0xdd).copied().unwrap_or(0),
+            payload.get(0xe0).copied().unwrap_or(0),
+            payload.get(0xe1).copied().unwrap_or(0),
+        ),
+        Some(0x0c) => format!(
+            "MIX 2 exp lanes={:02x}/{:02x} e0/e1={:02x}/{:02x}",
+            payload.get(0xde).copied().unwrap_or(0),
+            payload.get(0xdf).copied().unwrap_or(0),
+            payload.get(0xe0).copied().unwrap_or(0),
+            payload.get(0xe1).copied().unwrap_or(0),
+        ),
+        Some(surface) => format!("exp pair pending: unsupported surface {:02x}", surface),
+        None => "exp pair pending: missing surface byte".to_string(),
+    }
+}
+
 fn render_mixer_strip_line(
     state: &AppState,
     index: usize,
@@ -377,6 +422,9 @@ fn draw_preamp_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ),
         layout[1],
     );
+    if let Some(area) = inner_bottom_line(layout[1]) {
+        frame.render_widget(render_preamp_observed_meter(state.preamp.input2), area);
+    }
 
     let status = Paragraph::new(vec![
         Line::from("Preamp Controls"),
@@ -425,6 +473,34 @@ fn render_preamp_gauge<'a>(title: &'a str, input: PreampInputState, focused: boo
             input.gain_raw,
         ))
         .ratio(input.gain_ratio())
+}
+
+fn render_preamp_observed_meter<'a>(input: PreampInputState) -> LineGauge<'a> {
+    LineGauge::default()
+        .filled_style(Style::default().fg(Color::LightCyan))
+        .unfilled_style(Style::default().fg(Color::DarkGray))
+        .label(observed_meter_label(input))
+        .ratio(input.observed_meter_ratio().unwrap_or(0.0))
+}
+
+fn observed_meter_label(input: PreampInputState) -> String {
+    match input.observed_meter {
+        Some(raw) => format!("obs meter raw {:02x}", raw),
+        None => "obs meter pending".to_string(),
+    }
+}
+
+fn inner_bottom_line(area: Rect) -> Option<Rect> {
+    if area.width <= 2 || area.height <= 2 {
+        return None;
+    }
+
+    Some(Rect {
+        x: area.x + 1,
+        y: area.y + area.height - 2,
+        width: area.width - 2,
+        height: 1,
+    })
 }
 
 fn style_for_preamp_mode(mode: PreampMode) -> Color {
@@ -559,7 +635,7 @@ mod tests {
     use crate::app::AppState;
     use crate::protocol::{
         ClockSource, MixerAssignment, MixerLinkTarget, MixerSurface, OutputMode, OutputState,
-        OutputTarget, PanState, SampleRate, Surface,
+        OutputTarget, PanState, PreampInputState, SampleRate, Surface,
     };
 
     use super::*;
@@ -694,5 +770,82 @@ mod tests {
         assert!(line.contains("CH 07"));
         assert!(line.contains("SPDIF In 1"));
         assert!(line.contains("link=on"));
+    }
+
+    #[test]
+    fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
+        let mut state = AppState::default();
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        frame[0x10 + 0x6a] = 0x0f;
+        frame[0x10 + 0xda] = 0x0a;
+        frame[0x10 + 0xdb] = 0x05;
+        frame[0x10 + 0xdc] = 0x0a;
+        frame[0x10 + 0xdd] = 0x05;
+        frame[0x10 + 0xe0] = 0x60;
+        frame[0x10 + 0xe1] = 0x60;
+        state.latest_raw_73 = Some(frame);
+
+        let line = render_experimental_pair_state_line(&state);
+
+        assert!(line.contains("MIX 1"));
+        assert!(line.contains("lanes=0a/05"));
+        assert!(line.contains("mirror=0a/05"));
+        assert!(line.contains("ch1=unmuted ch2=unmuted"));
+    }
+
+    #[test]
+    fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
+        let mut state = AppState::default();
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        frame[0x10 + 0x6a] = 0x0c;
+        frame[0x10 + 0xde] = 0x00;
+        frame[0x10 + 0xdf] = 0x06;
+        frame[0x10 + 0xe0] = 0x60;
+        frame[0x10 + 0xe1] = 0x60;
+        state.latest_raw_73 = Some(frame);
+
+        let line = render_experimental_pair_state_line(&state);
+
+        assert!(line.contains("MIX 2"));
+        assert!(line.contains("lanes=00/06"));
+        assert!(line.contains("e0/e1=60/60"));
+        assert!(line.contains("ch1=unmuted ch2=muted"));
+    }
+
+    #[test]
+    fn experimental_pair_state_line_marks_unresolved_codebook_values() {
+        let mut state = AppState::default();
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        frame[0x10 + 0x6a] = 0x0c;
+        frame[0x10 + 0xde] = 0x5a;
+        frame[0x10 + 0xdf] = 0x5a;
+        state.latest_raw_73 = Some(frame);
+
+        let line = render_experimental_pair_state_line(&state);
+
+        assert!(line.contains("MIX 2"));
+        assert!(line.contains("ch1/ch2=unresolved"));
+    }
+
+    #[test]
+    fn observed_meter_label_mentions_raw_value() {
+        let mut input = PreampInputState::from_raw(0x2a, 0x00);
+        input.observed_meter = Some(0x30);
+
+        assert_eq!(observed_meter_label(input), "obs meter raw 30");
+    }
+
+    #[test]
+    fn observed_meter_label_mentions_pending_state() {
+        assert_eq!(
+            observed_meter_label(PreampInputState::from_raw(0x2a, 0x00)),
+            "obs meter pending"
+        );
     }
 }
