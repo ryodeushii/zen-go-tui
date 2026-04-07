@@ -703,6 +703,25 @@ pub struct QueryReply75 {
     pub body: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueriedMixerStripState {
+    pub level: u8,
+    pub pan: PanState,
+    pub muted: bool,
+    pub soloed: bool,
+}
+
+impl Default for QueriedMixerStripState {
+    fn default() -> Self {
+        Self {
+            level: 0,
+            pan: PanState::center(),
+            muted: false,
+            soloed: false,
+        }
+    }
+}
+
 impl QueryReply75 {
     pub fn kind(&self) -> StartupQueryKind {
         StartupQueryKind::from_query_id(self.query_id)
@@ -764,6 +783,49 @@ impl QueryReply75 {
                 self.body.len()
             ),
         }
+    }
+
+    pub fn assignment_readback(&self) -> Option<[Option<MixerAssignment>; 16]> {
+        if self.query_id != 0x03 || self.body.is_empty() || self.body[0] != self.sub_id {
+            return None;
+        }
+
+        let mut assignments = [None; 16];
+        match self.sub_id {
+            0x05 if self.body.len() >= 9 => {
+                for (index, chunk) in self.body[1..9].chunks_exact(2).enumerate() {
+                    assignments[index] =
+                        MixerAssignment::from_ordinary_strip_bytes([chunk[0], chunk[1]]);
+                }
+                Some(assignments)
+            }
+            0x06..=0x09 if self.body.len() >= 33 => {
+                for (index, chunk) in self.body[9..33].chunks_exact(2).enumerate() {
+                    assignments[index + 4] =
+                        MixerAssignment::from_ordinary_strip_bytes([chunk[0], chunk[1]]);
+                }
+                Some(assignments)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn mixer_strip_readback(&self) -> Option<[QueriedMixerStripState; 16]> {
+        if self.query_id != 0x18 || self.sub_id != 0x00 || self.body.len() < 32 {
+            return None;
+        }
+
+        let mut strips = [QueriedMixerStripState::default(); 16];
+        for (index, chunk) in self.body[..32].chunks_exact(2).enumerate() {
+            strips[index] = QueriedMixerStripState {
+                level: chunk[0],
+                pan: PanState::from_state_code(chunk[1]),
+                muted: PanState::state_code_is_muted(chunk[1]),
+                soloed: PanState::state_code_is_soloed(chunk[1]),
+            };
+        }
+
+        Some(strips)
     }
 }
 
@@ -1838,6 +1900,73 @@ mod tests {
             status.summary_label(),
             "Status/capability value: 1 bytes [12]"
         );
+    }
+
+    #[test]
+    fn decodes_assignment_readback_from_grounded_0x75_banks() {
+        let early_bank = QueryReply75 {
+            query_id: 0x03,
+            sub_id: 0x05,
+            body: vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01, 0x01],
+        };
+        let ordinary_bank = QueryReply75 {
+            query_id: 0x03,
+            sub_id: 0x06,
+            body: vec![
+                0x06, 0x03, 0x00, 0x03, 0x01, 0x03, 0x02, 0x03, 0x03, 0x01, 0x02, 0x01, 0x03, 0x01,
+                0x04, 0x01, 0x05, 0x01, 0x06, 0x01, 0x07, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08,
+                0x00, 0x08, 0x00, 0x08, 0x00,
+            ],
+        };
+
+        let early = early_bank
+            .assignment_readback()
+            .expect("early assignment bank");
+        assert_eq!(early[0], Some(MixerAssignment::Preamp(1)));
+        assert_eq!(early[1], Some(MixerAssignment::Preamp(2)));
+        assert_eq!(early[2], Some(MixerAssignment::ComputerPlay(1)));
+        assert_eq!(early[3], Some(MixerAssignment::ComputerPlay(2)));
+        assert!(early[4..].iter().all(|slot| slot.is_none()));
+
+        let ordinary = ordinary_bank
+            .assignment_readback()
+            .expect("ordinary assignment bank");
+        assert!(ordinary[0..4].iter().all(|slot| slot.is_none()));
+        assert_eq!(ordinary[4], Some(MixerAssignment::ComputerPlay(3)));
+        assert_eq!(ordinary[5], Some(MixerAssignment::ComputerPlay(4)));
+        assert_eq!(ordinary[6], Some(MixerAssignment::ComputerPlay(5)));
+        assert_eq!(ordinary[7], Some(MixerAssignment::ComputerPlay(6)));
+        assert_eq!(ordinary[8], Some(MixerAssignment::ComputerPlay(7)));
+        assert_eq!(ordinary[9], Some(MixerAssignment::ComputerPlay(8)));
+        assert!(ordinary[10..]
+            .iter()
+            .all(|slot| *slot == Some(MixerAssignment::Mute)));
+    }
+
+    #[test]
+    fn decodes_mixer_strip_readback_from_0x75_18_00() {
+        let reply = QueryReply75 {
+            query_id: 0x18,
+            sub_id: 0x00,
+            body: vec![
+                0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x02, 0x60, 0x3e, 0x2e, 0x02, 0x60, 0x3e,
+                0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
+                0x60, 0x3e, 0x60, 0x02,
+            ],
+        };
+
+        let strips = reply.mixer_strip_readback().expect("strip state readback");
+        assert_eq!(strips[0].level, 0x00);
+        assert_eq!(strips[0].pan, PanState::center());
+        assert!(!strips[0].muted);
+        assert_eq!(strips[3].level, 0x60);
+        assert_eq!(strips[3].pan, PanState::left());
+        assert!(!strips[3].muted);
+        assert_eq!(strips[4].level, 0x60);
+        assert_eq!(strips[4].pan, PanState::right());
+        assert_eq!(strips[5].level, 0x2e);
+        assert_eq!(strips[5].pan, PanState::left());
+        assert!(strips.iter().all(|strip| !strip.soloed));
     }
 
     #[test]

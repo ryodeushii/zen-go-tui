@@ -241,6 +241,7 @@ impl AppState {
                 self.connection.last_frame_type = Some("0x75 query reply");
                 self.latest_raw_75 = Some(raw.clone());
                 self.store_startup_query_summary(&reply);
+                self.apply_query_reply_readback(&reply);
                 self.push_query_reply_log(&reply, raw);
                 if let Some(metadata) = reply.metadata() {
                     self.last_message = format!(
@@ -287,6 +288,31 @@ impl AppState {
             self.recent_query_reply_entries.drain(0..drop_count);
         }
         self.selected_query_reply_entry = Some(self.recent_query_reply_entries.len() - 1);
+    }
+
+    fn apply_query_reply_readback(&mut self, reply: &QueryReply75) {
+        if let Some(assignments) = reply.assignment_readback() {
+            for (index, assignment) in assignments.into_iter().enumerate() {
+                let Some(assignment) = assignment else {
+                    continue;
+                };
+                for channels in &mut self.mixer_channels {
+                    channels[index].assignment = Some(assignment);
+                }
+            }
+        }
+
+        if let Some(strips) = reply.mixer_strip_readback() {
+            let mixer = self.active_mixer_surface();
+            for (index, strip) in strips.into_iter().enumerate() {
+                let Some(slot) = self.mixer_channels[mixer.index()].get_mut(index) else {
+                    continue;
+                };
+                slot.level = Some(strip.level);
+                slot.pan = strip.pan;
+                slot.muted = Some(strip.muted);
+            }
+        }
     }
 
     pub fn mark_disconnected(&mut self) {
@@ -483,6 +509,9 @@ impl Controller {
                 .write(&encode_link_companion(bank, enabled))?;
         }
         self.transport.write(&encode_command(command))?;
+        if matches!(command, Command::SelectSurface(_)) {
+            self.refresh_queried_state()?;
+        }
         self.state.last_message = format!("Sent {:?}", command);
         Ok(())
     }
@@ -798,6 +827,86 @@ mod tests {
     }
 
     #[test]
+    fn query_reply_assignment_readback_updates_shared_strip_assignments() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x03,
+                sub_id: 0x05,
+                body: vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01, 0x01],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x03,
+                sub_id: 0x06,
+                body: vec![
+                    0x06, 0x03, 0x00, 0x03, 0x01, 0x03, 0x02, 0x03, 0x03, 0x01, 0x02, 0x01, 0x03,
+                    0x01, 0x04, 0x01, 0x05, 0x01, 0x06, 0x01, 0x07, 0x08, 0x00, 0x08, 0x00, 0x08,
+                    0x00, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
+            let channels = &state.mixer_channels[mixer.index()];
+            assert_eq!(channels[0].assignment, Some(MixerAssignment::Preamp(1)));
+            assert_eq!(channels[1].assignment, Some(MixerAssignment::Preamp(2)));
+            assert_eq!(
+                channels[2].assignment,
+                Some(MixerAssignment::ComputerPlay(1))
+            );
+            assert_eq!(
+                channels[3].assignment,
+                Some(MixerAssignment::ComputerPlay(2))
+            );
+            assert_eq!(
+                channels[4].assignment,
+                Some(MixerAssignment::ComputerPlay(3))
+            );
+            assert_eq!(
+                channels[9].assignment,
+                Some(MixerAssignment::ComputerPlay(8))
+            );
+            assert!(channels[10..]
+                .iter()
+                .all(|slot| slot.assignment == Some(MixerAssignment::Mute)));
+        }
+    }
+
+    #[test]
+    fn query_reply_strip_readback_updates_active_surface_levels_and_pan() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x18,
+                sub_id: 0x00,
+                body: vec![
+                    0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x02, 0x60, 0x3e, 0x2e, 0x02, 0x60,
+                    0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e,
+                    0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
+        let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
+        assert_eq!(mix1[0].level, Some(0x00));
+        assert_eq!(mix1[0].pan, PanState::center());
+        assert_eq!(mix1[0].muted, Some(false));
+        assert_eq!(mix1[3].level, Some(0x60));
+        assert_eq!(mix1[3].pan, PanState::left());
+        assert_eq!(mix1[4].pan, PanState::right());
+        assert_eq!(mix1[5].level, Some(0x2e));
+        assert!(mix2.iter().all(|slot| slot.level.is_none()));
+    }
+
+    #[test]
     fn passive_meter_does_not_override_known_level_value() {
         let mut state = AppState::default();
         state.mixer_channels[MixerSurface::Mix1.index()][0].level = Some(0x00);
@@ -913,6 +1022,22 @@ mod tests {
         assert_eq!(&writes[2][0x08..0x10], &[0x17, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(&writes[45][0x08..0x10], &[0x12, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(&writes[46][0x10..0x12], &[0x04, 0x02]);
+    }
+
+    #[test]
+    fn surface_select_refreshes_query_readback() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        controller
+            .send(Command::SelectSurface(Surface::Hp2))
+            .expect("select surface");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 47);
+        assert_eq!(&writes[0][0x10..0x13], &[0x49, 0x00, Surface::Hp2.code()]);
+        assert_eq!(&writes[1][0x08..0x10], &[0x11, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[46][0x08..0x10], &[0x12, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]

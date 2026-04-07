@@ -91,16 +91,21 @@ Observed fields:
 
 ### Other grounded startup replies
 
-The remaining startup `0x75` replies are grounded at the *classification* level but not yet at the inner field-decoding level:
+The startup sweep now has two different evidence levels:
 
-- `query = 0x00` returns a short capability/default block
-- `query = 0x11` returns a small capability/status value
+- still-classification-only replies:
+  - `query = 0x00` returns a short capability/default block
+  - `query = 0x11` returns a small capability/status value
+- partially decoded mixer replies from `antelope_pcap/channel_assignments/control panel open.pcapng`:
+  - `query = 0x03`, `sub = 0x05` carries the startup assignment readback for strips `1..4`
+  - `query = 0x03`, `sub = 0x06..0x09` mirrors the ordinary-strip assignment table strongly enough to read back strips `5..16`
+  - `query = 0x18`, `sub = 0x00` carries repeated `{level, pan/state}` tuples strong enough to seed the active mixer surface readback in the app
 
 Current implementation boundary:
 
-- it is safe to classify and surface these replies separately from metadata
-- it is **not** safe yet to assign specific semantic meaning to their inner bytes
-- UI/protocol code should therefore expose them conservatively as query-kind + raw-byte summaries only
+- it is safe to classify and surface `0x00` and `0x11` separately from metadata
+- it is still **not** safe to assign specific semantic meaning to the inner bytes of `0x00` and `0x11`
+- it is now safe to use the grounded subset above for query-side mixer assignment and active-surface strip level/pan/mute readback
 
 ## Stable-State Rule
 
