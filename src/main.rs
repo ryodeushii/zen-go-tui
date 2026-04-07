@@ -16,8 +16,8 @@ use ratatui::Terminal;
 
 use zen_go_tui::app::{Controller, FocusArea};
 use zen_go_tui::protocol::{
-    ClockSource, Command, MixerAssignment, MixerLinkTarget, MixerSurface, OutputMode, OutputTarget,
-    PanState, PreampMode, SampleRate, Surface,
+    ClockSource, Command, MixerLinkTarget, MixerSurface, OutputMode, OutputTarget, PanState,
+    PreampMode, SampleRate, Surface,
 };
 use zen_go_tui::transport::{HidTransport, MockTransport, Transport};
 use zen_go_tui::ui;
@@ -80,16 +80,33 @@ fn app_loop(
                 match key.code {
                     KeyCode::Char('q') => break,
                     KeyCode::Char('r') => controller.state.toggle_raw_view(),
+                    KeyCode::Char('R') => {
+                        controller.refresh_queried_state()?;
+                        controller.state.last_message =
+                            "Sent captured 0x74 startup/state refresh sweep".to_string();
+                    }
                     KeyCode::Tab => controller.state.cycle_focus(),
                     KeyCode::Char('?') => {
                         controller.state.last_message =
-                            "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ switch tabs, b/x baseline for 0x74/0x73/0x83/0x75/0x81.".to_string();
+                            "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ tabs, Query75 ←/→ history, b/x baseline. R sends the captured 0x74 refresh sweep.".to_string();
                     }
                     KeyCode::Left if controller.state.raw_view_open => {
-                        controller.state.cycle_raw_packet(false)
+                        if controller.state.selected_raw_packet
+                            == zen_go_tui::app::RawPacketTab::Query75
+                        {
+                            controller.state.cycle_query_reply_entry(false)
+                        } else {
+                            controller.state.cycle_raw_packet(false)
+                        }
                     }
                     KeyCode::Right if controller.state.raw_view_open => {
-                        controller.state.cycle_raw_packet(true)
+                        if controller.state.selected_raw_packet
+                            == zen_go_tui::app::RawPacketTab::Query75
+                        {
+                            controller.state.cycle_query_reply_entry(true)
+                        } else {
+                            controller.state.cycle_raw_packet(true)
+                        }
                     }
                     KeyCode::Left => move_selection(controller, false),
                     KeyCode::Right => move_selection(controller, true),
@@ -361,6 +378,9 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
         ui::MouseAction::SelectRawPacketTab(tab) => controller.state.selected_raw_packet = tab,
+        ui::MouseAction::SelectQueryReplyEntry(index) => {
+            controller.state.selected_query_reply_entry = Some(index)
+        }
         ui::MouseAction::SelectSurface(surface) => {
             controller.state.focus = FocusArea::Mixer;
             controller.send(Command::SelectSurface(surface))?;

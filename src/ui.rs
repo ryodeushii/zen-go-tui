@@ -15,6 +15,7 @@ use crate::protocol::{
 pub enum MouseAction {
     ToggleRawView,
     SelectRawPacketTab(RawPacketTab),
+    SelectQueryReplyEntry(usize),
     SelectSurface(Surface),
     SelectMixerChannel(usize),
     ToggleMixerMute(u8),
@@ -161,6 +162,27 @@ fn raw_tab_hit_areas(area: Rect) -> Vec<Rect> {
         .copied()
         .take(5)
         .collect()
+}
+
+fn raw_page_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(2),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+fn query_reply_history_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(10), Constraint::Min(4)])
+        .split(area)
+        .to_vec()
 }
 
 fn inner_area(area: Rect) -> Rect {
@@ -371,7 +393,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     }
 
     if state.raw_view_open {
-        return raw_mouse_action(area, point);
+        return raw_mouse_action(area, state, point);
     }
 
     if let Some(picker) = state.assignment_picker {
@@ -395,36 +417,48 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     None
 }
 
-fn raw_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(2),
-        ])
-        .split(area);
+fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
+    let layout = raw_page_layout(area);
     let header = raw_header_layout(layout[0]);
     if contains_point(header[1], point) {
         return Some(MouseAction::ToggleRawView);
     }
-    if !contains_point(layout[1], point) {
-        return None;
+    if contains_point(layout[1], point) {
+        let tabs = raw_tab_hit_areas(layout[1]);
+        if contains_point(tabs[0], point) {
+            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query74));
+        } else if contains_point(tabs[1], point) {
+            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::State73));
+        } else if contains_point(tabs[2], point) {
+            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Auxiliary83));
+        } else if contains_point(tabs[3], point) {
+            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75));
+        } else if contains_point(tabs[4], point) {
+            return Some(MouseAction::SelectRawPacketTab(
+                RawPacketTab::Notification81,
+            ));
+        }
     }
-    let tabs = raw_tab_hit_areas(layout[1]);
-    if contains_point(tabs[0], point) {
-        Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query74))
-    } else if contains_point(tabs[1], point) {
-        Some(MouseAction::SelectRawPacketTab(RawPacketTab::State73))
-    } else if contains_point(tabs[2], point) {
-        Some(MouseAction::SelectRawPacketTab(RawPacketTab::Auxiliary83))
-    } else if contains_point(tabs[3], point) {
-        Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75))
-    } else if contains_point(tabs[4], point) {
-        Some(MouseAction::SelectRawPacketTab(
-            RawPacketTab::Notification81,
-        ))
+    if state.selected_raw_packet == RawPacketTab::Query75 {
+        let sections = query_reply_history_layout(layout[2]);
+        if !contains_point(sections[0], point) {
+            return None;
+        }
+        let inner = inner_area(sections[0]);
+        if point.1 < inner.y + 1 {
+            return None;
+        }
+        let visible = state
+            .recent_query_reply_entries
+            .iter()
+            .enumerate()
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>();
+        let row = point.1.saturating_sub(inner.y + 1) as usize;
+        visible
+            .get(row)
+            .map(|(index, _)| MouseAction::SelectQueryReplyEntry(*index))
     } else {
         None
     }
@@ -584,15 +618,7 @@ fn contains_point(area: Rect, point: (u16, u16)) -> bool {
 }
 
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(2),
-        ])
-        .split(area);
+    let layout = raw_page_layout(area);
 
     let header = raw_header_layout(layout[0]);
     frame.render_widget(
@@ -675,12 +701,28 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 .unwrap_or_else(|| Text::from("Waiting for first 0x81 notification...")),
         ),
     };
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(section_block(title, true))
-            .wrap(Wrap { trim: false }),
-        layout[2],
-    );
+    if state.selected_raw_packet == RawPacketTab::Query75 {
+        let sections = query_reply_history_layout(layout[2]);
+        frame.render_widget(
+            Paragraph::new(render_query_reply_history_list(state))
+                .block(section_block("Recent 0x75 Replies", true))
+                .wrap(Wrap { trim: false }),
+            sections[0],
+        );
+        frame.render_widget(
+            Paragraph::new(text)
+                .block(section_block(title, true))
+                .wrap(Wrap { trim: false }),
+            sections[1],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(text)
+                .block(section_block(title, true))
+                .wrap(Wrap { trim: false }),
+            layout[2],
+        );
+    }
 
     frame.render_widget(
         Paragraph::new(render_footer_text(state))
@@ -713,7 +755,7 @@ fn render_thin_bar(ratio: f64) -> String {
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab focus | mouse: preamp buttons, mixer mute/link/src, tabs | r raw view | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
+    "Tab focus | mouse: preamp buttons, mixer mute/link/src, tabs | r raw view | R refresh queries | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
 
 fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
@@ -739,16 +781,11 @@ fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
     ))])
 }
 
-fn render_query_reply_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
-    let mut lines = render_full_packet_dump(state_bytes, state.baseline_raw_75.as_deref()).lines;
-    if !state.recent_query_reply_log.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from("Recent 0x75 replies:"));
-        for entry in state.recent_query_reply_log.iter().rev().take(8) {
-            lines.push(Line::from(entry.clone()));
-        }
-    }
-    Text::from(lines)
+fn render_query_reply_panel(_state_bytes: &[u8], state: &AppState) -> Text<'static> {
+    state
+        .selected_query_reply_entry()
+        .map(|entry| render_full_packet_dump(&entry.raw, state.baseline_raw_75.as_deref()))
+        .unwrap_or_else(|| Text::from("No 0x75 reply selected yet."))
 }
 
 fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
@@ -759,6 +796,29 @@ fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -> Text<'sta
         for entry in state.recent_query_request_log.iter().rev().take(8) {
             lines.push(Line::from(entry.clone()));
         }
+    }
+    Text::from(lines)
+}
+
+fn render_query_reply_history_list(state: &AppState) -> Text<'static> {
+    let mut lines = vec![Line::from("Select one reply to inspect its raw bytes:")];
+    if state.recent_query_reply_entries.is_empty() {
+        lines.push(Line::from("Waiting for first 0x75 query reply..."));
+        return Text::from(lines);
+    }
+    for (index, entry) in state
+        .recent_query_reply_entries
+        .iter()
+        .enumerate()
+        .rev()
+        .take(8)
+    {
+        let marker = if state.selected_query_reply_entry == Some(index) {
+            ">"
+        } else {
+            " "
+        };
+        lines.push(Line::from(format!("{} {}", marker, entry.summary)));
     }
     Text::from(lines)
 }
@@ -1248,16 +1308,21 @@ mod tests {
     #[test]
     fn query_reply_panel_includes_recent_reply_log() {
         let mut state = AppState::default();
-        state.recent_query_reply_log = vec![
-            "0x75 03/05 [64 bytes] 05 00 00 00 01 01 00 01".to_string(),
-            "0x75 03/06 [64 bytes] 06 03 00 03 01 03 02 03".to_string(),
+        state.recent_query_reply_entries = vec![
+            crate::app::QueryReplyLogEntry {
+                summary: "0x75 03/05 [64 bytes] 05 00 00 00 01 01 00 01".to_string(),
+                raw: vec![0x75, 0x05],
+            },
+            crate::app::QueryReplyLogEntry {
+                summary: "0x75 03/06 [64 bytes] 06 03 00 03 01 03 02 03".to_string(),
+                raw: vec![0x75, 0x06],
+            },
         ];
+        state.selected_query_reply_entry = Some(1);
 
         let text = render_query_reply_panel(&[0x75, 0x00, 0x00, 0x00], &state).to_string();
 
-        assert!(text.contains("Recent 0x75 replies:"));
-        assert!(text.contains("0x75 03/05"));
-        assert!(text.contains("0x75 03/06"));
+        assert!(text.contains("0000: 75 06"));
     }
 
     #[test]
@@ -1304,6 +1369,33 @@ mod tests {
         assert_eq!(
             mouse_action(area, &state, point.0, point.1),
             Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75))
+        );
+    }
+
+    #[test]
+    fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
+        let area = Rect::new(0, 0, 120, 50);
+        let layout = raw_page_layout(area);
+        let sections = query_reply_history_layout(layout[2]);
+        let inner = inner_area(sections[0]);
+        let mut state = AppState::default();
+        state.raw_view_open = true;
+        state.selected_raw_packet = RawPacketTab::Query75;
+        state.recent_query_reply_entries = vec![
+            crate::app::QueryReplyLogEntry {
+                summary: "0x75 03/05".to_string(),
+                raw: vec![0x75, 0x05],
+            },
+            crate::app::QueryReplyLogEntry {
+                summary: "0x75 03/06".to_string(),
+                raw: vec![0x75, 0x06],
+            },
+        ];
+        let point = (inner.x + 1, inner.y + 1);
+
+        assert_eq!(
+            mouse_action(area, &state, point.0, point.1),
+            Some(MouseAction::SelectQueryReplyEntry(1))
         );
     }
 

@@ -3,10 +3,10 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 
 use crate::protocol::{
-    encode_command, encode_link_companion, encode_query, ClockSource, Command, DeviceMetadata,
-    DeviceSnapshot, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface,
-    OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState, QueryReply75,
-    SampleRate, Snapshot73, Surface,
+    control_panel_startup_queries, encode_command, encode_link_companion, encode_query,
+    ClockSource, Command, DeviceMetadata, DeviceSnapshot, Frame, MixerAssignment,
+    MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode, OutputState, OutputTarget,
+    PanState, PreampMode, PreampState, QueryReply75, SampleRate, Snapshot73, Surface,
 };
 use crate::transport::Transport;
 
@@ -64,6 +64,12 @@ pub struct AssignmentPickerState {
     pub strip: u8,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryReplyLogEntry {
+    pub summary: String,
+    pub raw: Vec<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub device: DeviceStatus,
@@ -88,6 +94,8 @@ pub struct AppState {
     pub latest_raw_81: Option<Vec<u8>>,
     pub recent_query_request_log: Vec<String>,
     pub recent_query_reply_log: Vec<String>,
+    pub recent_query_reply_entries: Vec<QueryReplyLogEntry>,
+    pub selected_query_reply_entry: Option<usize>,
     pub baseline_raw_73: Option<Vec<u8>>,
     pub baseline_raw_83: Option<Vec<u8>>,
     pub baseline_raw_74: Option<Vec<u8>>,
@@ -130,6 +138,8 @@ impl Default for AppState {
             latest_raw_81: None,
             recent_query_request_log: Vec::new(),
             recent_query_reply_log: Vec::new(),
+            recent_query_reply_entries: Vec::new(),
+            selected_query_reply_entry: None,
             baseline_raw_73: None,
             baseline_raw_83: None,
             baseline_raw_74: None,
@@ -144,6 +154,11 @@ impl AppState {
     pub fn startup_query_summary(&self, query_id: u8) -> Option<&str> {
         startup_query_slot(query_id)
             .and_then(|index| self.device.startup_query_summaries[index].as_deref())
+    }
+
+    pub fn selected_query_reply_entry(&self) -> Option<&QueryReplyLogEntry> {
+        self.selected_query_reply_entry
+            .and_then(|index| self.recent_query_reply_entries.get(index))
     }
 
     pub fn active_mixer_surface(&self) -> MixerSurface {
@@ -224,9 +239,9 @@ impl AppState {
             }
             DeviceSnapshot::QueryReply(reply) => {
                 self.connection.last_frame_type = Some("0x75 query reply");
-                self.latest_raw_75 = Some(raw);
+                self.latest_raw_75 = Some(raw.clone());
                 self.store_startup_query_summary(&reply);
-                self.push_query_reply_log(&reply);
+                self.push_query_reply_log(&reply, raw);
                 if let Some(metadata) = reply.metadata() {
                     self.last_message = format!(
                         "Connected to {} ({})",
@@ -248,7 +263,7 @@ impl AppState {
         }
     }
 
-    fn push_query_reply_log(&mut self, reply: &QueryReply75) {
+    fn push_query_reply_log(&mut self, reply: &QueryReply75, raw: Vec<u8>) {
         let preview = reply
             .body
             .iter()
@@ -256,17 +271,22 @@ impl AppState {
             .map(|byte| format!("{:02x}", byte))
             .collect::<Vec<_>>()
             .join(" ");
-        self.recent_query_reply_log.push(format!(
+        let summary = format!(
             "0x75 {:02x}/{:02x} [{} bytes] {}",
             reply.query_id,
             reply.sub_id,
             reply.body.len(),
             preview
-        ));
+        );
+        self.recent_query_reply_log.push(summary.clone());
+        self.recent_query_reply_entries
+            .push(QueryReplyLogEntry { summary, raw });
         if self.recent_query_reply_log.len() > 16 {
             let drop_count = self.recent_query_reply_log.len() - 16;
             self.recent_query_reply_log.drain(0..drop_count);
+            self.recent_query_reply_entries.drain(0..drop_count);
         }
+        self.selected_query_reply_entry = Some(self.recent_query_reply_entries.len() - 1);
     }
 
     pub fn mark_disconnected(&mut self) {
@@ -304,6 +324,23 @@ impl AppState {
         } else {
             tabs[index.checked_sub(1).unwrap_or(tabs.len() - 1)]
         };
+    }
+
+    pub fn cycle_query_reply_entry(&mut self, forward: bool) {
+        if self.recent_query_reply_entries.is_empty() {
+            self.selected_query_reply_entry = None;
+            return;
+        }
+        let current = self
+            .selected_query_reply_entry
+            .unwrap_or(self.recent_query_reply_entries.len() - 1);
+        self.selected_query_reply_entry = Some(if forward {
+            (current + 1) % self.recent_query_reply_entries.len()
+        } else {
+            current
+                .checked_sub(1)
+                .unwrap_or(self.recent_query_reply_entries.len() - 1)
+        });
     }
 
     pub fn capture_raw_baseline(&mut self) {
@@ -415,8 +452,12 @@ impl Controller {
     }
 
     pub fn bootstrap(&mut self) -> Result<()> {
-        for query in [0x01_u8, 0x00, 0x11] {
-            let frame = encode_query(query);
+        self.refresh_queried_state()
+    }
+
+    pub fn refresh_queried_state(&mut self) -> Result<()> {
+        for query in control_panel_startup_queries() {
+            let frame = encode_query(*query);
             self.state.observe_query_request(frame.clone());
             self.transport.write(&frame)?;
         }
@@ -866,11 +907,12 @@ mod tests {
             .expect("write command");
 
         let writes = transport.take_writes();
-        assert_eq!(writes.len(), 4);
-        assert_eq!(&writes[0][0x08..0x10], &[0x01, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&writes[1][0x08..0x10], &[0x00, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&writes[2][0x08..0x10], &[0x11, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&writes[3][0x10..0x12], &[0x04, 0x02]);
+        assert_eq!(writes.len(), 47);
+        assert_eq!(&writes[0][0x08..0x10], &[0x11, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[1][0x08..0x10], &[0x0a, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[2][0x08..0x10], &[0x17, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[45][0x08..0x10], &[0x12, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[46][0x10..0x12], &[0x04, 0x02]);
     }
 
     #[test]
@@ -1409,6 +1451,35 @@ mod tests {
             .last()
             .unwrap()
             .contains("0x75 03/13"));
+        assert_eq!(state.selected_query_reply_entry, Some(15));
+    }
+
+    #[test]
+    fn selected_query_reply_entry_tracks_latest_reply_and_cycles() {
+        let mut state = AppState::default();
+        for sub_id in 0..3_u8 {
+            state.observe_frame(
+                DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                    query_id: 0x03,
+                    sub_id,
+                    body: vec![sub_id],
+                }),
+                vec![0x75, sub_id],
+            );
+        }
+
+        assert_eq!(state.selected_query_reply_entry, Some(2));
+        assert_eq!(
+            state
+                .selected_query_reply_entry()
+                .map(|entry| entry.raw.clone()),
+            Some(vec![0x75, 0x02])
+        );
+
+        state.cycle_query_reply_entry(false);
+        assert_eq!(state.selected_query_reply_entry, Some(1));
+        state.cycle_query_reply_entry(true);
+        assert_eq!(state.selected_query_reply_entry, Some(2));
     }
 
     #[test]

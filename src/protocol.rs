@@ -664,6 +664,18 @@ pub enum StartupQueryKind {
     Unknown(u8),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryRequest74 {
+    pub query_id: u8,
+    pub sub_id: u8,
+}
+
+impl QueryRequest74 {
+    pub const fn new(query_id: u8, sub_id: u8) -> Self {
+        Self { query_id, sub_id }
+    }
+}
+
 impl StartupQueryKind {
     pub fn from_query_id(query_id: u8) -> Self {
         match query_id {
@@ -1216,11 +1228,64 @@ impl MixerChannelState {
     }
 }
 
-pub fn encode_query(query_id: u8) -> Vec<u8> {
+pub fn control_panel_startup_queries() -> &'static [QueryRequest74] {
+    const QUERIES: [QueryRequest74; 46] = [
+        QueryRequest74::new(0x11, 0x00),
+        QueryRequest74::new(0x0a, 0x00),
+        QueryRequest74::new(0x17, 0x00),
+        QueryRequest74::new(0x18, 0x00),
+        QueryRequest74::new(0x11, 0x01),
+        QueryRequest74::new(0x03, 0x00),
+        QueryRequest74::new(0x03, 0x01),
+        QueryRequest74::new(0x03, 0x02),
+        QueryRequest74::new(0x03, 0x03),
+        QueryRequest74::new(0x03, 0x04),
+        QueryRequest74::new(0x03, 0x05),
+        QueryRequest74::new(0x03, 0x06),
+        QueryRequest74::new(0x03, 0x07),
+        QueryRequest74::new(0x03, 0x08),
+        QueryRequest74::new(0x03, 0x09),
+        QueryRequest74::new(0x0b, 0x00),
+        QueryRequest74::new(0x16, 0x00),
+        QueryRequest74::new(0x0a, 0x00),
+        QueryRequest74::new(0x04, 0x00),
+        QueryRequest74::new(0x0b, 0x03),
+        QueryRequest74::new(0x04, 0x01),
+        QueryRequest74::new(0x0b, 0x03),
+        QueryRequest74::new(0x04, 0x02),
+        QueryRequest74::new(0x0b, 0x03),
+        QueryRequest74::new(0x04, 0x03),
+        QueryRequest74::new(0x0b, 0x03),
+        QueryRequest74::new(0x15, 0x00),
+        QueryRequest74::new(0x19, 0x00),
+        QueryRequest74::new(0x19, 0x01),
+        QueryRequest74::new(0x07, 0x27),
+        QueryRequest74::new(0x07, 0x2c),
+        QueryRequest74::new(0x07, 0x09),
+        QueryRequest74::new(0x07, 0x14),
+        QueryRequest74::new(0x07, 0x4c),
+        QueryRequest74::new(0x19, 0x02),
+        QueryRequest74::new(0x19, 0x03),
+        QueryRequest74::new(0x19, 0x04),
+        QueryRequest74::new(0x19, 0x05),
+        QueryRequest74::new(0x19, 0x06),
+        QueryRequest74::new(0x19, 0x07),
+        QueryRequest74::new(0x19, 0x08),
+        QueryRequest74::new(0x19, 0x09),
+        QueryRequest74::new(0x19, 0x0a),
+        QueryRequest74::new(0x19, 0x0b),
+        QueryRequest74::new(0x0b, 0x04),
+        QueryRequest74::new(0x12, 0x00),
+    ];
+    &QUERIES
+}
+
+pub fn encode_query(query: QueryRequest74) -> Vec<u8> {
     let mut frame = vec![0_u8; HID_REPORT_SIZE];
     frame[0..4].copy_from_slice(&0x74_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x10_u32.to_le_bytes());
-    frame[0x08] = query_id;
+    frame[0x08] = query.query_id;
+    frame[0x0c] = query.sub_id;
     frame
 }
 
