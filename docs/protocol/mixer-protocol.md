@@ -208,6 +208,10 @@ Grounded details:
 - the full per-strip entry map is now grounded from the new channel-assignment captures:
   - early `bb = 0x05`: `CH1..4 -> entry 0..3`
   - ordinary `bb = 0x03/06/07/08/09`: `CH5..16 -> entry 4..15`
+- stable host writes are full table writes, not sparse single-entry patches:
+  - ordinary banks carry the current populated table for their visible span
+  - ordinary-bank early slots remain placeholder entries `03 00 .. 03 03`
+  - early `bb = 0x05` writes carry direct source tuples for `CH1..4`
 - for ordinary strips, the changing source tuple is still carried at payload offsets `0x17..0x18` relative to the `d3 41` payload body when expressed in the full ordinary bank rows
 
 Confirmed ordinary-strip enum values from the assignment captures:

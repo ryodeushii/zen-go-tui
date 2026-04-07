@@ -1746,20 +1746,15 @@ fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
 pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) -> Vec<Vec<u8>> {
     let strip = MixerStrip::new(strip).expect("assignment write requires grounded strip mapping");
     let entry_index = strip.assignment_entry_index();
-    let tuple_offset = 0x03 + entry_index * 2;
-    let [a, b] = assignment.ordinary_strip_bytes();
+    let assignment_bytes = assignment.ordinary_strip_bytes();
 
     strip
         .assignment_write_banks()
         .iter()
         .copied()
         .map(|bank| {
-            let mut frame = vec![0_u8; HID_REPORT_SIZE];
-            frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
-            frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
-            frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, bank]);
-            frame[0x10 + tuple_offset] = a;
-            frame[0x10 + tuple_offset + 1] = b;
+            let mut frame = assignment_frame(bank);
+            write_assignment_entry(&mut frame, entry_index, assignment_bytes);
             frame
         })
         .collect()
@@ -1779,21 +1774,33 @@ pub fn encode_mixer_assignment_frames_with_table(
         .iter()
         .copied()
         .map(|bank| {
-            let mut frame = vec![0_u8; HID_REPORT_SIZE];
-            frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
-            frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
-            frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, bank]);
+            let mut frame = assignment_frame(bank);
 
             for entry_index in assignment_entries_for_bank(bank) {
-                let [a, b] = assignment_entry_bytes(bank, entry_index, &full_assignments);
-                let tuple_offset = 0x03 + entry_index * 2;
-                frame[0x10 + tuple_offset] = a;
-                frame[0x10 + tuple_offset + 1] = b;
+                write_assignment_entry(
+                    &mut frame,
+                    entry_index,
+                    assignment_entry_bytes(bank, entry_index, &full_assignments),
+                );
             }
 
             frame
         })
         .collect()
+}
+
+fn assignment_frame(bank: u8) -> Vec<u8> {
+    let mut frame = vec![0_u8; HID_REPORT_SIZE];
+    frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
+    frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
+    frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, bank]);
+    frame
+}
+
+fn write_assignment_entry(frame: &mut [u8], entry_index: usize, assignment: [u8; 2]) {
+    let tuple_offset = 0x03 + entry_index * 2;
+    frame[0x10 + tuple_offset] = assignment[0];
+    frame[0x10 + tuple_offset + 1] = assignment[1];
 }
 
 fn assignment_entries_for_bank(bank: u8) -> std::ops::Range<usize> {

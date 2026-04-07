@@ -666,6 +666,7 @@ What is confirmed from the current evidence:
   - `CH2 -> entry 1`
   - `CH3 -> entry 2`
   - `CH4 -> entry 3`
+- the working app behavior also needs to mirror one more grounded rule from those host frames: late-channel writes must preserve the rest of the populated table rather than zeroing untouched entries
 
 For the ordinary-strip sweeps on strip `11`, the only changing table entry is the zero-based entry `10` inside the `d3 41` payload body.
 That entry sits at payload offsets `0x17..0x18` relative to the start of the `d3 41` payload (after bytes `d3 41 bb`).

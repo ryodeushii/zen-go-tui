@@ -160,6 +160,7 @@ Mixer protocol notes:
 - mixer pan host encoding is now modeled as a scalar raw value over the grounded `0x02 .. 0x3e` range rather than only anchor states
 - mixer assignment cycling now uses the grounded per-strip write map across `CH1..16`
 - the assignment write path now covers early `bb = 0x05`, ordinary `CH5..8` `bb = 0x03/06/07/08/09`, and ordinary `CH9..16` `bb = 0x06/07/08/09`
+- assignment writes now serialize the full current shared assignment table so untouched strips survive refresh/readback correctly
 - the status pane now shows the grounded non-metadata startup `0x75` replies as conservative summaries instead of ignoring them
 - mixer assignments now seed from grounded `0x75` readback instead of waiting for local write overlays
 - startup visible link state for `CH1..16` now seeds from grounded `0x75 0b/03`

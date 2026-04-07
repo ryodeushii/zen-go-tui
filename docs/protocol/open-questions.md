@@ -27,6 +27,7 @@ What is already safe:
 - the full per-strip entry map across both families:
   - early `bb = 0x05`: `CH1..4 -> entry 0..3`
   - ordinary `bb = 0x03/06/07/08/09`: `CH5..16 -> entry 4..15`
+- the app-side write rule that preserves existing assignments by serializing a full current table instead of sparse single-entry patches
 
 ### Exact semantics inside the late `0x73` table rows
 
