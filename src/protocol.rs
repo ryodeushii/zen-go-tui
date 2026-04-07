@@ -774,6 +774,23 @@ impl QueryReply75 {
     }
 
     pub fn summary_label(&self) -> String {
+        if let Some(entries) = self.startup_indexed_code_table() {
+            let preview = entries
+                .iter()
+                .take(10)
+                .map(|(index, code)| format!("{index:02x}:{code:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return format!("Startup indexed code table [{}]", preview);
+        }
+
+        if let Some(bytes) = self.startup_quad_state() {
+            return format!(
+                "Startup quad state [{:02x} {:02x} {:02x} {:02x}]",
+                bytes[0], bytes[1], bytes[2], bytes[3]
+            );
+        }
+
         if let Some((surface, categories)) = self.startup_pan_category_readback() {
             let preview = categories
                 .iter()
@@ -869,16 +886,53 @@ impl QueryReply75 {
         }
     }
 
-    pub fn selector_bitmap(&self) -> Option<[bool; 21]> {
-        if self.query_id != 0x0b || self.sub_id != 0x03 || self.body.len() < 21 {
+    pub fn selector_bitmap(&self) -> Option<[bool; 24]> {
+        if self.query_id != 0x0b || self.sub_id != 0x03 || self.body.len() < 24 {
             return None;
         }
 
-        let mut selectors = [false; 21];
-        for (index, value) in self.body.iter().take(21).copied().enumerate() {
+        let mut selectors = [false; 24];
+        for (index, value) in self.body.iter().take(24).copied().enumerate() {
             selectors[index] = value != 0;
         }
         Some(selectors)
+    }
+
+    pub fn startup_link_readback_from_bitmap(
+        &self,
+    ) -> Option<[(MixerSurface, [Option<bool>; 16]); 2]> {
+        let bitmap = self.selector_bitmap()?;
+        let mut mix1 = [None; 16];
+        let mut mix2 = [None; 16];
+
+        for (bit, pair_start) in [
+            (0_usize, 0_usize),
+            (1, 2),
+            (2, 4),
+            (3, 6),
+            (4, 8),
+            (5, 10),
+            (6, 12),
+            (7, 14),
+        ] {
+            mix1[pair_start] = Some(bitmap[bit]);
+            mix1[pair_start + 1] = Some(bitmap[bit]);
+        }
+        for (bit, pair_start) in [
+            (16_usize, 0_usize),
+            (17, 2),
+            (18, 4),
+            (19, 6),
+            (20, 8),
+            (21, 10),
+            (22, 12),
+            (23, 14),
+        ] {
+            mix2[pair_start] = Some(bitmap[bit]);
+            mix2[pair_start + 1] = Some(bitmap[bit]);
+        }
+
+        Some([(MixerSurface::Mix1, mix1), (MixerSurface::Mix2, mix2)])
     }
 
     pub fn selector_pair_bank(&self) -> Option<Vec<(u8, u8)>> {
@@ -892,47 +946,6 @@ impl QueryReply75 {
                 .map(|chunk| (chunk[0], chunk[1]))
                 .collect(),
         )
-    }
-
-    pub fn startup_link_readback(&self) -> Option<(MixerSurface, [Option<bool>; 16])> {
-        let surface = match self.sub_id {
-            0x00 | 0x01 => MixerSurface::Mix1,
-            0x02 | 0x03 => MixerSurface::Mix2,
-            _ => return None,
-        };
-        let pairs = self.selector_pair_bank()?;
-        if pairs.len() < 17 {
-            return None;
-        }
-
-        let mut linked = [None; 16];
-        let visible_codes = pairs
-            .iter()
-            .skip(1)
-            .take(16)
-            .map(|(_, state)| *state)
-            .collect::<Vec<_>>();
-
-        for pair_start in (2..16).step_by(2) {
-            let left = visible_codes[pair_start];
-            let right = visible_codes[pair_start + 1];
-            if left == 0x02 && right == 0x3e {
-                linked[pair_start] = Some(true);
-                linked[pair_start + 1] = Some(true);
-            } else if matches!(left, 0x20 | 0x60) && matches!(right, 0x20 | 0x60) {
-                linked[pair_start] = Some(false);
-                linked[pair_start + 1] = Some(false);
-            }
-        }
-
-        let first_left = visible_codes[0];
-        let first_right = visible_codes[1];
-        if matches!(first_left, 0x20 | 0x60) && matches!(first_right, 0x20 | 0x60) {
-            linked[0] = Some(false);
-            linked[1] = Some(false);
-        }
-
-        Some((surface, linked))
     }
 
     pub fn startup_pan_category_readback(
@@ -959,6 +972,27 @@ impl QueryReply75 {
         }
 
         Some((surface, categories))
+    }
+
+    pub fn startup_indexed_code_table(&self) -> Option<Vec<(u8, u8)>> {
+        if self.query_id != 0x15 || self.sub_id != 0x00 || self.body.len() < 64 {
+            return None;
+        }
+
+        Some(
+            self.body[..64]
+                .chunks_exact(2)
+                .map(|chunk| (chunk[0], chunk[1]))
+                .collect(),
+        )
+    }
+
+    pub fn startup_quad_state(&self) -> Option<[u8; 4]> {
+        if self.query_id != 0x17 || self.sub_id != 0x00 || self.body.len() < 4 {
+            return None;
+        }
+
+        Some(self.body[..4].try_into().ok()?)
     }
 
     pub fn mixer_strip_readback(&self) -> Option<QueriedMixerSurfaceReadback> {
@@ -1239,9 +1273,9 @@ fn decode_pan_from_group(
 }
 
 fn decode_link_state(payload: &[u8]) -> Option<bool> {
-    let values = [
-        payload.get(0x8f).copied()?,
-        payload.get(0xcf).copied()?,
+    let head_a = payload.get(0x8f).copied()?;
+    let head_b = payload.get(0xcf).copied()?;
+    let tails = [
         payload.get(0xda).copied()?,
         payload.get(0xdb).copied()?,
         payload.get(0xdc).copied()?,
@@ -1249,12 +1283,18 @@ fn decode_link_state(payload: &[u8]) -> Option<bool> {
         payload.get(0xde).copied()?,
         payload.get(0xdf).copied()?,
     ];
-    if values
-        .iter()
-        .all(|value| matches!(*value, 0x4c | 0x5a | 0x51))
-    {
+    let values = [
+        head_a, head_b, tails[0], tails[1], tails[2], tails[3], tails[4], tails[5],
+    ];
+
+    if values.iter().all(|value| *value == 0x49) {
         Some(true)
-    } else if values.iter().all(|value| matches!(*value, 0x4e | 0x51)) {
+    } else if head_a == 0x51 && head_b == 0x51 && tails.iter().all(|value| *value == 0x4e) {
+        Some(true)
+    } else if head_a == 0x4e
+        && head_b == 0x4e
+        && tails.iter().all(|value| matches!(*value, 0x4c | 0x4e))
+    {
         Some(false)
     } else {
         None
@@ -1733,6 +1773,40 @@ mod tests {
     }
 
     #[test]
+    fn passive_link_state_decode_matches_grounded_mix1_and_mix2_signatures() {
+        let mut payload = vec![0_u8; 0xe6];
+        payload[0x8f] = 0x51;
+        payload[0xcf] = 0x51;
+        payload[0xda] = 0x4e;
+        payload[0xdb] = 0x4e;
+        payload[0xdc] = 0x4e;
+        payload[0xdd] = 0x4e;
+        payload[0xde] = 0x4e;
+        payload[0xdf] = 0x4e;
+        assert_eq!(decode_link_state(&payload), Some(true));
+
+        payload[0x8f] = 0x4e;
+        payload[0xcf] = 0x4e;
+        payload[0xda] = 0x4c;
+        payload[0xdb] = 0x4c;
+        payload[0xdc] = 0x4c;
+        payload[0xdd] = 0x4c;
+        payload[0xde] = 0x4c;
+        payload[0xdf] = 0x4c;
+        assert_eq!(decode_link_state(&payload), Some(false));
+
+        payload[0x8f] = 0x49;
+        payload[0xcf] = 0x49;
+        payload[0xda] = 0x49;
+        payload[0xdb] = 0x49;
+        payload[0xdc] = 0x49;
+        payload[0xdd] = 0x49;
+        payload[0xde] = 0x49;
+        payload[0xdf] = 0x49;
+        assert_eq!(decode_link_state(&payload), Some(true));
+    }
+
+    #[test]
     fn mixer_channel_state_tracks_assignment_pan_and_link() {
         let state = MixerChannelState::known(
             16,
@@ -2062,7 +2136,7 @@ mod tests {
             sub_id: 0x03,
             body: vec![
                 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01,
+                0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
             ],
         };
 
@@ -2079,6 +2153,166 @@ mod tests {
         assert_eq!(
             reply.summary_label(),
             "Selector bitmap: 9 asserted [00 01 02 03 04 11 12 13 14]"
+        );
+    }
+
+    #[test]
+    fn decodes_startup_visible_link_pairs_from_0x75_0b_03() {
+        let mix1_linked = QueryReply75 {
+            query_id: 0x0b,
+            sub_id: 0x03,
+            body: vec![
+                0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+            ],
+        };
+        let unlinked = QueryReply75 {
+            query_id: 0x0b,
+            sub_id: 0x03,
+            body: vec![
+                0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+            ],
+        };
+        let mix2_linked = QueryReply75 {
+            query_id: 0x0b,
+            sub_id: 0x03,
+            body: vec![
+                0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+            ],
+        };
+        let mix1_high = QueryReply75 {
+            query_id: 0x0b,
+            sub_id: 0x03,
+            body: vec![
+                0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
+            ],
+        };
+        let mix2_high = QueryReply75 {
+            query_id: 0x0b,
+            sub_id: 0x03,
+            body: vec![
+                0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+            ],
+        };
+
+        assert_eq!(
+            mix1_linked
+                .startup_link_readback_from_bitmap()
+                .map(|maps| maps[0].1),
+            Some([
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            ])
+        );
+        assert_eq!(
+            unlinked
+                .startup_link_readback_from_bitmap()
+                .map(|maps| maps[0].1),
+            Some([
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            ])
+        );
+        assert_eq!(
+            mix2_linked
+                .startup_link_readback_from_bitmap()
+                .map(|maps| maps[1].1),
+            Some([
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            ])
+        );
+        assert_eq!(
+            mix1_high
+                .startup_link_readback_from_bitmap()
+                .map(|maps| maps[0].1),
+            Some([
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+            ])
+        );
+        assert_eq!(
+            mix2_high
+                .startup_link_readback_from_bitmap()
+                .map(|maps| maps[1].1),
+            Some([
+                Some(false),
+                Some(false),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+            ])
         );
     }
 
@@ -2106,64 +2340,6 @@ mod tests {
             reply.summary_label(),
             "Startup Mix1 pan categories [C C L R L R L R L R L R L R L R]"
         );
-    }
-
-    #[test]
-    fn decodes_startup_link_pairs_from_grounded_0x75_04_mix_banks() {
-        let mix1_alt = QueryReply75 {
-            query_id: 0x04,
-            sub_id: 0x00,
-            body: vec![
-                0x00, 0x20, 0x00, 0x20, 0x10, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
-                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
-                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-            ],
-        };
-        let mix1 = QueryReply75 {
-            query_id: 0x04,
-            sub_id: 0x01,
-            body: vec![
-                0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
-                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
-                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-            ],
-        };
-        let mix2 = QueryReply75 {
-            query_id: 0x04,
-            sub_id: 0x02,
-            body: vec![
-                0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
-                0x60, 0x02, 0x60, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
-                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
-            ],
-        };
-
-        let (surface1_alt, links1_alt) = mix1_alt.startup_link_readback().expect("mix1 alt links");
-        let (surface1, links1) = mix1.startup_link_readback().expect("mix1 links");
-        let (surface2, links2) = mix2.startup_link_readback().expect("mix2 links");
-        assert_eq!(surface1_alt, MixerSurface::Mix1);
-        assert_eq!(surface1, MixerSurface::Mix1);
-        assert_eq!(surface2, MixerSurface::Mix2);
-        assert_eq!(links1_alt[0], Some(false));
-        assert_eq!(links1_alt[1], Some(false));
-        assert_eq!(links1[0], Some(false));
-        assert_eq!(links1[1], Some(false));
-        assert_eq!(links2[0], Some(false));
-        assert_eq!(links2[1], Some(false));
-        for index in (2..16).step_by(2) {
-            assert_eq!(links1_alt[index], Some(true));
-            assert_eq!(links1_alt[index + 1], Some(true));
-            assert_eq!(links1[index], Some(true));
-            assert_eq!(links1[index + 1], Some(true));
-            assert_eq!(links2[index], Some(true));
-            assert_eq!(links2[index + 1], Some(true));
-        }
     }
 
     #[test]
@@ -2207,6 +2383,45 @@ mod tests {
             mix1.summary_label(),
             "Startup Mix1 pan categories [C C L R L R L R L R L R L R L R]"
         );
+    }
+
+    #[test]
+    fn summarizes_startup_indexed_code_table() {
+        let reply = QueryReply75 {
+            query_id: 0x15,
+            sub_id: 0x00,
+            body: vec![
+                0x00, 0x00, 0x01, 0x10, 0x02, 0x10, 0x03, 0x04, 0x04, 0x04, 0x05, 0x10, 0x06, 0x10,
+                0x07, 0x10, 0x08, 0x00, 0x09, 0x0f, 0x0a, 0x00, 0x0b, 0x10, 0x0c, 0x10, 0x0d, 0x10,
+                0x0e, 0x00, 0x0f, 0x10, 0x10, 0x00, 0x11, 0x10, 0x12, 0x10, 0x13, 0x00, 0x14, 0x0f,
+                0x15, 0x10, 0x16, 0x00, 0x17, 0x00, 0x18, 0x00, 0x19, 0x00, 0x1a, 0x10, 0x1b, 0x00,
+                0x1c, 0x10, 0x1d, 0x10, 0x1e, 0x10, 0x1f, 0x10,
+            ],
+        };
+
+        let entries = reply
+            .startup_indexed_code_table()
+            .expect("startup indexed code table");
+        assert_eq!(entries.len(), 32);
+        assert_eq!(entries[0], (0x00, 0x00));
+        assert_eq!(entries[3], (0x03, 0x04));
+        assert_eq!(entries[9], (0x09, 0x0f));
+        assert_eq!(
+            reply.summary_label(),
+            "Startup indexed code table [00:00 01:10 02:10 03:04 04:04 05:10 06:10 07:10 08:00 09:0f]"
+        );
+    }
+
+    #[test]
+    fn summarizes_startup_quad_state() {
+        let reply = QueryReply75 {
+            query_id: 0x17,
+            sub_id: 0x00,
+            body: vec![0x5a, 0x00, 0x60, 0x60],
+        };
+
+        assert_eq!(reply.startup_quad_state(), Some([0x5a, 0x00, 0x60, 0x60]));
+        assert_eq!(reply.summary_label(), "Startup quad state [5a 00 60 60]");
     }
 
     #[test]
@@ -2391,14 +2606,14 @@ mod tests {
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
         let payload = &mut frame[0x10..];
         payload[0x6a] = 0x0f;
-        payload[0x8f] = 0x5a;
-        payload[0xcf] = 0x4c;
-        payload[0xda] = 0x51;
-        payload[0xdb] = 0x51;
-        payload[0xdc] = 0x51;
-        payload[0xdd] = 0x51;
-        payload[0xde] = 0x51;
-        payload[0xdf] = 0x51;
+        payload[0x8f] = 0x51;
+        payload[0xcf] = 0x51;
+        payload[0xda] = 0x4e;
+        payload[0xdb] = 0x4e;
+        payload[0xdc] = 0x4e;
+        payload[0xdd] = 0x4e;
+        payload[0xde] = 0x4e;
+        payload[0xdf] = 0x4e;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")

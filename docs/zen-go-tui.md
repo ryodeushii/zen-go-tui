@@ -85,9 +85,9 @@ This is especially useful while continuing reverse-engineering of late `0x73` mi
 - grounded startup `0x75` selector-family diagnostics for:
   - `query 0x0b / sub 0x03` = asserted selector bitmap
   - `query 0x04 / sub 0x00..0x03` = selector pair banks shown conservatively in Raw view
-- grounded startup link seeding from `0x75 04` for:
-  - `query 0x04 / sub 0x01` = `MIX 1` linked odd/even pairs on the visible `CH3..CH16` range
-  - `query 0x04 / sub 0x02` = `MIX 2` linked odd/even pairs on the visible `CH3..CH16` range
+- grounded startup visible-link seeding from `0x75 0b/03` for:
+  - selector bits `0..7` = `MIX 1` pairs `1-2`, `3-4`, `5-6`, `7-8`, `9-10`, `11-12`, `13-14`, `15-16`
+  - selector bits `16..23` = `MIX 2` pairs `1-2`, `3-4`, `5-6`, `7-8`, `9-10`, `11-12`, `13-14`, `15-16`
 - grounded startup `0x75 04` pan-category diagnostics for:
   - `query 0x04 / sub 0x01` = visible `MIX 1` startup pan categories `C C L R ...`
   - `query 0x04 / sub 0x02` = visible `MIX 2` startup pan categories `C C L R ...`
@@ -159,7 +159,7 @@ Mixer protocol notes:
 - the ordinary-strip assignment write path now explicitly covers the grounded strip range `5..16`
 - the status pane now shows the grounded non-metadata startup `0x75` replies as conservative summaries instead of ignoring them
 - mixer assignments now seed from grounded `0x75` readback instead of waiting for local write overlays
-- startup linked pairs now seed from grounded `0x75 04/01` and `0x75 04/02` on the visible `CH3..CH16` range for `MIX 1` and `MIX 2`
+- startup visible link state for `CH1..16` now seeds from grounded `0x75 0b/03`
 - surface switching still triggers a refresh sweep so the newly selected surface can be inspected in Raw view while the remaining `0x75` mixer-state families are being decoded
 - Raw `0x75` history now summarizes grounded selector-family replies instead of showing them only as opaque hex previews
 
@@ -171,7 +171,7 @@ Mixer protocol notes:
 - **link / unlink controls**: the `0x70 / 0x14` family is documented, but selector semantics are not resolved enough to expose as a normal interactive control yet
 - **link / unlink controls**: the TUI now exposes only the currently grounded selector mappings (`MIX 1` pairs `1-2`, `7-8`, and `MIX 2` pair `1-2`); ungrounded ordinary-pair selectors remain deferred
 - **startup `0x75` blocks**: the app now reads back the grounded assignment subset from `0x03`, but it still intentionally does **not** decode the inner meaning of the `0x00` capability/default block or `0x11` status/capability value beyond conservative byte summaries, and it does not trust `0x18/00` for startup level/pan/mute yet
-- **`0x04/*` and `0x0b/03`**: these are still not trusted for startup level or exact numeric pan, but `0x04/01` and `0x04/02` are now grounded enough to seed the visible linked-pair topology on `CH3..CH16` and to summarize startup pan categories in Raw view
+- **`0x04/*` and `0x0b/03`**: these are still not trusted for startup level or exact numeric pan, but `0x0b/03` is now grounded for startup visible link state on `CH1..16` and `0x04/01` plus `0x04/02` remain useful for startup pan-category summaries in Raw view
 - **metering decode**: captures now ground that meter-related movement is device-originated and visible in late `0x73` rows rather than `0x83`. The UI now keeps that live meter subset separate from stored level, but exact strip/master meter parsing is still intentionally out of scope
 
 ## Verification expectations without hardware
