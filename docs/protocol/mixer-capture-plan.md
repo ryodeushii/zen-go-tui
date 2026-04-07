@@ -45,11 +45,18 @@ Use this baseline before the family captures unless a capture says otherwise.
 - Visible page: `Monitors & Headphones`
 - Mixer surface: `MIX 1`
 - Expanded mixer view: show all `16` strips if possible
-- Default strip assignment:
+- Default strip assignment on the baseline screenshots / captures:
   - `1 = Preamp 1`
   - `2 = Preamp 2`
-  - `3..10 = Computer Play 1..8`
-  - `11..16 = Mute` or unassigned/silent state
+  - `3 = Computer Play 1`
+  - `4 = Computer Play 2`
+  - `5 = Computer Play 3`
+  - `6 = Computer Play 4`
+  - `7 = Computer Play 5`
+  - `8 = Computer Play 6`
+  - `9 = Computer Play 7`
+  - `10 = Computer Play 8`
+  - `11..16 = Mute`
 - All link pairs unlinked
 - All strip mutes off
 - All strip solos off
@@ -115,6 +122,151 @@ Capture 04 actions:
 Notes:
 - do not move the strip fader
 - do not touch pan, mute, solo, or link in these captures
+
+Status after captures `03`, `04`, and `18`:
+
+- these files are enough to ground the ordinary-strip assignment family itself: `0x70 / 0x53` with payload prefix `d3 41`
+- they are enough to ground the ordinary-strip source enum for the currently observed values and to trust query-side readback from `0x75 03/05..09`
+- they were not enough by themselves to safely enable interactive assignment writes across all strips
+
+Files already received under `antelope_pcap/channel_assignments/`:
+
+- the planned focused captures `capture_mixer_21` through `capture_mixer_30`
+- additional per-channel spot captures such as `ch1_preamp1_oscillator1_preamp1.pcapng`, `ch2_preamp2_oscillator1_preamp2.pcapng`, `ch3_cp1_oscillator1_cp1.pcapng`, `ch4_cp2_oscillator1_cp2.pcapng`, `ch5_cp3_oscillator1_cp3.pcapng`, `ch11_mute_oscillator1_mute.pcapng`, and `ch16_mute_oscillator1_mute.pcapng`
+
+These should be treated as assignment-focused evidence first, with the numbered `capture_mixer_21..30` files as the canonical implementation set.
+
+What these captures were intended to close:
+
+- the full ordinary-strip write-index map for strips `5..16`
+- the dedicated early-strip (`1..4`) write map
+- one explicit write-plus-readback cross-check after reassignment so we can tie host writes, UI-visible result, and `0x75 03/*` replies together in the same session
+
+### 2b. Assignment Delta Needed For Implementation
+
+Goal:
+- finish only the assignment-side gaps that blocked safe interactive per-channel source selection
+- avoid re-capturing already-grounded ordinary-strip enum values unless they are needed as anchors for strip indexing
+
+#### 2b-1. Ordinary Strip Index Map
+
+Goal:
+- identify which `d3 41` table entry belongs to each ordinary strip `5..16`
+- prove or disprove the current linear-strip-index assumption before enabling writes again
+
+Recommended files:
+- `capture_mixer_21_assignment_index_map_5_8.pcapng`
+- `capture_mixer_22_assignment_index_map_9_12.pcapng`
+- `capture_mixer_23_assignment_index_map_13_16.pcapng`
+
+Setup:
+- stay on `MIX 1`
+- all ordinary strips `5..16` set to a written-down baseline assignment before recording
+- keep links off, pan untouched, faders untouched, no signal present
+- use one clearly visible target source that is easy to spot in the UI and already grounded in the ordinary enum, preferably `Oscillator 1` or `SPDIF In 1`
+
+Actions per file:
+- for each strip in the file's range:
+  - assign strip to the chosen target source
+  - wait `2-3` seconds
+  - assign the same strip back to baseline `Mute`
+  - wait `2-3` seconds
+- touch only one strip at a time
+
+Write down:
+- exact strip number changed on each step
+- source before and after each step
+- whether any other visible strip changed unexpectedly in the UI
+
+Why this is needed:
+- current captures anchor the write index for strip `11`, but the failed attempt showed that extrapolating that map to every other ordinary strip is not safe enough
+
+#### 2b-2. Early Strip Write Map (`1..4`)
+
+Goal:
+- determine how strips `1..4` are encoded in `d3 41`
+- separate early-strip indexing from early-strip enum semantics
+
+Recommended files:
+- `capture_mixer_24_assignment_early_ch1.pcapng`
+- `capture_mixer_25_assignment_early_ch2.pcapng`
+- `capture_mixer_26_assignment_early_ch3.pcapng`
+- `capture_mixer_27_assignment_early_ch4.pcapng`
+
+Setup:
+- stay on `MIX 1`
+- no AFX page changes, no BP ALL, no DSP editor interaction during the recording
+- keep strips `5..16` untouched for the whole session
+- choose two or three source assignments per channel that are visibly valid on that channel and already easy to recognize in the UI
+
+Actions per file:
+- start from the written baseline source for that strip
+- change the strip to source A
+- wait `2-3` seconds
+- change the strip to source B
+- wait `2-3` seconds
+- change the strip back to baseline
+
+Preferred source choices:
+- use at least one source that is already grounded in the ordinary enum, such as `Preamp 1`, `Preamp 2`, or `Mute`
+- if the UI exposes early-strip-only choices, write them down but capture them in a separate pass only after the baseline two-or-three-source run succeeds
+
+Write down:
+- whether the UI exposes a different source list for that strip
+- whether any AFX-related control becomes selected or highlighted automatically
+- exact visible source label after each click
+
+Why this is needed:
+- `capture_mixer_18_surface_independence_assignment.pcapng` already shows an early-strip-shaped `d3 41 05 ...` write, so we know the family exists, but not the full per-channel mapping or whether the source enum differs
+
+#### 2b-3. Write/Readback Cross-Check
+
+Goal:
+- confirm that the same session shows matching host write, visible UI result, and startup/query readback for both an ordinary strip and an early strip
+
+Recommended files:
+- `capture_mixer_28_assignment_write_readback_ordinary.pcapng`
+- `capture_mixer_29_assignment_write_readback_early.pcapng`
+
+Setup:
+- start from a non-default but clearly written baseline
+- keep only one target strip changing in each file
+- after each assignment change, let the control panel settle long enough to emit its readback traffic
+
+Actions per file:
+- change one strip assignment
+- wait `3-5` seconds
+- if needed, switch away and back to the mixer page or surface only if that is required to trigger `0x75` refreshes, and note it explicitly
+- leave `3-5` seconds idle after the last action
+
+Write down:
+- exact strip changed
+- exact visible source after the write
+- whether the control panel needed a page/surface refresh before the expected readback appeared
+
+Why this is needed:
+- it gives one authoritative end-to-end anchor tying together `d3 41` host writes and the `0x75 03/05..09` query-side state we already decode
+
+#### 2b-4. Surface Propagation Sanity Check
+
+Goal:
+- verify assignment sharing across surfaces with one ordinary strip and one early strip after the new focused captures, without mixing in link or level work
+
+Recommended file:
+- `capture_mixer_30_assignment_surface_propagation_sanity.pcapng`
+
+Actions:
+- on `MIX 1`, change one ordinary strip assignment
+- switch to `MIX 2` and confirm the same assignment is visible
+- back on `MIX 1`, change one early strip assignment
+- switch to `MIX 2` and confirm the same assignment is visible
+
+Write down:
+- whether propagation is immediate or only visible after the page settles
+- whether the early strip behaves differently from the ordinary strip during the switch
+
+Why this is still useful even though `capture_mixer_18` exists:
+- the failed implementation suggests we need one cleaner post-index-map sanity capture where assignment is the only thing under test
 
 ### 3. Link Pair State Only
 

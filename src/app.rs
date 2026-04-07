@@ -3,10 +3,11 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 
 use crate::protocol::{
-    control_panel_startup_queries, encode_command, encode_link_companion, encode_query,
-    ClockSource, Command, DeviceMetadata, DeviceSnapshot, Frame, MixerAssignment,
-    MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode, OutputState, OutputTarget,
-    PanState, PreampMode, PreampState, QueryReply75, SampleRate, Snapshot73, Surface,
+    control_panel_startup_queries, encode_command, encode_link_companion,
+    encode_mixer_assignment_frames_with_table, encode_query, ClockSource, Command, DeviceMetadata,
+    DeviceSnapshot, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface,
+    OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState, QueryReply75,
+    SampleRate, Snapshot73, Surface,
 };
 use crate::transport::Transport;
 
@@ -525,14 +526,29 @@ impl Controller {
         Ok(())
     }
 
+    fn shared_assignment_table(&self) -> Result<[MixerAssignment; 16]> {
+        let mut assignments = [MixerAssignment::Mute; 16];
+        for (index, slot) in assignments.iter_mut().enumerate() {
+            *slot = self.state.mixer_channels[0][index]
+                .assignment
+                .or(self.state.mixer_channels[1][index].assignment)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("assignment table is incomplete for CH {:02}", index + 1)
+                })?;
+        }
+        Ok(assignments)
+    }
+
     pub fn send(&mut self, command: Command) -> Result<()> {
         self.pending_mutation = pending_from_command(command);
         if let Command::SetMixerAssignment { strip, assignment } = command {
-            let _ = (strip, assignment);
-            self.pending_mutation = None;
-            bail!(
-                "assignment writes are disabled until the full d3 41 table can be reconstructed safely"
-            );
+            let assignments = self.shared_assignment_table()?;
+            for frame in encode_mixer_assignment_frames_with_table(strip, assignment, &assignments)
+            {
+                self.transport.write(&frame)?;
+            }
+            self.state.last_message = format!("Sent {:?}", command);
+            return Ok(());
         }
         if let Command::SetLinkState {
             enabled,
@@ -1005,6 +1021,42 @@ mod tests {
             mixer_decode: Default::default(),
             late_shadow: [0; 12],
         }
+    }
+
+    fn seed_shared_assignments(state: &mut AppState) {
+        let assignments = [
+            MixerAssignment::Preamp(1),
+            MixerAssignment::Preamp(2),
+            MixerAssignment::ComputerPlay(1),
+            MixerAssignment::ComputerPlay(2),
+            MixerAssignment::ComputerPlay(3),
+            MixerAssignment::ComputerPlay(4),
+            MixerAssignment::ComputerPlay(5),
+            MixerAssignment::ComputerPlay(6),
+            MixerAssignment::ComputerPlay(7),
+            MixerAssignment::ComputerPlay(8),
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+        ];
+
+        for surface in &mut state.mixer_channels {
+            for (channel, assignment) in surface.iter_mut().zip(assignments) {
+                channel.assignment = Some(assignment);
+            }
+        }
+    }
+
+    fn assignment_pairs(frame: &[u8], count: usize) -> Vec<[u8; 2]> {
+        let payload = &frame[0x10 + 0x03..];
+        payload
+            .chunks_exact(2)
+            .take(count)
+            .map(|chunk| [chunk[0], chunk[1]])
+            .collect()
     }
 
     #[test]
@@ -1714,19 +1766,103 @@ mod tests {
     }
 
     #[test]
-    fn mixer_assignment_write_is_blocked_until_full_table_is_grounded() {
+    fn mixer_assignment_write_sends_ordinary_strip_frames_and_updates_shared_state() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
+        seed_shared_assignments(&mut controller.state);
 
-        let error = controller
+        controller
+            .send(Command::SetMixerAssignment {
+                strip: 5,
+                assignment: MixerAssignment::Oscillator(1),
+            })
+            .expect("assignment write should succeed");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 5);
+        assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
+        assert_eq!(&writes[0][0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
+
+        controller.confirm_pending_write(snapshot());
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][4].assignment,
+            Some(MixerAssignment::Oscillator(1))
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][4].assignment,
+            Some(MixerAssignment::Oscillator(1))
+        );
+    }
+
+    #[test]
+    fn mixer_assignment_write_sends_early_strip_frames_and_updates_shared_state() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        seed_shared_assignments(&mut controller.state);
+
+        controller
+            .send(Command::SetMixerAssignment {
+                strip: 1,
+                assignment: MixerAssignment::Oscillator(1),
+            })
+            .expect("assignment write should succeed");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x05]);
+        assert_eq!(&writes[0][0x10 + 0x03..0x10 + 0x05], &[0x09, 0x00]);
+
+        controller.confirm_pending_write(snapshot());
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment,
+            Some(MixerAssignment::Oscillator(1))
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][0].assignment,
+            Some(MixerAssignment::Oscillator(1))
+        );
+    }
+
+    #[test]
+    fn late_strip_assignment_write_preserves_existing_assignment_table_entries() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        seed_shared_assignments(&mut controller.state);
+
+        controller
             .send(Command::SetMixerAssignment {
                 strip: 11,
-                assignment: MixerAssignment::Oscillator(2),
+                assignment: MixerAssignment::ComputerPlay(1),
             })
-            .expect_err("assignment write should be blocked");
+            .expect("assignment write should succeed");
 
-        assert!(error.to_string().contains("d3 41 table"));
-        assert!(transport.take_writes().is_empty());
+        let writes = transport.take_writes();
+        let bank06 = writes
+            .iter()
+            .find(|frame| frame[0x10..0x13] == [0xd3, 0x41, 0x06])
+            .expect("bank 06 frame");
+
+        assert_eq!(
+            assignment_pairs(bank06, 16),
+            vec![
+                [0x03, 0x00],
+                [0x03, 0x01],
+                [0x03, 0x02],
+                [0x03, 0x03],
+                [0x01, 0x02],
+                [0x01, 0x03],
+                [0x01, 0x04],
+                [0x01, 0x05],
+                [0x01, 0x06],
+                [0x01, 0x07],
+                [0x01, 0x00],
+                [0x08, 0x00],
+                [0x08, 0x00],
+                [0x08, 0x00],
+                [0x08, 0x00],
+                [0x08, 0x00],
+            ]
+        );
     }
 
     #[test]

@@ -465,15 +465,20 @@ impl MixerStrip {
         matches!(strip.kind, MixerStripKind::Ordinary).then_some(strip)
     }
 
-    pub fn assignment_entry_index(self) -> Option<usize> {
+    pub fn assignment_entry_index(self) -> usize {
+        (self.channel - 1) as usize
+    }
+
+    pub fn assignment_write_banks(self) -> &'static [u8] {
         match self.kind {
-            MixerStripKind::Ordinary => Some((self.channel - 1) as usize),
-            MixerStripKind::EarlyAfxAdjacent => None,
+            MixerStripKind::EarlyAfxAdjacent => &[0x05],
+            MixerStripKind::Ordinary if self.channel <= 8 => &[0x03, 0x06, 0x07, 0x08, 0x09],
+            MixerStripKind::Ordinary => &[0x06, 0x07, 0x08, 0x09],
         }
     }
 
     pub fn assignment_write_is_grounded(channel: u8) -> bool {
-        channel == 11
+        Self::new(channel).is_some()
     }
 }
 
@@ -1739,14 +1744,15 @@ fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
 }
 
 pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) -> Vec<Vec<u8>> {
-    let entry_index = MixerStrip::ordinary(strip)
-        .and_then(|value| value.assignment_entry_index())
-        .expect("ordinary strip assignment write requires grounded ordinary-strip mapping");
+    let strip = MixerStrip::new(strip).expect("assignment write requires grounded strip mapping");
+    let entry_index = strip.assignment_entry_index();
     let tuple_offset = 0x03 + entry_index * 2;
     let [a, b] = assignment.ordinary_strip_bytes();
 
-    [0x06_u8, 0x07, 0x08, 0x09]
-        .into_iter()
+    strip
+        .assignment_write_banks()
+        .iter()
+        .copied()
         .map(|bank| {
             let mut frame = vec![0_u8; HID_REPORT_SIZE];
             frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
@@ -1757,6 +1763,57 @@ pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) ->
             frame
         })
         .collect()
+}
+
+pub fn encode_mixer_assignment_frames_with_table(
+    strip: u8,
+    assignment: MixerAssignment,
+    assignments: &[MixerAssignment; 16],
+) -> Vec<Vec<u8>> {
+    let strip = MixerStrip::new(strip).expect("assignment write requires grounded strip mapping");
+    let mut full_assignments = *assignments;
+    full_assignments[strip.assignment_entry_index()] = assignment;
+
+    strip
+        .assignment_write_banks()
+        .iter()
+        .copied()
+        .map(|bank| {
+            let mut frame = vec![0_u8; HID_REPORT_SIZE];
+            frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
+            frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
+            frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, bank]);
+
+            for entry_index in assignment_entries_for_bank(bank) {
+                let [a, b] = assignment_entry_bytes(bank, entry_index, &full_assignments);
+                let tuple_offset = 0x03 + entry_index * 2;
+                frame[0x10 + tuple_offset] = a;
+                frame[0x10 + tuple_offset + 1] = b;
+            }
+
+            frame
+        })
+        .collect()
+}
+
+fn assignment_entries_for_bank(bank: u8) -> std::ops::Range<usize> {
+    match bank {
+        0x05 => 0..4,
+        0x03 => 0..8,
+        0x06 | 0x07 | 0x08 | 0x09 => 0..16,
+        _ => 0..0,
+    }
+}
+
+fn assignment_entry_bytes(
+    bank: u8,
+    entry_index: usize,
+    assignments: &[MixerAssignment; 16],
+) -> [u8; 2] {
+    match (bank, entry_index) {
+        (0x03 | 0x06 | 0x07 | 0x08 | 0x09, 0..=3) => [0x03, entry_index as u8],
+        _ => assignments[entry_index].ordinary_strip_bytes(),
+    }
 }
 
 fn host_frame(length: u32, payload: &[u8]) -> Vec<u8> {
@@ -1845,12 +1902,19 @@ mod tests {
         assert_eq!(MixerStrip::ordinary(4), None);
         assert_eq!(
             MixerStrip::ordinary(5).map(|strip| strip.assignment_entry_index()),
-            Some(Some(4))
+            Some(4)
         );
         assert_eq!(
             MixerStrip::ordinary(16).map(|strip| strip.assignment_entry_index()),
-            Some(Some(15))
+            Some(15)
         );
+    }
+
+    #[test]
+    fn assignment_write_is_grounded_for_all_visible_strips() {
+        for channel in 1..=16 {
+            assert!(MixerStrip::assignment_write_is_grounded(channel));
+        }
     }
 
     #[test]
@@ -2029,6 +2093,31 @@ mod tests {
             assert_eq!(&frame[0x10..0x13], &[0xd3, 0x41, bank]);
             assert_eq!(&frame[0x10 + 0x17..0x10 + 0x19], &[0x0a, 0x01]);
         }
+    }
+
+    #[test]
+    fn encodes_ordinary_assignment_write_sequence_for_strip_5_with_bank_03() {
+        let frames = encode_mixer_assignment_frames(5, MixerAssignment::Oscillator(1));
+
+        assert_eq!(frames.len(), 5);
+        for (frame, bank) in frames.iter().zip([0x03_u8, 0x06, 0x07, 0x08, 0x09]) {
+            assert_eq!(&frame[0..4], &0x70_u32.to_le_bytes());
+            assert_eq!(&frame[4..8], &0x53_u32.to_le_bytes());
+            assert_eq!(&frame[0x10..0x13], &[0xd3, 0x41, bank]);
+            assert_eq!(&frame[0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
+        }
+    }
+
+    #[test]
+    fn encodes_early_assignment_write_sequence_for_strip_1_with_bank_05() {
+        let frames = encode_mixer_assignment_frames(1, MixerAssignment::Oscillator(1));
+
+        assert_eq!(frames.len(), 1);
+        let frame = &frames[0];
+        assert_eq!(&frame[0..4], &0x70_u32.to_le_bytes());
+        assert_eq!(&frame[4..8], &0x53_u32.to_le_bytes());
+        assert_eq!(&frame[0x10..0x13], &[0xd3, 0x41, 0x05]);
+        assert_eq!(&frame[0x10 + 0x03..0x10 + 0x05], &[0x09, 0x00]);
     }
 
     #[test]

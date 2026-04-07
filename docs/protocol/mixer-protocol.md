@@ -205,8 +205,10 @@ Grounded details:
 
 - `d3 41` is the logical assignment-family marker
 - `bb` behaves like a bank/subwrite selector, not the source id itself
-- for the ordinary strip-11 sweeps, the changing source tuple sits in zero-based table entry `10`
-- that changing entry is carried at payload offsets `0x17..0x18` relative to the `d3 41` payload body
+- the full per-strip entry map is now grounded from the new channel-assignment captures:
+  - early `bb = 0x05`: `CH1..4 -> entry 0..3`
+  - ordinary `bb = 0x03/06/07/08/09`: `CH5..16 -> entry 4..15`
+- for ordinary strips, the changing source tuple is still carried at payload offsets `0x17..0x18` relative to the `d3 41` payload body when expressed in the full ordinary bank rows
 
 Confirmed ordinary-strip enum values from the assignment captures:
 
@@ -234,8 +236,9 @@ Strong candidate interpolation:
 Important boundary:
 
 - early-strip entries include values such as `03 00`, `03 01`, `03 02`, `03 03`
-- those are likely tied to the special strips `1..4` / AFX-capable area
-- they should not be merged into the ordinary-strip enum yet
+- those values are still tied to the special strips `1..4` / AFX-capable area inside the ordinary-bank tables
+- the newer dedicated early-strip captures show that the actual early-strip `bb = 0x05` writes use the common source tuples directly for the tested sources instead
+- they therefore should not be merged into the ordinary-strip source enum or reused as direct UI-facing source ids
 
 ## What `0x73` Safely Tells Us Today
 

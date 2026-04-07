@@ -16,8 +16,8 @@ use ratatui::Terminal;
 
 use zen_go_tui::app::{Controller, FocusArea};
 use zen_go_tui::protocol::{
-    ClockSource, Command, MixerSurface, OutputMode, OutputTarget, PanState, PreampMode, SampleRate,
-    Surface,
+    ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, OutputTarget, PanState,
+    PreampMode, SampleRate, Surface,
 };
 use zen_go_tui::transport::{HidTransport, MockTransport, Transport};
 use zen_go_tui::ui;
@@ -324,14 +324,24 @@ fn cycle_mixer_assignment(controller: &mut Controller) -> Result<()> {
         controller.state.active_mixer_channels()[controller.state.selected_channel];
     if !zen_go_tui::protocol::MixerStrip::assignment_write_is_grounded(active_channel.channel) {
         controller.state.last_message =
-            "Assignment cycling is only grounded for strip 11 currently; broader strip mapping remains deferred.".to_string();
+            "Assignment cycling is not grounded for the selected strip.".to_string();
         return Ok(());
     }
 
-    controller.state.last_message =
-        "Assignment writes are disabled until the full d3 41 table can be reconstructed safely."
-            .to_string();
-    return Ok(());
+    let choices = MixerAssignment::grounded_choices();
+    let current = active_channel
+        .assignment
+        .and_then(|assignment| {
+            choices
+                .iter()
+                .position(|candidate| *candidate == assignment)
+        })
+        .unwrap_or(0);
+    let next = choices[(current + 1) % choices.len()];
+    controller.send(Command::SetMixerAssignment {
+        strip: active_channel.channel,
+        assignment: next,
+    })
 }
 
 fn toggle_mixer_link(controller: &mut Controller) -> Result<()> {
@@ -411,17 +421,16 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
             controller.state.selected_channel = strip.saturating_sub(1) as usize;
             if !zen_go_tui::protocol::MixerStrip::assignment_write_is_grounded(strip) {
                 controller.state.last_message =
-                    "Assignment picking is only grounded for strip 11 currently; broader strip mapping remains deferred.".to_string();
+                    "Assignment picking is not grounded for the selected strip.".to_string();
             } else {
-                controller.state.last_message =
-                    "Assignment writes are disabled until the full d3 41 table can be reconstructed safely.".to_string();
+                controller.state.assignment_picker =
+                    Some(zen_go_tui::app::AssignmentPickerState { strip });
+                controller.state.last_message = format!("Pick source assignment for CH {strip:02}");
             }
         }
         ui::MouseAction::PickAssignment { strip, assignment } => {
             controller.state.assignment_picker = None;
-            let _ = (strip, assignment);
-            controller.state.last_message =
-                "Assignment writes are disabled until the full d3 41 table can be reconstructed safely.".to_string();
+            controller.send(Command::SetMixerAssignment { strip, assignment })?;
         }
         ui::MouseAction::CloseAssignmentPicker => {
             controller.state.assignment_picker = None;
@@ -583,5 +592,86 @@ fn next_preamp_gain_raw(input: zen_go_tui::protocol::PreampInputState, up: bool)
             }
         }
         PreampMode::Unknown(_) => input.gain_raw,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use zen_go_tui::app::AssignmentPickerState;
+    use zen_go_tui::protocol::{MixerAssignment, MixerSurface};
+
+    fn seed_shared_assignments(controller: &mut Controller) {
+        let assignments = [
+            MixerAssignment::Preamp(1),
+            MixerAssignment::Preamp(2),
+            MixerAssignment::ComputerPlay(1),
+            MixerAssignment::ComputerPlay(2),
+            MixerAssignment::ComputerPlay(3),
+            MixerAssignment::ComputerPlay(4),
+            MixerAssignment::ComputerPlay(5),
+            MixerAssignment::ComputerPlay(6),
+            MixerAssignment::ComputerPlay(7),
+            MixerAssignment::ComputerPlay(8),
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+            MixerAssignment::Mute,
+        ];
+
+        for surface in &mut controller.state.mixer_channels {
+            for (channel, assignment) in surface.iter_mut().zip(assignments) {
+                channel.assignment = Some(assignment);
+            }
+        }
+    }
+
+    #[test]
+    fn cycle_mixer_assignment_sends_next_assignment_for_early_strip() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        seed_shared_assignments(&mut controller);
+        controller.state.focus = FocusArea::Mixer;
+        controller.state.selected_channel = 0;
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
+            Some(MixerAssignment::Preamp(1));
+
+        cycle_mixer_assignment(&mut controller).expect("cycle assignment");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x05]);
+        assert_eq!(&writes[0][0x10 + 0x03..0x10 + 0x05], &[0x00, 0x01]);
+    }
+
+    #[test]
+    fn mouse_assignment_picker_sends_selected_assignment_for_ordinary_strip() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        seed_shared_assignments(&mut controller);
+
+        apply_mouse_action(&mut controller, ui::MouseAction::OpenAssignmentPicker(5))
+            .expect("open picker");
+        assert_eq!(
+            controller.state.assignment_picker,
+            Some(AssignmentPickerState { strip: 5 })
+        );
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::PickAssignment {
+                strip: 5,
+                assignment: MixerAssignment::Oscillator(1),
+            },
+        )
+        .expect("pick assignment");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 5);
+        assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
+        assert_eq!(&writes[0][0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
     }
 }

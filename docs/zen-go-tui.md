@@ -45,7 +45,7 @@ The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device m
 - `m` — toggle output mute or mixer mute
 - `d` — toggle output dim
 - `[` / `]` — adjust mixer pan left/right for the selected strip
-- `a` — cycle grounded ordinary-strip mixer assignments on strips `5..16`
+- `a` — cycle grounded mixer assignments on the selected strip
 - `l` — toggle currently grounded mixer link selectors only
 - `3` — cycle preamp mode for the selected preamp input
 - `p` — toggle preamp phase for the selected preamp input
@@ -119,7 +119,7 @@ This is especially useful while continuing reverse-engineering of late `0x73` mi
   - output dim (`0x66`)
   - mixer level (`0xd4 04 mm cc ll pp`)
   - mixer mute (`0x40` bit in `pp`)
-- mixer strip assignment (`0x70 / 0x53`, `d3 41`, ordinary strips documented)
+- mixer strip assignment (`0x70 / 0x53`, `d3 41`, early + ordinary write families documented)
 - mixer pan (`0xd4 04 mm cc 00 pp` with scalar raw pan byte support)
 - surface select (`0x49 00 ss`)
 
@@ -154,12 +154,12 @@ Mixer level notes:
 Mixer protocol notes:
 
 - the current dedicated mixer protocol summary lives in `docs/protocol/mixer-protocol.md`
-- strip source assignment is now documented as a separate `0x70 / 0x53` table-write family for ordinary strips
+- strip source assignment is now documented as a separate `0x70 / 0x53` table-write family with early and ordinary strip variants
 - assignment is shared across mixer surfaces, while link state and level are treated as surface-local
 - the app now tracks `16` strips per surface with shared assignment plus per-surface level, mute, pan, and link overlay state
 - mixer pan host encoding is now modeled as a scalar raw value over the grounded `0x02 .. 0x3e` range rather than only anchor states
-- ordinary-strip assignment cycling is intentionally limited to strips `5..16`; early AFX-adjacent strip assignment semantics remain deferred
-- the ordinary-strip assignment write path now explicitly covers the grounded strip range `5..16`
+- mixer assignment cycling now uses the grounded per-strip write map across `CH1..16`
+- the assignment write path now covers early `bb = 0x05`, ordinary `CH5..8` `bb = 0x03/06/07/08/09`, and ordinary `CH9..16` `bb = 0x06/07/08/09`
 - the status pane now shows the grounded non-metadata startup `0x75` replies as conservative summaries instead of ignoring them
 - mixer assignments now seed from grounded `0x75` readback instead of waiting for local write overlays
 - startup visible link state for `CH1..16` now seeds from grounded `0x75 0b/03`

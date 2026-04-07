@@ -645,7 +645,27 @@ What is confirmed from the current evidence:
 - the logical assignment family marker is `d3 41`
 - the third payload byte (`bb`) behaves like a bank/subwrite selector rather than the source id itself
 - strip `11` assignment sweeps emit four near-identical writes with `bb = 0x06`, `0x07`, `0x08`, `0x09`
-- `capture_mixer_18_surface_independence_assignment.pcapng` also contains a `d3 41` write, but with `bb = 0x05` and an early-strip payload shape; that aligns with the current decision to keep strips `1..4` / AFX-adjacent assignment encoding out of scope for this pass
+- the newer `antelope_pcap/channel_assignments/capture_mixer_21..23_*.pcapng` files confirm the ordinary-strip write index map directly:
+  - `CH5 -> entry 4`
+  - `CH6 -> entry 5`
+  - `CH7 -> entry 6`
+  - `CH8 -> entry 7`
+  - `CH9 -> entry 8`
+  - `CH10 -> entry 9`
+  - `CH11 -> entry 10`
+  - `CH12 -> entry 11`
+  - `CH13 -> entry 12`
+  - `CH14 -> entry 13`
+  - `CH15 -> entry 14`
+  - `CH16 -> entry 15`
+- those same captures show a write-shape split inside the ordinary family:
+  - `CH5..8` emit `bb = 0x03, 0x06, 0x07, 0x08, 0x09`
+  - `CH9..16` emit `bb = 0x06, 0x07, 0x08, 0x09` only
+- the dedicated early-strip captures in `antelope_pcap/channel_assignments/capture_mixer_24..27_*.pcapng` plus the single-channel spot captures show that `CH1..4` use a separate `bb = 0x05` write shape with direct per-channel entry mapping:
+  - `CH1 -> entry 0`
+  - `CH2 -> entry 1`
+  - `CH3 -> entry 2`
+  - `CH4 -> entry 3`
 
 For the ordinary-strip sweeps on strip `11`, the only changing table entry is the zero-based entry `10` inside the `d3 41` payload body.
 That entry sits at payload offsets `0x17..0x18` relative to the start of the `d3 41` payload (after bytes `d3 41 bb`).
@@ -677,7 +697,9 @@ Strong candidate interpolation from the unchanged ordinary-strip entries that ap
 Important boundary:
 
 - the early-strip entries visible in the same tables include `03 00`, `03 01`, `03 02`, `03 03`
-- those values likely belong to the special strips `1..4` / AFX-capable area and should **not** be merged into the ordinary-strip enum yet
+- the newer `bb = 0x05` early-strip captures show that those `03 xx` values are **not** the direct early-strip source enum used by the early write family
+- in the tested `bb = 0x05` writes, early strips reuse the common source tuples directly (`00 00`, `00 01`, `01 00`, `01 01`, `08 00`, `09 00`, and observed `02 01`, `09 01`, `0a 00`)
+- the `03 xx` values therefore remain best treated as ordinary-bank placeholders or a separate bank-local representation for early-strip slots, not as user-facing source ids
 
 #### Stable device state after assignment writes
 
