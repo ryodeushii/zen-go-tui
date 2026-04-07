@@ -271,9 +271,24 @@ impl PreampInputState {
         }
     }
 
+    pub fn observed_meter_db(self) -> Option<i16> {
+        self.observed_meter.and_then(meter_display_db)
+    }
+
     pub fn observed_meter_ratio(self) -> Option<f64> {
-        self.observed_meter
-            .map(|raw| (1.0 - (raw.min(0x60) as f64 / 96.0)).clamp(0.0, 1.0))
+        self.observed_meter.map(meter_ratio)
+    }
+}
+
+fn meter_display_db(raw: u8) -> Option<i16> {
+    (raw <= 0x3c).then_some(-(raw as i16))
+}
+
+fn meter_ratio(raw: u8) -> f64 {
+    if raw > 0x3c {
+        0.0
+    } else {
+        (1.0 - (raw as f64 / 60.0)).clamp(0.0, 1.0)
     }
 }
 
@@ -1606,8 +1621,11 @@ impl MixerChannelState {
     }
 
     pub fn meter_ratio(self) -> Option<f64> {
-        self.meter
-            .map(|raw| (1.0 - (raw.min(0x60) as f64 / 96.0)).clamp(0.0, 1.0))
+        self.meter.map(meter_ratio)
+    }
+
+    pub fn meter_db(self) -> Option<i16> {
+        self.meter.and_then(meter_display_db)
     }
 }
 
@@ -2879,6 +2897,30 @@ mod tests {
         assert_eq!(silence.display_db(), Some(-90));
         assert_eq!(unity.gain_ratio(), Some(1.0));
         assert_eq!(silence.gain_ratio(), Some(0.0));
+    }
+
+    #[test]
+    fn meter_display_uses_clamped_minus_60_to_0_db_ui_scale() {
+        let mut active =
+            MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
+        active.meter = Some(0x00);
+        let mut floor =
+            MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
+        floor.meter = Some(0x3c);
+        let mut hidden =
+            MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
+        hidden.meter = Some(0x60);
+        let mut preamp = PreampInputState::from_raw(0x2a, 0x00);
+        preamp.observed_meter = Some(0x60);
+
+        assert_eq!(active.meter_db(), Some(0));
+        assert_eq!(floor.meter_db(), Some(-60));
+        assert_eq!(hidden.meter_db(), None);
+        assert_eq!(active.meter_ratio(), Some(1.0));
+        assert_eq!(floor.meter_ratio(), Some(0.0));
+        assert_eq!(hidden.meter_ratio(), Some(0.0));
+        assert_eq!(preamp.observed_meter_db(), None);
+        assert_eq!(preamp.observed_meter_ratio(), Some(0.0));
     }
 
     #[test]

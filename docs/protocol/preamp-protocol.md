@@ -113,6 +113,7 @@ Implementation boundary:
 
 - these lanes are treated as narrow observed meter indicators for app use, not as a full parser-ready preamp metering model
 - the app only accepts the lower plausible meter range on these lanes (`0x01..0x49`) so late-row status values such as `0x4b`, `0x4c`, `0x4e`, `0x51`, `0x54`, `0x5a`, and `0x60` are not promoted into fake meters
+- the UI presents these observed meters on the same shared `-60..0 dB` scale used for other meters; wider raw values below that floor stay hidden rather than being mislabeled as exactly `-60 dB`
 - this observed preamp metering is distinct from the shared strip-meter lane at `0x8e..0x9d` and can coexist with strip metering when the same input is also assigned to a mixer strip
 
 This is implemented in `src/protocol.rs` via `decode_passive_mixer_state()` and `decode_preamp_meter()`, then surfaced in app/UI state through `src/app.rs` and `src/ui.rs`.

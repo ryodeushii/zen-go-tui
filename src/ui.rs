@@ -888,7 +888,7 @@ fn render_experimental_pair_state_line(state: &AppState) -> String {
 }
 
 fn render_mix_meter_bar(raw: u8) -> String {
-    let ratio = 1.0 - (raw.min(0x60) as f64 / 96.0);
+    let ratio = 1.0 - (raw.min(0x3c) as f64 / 60.0);
     render_thin_bar(ratio)
 }
 
@@ -925,8 +925,9 @@ fn render_mixer_strip_line(
             .map(|value| format!("{} dB", value))
             .unwrap_or_else(|| "undecoded".to_string()),
         channel
-            .meter
-            .map(|value| format!("raw {:02x}", value))
+            .meter_db()
+            .map(|value| format!("{} dB", value))
+            .or_else(|| channel.meter.map(|_| "below floor".to_string()))
             .unwrap_or_else(|| "undecoded".to_string()),
         channel
             .muted
@@ -1052,7 +1053,10 @@ fn render_preamp_observed_meter<'a>(input: PreampInputState) -> LineGauge<'a> {
 
 fn observed_meter_label(input: PreampInputState) -> String {
     match input.observed_meter {
-        Some(raw) => format!("obs meter raw {:02x}", raw),
+        Some(_) => input
+            .observed_meter_db()
+            .map(|value| format!("obs meter {} dB", value))
+            .unwrap_or_else(|| "obs meter below floor".to_string()),
         None => "obs meter pending".to_string(),
     }
 }
@@ -1484,7 +1488,7 @@ mod tests {
         let line = render_mixer_strip_line(&state, 0, &state.mixer_channels[0][0]);
 
         assert!(line.contains("level=0 dB"));
-        assert!(line.contains("meter="));
+        assert!(line.contains("meter=-48 dB"));
     }
 
     #[test]
@@ -1526,7 +1530,7 @@ mod tests {
 
         assert!(line.contains("MIX 1"));
         assert!(line.contains("L |||||||."));
-        assert!(line.contains("R ||||||||"));
+        assert!(line.contains("R |||||||."));
     }
 
     #[test]
@@ -1546,7 +1550,7 @@ mod tests {
 
         assert!(line.contains("MIX 2"));
         assert!(line.contains("L ||||||||"));
-        assert!(line.contains("R ||||||||"));
+        assert!(line.contains("R |||||||."));
     }
 
     #[test]
@@ -1566,8 +1570,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 2"));
-        assert!(line.contains("L |......."));
-        assert!(line.contains("R |......."));
+        assert!(line.contains("L ........"));
+        assert!(line.contains("R ........"));
     }
 
     #[test]
@@ -1583,8 +1587,8 @@ mod tests {
 
         let line = render_experimental_pair_state_line(&state);
 
-        assert!(line.contains("L |||||||."));
-        assert!(line.contains("R ||||...."));
+        assert!(line.contains("L ||||||.."));
+        assert!(line.contains("R |......."));
     }
 
     #[test]
@@ -1592,7 +1596,7 @@ mod tests {
         let mut input = PreampInputState::from_raw(0x2a, 0x00);
         input.observed_meter = Some(0x30);
 
-        assert_eq!(observed_meter_label(input), "obs meter raw 30");
+        assert_eq!(observed_meter_label(input), "obs meter -48 dB");
     }
 
     #[test]
@@ -1601,5 +1605,13 @@ mod tests {
             observed_meter_label(PreampInputState::from_raw(0x2a, 0x00)),
             "obs meter pending"
         );
+    }
+
+    #[test]
+    fn observed_meter_label_hides_values_below_ui_floor() {
+        let mut input = PreampInputState::from_raw(0x2a, 0x00);
+        input.observed_meter = Some(0x60);
+
+        assert_eq!(observed_meter_label(input), "obs meter below floor");
     }
 }

@@ -333,6 +333,7 @@ What is grounded:
 - the mixer view can now surface the active mix raw meter lanes from `0xda/0xdb` / `0xdc/0xdd` (`MIX 1`) and `0xde/0xdf` (`MIX 2`)
 - the preamp panel can now surface narrow observed input meters from `0xce` (`A1`) and `0xcf` (`A2`)
 - app code only treats the lower raw range as plausible direct-preamp metering on those lanes, which avoids promoting late-row status values like `0x4b/0x4c/0x4e/0x51/0x54/0x5a/0x60` into fake meters
+- the UI presents all meters on a shared `-60..0 dB` scale; raw values that land below that floor stay hidden rather than being mislabeled as exactly `-60 dB`
 - ordinary playback metering follows strip slot / row placement rather than source identity alone
 - preamp-panel metering is distinct from mixer-strip metering and can coexist with it when a preamp source is also assigned to a strip
 - `0x81` behaves like an activity side channel rather than a second canonical snapshot: packet rate and byte diversity rise with some passive meter setups, but the byte patterns do not stay stable enough to map directly to strip/master meter values
