@@ -182,6 +182,7 @@ impl AppState {
         self.outputs = snapshot.outputs;
         self.dsp_cluster = snapshot.dsp_cluster;
         self.preamp = PreampState::from_cluster(snapshot.dsp_cluster);
+        self.preamp.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
         self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
         self.surface = snapshot.surface;
         self.apply_passive_mixer_decode(&snapshot);
@@ -219,9 +220,11 @@ impl AppState {
     }
 
     fn refresh_preamp_from_cluster_preserving_observed_meter(&mut self) {
-        let observed_meter = self.preamp.input2.observed_meter;
+        let observed_meter_input1 = self.preamp.input1.observed_meter;
+        let observed_meter_input2 = self.preamp.input2.observed_meter;
         self.preamp = PreampState::from_cluster(self.dsp_cluster);
-        self.preamp.input2.observed_meter = observed_meter;
+        self.preamp.input1.observed_meter = observed_meter_input1;
+        self.preamp.input2.observed_meter = observed_meter_input2;
     }
 
     pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: Vec<u8>) {
@@ -1103,6 +1106,7 @@ mod tests {
 
         state.apply_snapshot(device_snapshot);
 
+        assert_eq!(state.preamp.input1.observed_meter, None);
         assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
@@ -1444,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn preamp_pending_updates_preserve_observed_input2_meter() {
+    fn preamp_pending_updates_preserve_observed_input_meters() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
         controller.state.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
@@ -1460,6 +1464,7 @@ mod tests {
         controller.confirm_pending_write(snapshot());
 
         assert_eq!(controller.state.preamp.input2.gain_raw, 0x2d);
+        assert_eq!(controller.state.preamp.input1.observed_meter, None);
         assert_eq!(controller.state.preamp.input2.observed_meter, Some(0x30));
     }
 

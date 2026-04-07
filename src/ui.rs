@@ -332,11 +332,7 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     frame.render_widget(
         Paragraph::new(render_experimental_pair_state_line(state))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Exp Pair State"),
-            )
+            .block(Block::default().borders(Borders::ALL).title("Mix Meter"))
             .wrap(Wrap { trim: true }),
         mixer_layout[1],
     );
@@ -872,38 +868,18 @@ fn render_experimental_pair_state_line(state: &AppState) -> String {
             let lane_a = payload.get(0xda).copied().unwrap_or(0);
             let lane_b = payload.get(0xdb).copied().unwrap_or(0);
             format!(
-                "MIX 1 exp lanes={:02x}/{:02x} mirror={:02x}/{:02x} {} e0/e1={:02x}/{:02x}",
-                lane_a,
-                lane_b,
-                payload.get(0xdc).copied().unwrap_or(0),
-                payload.get(0xdd).copied().unwrap_or(0),
-                experimental_pair_state_label(
-                    lane_a,
-                    lane_b,
-                    payload.get(0x6e).copied().unwrap_or(0),
-                    payload.get(0x8e).copied().unwrap_or(0),
-                    payload.get(0xe2).copied().unwrap_or(0),
-                ),
-                payload.get(0xe0).copied().unwrap_or(0),
-                payload.get(0xe1).copied().unwrap_or(0),
+                "MIX 1 L {} R {}",
+                render_mix_meter_bar(lane_a),
+                render_mix_meter_bar(lane_b),
             )
         }
         Some(0x0c) => {
             let lane_a = payload.get(0xde).copied().unwrap_or(0);
             let lane_b = payload.get(0xdf).copied().unwrap_or(0);
             format!(
-                "MIX 2 exp lanes={:02x}/{:02x} {} e0/e1={:02x}/{:02x}",
-                lane_a,
-                lane_b,
-                experimental_pair_state_label(
-                    lane_a,
-                    lane_b,
-                    payload.get(0x6e).copied().unwrap_or(0),
-                    payload.get(0x8e).copied().unwrap_or(0),
-                    payload.get(0xe2).copied().unwrap_or(0),
-                ),
-                payload.get(0xe0).copied().unwrap_or(0),
-                payload.get(0xe1).copied().unwrap_or(0),
+                "MIX 2 L {} R {}",
+                render_mix_meter_bar(lane_a),
+                render_mix_meter_bar(lane_b),
             )
         }
         Some(surface) => format!("exp pair pending: unsupported surface {:02x}", surface),
@@ -911,32 +887,9 @@ fn render_experimental_pair_state_line(state: &AppState) -> String {
     }
 }
 
-fn experimental_pair_state_label(
-    lane_a: u8,
-    lane_b: u8,
-    row_6e: u8,
-    row_8e: u8,
-    row_e2: u8,
-) -> &'static str {
-    match (lane_a, lane_b) {
-        (0x60, 0x60) => return "ch1=muted ch2=muted",
-        (0x01, 0x01) => return "ch1=muted ch2=unmuted",
-        (0x00, 0x06) => return "ch1=unmuted ch2=muted",
-        (0x0a, 0x05) => return "ch1=unmuted ch2=unmuted",
-        _ => {}
-    }
-
-    let no_signal_family = row_6e == 0x60 && row_8e == 0x60 && row_e2 == 0x60;
-
-    if no_signal_family {
-        return match (lane_a, lane_b) {
-            (0x5a, 0x5a) => "no-signal? ch1=unknown ch2=unmuted",
-            (0x60, 0x60) => "no-signal? ch1=unknown ch2=muted",
-            _ => "ch1/ch2=unresolved",
-        };
-    }
-
-    "ch1/ch2=unresolved"
+fn render_mix_meter_bar(raw: u8) -> String {
+    let ratio = 1.0 - (raw.min(0x60) as f64 / 96.0);
+    render_thin_bar(ratio)
 }
 
 fn render_mixer_strip_line(
@@ -1569,9 +1522,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 1"));
-        assert!(line.contains("lanes=0a/05"));
-        assert!(line.contains("mirror=0a/05"));
-        assert!(line.contains("ch1=unmuted ch2=unmuted"));
+        assert!(line.contains("L |||||||."));
+        assert!(line.contains("R ||||||||"));
     }
 
     #[test]
@@ -1590,13 +1542,12 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 2"));
-        assert!(line.contains("lanes=00/06"));
-        assert!(line.contains("e0/e1=60/60"));
-        assert!(line.contains("ch1=unmuted ch2=muted"));
+        assert!(line.contains("L ||||||||"));
+        assert!(line.contains("R ||||||||"));
     }
 
     #[test]
-    fn experimental_pair_state_line_surfaces_no_signal_family_as_partial_state() {
+    fn experimental_pair_state_line_surfaces_no_signal_family_as_pending_meter() {
         let mut state = AppState::default();
         let mut frame = vec![0_u8; 320];
         frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
@@ -1612,11 +1563,12 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 2"));
-        assert!(line.contains("no-signal? ch1=unknown ch2=unmuted"));
+        assert!(line.contains("L |......."));
+        assert!(line.contains("R |......."));
     }
 
     #[test]
-    fn experimental_pair_state_line_marks_unknown_codes_as_unresolved() {
+    fn experimental_pair_state_line_keeps_unknown_meter_bytes_visible() {
         let mut state = AppState::default();
         let mut frame = vec![0_u8; 320];
         frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
@@ -1628,28 +1580,8 @@ mod tests {
 
         let line = render_experimental_pair_state_line(&state);
 
-        assert!(line.contains("ch1/ch2=unresolved"));
-    }
-
-    #[test]
-    fn experimental_pair_state_line_uses_lane_codebook_even_without_family_match() {
-        let mut state = AppState::default();
-        let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        frame[0x10 + 0x6a] = 0x0f;
-        frame[0x10 + 0xda] = 0x01;
-        frame[0x10 + 0xdb] = 0x01;
-        frame[0x10 + 0xdc] = 0x01;
-        frame[0x10 + 0xdd] = 0x01;
-        frame[0x10 + 0x6e] = 0x54;
-        frame[0x10 + 0x8e] = 0x54;
-        frame[0x10 + 0xe2] = 0x5a;
-        state.latest_raw_73 = Some(frame);
-
-        let line = render_experimental_pair_state_line(&state);
-
-        assert!(line.contains("ch1=muted ch2=unmuted"));
+        assert!(line.contains("L |||||||."));
+        assert!(line.contains("R ||||...."));
     }
 
     #[test]

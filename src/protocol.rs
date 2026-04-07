@@ -1287,13 +1287,12 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<Snapshot73, ProtocolError> {
 fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
     let mut decode = MixerPassiveDecode::default();
 
-    let shared_meter = observe_meter_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf)
-        .or_else(|| observe_meter_from_group(payload, 0x6f, 0x8f, 0xda, 0xdd, 0xde, 0xdf));
     let shared_mute = decode_mute_from_group(payload, 0x8f, 0xcf, 0xda, 0xdb, 0xdc, 0xdd);
     let shared_pan = decode_pan_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf);
 
     let active_mixer = MixerSurface::from_surface(Surface::from_code(payload[0x6a]));
-    decode.observed_preamp2_meter = shared_meter;
+    decode.observed_preamp1_meter = None;
+    decode.observed_preamp2_meter = decode_preamp_meter(payload, 0xcf);
     for channel in 1..=16 {
         let meter = decode_strip_meter(payload, channel);
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
@@ -1334,27 +1333,11 @@ fn decode_strip_meter(payload: &[u8], channel: u8) -> Option<u8> {
         .filter(|raw| *raw <= 0x60)
 }
 
-fn observe_meter_from_group(
-    payload: &[u8],
-    primary_a: usize,
-    primary_b: usize,
-    shadow_a: usize,
-    shadow_b: usize,
-    tail_a: usize,
-    tail_b: usize,
-) -> Option<u8> {
-    let samples = [
-        payload.get(primary_a).copied()?,
-        payload.get(primary_b).copied()?,
-        payload.get(shadow_a).copied()?,
-        payload.get(shadow_b).copied()?,
-        payload.get(tail_a).copied()?,
-        payload.get(tail_b).copied()?,
-    ];
-
-    let value =
-        (samples.iter().map(|&sample| sample as u16).sum::<u16>() / samples.len() as u16) as u8;
-    matches!(value, 0x43..=0x4e).then_some(value)
+fn decode_preamp_meter(payload: &[u8], offset: usize) -> Option<u8> {
+    payload
+        .get(offset)
+        .copied()
+        .filter(|raw| *raw != 0x00 && *raw <= 0x60)
 }
 
 fn decode_mute_from_group(
@@ -1557,6 +1540,7 @@ impl MixerPassiveStripState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MixerPassiveDecode {
     pub surfaces: [[MixerPassiveStripState; 16]; 2],
+    pub observed_preamp1_meter: Option<u8>,
     pub observed_preamp2_meter: Option<u8>,
 }
 
@@ -1564,6 +1548,7 @@ impl Default for MixerPassiveDecode {
     fn default() -> Self {
         Self {
             surfaces: [[MixerPassiveStripState::unresolved(); 16]; 2],
+            observed_preamp1_meter: None,
             observed_preamp2_meter: None,
         }
     }
@@ -2897,20 +2882,13 @@ mod tests {
     }
 
     #[test]
-    fn decodes_observed_preamp2_meter_from_late_row_cluster_while_strip_lane_stays_silent() {
+    fn does_not_decode_observed_preamp1_meter_from_untrusted_lane() {
         let mut frame = vec![0_u8; 320];
         frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
         let payload = &mut frame[0x10..];
         payload[0x6a] = 0x0f;
-        payload[0x8e..=0x9d].fill(0x60);
-        payload[0x6f] = 0x49;
-        payload[0x8f] = 0x49;
-        payload[0xcf] = 0x49;
-        payload[0xda] = 0x49;
-        payload[0xdd] = 0x49;
-        payload[0xde] = 0x49;
-        payload[0xdf] = 0x49;
+        payload[0x7e] = 0x18;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -2918,13 +2896,55 @@ mod tests {
             .expect("snapshot")
             .clone();
 
-        let strip = snapshot
-            .mixer_decode
-            .strip(MixerSurface::Mix1, 1)
-            .expect("mix1 strip 1");
-        assert_eq!(strip.meter, Some(0x60));
+        assert_eq!(snapshot.mixer_decode.observed_preamp1_meter, None);
+        assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, None);
+    }
+
+    #[test]
+    fn decodes_observed_preamp2_meter_from_direct_lane() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0f;
+        payload[0xcf] = 0x49;
+
+        let snapshot = Frame::parse(&frame)
+            .expect("frame should parse")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone();
+
+        assert_eq!(snapshot.mixer_decode.observed_preamp1_meter, None);
         assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, Some(0x49));
-        assert_eq!(strip.pan, Some(PanState::center()));
+    }
+
+    #[test]
+    fn observed_preamp2_meter_can_coexist_with_strip_meter() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0f;
+        payload[0xcf] = 0x22;
+        payload[0x8e] = 0x12;
+
+        let snapshot = Frame::parse(&frame)
+            .expect("frame should parse")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone();
+
+        assert_eq!(
+            snapshot
+                .mixer_decode
+                .strip(MixerSurface::Mix1, 1)
+                .expect("mix1 strip 1")
+                .meter,
+            Some(0x12)
+        );
+        assert_eq!(snapshot.mixer_decode.observed_preamp1_meter, None);
+        assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, Some(0x22));
     }
 
     #[test]
@@ -2958,6 +2978,7 @@ mod tests {
                 .meter,
             Some(0x12)
         );
+        assert_eq!(snapshot.mixer_decode.observed_preamp1_meter, None);
         assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, None);
     }
 

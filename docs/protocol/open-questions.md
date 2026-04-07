@@ -218,13 +218,16 @@ The metering captures now narrow this further than before:
 
 What remains unresolved:
 
-- exact master-meter separation
+- exact master-meter separation beyond the current raw active-mix lane display
 - exact user-facing strip-meter scaling beyond the currently grounded raw-byte lane
+- exact separation between the current `A2` observed lane and any broader output/master-related late-row activity when the same signal is routed widely
 - whether `0x81` contributes compact meter-side timing/stream data or is only adjacent notification traffic; the current broader cross-plane pass still does not justify treating it as a parser-ready meter source
 
 What is better bounded now:
 
 - the shared strip-meter raw lane is now grounded at `0x8e..0x9d`, mapping directly to `CH1..16`
+- the active mix raw meter lanes are now narrow enough for app use in the mixer view at `0xda/0xdb` / `0xdc/0xdd` (`MIX 1`) and `0xde/0xdf` (`MIX 2`)
+- the direct `A2` observed preamp lane is still narrow enough for app use at `0xcf`; `A1` remains unresolved
 - `0x83` remains fully stable in the dedicated passive meter captures, so it is not the missing mixer meter/state plane
 - `0x81` clearly reacts to activity level, but the current passive meter captures do not give a stable strip-addressable mapping from its six bytes to visible meter values
 
