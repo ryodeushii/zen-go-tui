@@ -1294,6 +1294,14 @@ fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
 
     let active_mixer = MixerSurface::from_surface(Surface::from_code(payload[0x6a]));
     decode.observed_preamp2_meter = shared_meter;
+    for channel in 1..=16 {
+        let meter = decode_strip_meter(payload, channel);
+        for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
+            if let Some(slot) = decode.surfaces[mixer.index()].get_mut(channel as usize - 1) {
+                slot.meter = meter;
+            }
+        }
+    }
     if let Some(slot) = decode.surfaces[active_mixer.index()].get_mut(0) {
         slot.muted = shared_mute;
         slot.pan = shared_pan;
@@ -1312,6 +1320,18 @@ fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
     }
 
     decode
+}
+
+fn decode_strip_meter(payload: &[u8], channel: u8) -> Option<u8> {
+    let meter_lanes = payload.get(0x8e..=0x9d)?;
+    if meter_lanes.iter().all(|lane| *lane == 0x00) {
+        return None;
+    }
+
+    meter_lanes
+        .get(channel.checked_sub(1)? as usize)
+        .copied()
+        .filter(|raw| *raw <= 0x60)
 }
 
 fn observe_meter_from_group(
@@ -2877,12 +2897,13 @@ mod tests {
     }
 
     #[test]
-    fn decodes_passive_mix1_strip1_meter_from_late_row_cluster() {
+    fn decodes_observed_preamp2_meter_from_late_row_cluster_while_strip_lane_stays_silent() {
         let mut frame = vec![0_u8; 320];
         frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
         let payload = &mut frame[0x10..];
         payload[0x6a] = 0x0f;
+        payload[0x8e..=0x9d].fill(0x60);
         payload[0x6f] = 0x49;
         payload[0x8f] = 0x49;
         payload[0xcf] = 0x49;
@@ -2901,9 +2922,76 @@ mod tests {
             .mixer_decode
             .strip(MixerSurface::Mix1, 1)
             .expect("mix1 strip 1");
-        assert_eq!(strip.meter, None);
+        assert_eq!(strip.meter, Some(0x60));
         assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, Some(0x49));
         assert_eq!(strip.pan, Some(PanState::center()));
+    }
+
+    #[test]
+    fn decodes_passive_shared_strip1_meter_from_slot_byte() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0f;
+        payload[0x8e] = 0x12;
+
+        let snapshot = Frame::parse(&frame)
+            .expect("frame should parse")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone();
+
+        assert_eq!(
+            snapshot
+                .mixer_decode
+                .strip(MixerSurface::Mix1, 1)
+                .expect("mix1 strip 1")
+                .meter,
+            Some(0x12)
+        );
+        assert_eq!(
+            snapshot
+                .mixer_decode
+                .strip(MixerSurface::Mix2, 1)
+                .expect("mix2 strip 1")
+                .meter,
+            Some(0x12)
+        );
+        assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, None);
+    }
+
+    #[test]
+    fn decodes_passive_shared_strip11_meter_from_slot_byte() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        let payload = &mut frame[0x10..];
+        payload[0x6a] = 0x0f;
+        payload[0x98] = 0x05;
+
+        let snapshot = Frame::parse(&frame)
+            .expect("frame should parse")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone();
+
+        assert_eq!(
+            snapshot
+                .mixer_decode
+                .strip(MixerSurface::Mix1, 11)
+                .expect("mix1 strip 11")
+                .meter,
+            Some(0x05)
+        );
+        assert_eq!(
+            snapshot
+                .mixer_decode
+                .strip(MixerSurface::Mix2, 11)
+                .expect("mix2 strip 11")
+                .meter,
+            Some(0x05)
+        );
     }
 
     #[test]

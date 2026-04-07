@@ -309,19 +309,22 @@ Important boundary of the implementation:
 - this is **not** a full per-strip passive mixer decoder
 - it currently updates only the grounded strip/pair subset above
 - the newer `antelope_pcap/mutes/` captures show promising surface-local pair-state bytes, but they are still not clean mute-only fields and should not yet be promoted into a broader passive mute decoder
-- the moving late-cluster meter bytes are still not grounded enough to call a strip meter or master meter parser; the current TUI only exposes the observed value on `A2` as a temporary operator aid
+- the shared strip-meter lane `0x8e..0x9d` is now grounded enough for a narrow passive per-channel parser across `CH1..16`
+- master/output meter separation is still not grounded enough for a parser-ready claim
+- the current observed value on `A2` should still be treated as a separate unresolved meter-like signal rather than proven direct preamp metering
 - passive pan remains intentionally narrow; the captures do not yet justify a continuous one-frame pan-value decoder over the full `0x02 .. 0x3e` command range
 - links are still only grounded for the tested `1-2` pair target on each surface; broader selector coverage remains deferred
 
 ## Metering Boundary
 
-The current meter captures are sufficient to document boundaries, but not enough for parser implementation.
+The current meter captures are now sufficient for a narrow strip-meter parser, but not yet for master/output or direct-preamp meter separation.
 
 What is grounded:
 
 - meter traffic is device-originated; the tested captures contain no dedicated meter host-write family
 - `0x83` remains stable in the tested meter captures, including the two new `capture_mixer_20_*` surface-isolated files
 - meter-correlated movement is visible in `0x73` late rows and in the 6-byte async packets on endpoint `0x81`
+- the shared per-channel strip meter now has a grounded raw-byte lane at `0x8e..0x9d`, mapping directly to `CH1..16`
 - ordinary playback metering follows strip slot / row placement rather than source identity alone
 - preamp-panel metering is distinct from mixer-strip metering and can coexist with it when a preamp source is also assigned to a strip
 - `0x81` behaves like an activity side channel rather than a second canonical snapshot: packet rate and byte diversity rise with some passive meter setups, but the byte patterns do not stay stable enough to map directly to strip/master meter values
@@ -329,6 +332,12 @@ What is grounded:
   - `MIX 1` file: `0x6e`, `0x8e`, `0xce`, `0xcf`, `0xe2`
   - `MIX 2` file: `0x8e`, `0xce`, `0xcf`, `0xda..0xdd`, `0xe2`
 - the newer `antelope_pcap/mutes/with signal/` files reinforce that `0xda..0xdd` (`MIX 1`) and `0xde..0xdf` (`MIX 2`) are pair-local mixed state/activity bytes rather than static mute-only fields, while `0xe0/0xe1` remain pinned at `0x60`
+
+Current implementation boundary:
+
+- app code now decodes raw strip meter bytes from `0x8e..0x9d` and applies them as shared `CH1..16` meter state across both visible mixes
+- app code still does **not** claim parser-ready master/output meter bytes
+- app code still keeps the old observed `A2`-adjacent meter path separate because it does not yet prove true direct preamp metering
 
 What is not grounded enough yet:
 

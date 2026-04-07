@@ -218,18 +218,20 @@ The metering captures now narrow this further than before:
 
 What remains unresolved:
 
-- exact strip-meter bytes and scale
 - exact master-meter separation
+- exact user-facing strip-meter scaling beyond the currently grounded raw-byte lane
 - whether `0x81` contributes compact meter-side timing/stream data or is only adjacent notification traffic; the current broader cross-plane pass still does not justify treating it as a parser-ready meter source
 
 What is better bounded now:
 
+- the shared strip-meter raw lane is now grounded at `0x8e..0x9d`, mapping directly to `CH1..16`
 - `0x83` remains fully stable in the dedicated passive meter captures, so it is not the missing mixer meter/state plane
 - `0x81` clearly reacts to activity level, but the current passive meter captures do not give a stable strip-addressable mapping from its six bytes to visible meter values
 
 Recommended follow-up only if parser work becomes the next target:
 
 - a better-labeled repeat of the same surface-isolated setup, with written UI notes stating exactly which visible master meter moved and whether any strip meter moved at the same time; the current `capture_mixer_20_*` pair improves the boundary but is still not enough to disambiguate master-only bytes
+- the focused follow-up matrix now lives in `docs/protocol/mixer-capture-plan.md` under `8b. Parser-Ready Meter Follow-Up`
 
 ### DSP / preamp UI-label mapping
 

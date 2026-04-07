@@ -197,6 +197,9 @@ impl AppState {
                     continue;
                 };
 
+                if let Some(meter) = decoded.meter {
+                    slot.meter = Some(meter);
+                }
                 if let Some(muted) = decoded.muted {
                     slot.muted = Some(muted);
                 }
@@ -1092,6 +1095,8 @@ mod tests {
         let mut state = AppState::default();
         let mut device_snapshot = snapshot();
         device_snapshot.mixer_decode.observed_preamp2_meter = Some(0x30);
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].meter = Some(0x30);
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix2.index()][0].meter = Some(0x30);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].muted = Some(false);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].linked = Some(true);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][1].linked = Some(true);
@@ -1101,7 +1106,11 @@ mod tests {
         assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
-            None
+            Some(0x30)
+        );
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix2.index()][0].meter,
+            Some(0x30)
         );
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].level,
@@ -1395,6 +1404,8 @@ mod tests {
 
         let mut device_snapshot = snapshot();
         device_snapshot.mixer_decode.observed_preamp2_meter = Some(0x30);
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].meter = Some(0x30);
+        device_snapshot.mixer_decode.surfaces[MixerSurface::Mix2.index()][0].meter = Some(0x30);
 
         state.apply_snapshot(device_snapshot);
 
@@ -1405,7 +1416,11 @@ mod tests {
         );
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
-            None
+            Some(0x30)
+        );
+        assert_eq!(
+            state.mixer_channels[MixerSurface::Mix2.index()][0].meter,
+            Some(0x30)
         );
     }
 

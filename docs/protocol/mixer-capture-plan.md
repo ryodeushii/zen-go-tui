@@ -472,6 +472,144 @@ Status after analyzing captures `15..17` and the two new `capture_mixer_20_*` fi
 - they still do not provide enough UI-labeled evidence to identify master-only bytes confidently
 - no additional metering capture is required **yet** for documentation-only work
 
+Status now that meter parser work is the next implementation target:
+
+- additional metering capture **is** required before claiming a parser-ready strip or master meter map
+- the current late-row candidates are still too ambiguous to promote safely into app code
+- the existing `A2` observed meter path should be treated as a separate unresolved meter-like signal, not as proven preamp metering
+
+### 8b. Parser-Ready Meter Follow-Up
+
+Goal:
+- isolate strip-local mixer metering from master/output metering
+- distinguish direct preamp metering from the existing weird meter-like path currently surfaced near `A2`
+- add enough UI-labeled evidence to promote at least a narrow passive meter parser safely
+
+General setup for all files:
+- record exact visible page and active surface in notes
+- baseline mixer setup: all strips muted on both mixes unless the file explicitly says otherwise
+- baseline source setup: every strip source assignment set to `Mute` unless the file explicitly says otherwise
+- prefer using `Oscillator` as the signal source for strip-meter mapping, because it should light only the assigned strip meters by default
+- keep source assignment unchanged during a given file unless the file is explicitly about strip-slot remapping
+- do not touch pan, mute, solo, link, or assignment while signal is present unless the file explicitly requires it
+- use one steady signal source only
+- keep `0x70` host traffic out of the meter window whenever possible
+- write down exactly which on-screen meter moved: strip meter, monitor/hp1 master, hp2 master, preamp input meter, or some combination
+
+Grounded operating assumptions for these follow-up files:
+- strip meter display follows strip assignment and is **not** suppressed by per-strip volume or mute alone
+- if all strips stay muted on both mixes, the safest expectation is strip-meter movement without output/master movement
+- if all strip sources start at `Mute`, accidental preamp or mic noise should stay out of the capture until one strip is explicitly reassigned for the test
+- if one or more strips are unmuted in a given mix, that mix's output/master meter may also move
+- this makes all-strips-muted the preferred baseline for strip-only captures, and deliberate per-mix unmute differences the preferred baseline for output/master isolation captures
+
+#### 8b-1. Strip-Slot Meter Map
+
+Goal:
+- prove which late-row movement follows strip slot rather than source identity
+- compare an early strip, an adjacent early strip, and at least one late ordinary strip with the same source and level conditions
+
+Recommended files:
+- `capture_mixer_31_strip_meter_map_ch1.pcapng`
+- `capture_mixer_32_strip_meter_map_ch2.pcapng`
+- `capture_mixer_33_strip_meter_map_ch11.pcapng`
+- `capture_mixer_34_strip_meter_map_ch12.pcapng`
+
+Actions for each file:
+- start from a quiet baseline with all other visible strips idle
+- route the same already-grounded source to the target strip before recording, preferably `Oscillator`
+- start steady signal
+- record `8-10` seconds with no UI interaction
+- stop signal
+- leave `2-3` seconds idle before ending capture
+
+Write down:
+- exact target strip number
+- whether only that strip meter moved or whether another visible strip also moved
+- whether either master meter moved
+- which surface was visible
+
+Why these files:
+- `capture_mixer_15` and `capture_mixer_16` already showed slot-sensitive movement, but not enough adjacent-slot comparison to promote a parser
+
+#### 8b-2. Master/Output Isolation
+
+Goal:
+- separate strip-local meter bytes from visible master/output meter bytes
+- decide whether `Monitor+HP1` and `HP2` have different passive meter footprints
+
+Recommended files:
+- `capture_mixer_35_master_isolation_mix1_chan2_only.pcapng`
+- `capture_mixer_36_master_isolation_mix2_chan2_only.pcapng`
+- `capture_mixer_37_master_isolation_mix1_master_only_if_possible.pcapng`
+- `capture_mixer_38_master_isolation_mix2_master_only_if_possible.pcapng`
+
+Actions:
+- keep assignment shared exactly as in the current working setup
+- start from the all-strips-muted baseline
+- make one surface clearly pass the signal by unmuting only the intended strip on that mix
+- make the other surface clearly suppress the same strip by keeping it muted on that mix
+- start steady signal and record `8-10` seconds idle
+- if the UI allows a clean master-only visible state with no strip meter movement, record that as a separate file
+- stop signal and leave `2-3` seconds idle
+
+Write down:
+- whether `Monitor+HP1` moved
+- whether `HP2` moved
+- whether the visible strip meter also moved
+- whether the suppressed surface still showed master movement
+
+Why these files:
+- the current `capture_mixer_20_*` pair proves the right experiment shape, but not enough UI-side labeling to claim master-only bytes
+
+#### 8b-3. Direct Preamp Meter Versus Mixer Meter
+
+Goal:
+- separate true preamp-input metering from mixer-strip metering
+- determine whether the existing weird meter-like path near `A2` is direct-preamp, output/master-related, or a mixed proxy
+
+Recommended files:
+- `capture_mixer_39_preamp_only_a1_signal.pcapng`
+- `capture_mixer_40_preamp_only_a2_signal.pcapng`
+- `capture_mixer_41_preamp_and_strip_a1_to_ch1.pcapng`
+- `capture_mixer_42_preamp_and_strip_a2_to_ch2.pcapng`
+
+Actions:
+- for preamp-only files, feed steady signal into one preamp input without assigning it to an active strip if possible
+- for combined files, feed the same signal and assign it to exactly one strip before recording
+- record `8-10` seconds idle per file with no UI interaction
+- stop signal and leave `2-3` seconds idle
+
+Write down:
+- whether the preamp input meter moved
+- whether any strip meter moved
+- whether either master meter moved
+- whether the weird existing meter-like path appears to follow `A2`, output/master activity, or both
+
+Why these files:
+- `capture_mixer_17_preamp_panel_and_strip` and `capture_mixer_17_preamp_panel_only` prove coexistence, but not enough to identify the current `A2` path safely
+
+#### 8b-4. Silent Baselines For Every Follow-Up Family
+
+Goal:
+- pin stable baseline values for the same late-row windows without signal
+
+Recommended files:
+- `capture_mixer_43_strip_meter_baseline_silent.pcapng`
+- `capture_mixer_44_master_meter_baseline_silent.pcapng`
+- `capture_mixer_45_preamp_meter_baseline_silent.pcapng`
+
+Actions:
+- repeat the same visual setup as the corresponding signal-present files
+- record `8-10` seconds with no signal and no interaction
+
+Write down:
+- which on-screen meters stayed fully still
+- whether any meter-like flicker remained visible in the UI
+
+Why these files:
+- clean silent baselines make it easier to separate true activity bytes from static row-state placeholders
+
 Deferred only if parser work becomes the next task:
 
 ### 10. Surface-Isolated Master Meter Capture
