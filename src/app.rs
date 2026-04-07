@@ -463,6 +463,12 @@ enum PendingMutation {
         selector: u8,
         enabled: bool,
     },
+    MixerLinkExplicit {
+        mixer: MixerSurface,
+        left_channel: u8,
+        right_channel: u8,
+        enabled: bool,
+    },
     OutputVolume {
         target: OutputTarget,
         step: u8,
@@ -681,6 +687,45 @@ impl Controller {
         })
     }
 
+    pub fn send_mixer_link_change(
+        &mut self,
+        mixer: MixerSurface,
+        channel: u8,
+        enabled: bool,
+    ) -> Result<()> {
+        let Some(target) = experimental_link_target(mixer, channel) else {
+            bail!("invalid mixer link channel {channel}");
+        };
+        self.pending_mutation = Some(PendingMutation::MixerLinkExplicit {
+            mixer,
+            left_channel: target.left_channel,
+            right_channel: target.right_channel,
+            enabled,
+        });
+        if let Some(bank) = experimental_link_companion_bank(target) {
+            self.transport
+                .write(&encode_link_companion(bank, enabled))?;
+        }
+        self.transport
+            .write(&encode_command(Command::SetLinkState {
+                selector: target.selector,
+                enabled,
+                companion_bank: None,
+            }))?;
+        if MixerLinkTarget::from_channel(mixer, channel).is_some() {
+            self.state.last_message = format!(
+                "Sent mixer link {:?} ch {}-{}",
+                mixer, target.left_channel, target.right_channel
+            );
+        } else {
+            self.state.last_message = format!(
+                "Sent experimental mixer link {:?} ch {}-{}",
+                mixer, target.left_channel, target.right_channel
+            );
+        }
+        Ok(())
+    }
+
     pub fn poll_device(&mut self, timeout: Duration) -> Result<()> {
         let mut next_timeout = timeout;
 
@@ -794,6 +839,20 @@ impl Controller {
                         {
                             slot.linked = Some(enabled);
                         }
+                    }
+                }
+            }
+            Some(PendingMutation::MixerLinkExplicit {
+                mixer,
+                left_channel,
+                right_channel,
+                enabled,
+            }) => {
+                for channel in [left_channel, right_channel] {
+                    if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                        .get_mut(channel.saturating_sub(1) as usize)
+                    {
+                        slot.linked = Some(enabled);
                     }
                 }
             }
@@ -922,6 +981,41 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
 fn link_pair_from_selector(mixer: MixerSurface, selector: u8) -> Option<(u8, u8)> {
     MixerLinkTarget::from_selector(mixer, selector)
         .map(|target| (target.left_channel, target.right_channel))
+}
+
+fn experimental_link_target(mixer: MixerSurface, channel: u8) -> Option<MixerLinkTarget> {
+    if let Some(target) = MixerLinkTarget::from_channel(mixer, channel) {
+        return Some(target);
+    }
+
+    let left_channel = if channel % 2 == 1 {
+        channel
+    } else {
+        channel.saturating_sub(1)
+    };
+    if !(1..=15).contains(&left_channel) {
+        return None;
+    }
+
+    let pair_index = (left_channel - 1) / 2;
+    let selector = match mixer {
+        MixerSurface::Mix1 => pair_index,
+        MixerSurface::Mix2 => 0x10 + pair_index,
+    };
+
+    Some(MixerLinkTarget {
+        mixer,
+        left_channel,
+        right_channel: left_channel + 1,
+        selector,
+    })
+}
+
+fn experimental_link_companion_bank(target: MixerLinkTarget) -> Option<u8> {
+    target.companion_bank().or(Some(match target.mixer {
+        MixerSurface::Mix1 => 0x00,
+        MixerSurface::Mix2 => 0x01,
+    }))
 }
 
 #[cfg(test)]
@@ -1527,6 +1621,63 @@ mod tests {
     }
 
     #[test]
+    fn experimental_link_target_guesses_remaining_pair_selectors() {
+        let mix1 = experimental_link_target(MixerSurface::Mix1, 11).expect("mix1 target");
+        assert_eq!(
+            (mix1.left_channel, mix1.right_channel, mix1.selector),
+            (11, 12, 0x05)
+        );
+        assert_eq!(experimental_link_companion_bank(mix1), Some(0x00));
+
+        let mix2 = experimental_link_target(MixerSurface::Mix2, 15).expect("mix2 target");
+        assert_eq!(
+            (mix2.left_channel, mix2.right_channel, mix2.selector),
+            (15, 16, 0x17)
+        );
+        assert_eq!(experimental_link_companion_bank(mix2), Some(0x01));
+    }
+
+    #[test]
+    fn experimental_mixer_link_change_writes_guessed_selector_and_updates_pair() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        controller
+            .send_mixer_link_change(MixerSurface::Mix1, 11, true)
+            .expect("send experimental mix1 link");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x04, 0x00, 0x01]);
+        assert_eq!(&writes[1][0x10..0x14], &[0xa2, 0x03, 0x05, 0x01]);
+        controller.confirm_pending_write(snapshot());
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][10].linked,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][11].linked,
+            Some(true)
+        );
+
+        controller
+            .send_mixer_link_change(MixerSurface::Mix2, 15, true)
+            .expect("send experimental mix2 link");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x04, 0x01, 0x01]);
+        assert_eq!(&writes[1][0x10..0x14], &[0xa2, 0x03, 0x17, 0x01]);
+        controller.confirm_pending_write(snapshot());
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][14].linked,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][15].linked,
+            Some(true)
+        );
+    }
+
+    #[test]
     fn app_state_starts_with_16_strips_per_surface() {
         let state = AppState::default();
 
@@ -1549,11 +1700,12 @@ mod tests {
         });
         controller.confirm_pending_write(snapshot());
 
+        let target = MixerLinkTarget::from_channel(MixerSurface::Mix2, 1).expect("mix2 1-2");
         controller
             .send(Command::SetLinkState {
-                selector: 0x01,
+                selector: target.selector,
                 enabled: true,
-                companion_bank: None,
+                companion_bank: target.companion_bank(),
             })
             .expect("send link");
         controller.confirm_pending_write(snapshot());

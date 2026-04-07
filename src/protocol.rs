@@ -494,16 +494,40 @@ impl MixerLinkTarget {
                 right_channel: 2,
                 selector,
             }),
+            (MixerSurface::Mix1, 0x01) => Some(Self {
+                mixer,
+                left_channel: 3,
+                right_channel: 4,
+                selector,
+            }),
             (MixerSurface::Mix1, 0x03) => Some(Self {
                 mixer,
                 left_channel: 7,
                 right_channel: 8,
                 selector,
             }),
-            (MixerSurface::Mix2, 0x01) => Some(Self {
+            (MixerSurface::Mix1, 0x05) => Some(Self {
+                mixer,
+                left_channel: 11,
+                right_channel: 12,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x10) => Some(Self {
                 mixer,
                 left_channel: 1,
                 right_channel: 2,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x11) => Some(Self {
+                mixer,
+                left_channel: 3,
+                right_channel: 4,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x15) => Some(Self {
+                mixer,
+                left_channel: 11,
+                right_channel: 12,
                 selector,
             }),
             _ => None,
@@ -513,8 +537,12 @@ impl MixerLinkTarget {
     pub fn from_channel(mixer: MixerSurface, channel: u8) -> Option<Self> {
         match (mixer, channel) {
             (MixerSurface::Mix1, 1 | 2) => Self::from_selector(mixer, 0x00),
+            (MixerSurface::Mix1, 3 | 4) => Self::from_selector(mixer, 0x01),
             (MixerSurface::Mix1, 7 | 8) => Self::from_selector(mixer, 0x03),
-            (MixerSurface::Mix2, 1 | 2) => Self::from_selector(mixer, 0x01),
+            (MixerSurface::Mix1, 11 | 12) => Self::from_selector(mixer, 0x05),
+            (MixerSurface::Mix2, 1 | 2) => Self::from_selector(mixer, 0x10),
+            (MixerSurface::Mix2, 3 | 4) => Self::from_selector(mixer, 0x11),
+            (MixerSurface::Mix2, 11 | 12) => Self::from_selector(mixer, 0x15),
             _ => None,
         }
     }
@@ -522,7 +550,9 @@ impl MixerLinkTarget {
     pub fn companion_bank(self) -> Option<u8> {
         match (self.mixer, self.selector) {
             (MixerSurface::Mix1, 0x00) => Some(0x00),
-            (MixerSurface::Mix2, 0x01) => Some(0x01),
+            (MixerSurface::Mix1, 0x01) => Some(0x01),
+            (MixerSurface::Mix2, 0x10) => Some(0x00),
+            (MixerSurface::Mix2, 0x11) => Some(0x01),
             _ => None,
         }
     }
@@ -1773,11 +1803,24 @@ mod tests {
         );
         assert_eq!(
             MixerLinkTarget::from_selector(MixerSurface::Mix1, 0x01),
-            None
+            Some(MixerLinkTarget {
+                mixer: MixerSurface::Mix1,
+                left_channel: 3,
+                right_channel: 4,
+                selector: 0x01,
+            })
         );
         assert_eq!(
             MixerLinkTarget::from_channel(MixerSurface::Mix2, 2).map(|target| target.selector),
-            Some(0x01)
+            Some(0x10)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 4).map(|target| target.selector),
+            Some(0x11)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix1, 12).map(|target| target.selector),
+            Some(0x05)
         );
         assert_eq!(MixerLinkTarget::from_channel(MixerSurface::Mix2, 7), None);
         assert_eq!(
@@ -1792,6 +1835,11 @@ mod tests {
         );
         assert_eq!(
             MixerLinkTarget::from_channel(MixerSurface::Mix2, 1)
+                .and_then(|target| target.companion_bank()),
+            Some(0x00)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 3)
                 .and_then(|target| target.companion_bank()),
             Some(0x01)
         );

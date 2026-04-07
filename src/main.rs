@@ -16,8 +16,8 @@ use ratatui::Terminal;
 
 use zen_go_tui::app::{Controller, FocusArea};
 use zen_go_tui::protocol::{
-    ClockSource, Command, MixerLinkTarget, MixerSurface, OutputMode, OutputTarget, PanState,
-    PreampMode, SampleRate, Surface,
+    ClockSource, Command, MixerSurface, OutputMode, OutputTarget, PanState, PreampMode, SampleRate,
+    Surface,
 };
 use zen_go_tui::transport::{HidTransport, MockTransport, Transport};
 use zen_go_tui::ui;
@@ -342,16 +342,11 @@ fn toggle_mixer_link(controller: &mut Controller) -> Result<()> {
     let active_channel =
         controller.state.active_mixer_channels()[controller.state.selected_channel];
     let mixer = MixerSurface::from_surface(controller.state.surface);
-    if let Some(target) = MixerLinkTarget::from_channel(mixer, active_channel.channel) {
-        controller.send(Command::SetLinkState {
-            selector: target.selector,
-            enabled: !active_channel.linked.unwrap_or(false),
-            companion_bank: target.companion_bank(),
-        })?;
-    } else {
-        controller.state.last_message =
-            "Link toggling is only exposed for currently grounded selector mappings.".to_string();
-    }
+    controller.send_mixer_link_change(
+        mixer,
+        active_channel.channel,
+        !active_channel.linked.unwrap_or(false),
+    )?;
 
     Ok(())
 }
@@ -403,18 +398,13 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = channel.saturating_sub(1) as usize;
             let mixer = MixerSurface::from_surface(controller.state.surface);
-            if let Some(target) = MixerLinkTarget::from_channel(mixer, channel) {
-                let active_channel =
-                    controller.state.mixer_channels[mixer.index()][channel as usize - 1];
-                controller.send(Command::SetLinkState {
-                    selector: target.selector,
-                    enabled: !active_channel.linked.unwrap_or(false),
-                    companion_bank: target.companion_bank(),
-                })?;
-            } else {
-                controller.state.last_message =
-                    "Link toggling for this odd strip is not grounded yet.".to_string();
-            }
+            let active_channel =
+                controller.state.mixer_channels[mixer.index()][channel as usize - 1];
+            controller.send_mixer_link_change(
+                mixer,
+                channel,
+                !active_channel.linked.unwrap_or(false),
+            )?;
         }
         ui::MouseAction::OpenAssignmentPicker(strip) => {
             controller.state.focus = FocusArea::Mixer;
