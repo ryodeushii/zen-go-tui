@@ -301,18 +301,6 @@ impl AppState {
                 }
             }
         }
-
-        if let Some(strips) = reply.mixer_strip_readback() {
-            let mixer = self.active_mixer_surface();
-            for (index, strip) in strips.into_iter().enumerate() {
-                let Some(slot) = self.mixer_channels[mixer.index()].get_mut(index) else {
-                    continue;
-                };
-                slot.level = Some(strip.level);
-                slot.pan = strip.pan;
-                slot.muted = Some(strip.muted);
-            }
-        }
     }
 
     pub fn mark_disconnected(&mut self) {
@@ -878,7 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn query_reply_strip_readback_updates_active_surface_levels_and_pan() {
+    fn query_reply_strip_readback_does_not_seed_unstable_startup_state() {
         let mut state = AppState::default();
 
         state.observe_frame(
@@ -896,22 +884,17 @@ mod tests {
 
         let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
         let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
-        assert_eq!(mix1[0].level, Some(0x00));
+        assert_eq!(mix1[0].level, None);
         assert_eq!(mix1[0].pan, PanState::center());
-        assert_eq!(mix1[0].muted, Some(false));
-        assert_eq!(mix1[1].level, Some(0x00));
-        assert_eq!(mix1[1].pan, PanState::center());
-        assert_eq!(mix1[2].level, Some(0x00));
-        assert_eq!(mix1[2].pan, PanState::left());
-        assert_eq!(mix1[3].level, Some(0x00));
-        assert_eq!(mix1[3].pan, PanState::right());
-        assert_eq!(mix1[4].level, Some(0x32));
-        assert_eq!(mix1[4].pan, PanState::left());
+        assert_eq!(mix1[0].muted, None);
+        assert!(mix1.iter().all(|slot| slot.level.is_none()));
+        assert!(mix1.iter().all(|slot| slot.muted.is_none()));
+        assert!(mix1.iter().all(|slot| slot.pan == PanState::center()));
         assert!(mix2.iter().all(|slot| slot.level.is_none()));
     }
 
     #[test]
-    fn query_reply_strip_readback_can_mark_leading_channels_muted() {
+    fn query_reply_strip_readback_does_not_apply_muted_overlay() {
         let mut state = AppState::default();
 
         state.observe_frame(
@@ -928,12 +911,10 @@ mod tests {
         );
 
         let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
-        assert_eq!(mix1[0].muted, Some(true));
+        assert_eq!(mix1[0].muted, None);
         assert_eq!(mix1[0].pan, PanState::center());
-        assert_eq!(mix1[1].muted, Some(true));
-        assert_eq!(mix1[1].pan, PanState::center());
-        assert_eq!(mix1[2].muted, Some(false));
-        assert_eq!(mix1[2].pan, PanState::left());
+        assert!(mix1.iter().all(|slot| slot.muted.is_none()));
+        assert!(mix1.iter().all(|slot| slot.pan == PanState::center()));
     }
 
     #[test]
