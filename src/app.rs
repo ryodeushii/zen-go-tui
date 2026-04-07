@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use crate::protocol::{
     encode_command, encode_link_companion, encode_query, ClockSource, Command, DeviceMetadata,
@@ -48,7 +48,20 @@ pub enum FocusArea {
     Outputs,
     Mixer,
     Preamp,
-    Raw,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawPacketTab {
+    Query74,
+    State73,
+    Auxiliary83,
+    Query75,
+    Notification81,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssignmentPickerState {
+    pub strip: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -63,17 +76,24 @@ pub struct AppState {
     pub selected_output: usize,
     pub selected_channel: usize,
     pub selected_preamp_input: usize,
+    pub raw_view_open: bool,
+    pub selected_raw_packet: RawPacketTab,
     pub last_message: String,
     pub last_auxiliary_len: Option<usize>,
     pub dsp_cluster: [u8; 4],
     pub latest_raw_73: Option<Vec<u8>>,
     pub latest_raw_83: Option<Vec<u8>>,
+    pub latest_raw_74: Option<Vec<u8>>,
     pub latest_raw_75: Option<Vec<u8>>,
     pub latest_raw_81: Option<Vec<u8>>,
+    pub recent_query_request_log: Vec<String>,
+    pub recent_query_reply_log: Vec<String>,
     pub baseline_raw_73: Option<Vec<u8>>,
     pub baseline_raw_83: Option<Vec<u8>>,
+    pub baseline_raw_74: Option<Vec<u8>>,
     pub baseline_raw_75: Option<Vec<u8>>,
     pub baseline_raw_81: Option<Vec<u8>>,
+    pub assignment_picker: Option<AssignmentPickerState>,
 }
 
 impl Default for AppState {
@@ -96,6 +116,8 @@ impl Default for AppState {
             selected_output: 0,
             selected_channel: 0,
             selected_preamp_input: 0,
+            raw_view_open: false,
+            selected_raw_packet: RawPacketTab::State73,
             last_message:
                 "Press ? for help. Device state is authoritative where decoding is confirmed."
                     .to_string(),
@@ -103,12 +125,17 @@ impl Default for AppState {
             dsp_cluster: [0; 4],
             latest_raw_73: None,
             latest_raw_83: None,
+            latest_raw_74: None,
             latest_raw_75: None,
             latest_raw_81: None,
+            recent_query_request_log: Vec::new(),
+            recent_query_reply_log: Vec::new(),
             baseline_raw_73: None,
             baseline_raw_83: None,
+            baseline_raw_74: None,
             baseline_raw_75: None,
             baseline_raw_81: None,
+            assignment_picker: None,
         }
     }
 }
@@ -199,6 +226,7 @@ impl AppState {
                 self.connection.last_frame_type = Some("0x75 query reply");
                 self.latest_raw_75 = Some(raw);
                 self.store_startup_query_summary(&reply);
+                self.push_query_reply_log(&reply);
                 if let Some(metadata) = reply.metadata() {
                     self.last_message = format!(
                         "Connected to {} ({})",
@@ -220,6 +248,27 @@ impl AppState {
         }
     }
 
+    fn push_query_reply_log(&mut self, reply: &QueryReply75) {
+        let preview = reply
+            .body
+            .iter()
+            .take(8)
+            .map(|byte| format!("{:02x}", byte))
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.recent_query_reply_log.push(format!(
+            "0x75 {:02x}/{:02x} [{} bytes] {}",
+            reply.query_id,
+            reply.sub_id,
+            reply.body.len(),
+            preview
+        ));
+        if self.recent_query_reply_log.len() > 16 {
+            let drop_count = self.recent_query_reply_log.len() - 16;
+            self.recent_query_reply_log.drain(0..drop_count);
+        }
+    }
+
     pub fn mark_disconnected(&mut self) {
         self.connection.connected = false;
         self.connection.last_frame_type = Some("disconnected");
@@ -230,14 +279,37 @@ impl AppState {
             FocusArea::Status => FocusArea::Outputs,
             FocusArea::Outputs => FocusArea::Mixer,
             FocusArea::Mixer => FocusArea::Preamp,
-            FocusArea::Preamp => FocusArea::Raw,
-            FocusArea::Raw => FocusArea::Status,
+            FocusArea::Preamp => FocusArea::Status,
+        };
+    }
+
+    pub fn toggle_raw_view(&mut self) {
+        self.raw_view_open = !self.raw_view_open;
+    }
+
+    pub fn cycle_raw_packet(&mut self, forward: bool) {
+        let tabs = [
+            RawPacketTab::Query74,
+            RawPacketTab::State73,
+            RawPacketTab::Auxiliary83,
+            RawPacketTab::Query75,
+            RawPacketTab::Notification81,
+        ];
+        let index = tabs
+            .iter()
+            .position(|tab| *tab == self.selected_raw_packet)
+            .unwrap_or(0);
+        self.selected_raw_packet = if forward {
+            tabs[(index + 1) % tabs.len()]
+        } else {
+            tabs[index.checked_sub(1).unwrap_or(tabs.len() - 1)]
         };
     }
 
     pub fn capture_raw_baseline(&mut self) {
         self.baseline_raw_73 = self.latest_raw_73.clone();
         self.baseline_raw_83 = self.latest_raw_83.clone();
+        self.baseline_raw_74 = self.latest_raw_74.clone();
         self.baseline_raw_75 = self.latest_raw_75.clone();
         self.baseline_raw_81 = self.latest_raw_81.clone();
     }
@@ -245,8 +317,21 @@ impl AppState {
     pub fn clear_raw_baseline(&mut self) {
         self.baseline_raw_73 = None;
         self.baseline_raw_83 = None;
+        self.baseline_raw_74 = None;
         self.baseline_raw_75 = None;
         self.baseline_raw_81 = None;
+    }
+
+    pub fn observe_query_request(&mut self, raw: Vec<u8>) {
+        self.latest_raw_74 = Some(raw.clone());
+        let query_id = raw.get(0x08).copied().unwrap_or(0);
+        let sub_id = raw.get(0x0c).copied().unwrap_or(0);
+        self.recent_query_request_log
+            .push(format!("0x74 {:02x}/{:02x}", query_id, sub_id));
+        if self.recent_query_request_log.len() > 16 {
+            let drop_count = self.recent_query_request_log.len() - 16;
+            self.recent_query_request_log.drain(0..drop_count);
+        }
     }
 }
 
@@ -338,6 +423,13 @@ impl Controller {
 
     pub fn send(&mut self, command: Command) -> Result<()> {
         self.pending_mutation = pending_from_command(command);
+        if let Command::SetMixerAssignment { strip, assignment } = command {
+            let _ = (strip, assignment);
+            self.pending_mutation = None;
+            bail!(
+                "assignment writes are disabled until the full d3 41 table can be reconstructed safely"
+            );
+        }
         if let Command::SetLinkState {
             enabled,
             companion_bank: Some(bank),
@@ -824,12 +916,10 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
 
-        controller
-            .send(Command::SetMixerAssignment {
-                strip: 11,
-                assignment: MixerAssignment::Oscillator(2),
-            })
-            .expect("send assignment");
+        controller.pending_mutation = Some(PendingMutation::MixerAssignment {
+            strip: 11,
+            assignment: MixerAssignment::Oscillator(2),
+        });
         controller.confirm_pending_write(snapshot());
 
         controller
@@ -868,30 +958,40 @@ mod tests {
     }
 
     #[test]
-    fn ordinary_assignment_overlay_supports_full_grounded_strip_range() {
+    fn mixer_assignment_overlay_updates_both_surfaces_for_strip_11() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
 
-        for channel in 5..=16 {
-            controller
-                .send(Command::SetMixerAssignment {
-                    strip: channel,
-                    assignment: MixerAssignment::Mute,
-                })
-                .expect("send assignment");
-            controller.confirm_pending_write(snapshot());
+        controller.pending_mutation = Some(PendingMutation::MixerAssignment {
+            strip: 11,
+            assignment: MixerAssignment::Mute,
+        });
+        controller.confirm_pending_write(snapshot());
 
-            assert_eq!(
-                controller.state.mixer_channels[MixerSurface::Mix1.index()][channel as usize - 1]
-                    .assignment,
-                Some(MixerAssignment::Mute)
-            );
-            assert_eq!(
-                controller.state.mixer_channels[MixerSurface::Mix2.index()][channel as usize - 1]
-                    .assignment,
-                Some(MixerAssignment::Mute)
-            );
-        }
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][10].assignment,
+            Some(MixerAssignment::Mute)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][10].assignment,
+            Some(MixerAssignment::Mute)
+        );
+    }
+
+    #[test]
+    fn mixer_assignment_write_is_blocked_until_full_table_is_grounded() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        let error = controller
+            .send(Command::SetMixerAssignment {
+                strip: 11,
+                assignment: MixerAssignment::Oscillator(2),
+            })
+            .expect_err("assignment write should be blocked");
+
+        assert!(error.to_string().contains("d3 41 table"));
+        assert!(transport.take_writes().is_empty());
     }
 
     #[test]
@@ -1179,9 +1279,12 @@ mod tests {
         let raw75 = vec![
             0x75, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0, b'Z',
         ];
+        let raw74 = vec![0x74, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x11, 0, 0, 0, 0x03];
+        state.observe_query_request(raw74.clone());
         state.observe_frame(
             DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
                 query_id: 0x01,
+                sub_id: 0x00,
                 body: vec![b'Z'],
             }),
             raw75.clone(),
@@ -1197,6 +1300,11 @@ mod tests {
 
         assert_eq!(state.latest_raw_75, Some(raw75));
         assert_eq!(state.latest_raw_81, Some(raw81));
+        assert_eq!(state.latest_raw_74, Some(raw74));
+        assert_eq!(state.recent_query_request_log.len(), 1);
+        assert!(state.recent_query_request_log[0].contains("0x74 11/03"));
+        assert_eq!(state.recent_query_reply_log.len(), 1);
+        assert!(state.recent_query_reply_log[0].contains("0x75 01/00"));
         assert_eq!(
             state.startup_query_summary(0x01),
             Some("Metadata: undecoded")
@@ -1211,9 +1319,11 @@ mod tests {
             DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
             vec![0x83, 0, 0, 0],
         );
+        state.observe_query_request(vec![0x74, 0, 0, 0]);
         state.observe_frame(
             DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
                 query_id: 0x11,
+                sub_id: 0x00,
                 body: vec![0xaa, 0xbb],
             }),
             vec![0x75, 0, 0, 0],
@@ -1228,12 +1338,14 @@ mod tests {
         state.capture_raw_baseline();
         assert_eq!(state.baseline_raw_73, state.latest_raw_73);
         assert_eq!(state.baseline_raw_83, state.latest_raw_83);
+        assert_eq!(state.baseline_raw_74, state.latest_raw_74);
         assert_eq!(state.baseline_raw_75, state.latest_raw_75);
         assert_eq!(state.baseline_raw_81, state.latest_raw_81);
 
         state.clear_raw_baseline();
         assert!(state.baseline_raw_73.is_none());
         assert!(state.baseline_raw_83.is_none());
+        assert!(state.baseline_raw_74.is_none());
         assert!(state.baseline_raw_75.is_none());
         assert!(state.baseline_raw_81.is_none());
     }
@@ -1245,6 +1357,7 @@ mod tests {
         state.observe_frame(
             DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
                 query_id: 0x00,
+                sub_id: 0x00,
                 body: vec![0xaa, 0xbb, 0xcc],
             }),
             vec![0x75, 0, 0, 0],
@@ -1252,6 +1365,7 @@ mod tests {
         state.observe_frame(
             DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
                 query_id: 0x11,
+                sub_id: 0x00,
                 body: vec![0x12],
             }),
             vec![0x75, 0, 0, 0],
@@ -1265,5 +1379,86 @@ mod tests {
             state.startup_query_summary(0x11),
             Some("Status/capability value: 1 bytes [12]")
         );
+    }
+
+    #[test]
+    fn query_reply_log_keeps_recent_entries() {
+        let mut state = AppState::default();
+
+        for sub_id in 0..20_u8 {
+            state.observe_frame(
+                DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                    query_id: 0x03,
+                    sub_id,
+                    body: vec![sub_id, 0xaa],
+                }),
+                vec![0x75, 0, 0, 0],
+            );
+        }
+
+        assert_eq!(state.recent_query_reply_log.len(), 16);
+        assert!(state
+            .recent_query_reply_log
+            .first()
+            .unwrap()
+            .contains("0x75 03/04"));
+        assert!(state
+            .recent_query_reply_log
+            .last()
+            .unwrap()
+            .contains("0x75 03/13"));
+    }
+
+    #[test]
+    fn query_request_log_keeps_recent_entries() {
+        let mut state = AppState::default();
+
+        for sub_id in 0..20_u8 {
+            state.observe_query_request(vec![0x74, 0, 0, 0, 0, 0, 0, 0, 0x03, 0, 0, 0, sub_id]);
+        }
+
+        assert_eq!(state.recent_query_request_log.len(), 16);
+        assert!(state
+            .recent_query_request_log
+            .first()
+            .unwrap()
+            .contains("0x74 03/04"));
+        assert!(state
+            .recent_query_request_log
+            .last()
+            .unwrap()
+            .contains("0x74 03/13"));
+    }
+
+    #[test]
+    fn focus_cycle_skips_raw_view_state() {
+        let mut state = AppState::default();
+        state.focus = FocusArea::Status;
+
+        state.cycle_focus();
+        assert_eq!(state.focus, FocusArea::Outputs);
+        state.cycle_focus();
+        assert_eq!(state.focus, FocusArea::Mixer);
+        state.cycle_focus();
+        assert_eq!(state.focus, FocusArea::Preamp);
+        state.cycle_focus();
+        assert_eq!(state.focus, FocusArea::Status);
+    }
+
+    #[test]
+    fn raw_view_toggle_and_packet_tab_cycle_are_independent_of_focus() {
+        let mut state = AppState::default();
+
+        state.toggle_raw_view();
+        assert!(state.raw_view_open);
+        assert_eq!(state.selected_raw_packet, RawPacketTab::State73);
+
+        state.cycle_raw_packet(true);
+        assert_eq!(state.selected_raw_packet, RawPacketTab::Auxiliary83);
+        state.cycle_raw_packet(false);
+        assert_eq!(state.selected_raw_packet, RawPacketTab::State73);
+
+        state.toggle_raw_view();
+        assert!(!state.raw_view_open);
     }
 }

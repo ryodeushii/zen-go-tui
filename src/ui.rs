@@ -1,35 +1,179 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Gauge, LineGauge, List, ListItem, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph, Tabs, Wrap,
+};
 use ratatui::Frame;
 
-use crate::app::{AppState, FocusArea};
-use crate::protocol::{MixerSurface, OutputMode, PreampInputState, PreampMode};
+use crate::app::{AppState, AssignmentPickerState, FocusArea, RawPacketTab};
+use crate::protocol::{
+    MixerAssignment, MixerSurface, OutputMode, PreampInputState, PreampMode, Surface,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    ToggleRawView,
+    SelectRawPacketTab(RawPacketTab),
+    SelectSurface(Surface),
+    SelectMixerChannel(usize),
+    ToggleMixerMute(u8),
+    ToggleMixerLink(u8),
+    OpenAssignmentPicker(u8),
+    PickAssignment {
+        strip: u8,
+        assignment: MixerAssignment,
+    },
+    CloseAssignmentPicker,
+    SelectPreampInput(usize),
+    AdjustPreampGain {
+        input: u8,
+        increase: bool,
+    },
+    CyclePreampMode(u8),
+    TogglePreampPhase(u8),
+    TogglePreampPhantom(u8),
+}
 
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
-    if state.focus == FocusArea::Raw {
+    if state.raw_view_open {
         draw_raw_page(frame, frame.area(), state);
         return;
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Length(7),
-            Constraint::Min(10),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
+    let chunks = root_chunks(frame.area());
 
     draw_status(frame, chunks[0], state);
     draw_outputs(frame, chunks[1], state);
     draw_mixer_and_preamp(frame, chunks[2], state);
     draw_footer(frame, chunks[3], state);
+    draw_assignment_picker(frame, frame.area(), state);
+}
+
+fn root_chunks(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(7),
+            Constraint::Min(14),
+            Constraint::Length(3),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+fn mixer_preamp_sections(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .split(area)
+        .to_vec()
+}
+
+fn mixer_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(9),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+fn preamp_panel_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(9),
+            Constraint::Length(9),
+            Constraint::Length(4),
+            Constraint::Min(3),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+fn preamp_card_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Length(3)])
+        .split(area)
+        .to_vec()
+}
+
+fn preamp_button_rects(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(5),
+            Constraint::Length(10),
+            Constraint::Length(10),
+            Constraint::Min(12),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+fn assignment_picker_area(area: Rect) -> Rect {
+    let width = area.width.min(42).max(28);
+    let height = area.height.min(22).max(8);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn status_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(20), Constraint::Length(18)])
+        .split(area)
+        .to_vec()
+}
+
+fn raw_header_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(20), Constraint::Length(18)])
+        .split(area)
+        .to_vec()
+}
+
+fn raw_tab_hit_areas(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Length(8),
+            Constraint::Min(0),
+        ])
+        .split(inner_area(area))
+        .iter()
+        .copied()
+        .take(5)
+        .collect()
+}
+
+fn inner_area(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    }
 }
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let sections = status_layout(area);
     let block = section_block("Status", state.focus == FocusArea::Status);
     let sample = state
         .device
@@ -85,7 +229,17 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     ])
     .block(block)
     .wrap(Wrap { trim: true });
-    frame.render_widget(text, area);
+    frame.render_widget(text, sections[0]);
+    frame.render_widget(
+        Paragraph::new(if state.raw_view_open {
+            "Back To Main"
+        } else {
+            "Open Raw View"
+        })
+        .block(Block::default().borders(Borders::ALL).title("View"))
+        .wrap(Wrap { trim: true }),
+        sections[1],
+    );
 }
 
 fn draw_outputs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -127,24 +281,14 @@ fn draw_outputs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let sections = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
-        .split(area);
+    let sections = mixer_preamp_sections(area);
 
     let titles = ["MIX 1 / Monitor-HP1", "MIX 2 / HP2"];
     let active = match MixerSurface::from_surface(state.surface) {
         MixerSurface::Mix1 => 0,
         MixerSurface::Mix2 => 1,
     };
-    let mixer_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(7),
-        ])
-        .split(sections[0]);
+    let mixer_layout = mixer_layout(sections[0]);
 
     let tabs = Tabs::new(
         titles
@@ -179,7 +323,7 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .active_mixer_channels()
         .iter()
         .enumerate()
-        .map(|(index, channel)| ListItem::new(render_mixer_strip_line(state, index, channel)))
+        .map(|(index, channel)| ListItem::new(render_mixer_strip_item(state, index, channel)))
         .collect();
     let list = List::new(items).block(section_block(
         "Mixer Strips",
@@ -196,85 +340,352 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(footer, area);
 }
 
+fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let Some(picker) = state.assignment_picker else {
+        return;
+    };
+
+    let popup = assignment_picker_area(area);
+    let choices = MixerAssignment::grounded_choices();
+    let items = choices
+        .iter()
+        .map(|assignment| ListItem::new(assignment.label()))
+        .collect::<Vec<_>>();
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("Assign CH {:02}", picker.strip)),
+        ),
+        popup,
+    );
+}
+
+pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<MouseAction> {
+    let point = (x, y);
+
+    if contains_point(status_layout(root_chunks(area)[0])[1], point) {
+        return Some(MouseAction::ToggleRawView);
+    }
+
+    if state.raw_view_open {
+        return raw_mouse_action(area, point);
+    }
+
+    if let Some(picker) = state.assignment_picker {
+        return assignment_picker_mouse_action(area, picker, point);
+    }
+
+    let chunks = root_chunks(area);
+    let main_sections = mixer_preamp_sections(chunks[2]);
+    let mixer_sections = mixer_layout(main_sections[0]);
+
+    if let Some(action) = mixer_tab_mouse_action(mixer_sections[0], point) {
+        return Some(action);
+    }
+    if let Some(action) = mixer_list_mouse_action(mixer_sections[2], state, point) {
+        return Some(action);
+    }
+    if let Some(action) = preamp_mouse_action(main_sections[1], point) {
+        return Some(action);
+    }
+
+    None
+}
+
+fn raw_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(10),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let header = raw_header_layout(layout[0]);
+    if contains_point(header[1], point) {
+        return Some(MouseAction::ToggleRawView);
+    }
+    if !contains_point(layout[1], point) {
+        return None;
+    }
+    let tabs = raw_tab_hit_areas(layout[1]);
+    if contains_point(tabs[0], point) {
+        Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query74))
+    } else if contains_point(tabs[1], point) {
+        Some(MouseAction::SelectRawPacketTab(RawPacketTab::State73))
+    } else if contains_point(tabs[2], point) {
+        Some(MouseAction::SelectRawPacketTab(RawPacketTab::Auxiliary83))
+    } else if contains_point(tabs[3], point) {
+        Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75))
+    } else if contains_point(tabs[4], point) {
+        Some(MouseAction::SelectRawPacketTab(
+            RawPacketTab::Notification81,
+        ))
+    } else {
+        None
+    }
+}
+
+fn assignment_picker_mouse_action(
+    area: Rect,
+    picker: AssignmentPickerState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let popup = assignment_picker_area(area);
+    if !contains_point(popup, point) {
+        return Some(MouseAction::CloseAssignmentPicker);
+    }
+
+    let inner = inner_area(popup);
+    if point.1 < inner.y {
+        return None;
+    }
+    let index = point.1.saturating_sub(inner.y) as usize;
+    let assignment = *MixerAssignment::grounded_choices().get(index)?;
+    Some(MouseAction::PickAssignment {
+        strip: picker.strip,
+        assignment,
+    })
+}
+
+fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let inner = inner_area(area);
+    let tabs = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
+    if contains_point(tabs[0], point) {
+        Some(MouseAction::SelectSurface(Surface::MonitorHp1))
+    } else if contains_point(tabs[1], point) {
+        Some(MouseAction::SelectSurface(Surface::Hp2))
+    } else {
+        None
+    }
+}
+
+fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let inner = inner_area(area);
+    if point.1 < inner.y {
+        return None;
+    }
+    let row = point.1.saturating_sub(inner.y) / 2;
+    let index = row as usize;
+    let channel = state.active_mixer_channels().get(index)?.channel;
+    let row_area = Rect {
+        x: inner.x,
+        y: inner.y + row * 2,
+        width: inner.width,
+        height: 2,
+    };
+    if point.1 == row_area.y {
+        return Some(MouseAction::SelectMixerChannel(index));
+    }
+
+    let controls = mixer_control_button_rects(row_area, channel % 2 == 1);
+    if contains_point(controls[0], point) {
+        return Some(MouseAction::ToggleMixerMute(channel));
+    }
+    if channel % 2 == 1 && contains_point(controls[1], point) {
+        return Some(MouseAction::ToggleMixerLink(channel));
+    }
+    let src_rect = if channel % 2 == 1 {
+        controls[2]
+    } else {
+        controls[1]
+    };
+    if contains_point(src_rect, point) {
+        return Some(MouseAction::OpenAssignmentPicker(channel));
+    }
+
+    Some(MouseAction::SelectMixerChannel(index))
+}
+
+fn preamp_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let layout = preamp_panel_layout(area);
+    for (input, card) in [layout[0], layout[1]].into_iter().enumerate() {
+        if !contains_point(card, point) {
+            continue;
+        }
+        let parts = preamp_card_layout(card);
+        let buttons = preamp_button_rects(parts[1]);
+        if contains_point(buttons[0], point) {
+            return Some(MouseAction::AdjustPreampGain {
+                input: input as u8,
+                increase: false,
+            });
+        }
+        if contains_point(buttons[1], point) {
+            return Some(MouseAction::AdjustPreampGain {
+                input: input as u8,
+                increase: true,
+            });
+        }
+        if contains_point(buttons[2], point) {
+            return Some(MouseAction::CyclePreampMode(input as u8));
+        }
+        if contains_point(buttons[3], point) {
+            return Some(MouseAction::TogglePreampPhantom(input as u8));
+        }
+        if contains_point(buttons[4], point) {
+            return Some(MouseAction::TogglePreampPhase(input as u8));
+        }
+        if contains_point(parts[0], point) {
+            return Some(MouseAction::SelectPreampInput(input));
+        }
+        return Some(MouseAction::SelectPreampInput(input));
+    }
+    None
+}
+
+fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
+    let controls = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: 1,
+    };
+    if has_link {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(14),
+                Constraint::Length(14),
+                Constraint::Min(18),
+            ])
+            .split(controls)
+            .to_vec()
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(14), Constraint::Min(18)])
+            .split(controls)
+            .to_vec()
+    }
+}
+
+fn contains_point(area: Rect, point: (u16, u16)) -> bool {
+    point.0 >= area.x
+        && point.0 < area.x.saturating_add(area.width)
+        && point.1 >= area.y
+        && point.1 < area.y.saturating_add(area.height)
+}
+
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Min(10),
             Constraint::Length(2),
         ])
         .split(area);
 
-    let header = Paragraph::new(vec![
-        Line::from("Live Raw State View"),
-        Line::from("Latest full `0x73` and `0x83` state packets. `b` capture baseline, `x` clear."),
-    ])
-    .block(section_block("Raw", true));
-    frame.render_widget(header, layout[0]);
-
-    let content = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(35),
-            Constraint::Percentage(35),
-            Constraint::Percentage(15),
-            Constraint::Percentage(15),
+    let header = raw_header_layout(layout[0]);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("Live Raw State View"),
+            Line::from("One packet type at a time. `b` capture baseline, `x` clear."),
         ])
-        .split(layout[1]);
-
-    let dump_73 = state
-        .latest_raw_73
-        .as_deref()
-        .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_73.as_deref()))
-        .unwrap_or_else(|| Text::from("Waiting for first 0x73 snapshot..."));
+        .block(section_block("Raw", true))
+        .wrap(Wrap { trim: true }),
+        header[0],
+    );
     frame.render_widget(
-        Paragraph::new(dump_73)
-            .block(section_block("0x73 State", true))
-            .wrap(Wrap { trim: false }),
-        content[0],
+        Paragraph::new("Back To Main")
+            .block(Block::default().borders(Borders::ALL).title("View"))
+            .wrap(Wrap { trim: true }),
+        header[1],
     );
 
-    let dump_83 = state
-        .latest_raw_83
-        .as_deref()
-        .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_83.as_deref()))
-        .unwrap_or_else(|| Text::from("Waiting for first 0x83 auxiliary packet..."));
-    frame.render_widget(
-        Paragraph::new(dump_83)
-            .block(section_block("0x83 State", true))
-            .wrap(Wrap { trim: false }),
-        content[1],
+    let tabs = Tabs::new(vec![
+        Line::from("0x74"),
+        Line::from("0x73"),
+        Line::from("0x83"),
+        Line::from("0x75"),
+        Line::from("0x81"),
+    ])
+    .block(section_block("Packet Tabs", true))
+    .select(match state.selected_raw_packet {
+        RawPacketTab::Query74 => 0,
+        RawPacketTab::State73 => 1,
+        RawPacketTab::Auxiliary83 => 2,
+        RawPacketTab::Query75 => 3,
+        RawPacketTab::Notification81 => 4,
+    })
+    .highlight_style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
     );
+    frame.render_widget(tabs, layout[1]);
 
-    let dump_75 = state
-        .latest_raw_75
-        .as_deref()
-        .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_75.as_deref()))
-        .unwrap_or_else(|| Text::from("Waiting for first 0x75 query reply..."));
+    let (title, text) = match state.selected_raw_packet {
+        RawPacketTab::Query74 => (
+            "0x74 Query Requests",
+            state
+                .latest_raw_74
+                .as_deref()
+                .map(|bytes| render_query_request_panel(bytes, state))
+                .unwrap_or_else(|| Text::from("Waiting for first 0x74 query request...")),
+        ),
+        RawPacketTab::State73 => (
+            "0x73 State",
+            state
+                .latest_raw_73
+                .as_deref()
+                .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_73.as_deref()))
+                .unwrap_or_else(|| Text::from("Waiting for first 0x73 snapshot...")),
+        ),
+        RawPacketTab::Auxiliary83 => (
+            "0x83 State",
+            state
+                .latest_raw_83
+                .as_deref()
+                .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_83.as_deref()))
+                .unwrap_or_else(|| Text::from("Waiting for first 0x83 auxiliary packet...")),
+        ),
+        RawPacketTab::Query75 => (
+            "0x75 Query Replies",
+            state
+                .latest_raw_75
+                .as_deref()
+                .map(|bytes| render_query_reply_panel(bytes, state))
+                .unwrap_or_else(|| Text::from("Waiting for first 0x75 query reply...")),
+        ),
+        RawPacketTab::Notification81 => (
+            "0x81 Notification",
+            state
+                .latest_raw_81
+                .as_deref()
+                .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_81.as_deref()))
+                .unwrap_or_else(|| Text::from("Waiting for first 0x81 notification...")),
+        ),
+    };
     frame.render_widget(
-        Paragraph::new(dump_75)
-            .block(section_block("0x75 Query Reply", true))
+        Paragraph::new(text)
+            .block(section_block(title, true))
             .wrap(Wrap { trim: false }),
-        content[2],
-    );
-
-    let dump_81 = state
-        .latest_raw_81
-        .as_deref()
-        .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_81.as_deref()))
-        .unwrap_or_else(|| Text::from("Waiting for first 0x81 notification..."));
-    frame.render_widget(
-        Paragraph::new(dump_81)
-            .block(section_block("0x81 Notification", true))
-            .wrap(Wrap { trim: false }),
-        content[3],
+        layout[2],
     );
 
     frame.render_widget(
         Paragraph::new(render_footer_text(state))
             .block(Block::default().borders(Borders::ALL).title("Help")),
-        layout[2],
+        layout[3],
     );
 }
 
@@ -302,7 +713,90 @@ fn render_thin_bar(ratio: f64) -> String {
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab focus | ←/→ select | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
+    "Tab focus | mouse: preamp buttons, mixer mute/link/src, tabs | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
+}
+
+fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
+    let phantom = if matches!(input.mode, PreampMode::Mic) {
+        if input.phantom_on {
+            "[48V on]"
+        } else {
+            "[48V off]"
+        }
+    } else {
+        "[48V n/a]"
+    };
+    let phase = if input.mode_raw & 0x40 != 0 {
+        "[Phase inv]"
+    } else {
+        "[Phase norm]"
+    };
+    Text::from(vec![Line::from(format!(
+        "[-] [+] [Mode {}] {} {}",
+        input.mode.label(),
+        phantom,
+        phase
+    ))])
+}
+
+fn render_query_reply_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
+    let mut lines = render_full_packet_dump(state_bytes, state.baseline_raw_75.as_deref()).lines;
+    if !state.recent_query_reply_log.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Recent 0x75 replies:"));
+        for entry in state.recent_query_reply_log.iter().rev().take(8) {
+            lines.push(Line::from(entry.clone()));
+        }
+    }
+    Text::from(lines)
+}
+
+fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
+    let mut lines = render_full_packet_dump(state_bytes, state.baseline_raw_74.as_deref()).lines;
+    if !state.recent_query_request_log.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Recent 0x74 requests:"));
+        for entry in state.recent_query_request_log.iter().rev().take(8) {
+            lines.push(Line::from(entry.clone()));
+        }
+    }
+    Text::from(lines)
+}
+
+fn render_mixer_strip_item(
+    state: &AppState,
+    index: usize,
+    channel: &crate::protocol::MixerChannelState,
+) -> Text<'static> {
+    Text::from(vec![
+        Line::from(render_mixer_strip_line(state, index, channel)),
+        Line::from(render_mixer_strip_controls(state, index, channel)),
+    ])
+}
+
+fn render_mixer_strip_controls(
+    _state: &AppState,
+    _index: usize,
+    channel: &crate::protocol::MixerChannelState,
+) -> String {
+    let mute = channel
+        .muted
+        .map(|value| if value { "on" } else { "off" })
+        .unwrap_or("?");
+    let src = channel
+        .assignment
+        .map(|value| value.label())
+        .unwrap_or_else(|| "assignment?".to_string());
+    let link = if channel.channel % 2 == 1 {
+        let value = channel
+            .linked
+            .map(|flag| if flag { "on" } else { "off" })
+            .unwrap_or("?");
+        format!(" [Link {}]", value)
+    } else {
+        String::new()
+    };
+    format!("    [Mute {}]{} [Src {}]", mute, link, src)
 }
 
 fn render_experimental_pair_state_line(state: &AppState) -> String {
@@ -435,15 +929,7 @@ fn render_mixer_strip_line(
 }
 
 fn draw_preamp_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(7),
-            Constraint::Length(7),
-            Constraint::Length(4),
-            Constraint::Min(3),
-        ])
-        .split(area);
+    let layout = preamp_panel_layout(area);
 
     let input1_title = if state.focus == FocusArea::Preamp && state.selected_preamp_input == 0 {
         "A1 ←"
@@ -456,13 +942,22 @@ fn draw_preamp_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         "A2"
     };
 
+    let input1_layout = preamp_card_layout(layout[0]);
+    let input2_layout = preamp_card_layout(layout[1]);
+
     frame.render_widget(
         render_preamp_gauge(
             input1_title,
             state.preamp.input1,
             state.focus == FocusArea::Preamp && state.selected_preamp_input == 0,
         ),
-        layout[0],
+        input1_layout[0],
+    );
+    frame.render_widget(
+        Paragraph::new(render_preamp_controls_text(state.preamp.input1))
+            .block(Block::default().borders(Borders::ALL).title("Controls"))
+            .wrap(Wrap { trim: true }),
+        input1_layout[1],
     );
     frame.render_widget(
         render_preamp_gauge(
@@ -470,9 +965,15 @@ fn draw_preamp_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state.preamp.input2,
             state.focus == FocusArea::Preamp && state.selected_preamp_input == 1,
         ),
-        layout[1],
+        input2_layout[0],
     );
-    if let Some(area) = inner_bottom_line(layout[1]) {
+    frame.render_widget(
+        Paragraph::new(render_preamp_controls_text(state.preamp.input2))
+            .block(Block::default().borders(Borders::ALL).title("Controls"))
+            .wrap(Wrap { trim: true }),
+        input2_layout[1],
+    );
+    if let Some(area) = inner_bottom_line(input2_layout[0]) {
         frame.render_widget(render_preamp_observed_meter(state.preamp.input2), area);
     }
 
@@ -736,10 +1237,145 @@ mod tests {
     fn footer_mentions_assignment_pan_and_link_controls() {
         let footer = render_footer_text(&AppState::default());
 
+        assert!(footer.contains("mouse:"));
         assert!(footer.contains("a assign"));
         assert!(footer.contains("[ ] pan"));
         assert!(footer.contains("l link"));
         assert!(footer.contains("Raw shows 0x73/0x83/0x75/0x81"));
+    }
+
+    #[test]
+    fn query_reply_panel_includes_recent_reply_log() {
+        let mut state = AppState::default();
+        state.recent_query_reply_log = vec![
+            "0x75 03/05 [64 bytes] 05 00 00 00 01 01 00 01".to_string(),
+            "0x75 03/06 [64 bytes] 06 03 00 03 01 03 02 03".to_string(),
+        ];
+
+        let text = render_query_reply_panel(&[0x75, 0x00, 0x00, 0x00], &state).to_string();
+
+        assert!(text.contains("Recent 0x75 replies:"));
+        assert!(text.contains("0x75 03/05"));
+        assert!(text.contains("0x75 03/06"));
+    }
+
+    #[test]
+    fn query_request_panel_includes_recent_request_log() {
+        let mut state = AppState::default();
+        state.recent_query_request_log = vec!["0x74 03/05".to_string(), "0x74 03/06".to_string()];
+
+        let text = render_query_request_panel(&[0x74, 0x00, 0x00, 0x00], &state).to_string();
+
+        assert!(text.contains("Recent 0x74 requests:"));
+        assert!(text.contains("0x74 03/05"));
+        assert!(text.contains("0x74 03/06"));
+    }
+
+    #[test]
+    fn mouse_action_hits_status_raw_view_toggle() {
+        let area = Rect::new(0, 0, 120, 50);
+        let button = status_layout(root_chunks(area)[0])[1];
+        let point = (button.x + button.width / 2, button.y + 1);
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), point.0, point.1),
+            Some(MouseAction::ToggleRawView)
+        );
+    }
+
+    #[test]
+    fn mouse_action_selects_raw_packet_tab_when_raw_view_is_open() {
+        let area = Rect::new(0, 0, 120, 50);
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Min(10),
+                Constraint::Length(2),
+            ])
+            .split(area);
+        let tabs = raw_tab_hit_areas(layout[1]);
+        let point = (tabs[3].x + tabs[3].width / 2, tabs[3].y);
+        let mut state = AppState::default();
+        state.raw_view_open = true;
+
+        assert_eq!(
+            mouse_action(area, &state, point.0, point.1),
+            Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75))
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_preamp_gain_plus_button() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let sections = mixer_preamp_sections(chunks[2]);
+        let preamp = preamp_panel_layout(sections[1]);
+        let card = preamp_card_layout(preamp[0]);
+        let buttons = preamp_button_rects(card[1]);
+        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), point.0, point.1),
+            Some(MouseAction::AdjustPreampGain {
+                input: 0,
+                increase: true,
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_mixer_link_button_on_odd_strip() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let sections = mixer_preamp_sections(chunks[2]);
+        let mixer = mixer_layout(sections[0]);
+        let list_inner = inner_area(mixer[2]);
+        let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
+        let buttons = mixer_control_button_rects(row_area, true);
+        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), point.0, point.1),
+            Some(MouseAction::ToggleMixerLink(1))
+        );
+    }
+
+    #[test]
+    fn mouse_action_opens_assignment_picker_from_src_button() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let sections = mixer_preamp_sections(chunks[2]);
+        let mixer = mixer_layout(sections[0]);
+        let list_inner = inner_area(mixer[2]);
+        let row_area = Rect::new(list_inner.x, list_inner.y + 20, list_inner.width, 2);
+        let buttons = mixer_control_button_rects(row_area, false);
+        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+        let mut state = AppState::default();
+        state.selected_channel = 10;
+
+        assert_eq!(
+            mouse_action(area, &state, point.0, point.1),
+            Some(MouseAction::OpenAssignmentPicker(11))
+        );
+    }
+
+    #[test]
+    fn mouse_action_picks_assignment_from_modal() {
+        let area = Rect::new(0, 0, 120, 50);
+        let popup = assignment_picker_area(area);
+        let inner = inner_area(popup);
+        let mut state = AppState::default();
+        state.assignment_picker = Some(AssignmentPickerState { strip: 11 });
+
+        assert_eq!(
+            mouse_action(area, &state, inner.x + inner.width / 2, inner.y + 4),
+            Some(MouseAction::PickAssignment {
+                strip: 11,
+                assignment: MixerAssignment::ComputerPlay(2),
+            })
+        );
     }
 
     #[test]

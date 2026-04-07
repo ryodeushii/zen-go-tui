@@ -473,6 +473,10 @@ impl MixerStrip {
             MixerStripKind::EarlyAfxAdjacent => None,
         }
     }
+
+    pub fn assignment_write_is_grounded(channel: u8) -> bool {
+        channel == 11
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,6 +531,29 @@ impl MixerLinkTarget {
 }
 
 impl MixerAssignment {
+    pub fn grounded_choices() -> &'static [MixerAssignment] {
+        const CHOICES: [MixerAssignment; 17] = [
+            MixerAssignment::Mute,
+            MixerAssignment::Preamp(1),
+            MixerAssignment::Preamp(2),
+            MixerAssignment::ComputerPlay(1),
+            MixerAssignment::ComputerPlay(2),
+            MixerAssignment::ComputerPlay(3),
+            MixerAssignment::ComputerPlay(4),
+            MixerAssignment::ComputerPlay(5),
+            MixerAssignment::ComputerPlay(6),
+            MixerAssignment::ComputerPlay(7),
+            MixerAssignment::ComputerPlay(8),
+            MixerAssignment::SpdifIn(1),
+            MixerAssignment::SpdifIn(2),
+            MixerAssignment::Oscillator(1),
+            MixerAssignment::Oscillator(2),
+            MixerAssignment::EmuMic(1),
+            MixerAssignment::EmuMic(2),
+        ];
+        &CHOICES
+    }
+
     pub fn from_ordinary_strip_bytes(bytes: [u8; 2]) -> Option<Self> {
         match bytes {
             [0x00, 0x00] => Some(Self::Preamp(1)),
@@ -660,6 +687,7 @@ impl StartupQueryKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryReply75 {
     pub query_id: u8,
+    pub sub_id: u8,
     pub body: Vec<u8>,
 }
 
@@ -718,8 +746,9 @@ impl QueryReply75 {
                     .join(" ")
             ),
             StartupQueryKind::Unknown(id) => format!(
-                "{} 0x{id:02x}: {} bytes",
+                "{} 0x{id:02x}/0x{:02x}: {} bytes",
                 self.kind().label(),
+                self.sub_id,
                 self.body.len()
             ),
         }
@@ -779,6 +808,7 @@ impl Frame {
             0x75 => Ok(Self::QueryReply {
                 reply: QueryReply75 {
                     query_id: bytes[0x08],
+                    sub_id: bytes[0x0c],
                     body: bytes[0x10..].to_vec(),
                 },
                 raw: bytes.to_vec(),
@@ -1264,18 +1294,31 @@ pub fn encode_link_companion(bank: u8, enabled: bool) -> Vec<u8> {
 }
 
 fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
-    let mut frame = vec![0_u8; HID_REPORT_SIZE];
-    frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
-    frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, 0xbb]);
+    encode_mixer_assignment_frames(strip, assignment)
+        .into_iter()
+        .next()
+        .expect("assignment write must emit at least one frame")
+}
+
+pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) -> Vec<Vec<u8>> {
     let entry_index = MixerStrip::ordinary(strip)
         .and_then(|value| value.assignment_entry_index())
-        .expect("ordinary strip assignment write requires grounded strip 5..16 mapping");
-    let tuple_offset = 0x03 + 0x17 + entry_index * 2;
+        .expect("ordinary strip assignment write requires grounded ordinary-strip mapping");
+    let tuple_offset = 0x03 + entry_index * 2;
     let [a, b] = assignment.ordinary_strip_bytes();
-    frame[0x10 + tuple_offset] = a;
-    frame[0x10 + tuple_offset + 1] = b;
-    frame
+
+    [0x06_u8, 0x07, 0x08, 0x09]
+        .into_iter()
+        .map(|bank| {
+            let mut frame = vec![0_u8; HID_REPORT_SIZE];
+            frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
+            frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
+            frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, bank]);
+            frame[0x10 + tuple_offset] = a;
+            frame[0x10 + tuple_offset + 1] = b;
+            frame
+        })
+        .collect()
 }
 
 fn host_frame(length: u32, payload: &[u8]) -> Vec<u8> {
@@ -1483,16 +1526,16 @@ mod tests {
     }
 
     #[test]
-    fn encodes_ordinary_strip_assignment_write() {
-        let frame = encode_command(Command::SetMixerAssignment {
-            strip: 11,
-            assignment: MixerAssignment::EmuMic(2),
-        });
+    fn encodes_ordinary_strip_assignment_write_sequence_for_strip_11() {
+        let frames = encode_mixer_assignment_frames(11, MixerAssignment::EmuMic(2));
 
-        assert_eq!(&frame[0..4], &0x70_u32.to_le_bytes());
-        assert_eq!(&frame[4..8], &0x53_u32.to_le_bytes());
-        assert_eq!(&frame[0x10..0x13], &[0xd3, 0x41, 0xbb]);
-        assert_eq!(&frame[0x3e..0x40], &[0x0a, 0x01]);
+        assert_eq!(frames.len(), 4);
+        for (frame, bank) in frames.iter().zip([0x06_u8, 0x07, 0x08, 0x09]) {
+            assert_eq!(&frame[0..4], &0x70_u32.to_le_bytes());
+            assert_eq!(&frame[4..8], &0x53_u32.to_le_bytes());
+            assert_eq!(&frame[0x10..0x13], &[0xd3, 0x41, bank]);
+            assert_eq!(&frame[0x10 + 0x17..0x10 + 0x19], &[0x0a, 0x01]);
+        }
     }
 
     #[test]
@@ -1713,10 +1756,12 @@ mod tests {
     fn summarizes_non_metadata_query_replies_without_over_decoding() {
         let defaults = QueryReply75 {
             query_id: 0x00,
+            sub_id: 0x00,
             body: vec![0xaa, 0xbb, 0xcc],
         };
         let status = QueryReply75 {
             query_id: 0x11,
+            sub_id: 0x00,
             body: vec![0x12],
         };
 
