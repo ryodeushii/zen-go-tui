@@ -99,13 +99,18 @@ The startup sweep now has two different evidence levels:
 - partially decoded mixer replies from `antelope_pcap/channel_assignments/control panel open.pcapng`:
   - `query = 0x03`, `sub = 0x05` carries the startup assignment readback for strips `1..4`
   - `query = 0x03`, `sub = 0x06..0x09` mirrors the ordinary-strip assignment table strongly enough to read back strips `5..16`
-  - `query = 0x18`, `sub = 0x00` carries repeated tuple-like data, but live validation showed it is not stable enough yet for authoritative level/pan/mute startup readback
+  - `query = 0x18`, `sub = 0x00` carries `32` repeated tuple-like entries, but live validation still shows that neither the tuple ordering nor the state-byte semantics are safe enough yet for authoritative startup level/pan/mute readback
+  - `query = 0x0b`, `sub = 0x03` is grounded as a 21-slot selector bitmap, matching the startup `a2 03 <selector> 01` write window at indices `00..04` and `11..14`
+  - `query = 0x04`, `sub = 0x01` and `0x02` are grounded enough to seed startup link topology for the visible `CH3..CH16` odd/even pairs on `MIX 1` and `MIX 2` respectively
+  - `query = 0x04`, `sub = 0x00..0x03` remain better bounded as selector/state banks rather than authoritative mixer-fader readback
 
 Current implementation boundary:
 
 - it is safe to classify and surface `0x00` and `0x11` separately from metadata
 - it is still **not** safe to assign specific semantic meaning to the inner bytes of `0x00` and `0x11`
 - it is now safe to use the grounded `0x03` subset for query-side mixer assignment readback
+- it is safe to surface `0x0b/03` and `0x04/*` as selector-family diagnostics in Raw view
+- it is now safe to use `0x04/01` and `0x04/02` to seed only the grounded startup linked pairs (`CH3..CH16`) on `MIX 1` and `MIX 2`
 - it is **not** safe yet to seed startup level/pan/mute from `0x18/00`; the raw reply should remain visible for investigation, but UI state should not trust it yet
 
 ## Stable-State Rule

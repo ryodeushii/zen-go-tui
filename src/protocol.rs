@@ -711,6 +711,11 @@ pub struct QueriedMixerStripState {
     pub soloed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueriedMixerSurfaceReadback {
+    pub surfaces: [[QueriedMixerStripState; 16]; 2],
+}
+
 impl Default for QueriedMixerStripState {
     fn default() -> Self {
         Self {
@@ -752,6 +757,34 @@ impl QueryReply75 {
     }
 
     pub fn summary_label(&self) -> String {
+        if let Some(bitmap) = self.selector_bitmap() {
+            let asserted = bitmap
+                .iter()
+                .enumerate()
+                .filter_map(|(index, enabled)| enabled.then_some(format!("{index:02x}")))
+                .collect::<Vec<_>>();
+            return format!(
+                "Selector bitmap: {} asserted [{}]",
+                asserted.len(),
+                asserted.join(" ")
+            );
+        }
+
+        if let Some(pairs) = self.selector_pair_bank() {
+            let preview = pairs
+                .iter()
+                .take(8)
+                .map(|(left, right)| format!("{left:02x}/{right:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            return format!(
+                "Selector pair bank 0x{:02x}: {} pairs [{}]",
+                self.sub_id,
+                pairs.len(),
+                preview
+            );
+        }
+
         match self.kind() {
             StartupQueryKind::Metadata => self
                 .metadata()
@@ -810,23 +843,80 @@ impl QueryReply75 {
         }
     }
 
-    pub fn mixer_strip_readback(&self) -> Option<[QueriedMixerStripState; 16]> {
-        if self.query_id != 0x18 || self.sub_id != 0x00 || self.body.len() < 34 {
+    pub fn selector_bitmap(&self) -> Option<[bool; 21]> {
+        if self.query_id != 0x0b || self.sub_id != 0x03 || self.body.len() < 21 {
             return None;
         }
 
-        let mut strips = [QueriedMixerStripState::default(); 16];
-        // The startup reply begins with one leading non-strip tuple before the visible mixer strips.
-        for (index, chunk) in self.body[2..34].chunks_exact(2).enumerate() {
-            strips[index] = QueriedMixerStripState {
-                level: 0x60_u8.saturating_sub(chunk[0].min(0x60)),
+        let mut selectors = [false; 21];
+        for (index, value) in self.body.iter().take(21).copied().enumerate() {
+            selectors[index] = value != 0;
+        }
+        Some(selectors)
+    }
+
+    pub fn selector_pair_bank(&self) -> Option<Vec<(u8, u8)>> {
+        if self.query_id != 0x04 || self.body.len() < 64 {
+            return None;
+        }
+
+        Some(
+            self.body[..64]
+                .chunks_exact(2)
+                .map(|chunk| (chunk[0], chunk[1]))
+                .collect(),
+        )
+    }
+
+    pub fn startup_link_readback(&self) -> Option<(MixerSurface, [Option<bool>; 16])> {
+        let surface = match self.sub_id {
+            0x01 => MixerSurface::Mix1,
+            0x02 => MixerSurface::Mix2,
+            _ => return None,
+        };
+        let pairs = self.selector_pair_bank()?;
+        if pairs.len() < 17 {
+            return None;
+        }
+
+        let mut linked = [None; 16];
+        let visible_codes = pairs
+            .iter()
+            .skip(1)
+            .take(16)
+            .map(|(_, state)| *state)
+            .collect::<Vec<_>>();
+
+        for pair_start in (2..16).step_by(2) {
+            let left = visible_codes[pair_start];
+            let right = visible_codes[pair_start + 1];
+            if left == 0x02 && right == 0x3e {
+                linked[pair_start] = Some(true);
+                linked[pair_start + 1] = Some(true);
+            }
+        }
+
+        Some((surface, linked))
+    }
+
+    pub fn mixer_strip_readback(&self) -> Option<QueriedMixerSurfaceReadback> {
+        if self.query_id != 0x18 || self.sub_id != 0x00 || self.body.len() < 64 {
+            return None;
+        }
+
+        let mut surfaces = [[QueriedMixerStripState::default(); 16]; 2];
+        for (index, chunk) in self.body[..64].chunks_exact(2).enumerate() {
+            let surface = index / 16;
+            let channel = index % 16;
+            surfaces[surface][channel] = QueriedMixerStripState {
+                level: chunk[0].min(0x5a),
                 pan: PanState::from_state_code(chunk[1]),
                 muted: PanState::state_code_is_muted(chunk[1]),
                 soloed: PanState::state_code_is_soloed(chunk[1]),
             };
         }
 
-        Some(strips)
+        Some(QueriedMixerSurfaceReadback { surfaces })
     }
 }
 
@@ -1904,6 +1994,100 @@ mod tests {
     }
 
     #[test]
+    fn decodes_selector_bitmap_from_0x75_0b_03() {
+        let reply = QueryReply75 {
+            query_id: 0x0b,
+            sub_id: 0x03,
+            body: vec![
+                0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01,
+            ],
+        };
+
+        let bitmap = reply.selector_bitmap().expect("selector bitmap");
+        let asserted = bitmap
+            .iter()
+            .enumerate()
+            .filter_map(|(index, enabled)| enabled.then_some(index as u8))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            asserted,
+            vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x11, 0x12, 0x13, 0x14]
+        );
+        assert_eq!(
+            reply.summary_label(),
+            "Selector bitmap: 9 asserted [00 01 02 03 04 11 12 13 14]"
+        );
+    }
+
+    #[test]
+    fn summarizes_selector_pair_bank_conservatively() {
+        let reply = QueryReply75 {
+            query_id: 0x04,
+            sub_id: 0x01,
+            body: vec![
+                0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+            ],
+        };
+
+        let pairs = reply.selector_pair_bank().expect("selector pair bank");
+        assert_eq!(pairs.len(), 32);
+        assert_eq!(pairs[0], (0x00, 0x20));
+        assert_eq!(pairs[1], (0x00, 0x60));
+        assert_eq!(pairs[2], (0x00, 0x60));
+        assert_eq!(pairs[3], (0x00, 0x02));
+        assert_eq!(
+            reply.summary_label(),
+            "Selector pair bank 0x01: 32 pairs [00/20 00/60 00/60 00/02 00/3e 00/02 00/3e 00/02]"
+        );
+    }
+
+    #[test]
+    fn decodes_startup_link_pairs_from_grounded_0x75_04_mix_banks() {
+        let mix1 = QueryReply75 {
+            query_id: 0x04,
+            sub_id: 0x01,
+            body: vec![
+                0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+            ],
+        };
+        let mix2 = QueryReply75 {
+            query_id: 0x04,
+            sub_id: 0x02,
+            body: vec![
+                0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x60, 0x02, 0x60, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+            ],
+        };
+
+        let (surface1, links1) = mix1.startup_link_readback().expect("mix1 links");
+        let (surface2, links2) = mix2.startup_link_readback().expect("mix2 links");
+        assert_eq!(surface1, MixerSurface::Mix1);
+        assert_eq!(surface2, MixerSurface::Mix2);
+        assert_eq!(links1[0], None);
+        assert_eq!(links1[1], None);
+        assert_eq!(links2[0], None);
+        assert_eq!(links2[1], None);
+        for index in (2..16).step_by(2) {
+            assert_eq!(links1[index], Some(true));
+            assert_eq!(links1[index + 1], Some(true));
+            assert_eq!(links2[index], Some(true));
+            assert_eq!(links2[index + 1], Some(true));
+        }
+    }
+
+    #[test]
     fn decodes_assignment_readback_from_grounded_0x75_banks() {
         let early_bank = QueryReply75 {
             query_id: 0x03,
@@ -1952,45 +2136,47 @@ mod tests {
             body: vec![
                 0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x02, 0x60, 0x3e, 0x2e, 0x02, 0x60, 0x3e,
                 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
-                0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e,
+                0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e,
+                0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
+                0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
             ],
         };
 
-        let strips = reply.mixer_strip_readback().expect("strip state readback");
-        assert_eq!(strips[0].level, 0x00);
-        assert_eq!(strips[0].pan, PanState::center());
-        assert!(!strips[0].muted);
-        assert_eq!(strips[1].level, 0x00);
-        assert_eq!(strips[1].pan, PanState::center());
-        assert_eq!(strips[2].level, 0x00);
-        assert_eq!(strips[2].pan, PanState::left());
-        assert_eq!(strips[3].level, 0x00);
-        assert_eq!(strips[3].pan, PanState::right());
-        assert!(!strips[3].muted);
-        assert_eq!(strips[4].level, 0x32);
-        assert_eq!(strips[4].pan, PanState::left());
-        assert!(strips.iter().all(|strip| !strip.soloed));
+        assert_eq!(reply.body.len(), 64);
+        let readback = reply.mixer_strip_readback().expect("strip state readback");
+        let mix1 = &readback.surfaces[MixerSurface::Mix1.index()];
+        let mix2 = &readback.surfaces[MixerSurface::Mix2.index()];
+        assert_eq!(mix1[0].level, 0x00);
+        assert_eq!(mix1[0].pan, PanState::center());
+        assert!(!mix1[0].muted);
+        assert_eq!(mix1[1].level, 0x5a);
+        assert_eq!(mix1[1].pan, PanState::center());
+        assert_eq!(mix1[2].level, 0x5a);
+        assert_eq!(mix1[2].pan, PanState::center());
+        assert_eq!(mix1[3].level, 0x5a);
+        assert_eq!(mix1[3].pan, PanState::left());
+        assert_eq!(mix1[5].level, 0x2e);
+        assert_eq!(mix1[5].pan, PanState::left());
+        assert_eq!(mix2[0].level, 0x5a);
+        assert_eq!(mix2[0].pan, PanState::right());
+        assert_eq!(mix2[1].level, 0x5a);
+        assert_eq!(mix2[1].pan, PanState::left());
+        assert!(mix1.iter().chain(mix2.iter()).all(|strip| !strip.soloed));
     }
 
     #[test]
-    fn mixer_strip_readback_skips_leading_non_strip_tuple() {
+    fn mixer_strip_readback_requires_full_dual_surface_payload() {
         let reply = QueryReply75 {
             query_id: 0x18,
             sub_id: 0x00,
             body: vec![
                 0x12, 0x3e, 0x60, 0x60, 0x60, 0x60, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x20, 0x60, 0x20,
                 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
-                0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
+                0x60, 0x20, 0x60, 0x20,
             ],
         };
 
-        let strips = reply.mixer_strip_readback().expect("strip state readback");
-        assert_eq!(strips[0].pan, PanState::center());
-        assert!(strips[0].muted);
-        assert_eq!(strips[1].pan, PanState::center());
-        assert!(strips[1].muted);
-        assert_eq!(strips[2].pan, PanState::left());
-        assert!(!strips[2].muted);
+        assert!(reply.mixer_strip_readback().is_none());
     }
 
     #[test]

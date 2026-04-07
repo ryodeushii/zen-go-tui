@@ -265,19 +265,21 @@ impl AppState {
     }
 
     fn push_query_reply_log(&mut self, reply: &QueryReply75, raw: Vec<u8>) {
-        let preview = reply
-            .body
-            .iter()
-            .take(8)
-            .map(|byte| format!("{:02x}", byte))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let detail = if reply.selector_bitmap().is_some() || reply.selector_pair_bank().is_some() {
+            reply.summary_label()
+        } else {
+            let preview = reply
+                .body
+                .iter()
+                .take(8)
+                .map(|byte| format!("{:02x}", byte))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("[{} bytes] {}", reply.body.len(), preview)
+        };
         let summary = format!(
-            "0x75 {:02x}/{:02x} [{} bytes] {}",
-            reply.query_id,
-            reply.sub_id,
-            reply.body.len(),
-            preview
+            "0x75 {:02x}/{:02x} {}",
+            reply.query_id, reply.sub_id, detail
         );
         self.recent_query_reply_log.push(summary.clone());
         self.recent_query_reply_entries
@@ -299,6 +301,18 @@ impl AppState {
                 for channels in &mut self.mixer_channels {
                     channels[index].assignment = Some(assignment);
                 }
+            }
+        }
+
+        if let Some((mixer, linked)) = reply.startup_link_readback() {
+            for (index, state) in linked.into_iter().enumerate() {
+                let Some(linked) = state else {
+                    continue;
+                };
+                let Some(slot) = self.mixer_channels[mixer.index()].get_mut(index) else {
+                    continue;
+                };
+                slot.linked = Some(linked);
             }
         }
     }
@@ -866,6 +880,50 @@ mod tests {
     }
 
     #[test]
+    fn query_reply_startup_link_readback_updates_grounded_pairs() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x04,
+                sub_id: 0x01,
+                body: vec![
+                    0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00,
+                    0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                    0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00,
+                    0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                    0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x04,
+                sub_id: 0x02,
+                body: vec![
+                    0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00,
+                    0x3e, 0x60, 0x02, 0x60, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                    0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00,
+                    0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                    0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
+            let channels = &state.mixer_channels[mixer.index()];
+            assert_eq!(channels[0].linked, None);
+            assert_eq!(channels[1].linked, None);
+            for index in (2..16).step_by(2) {
+                assert_eq!(channels[index].linked, Some(true));
+                assert_eq!(channels[index + 1].linked, Some(true));
+            }
+        }
+    }
+
+    #[test]
     fn query_reply_strip_readback_does_not_seed_unstable_startup_state() {
         let mut state = AppState::default();
 
@@ -876,7 +934,9 @@ mod tests {
                 body: vec![
                     0x00, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x02, 0x60, 0x3e, 0x2e, 0x02, 0x60,
                     0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e,
-                    0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e,
+                    0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60,
+                    0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
+                    0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
                 ],
             }),
             vec![0x75, 0, 0, 0],
@@ -891,10 +951,12 @@ mod tests {
         assert!(mix1.iter().all(|slot| slot.muted.is_none()));
         assert!(mix1.iter().all(|slot| slot.pan == PanState::center()));
         assert!(mix2.iter().all(|slot| slot.level.is_none()));
+        assert!(mix2.iter().all(|slot| slot.muted.is_none()));
+        assert!(mix2.iter().all(|slot| slot.pan == PanState::center()));
     }
 
     #[test]
-    fn query_reply_strip_readback_does_not_apply_muted_overlay() {
+    fn query_reply_strip_readback_does_not_apply_pan_or_mute_overlay() {
         let mut state = AppState::default();
 
         state.observe_frame(
@@ -904,7 +966,9 @@ mod tests {
                 body: vec![
                     0x12, 0x3e, 0x60, 0x60, 0x60, 0x60, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x20, 0x60,
                     0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
-                    0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
+                    0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60,
+                    0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
+                    0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
                 ],
             }),
             vec![0x75, 0, 0, 0],
@@ -1588,6 +1652,40 @@ mod tests {
             .unwrap()
             .contains("0x75 03/13"));
         assert_eq!(state.selected_query_reply_entry, Some(15));
+    }
+
+    #[test]
+    fn query_reply_log_surfaces_selector_family_summaries() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x0b,
+                sub_id: 0x03,
+                body: vec![
+                    0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x04,
+                sub_id: 0x01,
+                body: vec![
+                    0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00,
+                    0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e,
+                    0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00,
+                    0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                    0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        assert!(state.recent_query_reply_log[0].contains("Selector bitmap"));
+        assert!(state.recent_query_reply_log[1].contains("Selector pair bank 0x01"));
     }
 
     #[test]
