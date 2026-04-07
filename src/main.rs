@@ -214,12 +214,11 @@ fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
             } else {
                 current.saturating_add(1).min(0x60)
             };
-            controller.send(Command::SetMixerLevel {
-                mixer: MixerSurface::from_surface(controller.state.surface),
+            controller.send_mixer_level_change(
+                MixerSurface::from_surface(controller.state.surface),
                 channel,
-                level: next,
-                pan_state: active_channel.pan,
-            })?;
+                next,
+            )?;
         }
         FocusArea::Preamp => {
             let input = controller.state.selected_preamp_input as u8;
@@ -251,12 +250,11 @@ fn toggle_mute(controller: &mut Controller) -> Result<()> {
                 controller.state.active_mixer_channels()[controller.state.selected_channel];
             let channel = active_channel.channel;
             let muted = !active_channel.muted.unwrap_or(false);
-            controller.send(Command::SetMixerMute {
-                mixer: MixerSurface::from_surface(controller.state.surface),
+            controller.send_mixer_mute_change(
+                MixerSurface::from_surface(controller.state.surface),
                 channel,
                 muted,
-                pan_state: active_channel.pan,
-            })?;
+            )?;
         }
         FocusArea::Preamp => {
             let input = controller.state.selected_preamp_input as u8;
@@ -395,12 +393,11 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
             let mixer = MixerSurface::from_surface(controller.state.surface);
             let active_channel =
                 controller.state.mixer_channels[mixer.index()][channel as usize - 1];
-            controller.send(Command::SetMixerMute {
+            controller.send_mixer_mute_change(
                 mixer,
                 channel,
-                muted: !active_channel.muted.unwrap_or(false),
-                pan_state: active_channel.pan,
-            })?;
+                !active_channel.muted.unwrap_or(false),
+            )?;
         }
         ui::MouseAction::ToggleMixerLink(channel) => {
             controller.state.focus = FocusArea::Mixer;

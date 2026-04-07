@@ -430,9 +430,23 @@ enum PendingMutation {
         level: u8,
         pan: PanState,
     },
+    MixerLinkedLevel {
+        mixer: MixerSurface,
+        left_channel: u8,
+        right_channel: u8,
+        level: u8,
+        left_pan: PanState,
+        right_pan: PanState,
+    },
     MixerMute {
         mixer: MixerSurface,
         channel: u8,
+        muted: bool,
+    },
+    MixerLinkedMute {
+        mixer: MixerSurface,
+        left_channel: u8,
+        right_channel: u8,
         muted: bool,
     },
     MixerPan {
@@ -531,6 +545,142 @@ impl Controller {
         Ok(())
     }
 
+    pub fn send_mixer_level_change(
+        &mut self,
+        mixer: MixerSurface,
+        channel: u8,
+        level: u8,
+    ) -> Result<()> {
+        let index = channel.saturating_sub(1) as usize;
+        let Some(active) = self.state.mixer_channels[mixer.index()].get(index).copied() else {
+            bail!("invalid mixer channel {channel}");
+        };
+
+        if active.linked == Some(true) {
+            let (left_channel, right_channel) = if channel % 2 == 1 {
+                (channel, channel.saturating_add(1))
+            } else {
+                (channel.saturating_sub(1), channel)
+            };
+            let left_index = left_channel.saturating_sub(1) as usize;
+            let right_index = right_channel.saturating_sub(1) as usize;
+            let Some(left) = self.state.mixer_channels[mixer.index()]
+                .get(left_index)
+                .copied()
+            else {
+                bail!("invalid linked left channel {left_channel}");
+            };
+            let Some(right) = self.state.mixer_channels[mixer.index()]
+                .get(right_index)
+                .copied()
+            else {
+                bail!("invalid linked right channel {right_channel}");
+            };
+
+            self.pending_mutation = Some(PendingMutation::MixerLinkedLevel {
+                mixer,
+                left_channel,
+                right_channel,
+                level,
+                left_pan: left.pan,
+                right_pan: right.pan,
+            });
+            self.transport
+                .write(&encode_command(Command::SetMixerLevel {
+                    mixer,
+                    channel: left_channel,
+                    level,
+                    pan_state: left.pan,
+                }))?;
+            self.transport
+                .write(&encode_command(Command::SetMixerLevel {
+                    mixer,
+                    channel: right_channel,
+                    level,
+                    pan_state: right.pan,
+                }))?;
+            self.state.last_message = format!(
+                "Sent linked mixer level {:?} ch {}-{}",
+                mixer, left_channel, right_channel
+            );
+            return Ok(());
+        }
+
+        self.send(Command::SetMixerLevel {
+            mixer,
+            channel,
+            level,
+            pan_state: active.pan,
+        })
+    }
+
+    pub fn send_mixer_mute_change(
+        &mut self,
+        mixer: MixerSurface,
+        channel: u8,
+        muted: bool,
+    ) -> Result<()> {
+        let index = channel.saturating_sub(1) as usize;
+        let Some(active) = self.state.mixer_channels[mixer.index()].get(index).copied() else {
+            bail!("invalid mixer channel {channel}");
+        };
+
+        if active.linked == Some(true) {
+            let (left_channel, right_channel) = if channel % 2 == 1 {
+                (channel, channel.saturating_add(1))
+            } else {
+                (channel.saturating_sub(1), channel)
+            };
+            let left_index = left_channel.saturating_sub(1) as usize;
+            let right_index = right_channel.saturating_sub(1) as usize;
+            let Some(left) = self.state.mixer_channels[mixer.index()]
+                .get(left_index)
+                .copied()
+            else {
+                bail!("invalid linked left channel {left_channel}");
+            };
+            let Some(right) = self.state.mixer_channels[mixer.index()]
+                .get(right_index)
+                .copied()
+            else {
+                bail!("invalid linked right channel {right_channel}");
+            };
+
+            self.pending_mutation = Some(PendingMutation::MixerLinkedMute {
+                mixer,
+                left_channel,
+                right_channel,
+                muted,
+            });
+            self.transport
+                .write(&encode_command(Command::SetMixerMute {
+                    mixer,
+                    channel: left_channel,
+                    muted,
+                    pan_state: left.pan,
+                }))?;
+            self.transport
+                .write(&encode_command(Command::SetMixerMute {
+                    mixer,
+                    channel: right_channel,
+                    muted,
+                    pan_state: right.pan,
+                }))?;
+            self.state.last_message = format!(
+                "Sent linked mixer mute {:?} ch {}-{}",
+                mixer, left_channel, right_channel
+            );
+            return Ok(());
+        }
+
+        self.send(Command::SetMixerMute {
+            mixer,
+            channel,
+            muted,
+            pan_state: active.pan,
+        })
+    }
+
     pub fn poll_device(&mut self, timeout: Duration) -> Result<()> {
         let mut next_timeout = timeout;
 
@@ -570,6 +720,24 @@ impl Controller {
                     slot.pan = pan;
                 }
             }
+            Some(PendingMutation::MixerLinkedLevel {
+                mixer,
+                left_channel,
+                right_channel,
+                level,
+                left_pan,
+                right_pan,
+            }) => {
+                for (channel, pan) in [(left_channel, left_pan), (right_channel, right_pan)] {
+                    if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                        .get_mut(channel.saturating_sub(1) as usize)
+                    {
+                        slot.level = Some(level);
+                        slot.muted = Some(false);
+                        slot.pan = pan;
+                    }
+                }
+            }
             Some(PendingMutation::MixerMute {
                 mixer,
                 channel,
@@ -579,6 +747,20 @@ impl Controller {
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
                     slot.muted = Some(muted);
+                }
+            }
+            Some(PendingMutation::MixerLinkedMute {
+                mixer,
+                left_channel,
+                right_channel,
+                muted,
+            }) => {
+                for channel in [left_channel, right_channel] {
+                    if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                        .get_mut(channel.saturating_sub(1) as usize)
+                    {
+                        slot.muted = Some(muted);
+                    }
                 }
             }
             Some(PendingMutation::MixerPan {
@@ -1261,6 +1443,86 @@ mod tests {
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][2],
             MixerChannelState::known(3, Some(0x2c), Some(false), PanState::left(), None, None)
+        );
+    }
+
+    #[test]
+    fn linked_mixer_level_change_writes_and_updates_both_channels() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].linked = Some(true);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].linked = Some(true);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
+
+        controller
+            .send_mixer_level_change(MixerSurface::Mix1, 4, 0x2c)
+            .expect("send linked mixer level");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x03, 0x2c, 0x02]
+        );
+        assert_eq!(
+            &writes[1][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x04, 0x2c, 0x3e]
+        );
+
+        controller.confirm_pending_write(snapshot());
+
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].level,
+            Some(0x2c)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][3].level,
+            Some(0x2c)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].pan,
+            PanState::left()
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][3].pan,
+            PanState::right()
+        );
+    }
+
+    #[test]
+    fn linked_mixer_mute_change_writes_and_updates_both_channels() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].linked = Some(true);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].linked = Some(true);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
+
+        controller
+            .send_mixer_mute_change(MixerSurface::Mix1, 3, true)
+            .expect("send linked mixer mute");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x03, 0x00, 0x42]
+        );
+        assert_eq!(
+            &writes[1][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x04, 0x00, 0x7e]
+        );
+
+        controller.confirm_pending_write(snapshot());
+
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].muted,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][3].muted,
+            Some(true)
         );
     }
 
