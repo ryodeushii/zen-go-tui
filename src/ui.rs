@@ -1513,7 +1513,7 @@ mod tests {
         let line = render_mixer_strip_line(&state, 10, channel);
 
         assert!(line.contains("Computer Play 8"));
-        assert!(line.contains("pan=R100"));
+        assert!(line.contains("pan=R30"));
         assert!(line.contains("link=on"));
         assert!(line.contains("meter="));
     }

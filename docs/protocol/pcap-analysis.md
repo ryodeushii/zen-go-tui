@@ -102,8 +102,14 @@ The startup sweep now has two different evidence levels:
   - `query = 0x18`, `sub = 0x00` carries `32` repeated tuple-like entries, but live validation still shows that neither the tuple ordering nor the state-byte semantics are safe enough yet for authoritative startup level/pan/mute readback
   - `query = 0x0b`, `sub = 0x03` is grounded as a 21-slot selector bitmap, matching the startup `a2 03 <selector> 01` write window at indices `00..04` and `11..14`
   - `query = 0x0b`, `sub = 0x03` is now grounded enough to seed the full startup link bitmap for all `8` visible odd/even pairs on each mix: selector bits `0..7` track `MIX 1` pairs `1-2` through `15-16`, while bits `16..23` track the same pairs on `MIX 2`
-  - `query = 0x04`, `sub = 0x00..0x03` no longer fit startup link topology once the new startup-link captures are compared; they are better treated as pan/category or other selector-state banks rather than link state
-  - `0x04/01` and `0x04/02` still carry visible startup pan *categories* after the leading hidden tuple: `C C L R L R ...`, matching the Windows control-panel screenshots for the visible pair layout, but not yet grounding the exact numeric pan amount
+  - `query = 0x04`, `sub = 0x00..0x03` no longer fit startup link topology once the new startup-link captures are compared; they are better treated as pan/state or other selector-state banks rather than link state
+  - `0x04/00` carries startup pan/state for `MIX 1`, and `0x04/01` carries startup pan/state for `MIX 2`
+  - within those banks, the visible strip state sits as `(level, pan/state)` pairs after a leading hidden tuple:
+    - even byte offsets `2, 4, 6, ... 32` = startup level raw attenuation (`0x00 = 0 dB`, `0x12 = -18 dB`, `0x1e = -30 dB`, `0x5a = -90 dB`)
+    - odd byte offsets `3, 5, 7, ... 33` = startup pan/state byte
+  - those state bytes reuse the ordinary pan/state encoding: low 6 bits are the pan raw value, bit `0x40` is mute
+  - the startup pan captures ground exact startup readback for values like `CH1 = -2` (`0x5e`) and linked-pair values like `-30 / +30` (`0x02 / 0x3e`)
+  - the startup level captures ground exact startup readback for values like `CH1 = -18 dB` (`0x12`) and linked-pair values like `CH3/4 = -30 dB` (`0x1e / 0x1e`)
   - `query = 0x04`, `sub = 0x00..0x03` remain better bounded as selector/state banks rather than authoritative mixer-fader readback
 
 Current implementation boundary:
@@ -113,7 +119,8 @@ Current implementation boundary:
 - it is now safe to use the grounded `0x03` subset for query-side mixer assignment readback
 - it is safe to surface `0x0b/03` and `0x04/*` as selector-family diagnostics in Raw view
 - it is now safe to use `0x0b/03` to seed the grounded startup visible link state for `CH1..16` on `MIX 1` and `MIX 2`
-- it is also safe to summarize startup pan categories from `0x04/01` and `0x04/02` as `center / left / right`, but **not** yet to turn those categories into authoritative numeric pan values in the mixer UI
+- it is now safe to use `0x04/00` and `0x04/01` to seed startup pan and mute state for the visible strips on `MIX 1` and `MIX 2`
+- it is now safe to use the even bytes of `0x04/00` and `0x04/01` to seed startup level readback for the visible strips on `MIX 1` and `MIX 2`
 - it is **not** safe yet to seed startup level/pan/mute from `0x18/00`; the raw reply should remain visible for investigation, but UI state should not trust it yet
 - it is also **not** safe to apply the old passive `0x73` strip-1 pan heuristic into mixer UI state; live validation showed it can flicker `CH01` away from center under signal
 

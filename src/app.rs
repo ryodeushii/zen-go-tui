@@ -314,6 +314,20 @@ impl AppState {
                 }
             }
         }
+
+        if let Some((mixer, states)) = reply.startup_pan_state_readback() {
+            for (index, state) in states.into_iter().enumerate() {
+                let Some(state) = state else {
+                    continue;
+                };
+                let Some(slot) = self.mixer_channels[mixer.index()].get_mut(index) else {
+                    continue;
+                };
+                slot.level = Some(state.level);
+                slot.pan = state.pan;
+                slot.muted = Some(state.muted);
+            }
+        }
     }
 
     pub fn mark_disconnected(&mut self) {
@@ -941,6 +955,93 @@ mod tests {
         let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
         assert!(mix1[10..].iter().all(|slot| slot.linked == Some(true)));
         assert!(mix2[10..].iter().all(|slot| slot.linked == Some(true)));
+    }
+
+    #[test]
+    fn query_reply_startup_pan_state_readback_updates_mix_pan_and_mute() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x04,
+                sub_id: 0x00,
+                body: vec![
+                    0x00, 0x20, 0x00, 0x5e, 0x00, 0x60, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x20, 0x00,
+                    0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+                    0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x04,
+                sub_id: 0x01,
+                body: vec![
+                    0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00,
+                    0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x02, 0x00, 0x3e,
+                    0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
+        let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
+        assert_eq!(mix1[0].level, Some(0x00));
+        assert_eq!(mix1[0].pan, PanState::from_raw(0x1e));
+        assert_eq!(mix1[0].muted, Some(true));
+        assert_eq!(mix1[1].level, Some(0x00));
+        assert_eq!(mix1[1].pan, PanState::center());
+        assert_eq!(mix1[1].muted, Some(true));
+        assert_eq!(mix1[2].level, Some(0x00));
+        assert_eq!(mix1[2].pan, PanState::left());
+        assert_eq!(mix1[2].muted, Some(false));
+        assert_eq!(mix1[3].level, Some(0x00));
+        assert_eq!(mix1[3].pan, PanState::right());
+        assert_eq!(mix1[3].muted, Some(false));
+        assert_eq!(mix2[10].level, Some(0x00));
+        assert_eq!(mix2[10].pan, PanState::left());
+        assert_eq!(mix2[10].muted, Some(false));
+        assert_eq!(mix2[11].level, Some(0x00));
+        assert_eq!(mix2[11].pan, PanState::right());
+        assert_eq!(mix2[11].muted, Some(false));
+    }
+
+    #[test]
+    fn query_reply_startup_level_readback_updates_mix_levels() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x04,
+                sub_id: 0x00,
+                body: vec![
+                    0x00, 0x20, 0x12, 0x5e, 0x00, 0x60, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00,
+                    0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+                    0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x04,
+                sub_id: 0x01,
+                body: vec![
+                    0x00, 0x20, 0x00, 0x60, 0x00, 0x60, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00,
+                    0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x1e, 0x02, 0x1e, 0x3e,
+                    0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+                ],
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
+        let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
+        assert_eq!(mix1[0].level, Some(0x12));
+        assert_eq!(mix2[10].level, Some(0x1e));
+        assert_eq!(mix2[11].level, Some(0x1e));
     }
 
     #[test]
@@ -1705,7 +1806,7 @@ mod tests {
         );
 
         assert!(state.recent_query_reply_log[0].contains("Selector bitmap"));
-        assert!(state.recent_query_reply_log[1].contains("Startup Mix1 pan categories"));
+        assert!(state.recent_query_reply_log[1].contains("Startup Mix2 pan categories"));
     }
 
     #[test]
