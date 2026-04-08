@@ -34,7 +34,9 @@ impl fmt::Display for TransportError {
 impl StdError for TransportError {}
 
 pub fn is_device_error(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<TransportError>().is_some()
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<TransportError>().is_some())
 }
 
 const HID_RECONNECT_INTERVAL: Duration = Duration::from_millis(500);
@@ -157,8 +159,41 @@ impl Transport for HidTransport {
 
 fn open_hid_device(vid: u16, pid: u16) -> Result<HidDevice> {
     let api = HidApi::new()?;
-    api.open(vid, pid)
-        .map_err(|_| anyhow!(TransportError::DeviceUnavailable))
+    let candidates: Vec<_> = api
+        .device_list()
+        .filter(|device| device.vendor_id() == vid && device.product_id() == pid)
+        .collect();
+
+    if candidates.is_empty() {
+        return Err(anyhow!(TransportError::DeviceUnavailable).context(format!(
+            "no HID interfaces found for {:04x}:{:04x}",
+            vid, pid
+        )));
+    }
+
+    let mut failures = Vec::new();
+    for candidate in candidates {
+        match candidate.open_device(&api) {
+            Ok(device) => return Ok(device),
+            Err(error) => failures.push(format!(
+                "path={} iface={} usage_page=0x{:04x} usage=0x{:04x} product={}: {}",
+                candidate.path().to_string_lossy(),
+                candidate.interface_number(),
+                candidate.usage_page(),
+                candidate.usage(),
+                candidate.product_string().unwrap_or("?"),
+                error
+            )),
+        }
+    }
+
+    Err(anyhow!(TransportError::DeviceUnavailable).context(format!(
+        "found {} matching HID interface(s) for {:04x}:{:04x}, but none opened:\n{}",
+        failures.len(),
+        vid,
+        pid,
+        failures.join("\n")
+    )))
 }
 
 #[derive(Clone, Default)]
@@ -223,5 +258,12 @@ mod tests {
         let read = transport.read(Duration::from_millis(10)).expect("read");
         assert_eq!(read, Some(vec![1, 2, 3]));
         assert_eq!(transport.take_writes(), vec![vec![9, 8, 7]]);
+    }
+
+    #[test]
+    fn is_device_error_matches_context_wrapped_transport_error() {
+        let error = anyhow!(TransportError::DeviceUnavailable).context("wrapped device error");
+
+        assert!(is_device_error(&error));
     }
 }

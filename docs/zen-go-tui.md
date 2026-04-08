@@ -99,7 +99,7 @@ The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device m
 
 - `Tab` — cycle focus between status, outputs, mixer, preamp
 - `Left` / `Right` — select output or mixer channel
-- `+` / `-` — adjust selected output volume or mixer fader
+- `Up` / `Down` — adjust the focused output level, mixer fader, or preamp gain
 - `m` — toggle output mute or mixer mute
 - `d` — toggle output dim
 - `[` / `]` — adjust mixer pan left/right for the selected strip
@@ -110,7 +110,6 @@ The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device m
 - `s` — cycle sample rate
 - `c` — cycle clock source
 - `Left` / `Right` on preamp page — select `A1` or `A2`
-- `+` / `-` on preamp page — adjust selected preamp gain
 - `m` on preamp page — toggle phantom for the selected preamp input
 - `1` — switch to Monitor / HP1 surface
 - `2` — switch to HP2 surface

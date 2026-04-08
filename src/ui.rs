@@ -2779,7 +2779,9 @@ fn render_hotkeys_popup_text() -> Text<'static> {
         Line::from("  q quit   ? hotkeys   Esc close popup"),
         Line::from(""),
         Line::from("Mixer Page"),
-        Line::from("  Tab focus cycle   Left/Right move selection   +/- adjust focused control"),
+        Line::from(
+            "  Tab focus cycle   Left/Right move selection   Up/Down adjust focused control",
+        ),
         Line::from("  Outputs: m mute   d dim"),
         Line::from("  Mixer: o solo   a assignment   l link   [ ] pan   1/2 surface"),
         Line::from("  Routing: click ROUTING in Mixer Surface header, then a opens source picker"),
@@ -3303,6 +3305,7 @@ mod tests {
 
         assert!(rendered.contains("Global"));
         assert!(rendered.contains("? hotkeys"));
+        assert!(rendered.contains("Up/Down adjust focused control"));
         assert!(rendered.contains("Outputs: m mute   d dim"));
         assert!(rendered.contains("r raw inspector"));
     }

@@ -42,9 +42,9 @@ fn main() -> Result<()> {
     } else {
         wait_for_transport(
             || Ok(Box::new(HidTransport::open(ZEN_GO_VID, ZEN_GO_PID)?) as Box<dyn Transport>),
-            |attempt, _| {
+            |attempt, error| {
                 if attempt == 1 {
-                    eprintln!("Waiting for Zen Go device...");
+                    eprintln!("Waiting for Zen Go device...\n{error:#}");
                 }
                 thread::sleep(DEVICE_RETRY_INTERVAL);
                 Ok(())
@@ -126,6 +126,149 @@ fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     result
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyAction {
+    Continue,
+    ReconnectPending,
+    Quit,
+}
+
+fn handle_key_press(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    if controller.state.hotkeys_popup_open {
+        match key_code {
+            AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+            AppKeyCode::Char('?') | AppKeyCode::Esc => controller.state.toggle_hotkeys_popup(),
+            _ => {}
+        }
+        return Ok(KeyAction::Continue);
+    }
+
+    let result = match key_code {
+        AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('r') => {
+            controller.state.toggle_raw_view();
+            Ok(())
+        }
+        AppKeyCode::Char('R') => match controller.refresh_queried_state() {
+            Ok(()) => {
+                controller.state.last_message =
+                    "Sent captured 0x74 startup/state refresh sweep".to_string();
+                Ok(())
+            }
+            Err(error) => Err(error),
+        },
+        AppKeyCode::Tab => {
+            if controller.state.page == MainPage::Mixer {
+                controller.state.cycle_focus();
+            }
+            Ok(())
+        }
+        AppKeyCode::BackTab => Ok(()),
+        AppKeyCode::Char('?') => {
+            controller.state.toggle_hotkeys_popup();
+            Ok(())
+        }
+        AppKeyCode::Up
+            if controller.state.assignment_picker.is_some()
+                || controller.state.selector_popup.is_some() =>
+        {
+            move_popup_selection(controller, false);
+            Ok(())
+        }
+        AppKeyCode::Down
+            if controller.state.assignment_picker.is_some()
+                || controller.state.selector_popup.is_some() =>
+        {
+            move_popup_selection(controller, true);
+            Ok(())
+        }
+        AppKeyCode::Enter
+            if controller.state.assignment_picker.is_some()
+                || controller.state.selector_popup.is_some() =>
+        {
+            activate_popup_selection(controller)
+        }
+        AppKeyCode::Left if controller.state.raw_view_open => {
+            if controller.state.selected_raw_packet == zen_go_tui::app::RawPacketTab::Query75 {
+                controller.state.cycle_query_reply_entry(false)
+            } else {
+                controller.state.cycle_raw_packet(false)
+            }
+            Ok(())
+        }
+        AppKeyCode::Right if controller.state.raw_view_open => {
+            if controller.state.selected_raw_packet == zen_go_tui::app::RawPacketTab::Query75 {
+                controller.state.cycle_query_reply_entry(true)
+            } else {
+                controller.state.cycle_raw_packet(true)
+            }
+            Ok(())
+        }
+        AppKeyCode::Left => {
+            move_selection(controller, false, area);
+            Ok(())
+        }
+        AppKeyCode::Right => {
+            move_selection(controller, true, area);
+            Ok(())
+        }
+        AppKeyCode::Up => adjust_focused(controller, true),
+        AppKeyCode::Down => adjust_focused(controller, false),
+        AppKeyCode::Char('m') => toggle_mute(controller),
+        AppKeyCode::Char('o') => toggle_mixer_solo(controller),
+        AppKeyCode::Char('d') => toggle_dim(controller),
+        AppKeyCode::Char('a') => open_mixer_assignment_picker(controller),
+        AppKeyCode::Char('l') => toggle_mixer_link(controller),
+        AppKeyCode::Char('[') => adjust_mixer_pan(controller, false),
+        AppKeyCode::Char(']') => adjust_mixer_pan(controller, true),
+        AppKeyCode::Char('p') => toggle_preamp_phase(controller),
+        AppKeyCode::Char('3') => open_preamp_mode_selector(controller),
+        AppKeyCode::Char('s') => cycle_sample_rate(controller),
+        AppKeyCode::Char('c') => cycle_clock_source(controller),
+        AppKeyCode::Char('1') => controller.send(Command::SelectSurface(Surface::MonitorHp1)),
+        AppKeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2)),
+        AppKeyCode::Char('b') if controller.state.raw_view_open => {
+            controller.state.capture_raw_baseline();
+            controller.state.last_message =
+                "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
+            Ok(())
+        }
+        AppKeyCode::Char('x') if controller.state.raw_view_open => {
+            controller.state.clear_raw_baseline();
+            controller.state.last_message = "Cleared raw baseline".to_string();
+            Ok(())
+        }
+        AppKeyCode::Esc
+            if controller.state.assignment_picker.is_some()
+                || controller.state.selector_popup.is_some()
+                || controller.state.routing_popup_open
+                || controller.state.hotkeys_popup_open =>
+        {
+            controller.state.assignment_picker = None;
+            controller.state.selector_popup = None;
+            controller.state.routing_popup_open = false;
+            controller.state.popup_selected_index = 0;
+            controller.state.hotkeys_popup_open = false;
+            controller.state.last_message = "Closed popup".to_string();
+            Ok(())
+        }
+        _ => Ok(()),
+    };
+
+    match result {
+        Ok(()) => Ok(KeyAction::Continue),
+        Err(error) if is_device_error(&error) => {
+            handle_runtime_error(controller, error)?;
+            Ok(KeyAction::ReconnectPending)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn app_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controller: &mut Controller,
@@ -152,153 +295,19 @@ fn app_loop(
                 if key.kind != AppKeyEventKind::Press {
                     continue;
                 }
+                let size = terminal.size()?;
+                let action = handle_key_press(
+                    controller,
+                    key.code,
+                    ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                )?;
 
-                if controller.state.hotkeys_popup_open {
-                    match key.code {
-                        AppKeyCode::Char('q') => break,
-                        AppKeyCode::Char('?') | AppKeyCode::Esc => {
-                            controller.state.toggle_hotkeys_popup();
-                        }
-                        _ => {}
-                    }
-                    continue;
+                if action == KeyAction::Quit {
+                    break;
                 }
 
-                let result = match key.code {
-                    AppKeyCode::Char('q') => break,
-                    AppKeyCode::Char('r') => {
-                        controller.state.toggle_raw_view();
-                        Ok(())
-                    }
-                    AppKeyCode::Char('R') => match controller.refresh_queried_state() {
-                        Ok(()) => {
-                            controller.state.last_message =
-                                "Sent captured 0x74 startup/state refresh sweep".to_string();
-                            Ok(())
-                        }
-                        Err(error) => Err(error),
-                    },
-                    AppKeyCode::Tab => {
-                        if controller.state.page == MainPage::Mixer {
-                            controller.state.cycle_focus();
-                        }
-                        Ok(())
-                    }
-                    AppKeyCode::BackTab => Ok(()),
-                    AppKeyCode::Char('?') => {
-                        controller.state.toggle_hotkeys_popup();
-                        Ok(())
-                    }
-                    AppKeyCode::Up
-                        if controller.state.assignment_picker.is_some()
-                            || controller.state.selector_popup.is_some() =>
-                    {
-                        move_popup_selection(controller, false);
-                        Ok(())
-                    }
-                    AppKeyCode::Down
-                        if controller.state.assignment_picker.is_some()
-                            || controller.state.selector_popup.is_some() =>
-                    {
-                        move_popup_selection(controller, true);
-                        Ok(())
-                    }
-                    AppKeyCode::Enter
-                        if controller.state.assignment_picker.is_some()
-                            || controller.state.selector_popup.is_some() =>
-                    {
-                        activate_popup_selection(controller)
-                    }
-                    AppKeyCode::Left if controller.state.raw_view_open => {
-                        if controller.state.selected_raw_packet
-                            == zen_go_tui::app::RawPacketTab::Query75
-                        {
-                            controller.state.cycle_query_reply_entry(false)
-                        } else {
-                            controller.state.cycle_raw_packet(false)
-                        }
-                        Ok(())
-                    }
-                    AppKeyCode::Right if controller.state.raw_view_open => {
-                        if controller.state.selected_raw_packet
-                            == zen_go_tui::app::RawPacketTab::Query75
-                        {
-                            controller.state.cycle_query_reply_entry(true)
-                        } else {
-                            controller.state.cycle_raw_packet(true)
-                        }
-                        Ok(())
-                    }
-                    AppKeyCode::Left => {
-                        let size = terminal.size()?;
-                        move_selection(
-                            controller,
-                            false,
-                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                        );
-                        Ok(())
-                    }
-                    AppKeyCode::Right => {
-                        let size = terminal.size()?;
-                        move_selection(
-                            controller,
-                            true,
-                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                        );
-                        Ok(())
-                    }
-                    AppKeyCode::Char('+') | AppKeyCode::Char('=') => {
-                        adjust_focused(controller, true)
-                    }
-                    AppKeyCode::Char('-') => adjust_focused(controller, false),
-                    AppKeyCode::Char('m') => toggle_mute(controller),
-                    AppKeyCode::Char('o') => toggle_mixer_solo(controller),
-                    AppKeyCode::Char('d') => toggle_dim(controller),
-                    AppKeyCode::Char('a') => open_mixer_assignment_picker(controller),
-                    AppKeyCode::Char('l') => toggle_mixer_link(controller),
-                    AppKeyCode::Char('[') => adjust_mixer_pan(controller, false),
-                    AppKeyCode::Char(']') => adjust_mixer_pan(controller, true),
-                    AppKeyCode::Char('p') => toggle_preamp_phase(controller),
-                    AppKeyCode::Char('3') => open_preamp_mode_selector(controller),
-                    AppKeyCode::Char('s') => cycle_sample_rate(controller),
-                    AppKeyCode::Char('c') => cycle_clock_source(controller),
-                    AppKeyCode::Char('1') => {
-                        controller.send(Command::SelectSurface(Surface::MonitorHp1))
-                    }
-                    AppKeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2)),
-                    AppKeyCode::Char('b') if controller.state.raw_view_open => {
-                        controller.state.capture_raw_baseline();
-                        controller.state.last_message =
-                            "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
-                        Ok(())
-                    }
-                    AppKeyCode::Char('x') if controller.state.raw_view_open => {
-                        controller.state.clear_raw_baseline();
-                        controller.state.last_message = "Cleared raw baseline".to_string();
-                        Ok(())
-                    }
-                    AppKeyCode::Esc
-                        if controller.state.assignment_picker.is_some()
-                            || controller.state.selector_popup.is_some()
-                            || controller.state.routing_popup_open
-                            || controller.state.hotkeys_popup_open =>
-                    {
-                        controller.state.assignment_picker = None;
-                        controller.state.selector_popup = None;
-                        controller.state.routing_popup_open = false;
-                        controller.state.popup_selected_index = 0;
-                        controller.state.hotkeys_popup_open = false;
-                        controller.state.last_message = "Closed popup".to_string();
-                        Ok(())
-                    }
-                    _ => Ok(()),
-                };
-
-                if let Err(error) = result {
-                    if is_device_error(&error) {
-                        reconnect_refresh_pending = true;
-                    }
-                    handle_runtime_error(controller, error)?;
+                if action == KeyAction::ReconnectPending {
+                    reconnect_refresh_pending = true;
                 }
             }
             Some(AppInputEvent::Mouse(mouse)) => {
@@ -1294,6 +1303,73 @@ mod tests {
             })
         );
         assert_eq!(controller.state.popup_selected_index, 1);
+    }
+
+    #[test]
+    fn up_key_adjusts_focused_output_level() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.focus = FocusArea::Outputs;
+        controller.state.outputs[0] =
+            OutputState::new(OutputTarget::Monitor, 0x30, OutputMode::Normal);
+
+        let action = handle_key_press(
+            &mut controller,
+            AppKeyCode::Up,
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("up key");
+
+        assert_eq!(action, KeyAction::Continue);
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0x47, 0x00, 0x2f]);
+    }
+
+    #[test]
+    fn down_key_adjusts_focused_preamp_gain() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.focus = FocusArea::Preamp;
+        controller.state.selected_preamp_input = 1;
+        controller.state.preamp.input2.mode = PreampMode::Mic;
+        controller.state.preamp.input2.gain_raw = 0x10;
+
+        let action = handle_key_press(
+            &mut controller,
+            AppKeyCode::Down,
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("down key");
+
+        assert_eq!(action, KeyAction::Continue);
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0x50, 0x01, 0x0f]);
+    }
+
+    #[test]
+    fn up_key_moves_popup_selection_before_adjusting_controls() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.focus = FocusArea::Outputs;
+        controller.state.selected_output = 1;
+        controller.state.outputs[1] = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
+        controller.state.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::SampleRate,
+        });
+        controller.state.popup_selected_index = 1;
+
+        let action = handle_key_press(
+            &mut controller,
+            AppKeyCode::Up,
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("popup up key");
+
+        assert_eq!(action, KeyAction::Continue);
+        assert_eq!(controller.state.popup_selected_index, 0);
+        assert!(transport.take_writes().is_empty());
     }
 
     #[test]
