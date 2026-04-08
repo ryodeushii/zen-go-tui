@@ -4,16 +4,21 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{AppState, AssignmentPickerState, FocusArea, MainPage, RawPacketTab};
+use crate::app::{
+    AppState, AssignmentPickerState, FocusArea, MainPage, RawPacketTab, SelectorPopupKind,
+    SelectorPopupState,
+};
 use crate::protocol::{
-    meter_display_db, meter_ratio, MixerAssignment, MixerSurface, OutputMode, OutputState,
-    PreampInputState, PreampMode, Surface,
+    meter_display_db, meter_ratio, ClockSource, MixerAssignment, MixerSurface, OutputMode,
+    OutputState, PreampInputState, PreampMode, SampleRate, Surface,
 };
 use crate::terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     ToggleRawView,
+    OpenSampleRateSelector,
+    OpenClockSourceSelector,
     SelectPage(MainPage),
     SelectOutput(usize),
     AdjustOutputLevel {
@@ -40,7 +45,15 @@ pub enum MouseAction {
         input: u8,
         increase: bool,
     },
+    OpenPreampModeSelector(u8),
     CyclePreampMode(u8),
+    PickSampleRate(SampleRate),
+    PickClockSource(ClockSource),
+    PickPreampMode {
+        input: u8,
+        mode: PreampMode,
+    },
+    CloseSelectorPopup,
     TogglePreampPhase(u8),
     TogglePreampPhantom(u8),
 }
@@ -61,6 +74,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     }
     draw_footer(frame, chunks[3], state);
     draw_assignment_picker(frame, frame.area(), state);
+    draw_selector_popup(frame, frame.area(), state);
 }
 
 fn root_chunks(area: Rect) -> Vec<Rect> {
@@ -82,6 +96,35 @@ fn titlebar_layout(area: Rect) -> Vec<Rect> {
         .constraints([Constraint::Min(24), Constraint::Length(18)])
         .split(area)
         .to_vec()
+}
+
+fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
+    let inner = inner_area(area);
+    let product = state
+        .device
+        .metadata
+        .as_ref()
+        .map(|metadata| metadata.product_name.clone())
+        .unwrap_or_else(|| "ZEN GO SYNERGY CORE".to_string());
+    let sample = state
+        .device
+        .sample_rate
+        .map(|value| value.label())
+        .unwrap_or_else(|| "rate ?".to_string());
+    let clock = state
+        .device
+        .clock_source
+        .map(|value| value.label().to_string())
+        .unwrap_or_else(|| "clock ?".to_string());
+
+    let mut x = inner.x + product.chars().count() as u16 + 2;
+    let connection_rect = Rect::new(x, inner.y, chip_width("CONNECTED"), 1);
+    x = x.saturating_add(connection_rect.width + 1);
+    let sample_rect = Rect::new(x, inner.y, chip_width(&sample), 1);
+    x = x.saturating_add(sample_rect.width + 1);
+    let clock_rect = Rect::new(x, inner.y, chip_width(&clock), 1);
+
+    vec![connection_rect, sample_rect, clock_rect]
 }
 
 fn page_tab_hit_areas(area: Rect) -> Vec<Rect> {
@@ -135,11 +178,7 @@ fn mixer_workspace_layout(area: Rect) -> Vec<Rect> {
 fn mixer_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(9),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(9)])
         .split(area)
         .to_vec()
 }
@@ -246,69 +285,9 @@ fn inner_area(area: Rect) -> Rect {
 
 fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = titlebar_layout(area);
-    let product = state
-        .device
-        .metadata
-        .as_ref()
-        .map(|metadata| metadata.product_name.as_str())
-        .unwrap_or("ZEN GO SYNERGY CORE");
-    let sample = state
-        .device
-        .sample_rate
-        .map(|value| value.label())
-        .unwrap_or_else(|| "rate ?".to_string());
-    let clock = state
-        .device
-        .clock_source
-        .map(|value| value.label().to_string())
-        .unwrap_or_else(|| "clock ?".to_string());
-    let lock = if state.device.lock_known {
-        if state.device.locked == Some(true) {
-            "locked"
-        } else {
-            "unlocked"
-        }
-    } else {
-        "lock ?"
-    };
-    let connection = if state.connection.connected {
-        "connected"
-    } else {
-        "waiting"
-    };
-    let page = match state.page {
-        MainPage::Mixer => "Mixer",
-        MainPage::AfxDsp => "AFX / DSP",
-    };
-    let text = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled(
-                product,
-                Style::default()
-                    .fg(Color::LightGreen)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            chip(connection.to_uppercase(), Color::Black, Color::LightGreen),
-            Span::raw(" "),
-            chip(sample, Color::Black, Color::Yellow),
-            Span::raw(" "),
-            chip(clock, Color::Black, Color::LightBlue),
-            Span::raw(" "),
-            chip(lock.to_uppercase(), Color::Black, Color::Magenta),
-        ]),
-        Line::from(vec![
-            Span::styled("SURFACE ", subdued_style()),
-            Span::styled(state.surface.label(), strong_style(Color::Cyan)),
-            Span::raw("   "),
-            Span::styled("PAGE ", subdued_style()),
-            Span::styled(page, strong_style(Color::LightGreen)),
-            Span::raw("   "),
-            Span::styled(state.device.last_refresh_summary.clone(), muted_style()),
-        ]),
-    ])
-    .block(panel_block("Device", Color::DarkGray, true))
-    .wrap(Wrap { trim: true });
+    let text = Paragraph::new(render_device_header(state))
+        .block(panel_block("Device", Color::DarkGray, true))
+        .wrap(Wrap { trim: false });
     frame.render_widget(text, sections[0]);
     frame.render_widget(
         Paragraph::new(vec![
@@ -491,13 +470,6 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         layout[0],
     );
 
-    frame.render_widget(
-        Paragraph::new(render_experimental_pair_state_line(state))
-            .block(panel_block("Mix Meter", Color::LightGreen, false))
-            .wrap(Wrap { trim: true }),
-        layout[1],
-    );
-
     let items: Vec<ListItem<'_>> = state
         .active_mixer_channels()
         .iter()
@@ -510,14 +482,14 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             Color::Rgb(70, 100, 130),
             state.focus == FocusArea::Mixer,
         )),
-        layout[2],
+        layout[1],
     );
 }
 
 fn draw_status_strip(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(
         Paragraph::new(render_status_strip(state))
-            .block(panel_block("Status", Color::DarkGray, false))
+            .block(panel_block("Mix", Color::DarkGray, false))
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -552,9 +524,51 @@ fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     );
 }
 
+fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let Some(popup_state) = state.selector_popup else {
+        return;
+    };
+
+    let popup = assignment_picker_area(area);
+    frame.render_widget(Clear, popup);
+
+    let (title, items) = match popup_state.kind {
+        SelectorPopupKind::SampleRate => (
+            "Sample Rate",
+            SampleRate::all_confirmed()
+                .iter()
+                .map(|rate| ListItem::new(rate.label()))
+                .collect::<Vec<_>>(),
+        ),
+        SelectorPopupKind::ClockSource => (
+            "Clock Source",
+            ClockSource::all_confirmed()
+                .iter()
+                .map(|source| ListItem::new(source.label()))
+                .collect::<Vec<_>>(),
+        ),
+        SelectorPopupKind::PreampMode { .. } => (
+            "Preamp Mode",
+            [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
+                .iter()
+                .map(|mode| ListItem::new(mode.label()))
+                .collect::<Vec<_>>(),
+        ),
+    };
+
+    frame.render_widget(
+        List::new(items).block(panel_block(title, Color::Yellow, true)),
+        popup,
+    );
+}
+
 pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<MouseAction> {
     let point = (x, y);
     let chunks = root_chunks(area);
+
+    if let Some(action) = device_header_mouse_action(titlebar_layout(chunks[0])[0], state, point) {
+        return Some(action);
+    }
 
     if contains_point(titlebar_layout(chunks[0])[1], point) {
         return Some(MouseAction::ToggleRawView);
@@ -562,6 +576,10 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
 
     if state.raw_view_open {
         return raw_mouse_action(area, state, point);
+    }
+
+    if let Some(popup) = state.selector_popup {
+        return selector_popup_mouse_action(area, popup, point);
     }
 
     if let Some(action) = page_tab_mouse_action(chunks[1], point) {
@@ -588,7 +606,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     if let Some(action) = mixer_tab_mouse_action(mixer_sections[0], point) {
         return Some(action);
     }
-    if let Some(action) = mixer_list_mouse_action(mixer_sections[2], state, point) {
+    if let Some(action) = mixer_list_mouse_action(mixer_sections[1], state, point) {
         return Some(action);
     }
     if let Some(action) = preamp_mouse_action(main[0], state, point) {
@@ -665,6 +683,57 @@ fn assignment_picker_mouse_action(
         strip: picker.strip,
         assignment,
     })
+}
+
+fn selector_popup_mouse_action(
+    area: Rect,
+    popup: SelectorPopupState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let popup_area = assignment_picker_area(area);
+    if !contains_point(popup_area, point) {
+        return Some(MouseAction::CloseSelectorPopup);
+    }
+
+    let inner = inner_area(popup_area);
+    if point.1 < inner.y {
+        return None;
+    }
+    let index = point.1.saturating_sub(inner.y) as usize;
+    match popup.kind {
+        SelectorPopupKind::SampleRate => SampleRate::all_confirmed()
+            .get(index)
+            .copied()
+            .map(MouseAction::PickSampleRate),
+        SelectorPopupKind::ClockSource => ClockSource::all_confirmed()
+            .get(index)
+            .copied()
+            .map(MouseAction::PickClockSource),
+        SelectorPopupKind::PreampMode { input } => {
+            [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
+                .get(index)
+                .copied()
+                .map(|mode| MouseAction::PickPreampMode { input, mode })
+        }
+    }
+}
+
+fn device_header_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let chips = device_header_hit_areas(area, state);
+    if contains_point(chips[1], point) {
+        Some(MouseAction::OpenSampleRateSelector)
+    } else if contains_point(chips[2], point) {
+        Some(MouseAction::OpenClockSourceSelector)
+    } else {
+        None
+    }
 }
 
 fn page_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
@@ -767,7 +836,7 @@ fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Optio
             });
         }
         if contains_point(buttons[2], point) {
-            return Some(MouseAction::CyclePreampMode(input as u8));
+            return Some(MouseAction::OpenPreampModeSelector(input as u8));
         }
         if contains_point(buttons[3], point) {
             return Some(MouseAction::TogglePreampPhantom(input as u8));
@@ -1132,15 +1201,76 @@ fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
     ])
 }
 
-fn render_status_strip(state: &AppState) -> Line<'static> {
-    Line::from(vec![
-        Span::styled("STATUS ", subdued_style()),
-        Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
-        Span::raw("  "),
-        chip(state.surface.label(), Color::Black, Color::LightBlue),
-        Span::raw("  "),
-        Span::styled(render_experimental_pair_state_line(state), muted_style()),
+fn render_device_header(state: &AppState) -> Text<'static> {
+    let product = state
+        .device
+        .metadata
+        .as_ref()
+        .map(|metadata| metadata.product_name.clone())
+        .unwrap_or_else(|| "ZEN GO SYNERGY CORE".to_string());
+    let sample = state
+        .device
+        .sample_rate
+        .map(|value| value.label())
+        .unwrap_or_else(|| "rate ?".to_string());
+    let clock = state
+        .device
+        .clock_source
+        .map(|value| value.label().to_string())
+        .unwrap_or_else(|| "clock ?".to_string());
+    let lock = if state.device.lock_known {
+        if state.device.locked == Some(true) {
+            "locked"
+        } else {
+            "unlocked"
+        }
+    } else {
+        "lock ?"
+    };
+    let connection = if state.connection.connected {
+        "connected"
+    } else {
+        "waiting"
+    };
+    let metadata_line = if let Some(metadata) = state.device.metadata.as_ref() {
+        Line::from(vec![
+            chip(
+                format!("SN {}", metadata.serial),
+                Color::Black,
+                Color::LightCyan,
+            ),
+            Span::raw(" "),
+            chip(
+                format!("HW {}", metadata.hardware_version),
+                Color::Black,
+                Color::LightMagenta,
+            ),
+        ])
+    } else {
+        Line::from(Span::styled("metadata pending", muted_style()))
+    };
+
+    Text::from(vec![
+        Line::from(vec![
+            Span::styled(product, strong_style(Color::LightGreen)),
+            Span::raw("  "),
+            chip(connection.to_uppercase(), Color::Black, Color::LightGreen),
+            Span::raw(" "),
+            chip(sample, Color::Black, Color::Yellow),
+            Span::raw(" "),
+            chip(clock, Color::Black, Color::LightBlue),
+            Span::raw(" "),
+            chip(lock.to_uppercase(), Color::Black, Color::Magenta),
+        ]),
+        metadata_line,
     ])
+}
+
+fn render_status_strip(state: &AppState) -> Line<'static> {
+    Line::from(Span::styled(
+        render_experimental_pair_state_line(state),
+        muted_style(),
+    ))
 }
 
 fn render_thin_bar(ratio: f64) -> String {
@@ -1733,10 +1863,31 @@ mod tests {
 
         let rendered = render_status_strip(&state).to_string();
 
-        assert!(rendered.contains("STATUS"));
-        assert!(rendered.contains("Applied dim change"));
-        assert!(rendered.contains("HP2"));
-        assert!(!rendered.contains("HP1"));
+        assert!(!rendered.contains("STATUS"));
+        assert!(!rendered.contains("Applied dim change"));
+        assert_eq!(rendered, render_experimental_pair_state_line(&state));
+    }
+
+    #[test]
+    fn device_header_surfaces_serial_and_hw_without_duplicate_status_line() {
+        let mut state = AppState::default();
+        state.device.metadata = Some(crate::protocol::DeviceMetadata {
+            product_name: "Zen Go Synergy Core".to_string(),
+            serial: "1234567890".to_string(),
+            hardware_version: "6.6".to_string(),
+        });
+        state.device.sample_rate = Some(SampleRate::Hz48000);
+        state.device.clock_source = Some(ClockSource::Internal);
+        state.device.lock_known = true;
+        state.device.locked = Some(true);
+
+        let rendered = render_device_header(&state).to_string();
+
+        assert!(rendered.contains("1234567890"));
+        assert!(rendered.contains("6.6"));
+        assert!(!rendered.contains("SURFACE"));
+        assert!(!rendered.contains("PAGE"));
+        assert!(!rendered.contains("Last"));
     }
 
     #[test]
@@ -1872,6 +2023,18 @@ mod tests {
         assert_eq!(
             mouse_action(area, &AppState::default(), point.0, point.1),
             Some(MouseAction::SelectPage(MainPage::AfxDsp))
+        );
+    }
+
+    #[test]
+    fn mouse_action_opens_sample_rate_selector_from_device_chip() {
+        let area = Rect::new(0, 0, 120, 50);
+        let state = AppState::default();
+        let chips = device_header_hit_areas(titlebar_layout(root_chunks(area)[0])[0], &state);
+
+        assert_eq!(
+            mouse_action(area, &state, chips[1].x + 1, chips[1].y),
+            Some(MouseAction::OpenSampleRateSelector)
         );
     }
 
@@ -2013,7 +2176,26 @@ mod tests {
 
         assert_eq!(
             mouse_action(area, &state, inner.x + chip_x, inner.y),
-            Some(MouseAction::CyclePreampMode(0))
+            Some(MouseAction::OpenPreampModeSelector(0))
+        );
+    }
+
+    #[test]
+    fn mouse_action_picks_preamp_mode_from_selector_popup() {
+        let area = Rect::new(0, 0, 120, 50);
+        let mut state = AppState::default();
+        state.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::PreampMode { input: 0 },
+        });
+        let popup = assignment_picker_area(area);
+        let inner = inner_area(popup);
+
+        assert_eq!(
+            mouse_action(area, &state, inner.x + 1, inner.y + 1),
+            Some(MouseAction::PickPreampMode {
+                input: 0,
+                mode: PreampMode::Line,
+            })
         );
     }
 
@@ -2035,7 +2217,7 @@ mod tests {
         let main = mixer_main_layout(page[1]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
-        let list_inner = inner_area(mixer[2]);
+        let list_inner = inner_area(mixer[1]);
         let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
         let buttons = mixer_control_button_rects(row_area, true);
         let point = (buttons[2].x + buttons[2].width / 2, buttons[2].y);
@@ -2054,7 +2236,7 @@ mod tests {
         let main = mixer_main_layout(page[1]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
-        let list_inner = inner_area(mixer[2]);
+        let list_inner = inner_area(mixer[1]);
         let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
         let buttons = mixer_control_button_rects(row_area, true);
         let point = (buttons[0].x + buttons[0].width / 2, buttons[0].y);
@@ -2073,7 +2255,7 @@ mod tests {
         let main = mixer_main_layout(page[1]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
-        let list_inner = inner_area(mixer[2]);
+        let list_inner = inner_area(mixer[1]);
         let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
         let state = AppState::default();
         let line = render_mixer_strip_item(&state, 0, &state.mixer_channels[0][0]);
@@ -2098,7 +2280,7 @@ mod tests {
         let main = mixer_main_layout(page[1]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
-        let list_inner = inner_area(mixer[2]);
+        let list_inner = inner_area(mixer[1]);
         let row_area = Rect::new(list_inner.x, list_inner.y + 20, list_inner.width, 2);
         let mut state = AppState::default();
         state.selected_channel = 10;

@@ -12,7 +12,7 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use zen_go_tui::app::{Controller, FocusArea, MainPage};
+use zen_go_tui::app::{Controller, FocusArea, MainPage, SelectorPopupKind, SelectorPopupState};
 use zen_go_tui::protocol::{
     ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, OutputTarget, PanState,
     PreampMode, SampleRate, Surface,
@@ -170,6 +170,7 @@ fn app_loop(
                     AppKeyCode::Tab => {
                         if !controller.state.raw_view_open
                             && controller.state.assignment_picker.is_none()
+                            && controller.state.selector_popup.is_none()
                         {
                             controller.state.cycle_page(true);
                         }
@@ -178,6 +179,7 @@ fn app_loop(
                     AppKeyCode::BackTab => {
                         if !controller.state.raw_view_open
                             && controller.state.assignment_picker.is_none()
+                            && controller.state.selector_popup.is_none()
                         {
                             controller.state.cycle_page(false);
                         }
@@ -252,8 +254,12 @@ fn app_loop(
                         controller.state.last_message = "Cleared raw baseline".to_string();
                         Ok(())
                     }
-                    AppKeyCode::Esc if controller.state.assignment_picker.is_some() => {
+                    AppKeyCode::Esc
+                        if controller.state.assignment_picker.is_some()
+                            || controller.state.selector_popup.is_some() =>
+                    {
                         controller.state.assignment_picker = None;
+                        controller.state.selector_popup = None;
                         controller.state.last_message = "Closed assignment picker".to_string();
                         Ok(())
                     }
@@ -565,6 +571,16 @@ fn handle_mouse_event(
 fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> Result<()> {
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
+        ui::MouseAction::OpenSampleRateSelector => {
+            controller.state.selector_popup = Some(SelectorPopupState {
+                kind: SelectorPopupKind::SampleRate,
+            });
+        }
+        ui::MouseAction::OpenClockSourceSelector => {
+            controller.state.selector_popup = Some(SelectorPopupState {
+                kind: SelectorPopupKind::ClockSource,
+            });
+        }
         ui::MouseAction::SelectPage(page) => controller.state.page = page,
         ui::MouseAction::SelectOutput(index) => {
             controller.state.focus = FocusArea::Outputs;
@@ -670,6 +686,10 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
             controller.state.assignment_picker = None;
             controller.state.last_message = "Closed assignment picker".to_string();
         }
+        ui::MouseAction::CloseSelectorPopup => {
+            controller.state.selector_popup = None;
+            controller.state.last_message = "Closed selector".to_string();
+        }
         ui::MouseAction::SelectPreampInput(input) => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1);
@@ -687,6 +707,13 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
                 raw: next_preamp_gain_raw(current, increase),
             })?;
         }
+        ui::MouseAction::OpenPreampModeSelector(input) => {
+            controller.state.focus = FocusArea::Preamp;
+            controller.state.selected_preamp_input = input.min(1) as usize;
+            controller.state.selector_popup = Some(SelectorPopupState {
+                kind: SelectorPopupKind::PreampMode { input },
+            });
+        }
         ui::MouseAction::CyclePreampMode(input) => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
@@ -701,6 +728,20 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
                 PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
             };
             controller.send(Command::SetPreampMode { input, mode: next })?;
+        }
+        ui::MouseAction::PickSampleRate(rate) => {
+            controller.state.selector_popup = None;
+            controller.send(Command::SetSampleRate(rate))?;
+        }
+        ui::MouseAction::PickClockSource(source) => {
+            controller.state.selector_popup = None;
+            controller.send(Command::SetClockSource(source))?;
+        }
+        ui::MouseAction::PickPreampMode { input, mode } => {
+            controller.state.selector_popup = None;
+            controller.state.focus = FocusArea::Preamp;
+            controller.state.selected_preamp_input = input.min(1) as usize;
+            controller.send(Command::SetPreampMode { input, mode })?;
         }
         ui::MouseAction::TogglePreampPhase(input) => {
             controller.state.focus = FocusArea::Preamp;
@@ -1006,6 +1047,61 @@ mod tests {
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x48, 0x01, 0x01]);
+    }
+
+    #[test]
+    fn mouse_sample_rate_selector_opens_and_pick_sends_exact_rate() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        apply_mouse_action(&mut controller, ui::MouseAction::OpenSampleRateSelector)
+            .expect("open sample rate selector");
+        assert_eq!(
+            controller.state.selector_popup,
+            Some(SelectorPopupState {
+                kind: SelectorPopupKind::SampleRate,
+            })
+        );
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::PickSampleRate(SampleRate::Hz48000),
+        )
+        .expect("pick sample rate");
+        assert_eq!(controller.state.selector_popup, None);
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x12], &[0x03, 0x02]);
+    }
+
+    #[test]
+    fn mouse_preamp_mode_selector_pick_sends_exact_mode() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        apply_mouse_action(&mut controller, ui::MouseAction::OpenPreampModeSelector(1))
+            .expect("open preamp mode selector");
+        assert_eq!(
+            controller.state.selector_popup,
+            Some(SelectorPopupState {
+                kind: SelectorPopupKind::PreampMode { input: 1 },
+            })
+        );
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::PickPreampMode {
+                input: 1,
+                mode: PreampMode::HiZ,
+            },
+        )
+        .expect("pick preamp mode");
+        assert_eq!(controller.state.selector_popup, None);
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0x4f, 0x01, 0x02]);
     }
 
     #[test]

@@ -71,6 +71,18 @@ pub struct AssignmentPickerState {
     pub strip: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectorPopupKind {
+    SampleRate,
+    ClockSource,
+    PreampMode { input: u8 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectorPopupState {
+    pub kind: SelectorPopupKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryReplyLogEntry {
     pub summary: String,
@@ -110,6 +122,7 @@ pub struct AppState {
     pub baseline_raw_75: Option<Vec<u8>>,
     pub baseline_raw_81: Option<Vec<u8>>,
     pub assignment_picker: Option<AssignmentPickerState>,
+    pub selector_popup: Option<SelectorPopupState>,
 }
 
 impl Default for AppState {
@@ -155,6 +168,7 @@ impl Default for AppState {
             baseline_raw_75: None,
             baseline_raw_81: None,
             assignment_picker: None,
+            selector_popup: None,
         }
     }
 }
