@@ -20,6 +20,7 @@ pub enum MouseAction {
     SelectSurface(Surface),
     SelectMixerChannel(usize),
     ToggleMixerMute(u8),
+    ToggleMixerSolo(u8),
     ToggleMixerLink(u8),
     OpenAssignmentPicker(u8),
     PickAssignment {
@@ -531,13 +532,16 @@ fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> O
     if contains_point(controls[0], point) {
         return Some(MouseAction::ToggleMixerMute(channel));
     }
-    if channel % 2 == 1 && contains_point(controls[1], point) {
+    if contains_point(controls[1], point) {
+        return Some(MouseAction::ToggleMixerSolo(channel));
+    }
+    if channel % 2 == 1 && contains_point(controls[2], point) {
         return Some(MouseAction::ToggleMixerLink(channel));
     }
     let src_rect = if channel % 2 == 1 {
-        controls[2]
+        controls[3]
     } else {
-        controls[1]
+        controls[2]
     };
     if contains_point(src_rect, point) {
         return Some(MouseAction::OpenAssignmentPicker(channel));
@@ -599,6 +603,7 @@ fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
             .constraints([
                 Constraint::Length(14),
                 Constraint::Length(14),
+                Constraint::Length(14),
                 Constraint::Min(18),
             ])
             .split(controls)
@@ -606,7 +611,11 @@ fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(14), Constraint::Min(18)])
+            .constraints([
+                Constraint::Length(14),
+                Constraint::Length(14),
+                Constraint::Min(18),
+            ])
             .split(controls)
             .to_vec()
     }
@@ -757,7 +766,7 @@ fn render_thin_bar(ratio: f64) -> String {
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab focus | mouse: preamp buttons, mixer mute/link/src, tabs | r raw view | R refresh queries | +/- adjust | m mute/phantom | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
+    "Tab focus | mouse: preamp buttons, mixer mute/solo/link/src, tabs | r raw view | R refresh queries | +/- adjust | m mute/phantom | o solo | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
 
 fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
@@ -849,6 +858,10 @@ fn render_mixer_strip_controls(
         .assignment
         .map(|value| value.label())
         .unwrap_or_else(|| "assignment?".to_string());
+    let solo = channel
+        .soloed
+        .map(|value| if value { "on" } else { "off" })
+        .unwrap_or("?");
     let link = if channel.channel % 2 == 1 {
         let value = channel
             .linked
@@ -858,7 +871,7 @@ fn render_mixer_strip_controls(
     } else {
         String::new()
     };
-    format!("    [Mute {}]{} [Src {}]", mute, link, src)
+    format!("    [Mute {}] [Solo {}]{} [Src {}]", mute, solo, link, src)
 }
 
 fn render_experimental_pair_state_line(state: &AppState) -> String {
@@ -925,7 +938,7 @@ fn render_mixer_strip_line(
         "C".to_string()
     };
     format!(
-        "CH {:02} {:<8} src={:<16} level={} meter={} mute={} pan={} link={} {}",
+        "CH {:02} {:<8} src={:<16} level={} meter={} mute={} solo={} pan={} link={} {}",
         channel.channel,
         bar,
         assignment,
@@ -940,6 +953,10 @@ fn render_mixer_strip_line(
             .unwrap_or_else(|| "undecoded".to_string()),
         channel
             .muted
+            .map(|value| if value { "on" } else { "off" })
+            .unwrap_or("undecoded"),
+        channel
+            .soloed
             .map(|value| if value { "on" } else { "off" })
             .unwrap_or("undecoded"),
         pan_label,
@@ -1235,9 +1252,32 @@ mod tests {
         let footer = render_footer_text(&state);
         assert!(footer.contains("Tab"));
         assert!(footer.contains("m mute"));
+        assert!(footer.contains("o solo"));
         assert!(footer.contains("d dim"));
         assert!(footer.contains("0x75/0x81"));
         assert!(footer.contains("q quit"));
+    }
+
+    #[test]
+    fn mixer_strip_rendering_includes_solo_state() {
+        let mut state = AppState::default();
+        state.focus = crate::app::FocusArea::Mixer;
+        state.selected_channel = 0;
+        state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(true);
+
+        let line = render_mixer_strip_line(
+            &state,
+            0,
+            &state.mixer_channels[MixerSurface::Mix1.index()][0],
+        );
+        let controls = render_mixer_strip_controls(
+            &state,
+            0,
+            &state.mixer_channels[MixerSurface::Mix1.index()][0],
+        );
+
+        assert!(line.contains("solo=on"));
+        assert!(controls.contains("[Solo on]"));
     }
 
     #[test]
@@ -1396,11 +1436,28 @@ mod tests {
         let list_inner = inner_area(mixer[2]);
         let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
         let buttons = mixer_control_button_rects(row_area, true);
-        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+        let point = (buttons[2].x + buttons[2].width / 2, buttons[2].y);
 
         assert_eq!(
             mouse_action(area, &AppState::default(), point.0, point.1),
             Some(MouseAction::ToggleMixerLink(1))
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_mixer_solo_button() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let sections = mixer_preamp_sections(chunks[2]);
+        let mixer = mixer_layout(sections[0]);
+        let list_inner = inner_area(mixer[2]);
+        let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
+        let buttons = mixer_control_button_rects(row_area, true);
+        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), point.0, point.1),
+            Some(MouseAction::ToggleMixerSolo(1))
         );
     }
 
@@ -1413,7 +1470,7 @@ mod tests {
         let list_inner = inner_area(mixer[2]);
         let row_area = Rect::new(list_inner.x, list_inner.y + 20, list_inner.width, 2);
         let buttons = mixer_control_button_rects(row_area, false);
-        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+        let point = (buttons[2].x + buttons[2].width / 2, buttons[2].y);
         let mut state = AppState::default();
         state.selected_channel = 10;
 

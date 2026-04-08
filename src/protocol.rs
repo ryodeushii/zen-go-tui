@@ -409,8 +409,14 @@ impl PanState {
         self.0
     }
 
+    pub fn state_code(self, muted: bool, soloed: bool) -> u8 {
+        self.code()
+            | if muted { Self::MUTE_FLAG } else { 0x00 }
+            | if soloed { Self::SOLO_FLAG } else { 0x00 }
+    }
+
     pub fn muted_code(self, muted: bool) -> u8 {
-        self.code() | if muted { Self::MUTE_FLAG } else { 0x00 }
+        self.state_code(muted, false)
     }
 
     pub fn state_code_is_muted(code: u8) -> bool {
@@ -849,6 +855,7 @@ pub struct StartupMixerStripState {
     pub level: u8,
     pub pan: PanState,
     pub muted: bool,
+    pub soloed: bool,
 }
 
 impl Default for QueriedMixerStripState {
@@ -1085,6 +1092,7 @@ impl QueryReply75 {
                 level,
                 pan: PanState::from_state_code(*code),
                 muted: PanState::state_code_is_muted(*code),
+                soloed: PanState::state_code_is_soloed(*code),
             });
         }
 
@@ -1499,10 +1507,20 @@ pub enum Command {
         channel: u8,
         level: u8,
         pan_state: PanState,
+        muted: bool,
+        soloed: bool,
     },
     SetMixerMute {
         mixer: MixerSurface,
         channel: u8,
+        muted: bool,
+        pan_state: PanState,
+        soloed: bool,
+    },
+    SetMixerSolo {
+        mixer: MixerSurface,
+        channel: u8,
+        soloed: bool,
         muted: bool,
         pan_state: PanState,
     },
@@ -1510,6 +1528,8 @@ pub enum Command {
         mixer: MixerSurface,
         channel: u8,
         pan: PanState,
+        muted: bool,
+        soloed: bool,
     },
     SetMixerAssignment {
         strip: u8,
@@ -1528,6 +1548,7 @@ pub struct MixerChannelState {
     pub level: Option<u8>,
     pub meter: Option<u8>,
     pub muted: Option<bool>,
+    pub soloed: Option<bool>,
     pub pan: PanState,
     pub assignment: Option<MixerAssignment>,
     pub linked: Option<bool>,
@@ -1586,6 +1607,7 @@ impl MixerChannelState {
             level: None,
             meter: None,
             muted: None,
+            soloed: None,
             pan: PanState::center(),
             assignment: None,
             linked: None,
@@ -1605,6 +1627,7 @@ impl MixerChannelState {
             level,
             meter: None,
             muted,
+            soloed: None,
             pan,
             assignment,
             linked,
@@ -1720,13 +1743,40 @@ pub fn encode_command(command: Command) -> Vec<u8> {
             channel,
             level,
             pan_state,
+            muted,
+            soloed,
         } => host_frame(
             0x16,
-            &[0xd4, 0x04, mixer.code(), channel, level, pan_state.code()],
+            &[
+                0xd4,
+                0x04,
+                mixer.code(),
+                channel,
+                level,
+                pan_state.state_code(muted, soloed),
+            ],
         ),
         Command::SetMixerMute {
             mixer,
             channel,
+            muted,
+            pan_state,
+            soloed,
+        } => host_frame(
+            0x16,
+            &[
+                0xd4,
+                0x04,
+                mixer.code(),
+                channel,
+                0x00,
+                pan_state.state_code(muted, soloed),
+            ],
+        ),
+        Command::SetMixerSolo {
+            mixer,
+            channel,
+            soloed,
             muted,
             pan_state,
         } => host_frame(
@@ -1737,14 +1787,26 @@ pub fn encode_command(command: Command) -> Vec<u8> {
                 mixer.code(),
                 channel,
                 0x00,
-                pan_state.muted_code(muted),
+                pan_state.state_code(muted, soloed),
             ],
         ),
         Command::SetMixerPan {
             mixer,
             channel,
             pan,
-        } => host_frame(0x16, &[0xd4, 0x04, mixer.code(), channel, 0x00, pan.code()]),
+            muted,
+            soloed,
+        } => host_frame(
+            0x16,
+            &[
+                0xd4,
+                0x04,
+                mixer.code(),
+                channel,
+                0x00,
+                pan.state_code(muted, soloed),
+            ],
+        ),
         Command::SetMixerAssignment { strip, assignment } => {
             encode_mixer_assignment(strip, assignment)
         }
@@ -1926,6 +1988,14 @@ mod tests {
         assert_eq!(PanState::from_state_code(0xe0), PanState::center());
         assert!(PanState::state_code_is_muted(0xe0));
         assert!(PanState::state_code_is_soloed(0xe0));
+    }
+
+    #[test]
+    fn pan_state_encodes_mute_and_solo_flags_into_state_code() {
+        assert_eq!(PanState::center().state_code(false, false), 0x20);
+        assert_eq!(PanState::left().state_code(true, false), 0x42);
+        assert_eq!(PanState::right().state_code(false, true), 0xbe);
+        assert_eq!(PanState::center().state_code(true, true), 0xe0);
     }
 
     #[test]
@@ -2288,6 +2358,8 @@ mod tests {
             channel: 4,
             level: 0x28,
             pan_state: PanState::right(),
+            muted: false,
+            soloed: false,
         });
         assert_eq!(mixer[4], 0x16);
         assert_eq!(&mixer[0x10..0x16], &[0xd4, 0x04, 0x01, 0x04, 0x28, 0x3e]);
@@ -2672,7 +2744,8 @@ mod tests {
             Some(StartupMixerStripState {
                 level: 0x00,
                 pan: PanState::from_raw(0x1e),
-                muted: true
+                muted: true,
+                soloed: false,
             })
         );
         assert_eq!(
@@ -2680,7 +2753,8 @@ mod tests {
             Some(StartupMixerStripState {
                 level: 0x00,
                 pan: PanState::center(),
-                muted: true
+                muted: true,
+                soloed: false,
             })
         );
 
@@ -2692,7 +2766,8 @@ mod tests {
             Some(StartupMixerStripState {
                 level: 0x00,
                 pan: PanState::left(),
-                muted: false
+                muted: false,
+                soloed: false,
             })
         );
         assert_eq!(
@@ -2700,9 +2775,29 @@ mod tests {
             Some(StartupMixerStripState {
                 level: 0x00,
                 pan: PanState::right(),
-                muted: false
+                muted: false,
+                soloed: false,
             })
         );
+    }
+
+    #[test]
+    fn startup_pan_state_readback_decodes_solo_flag() {
+        let reply = QueryReply75 {
+            query_id: 0x04,
+            sub_id: 0x00,
+            body: vec![
+                0x00, 0x20, 0x00, 0xa0, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+                0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+                0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
+            ],
+        };
+
+        let (_, states) = reply
+            .startup_pan_state_readback()
+            .expect("startup pan state");
+
+        assert!(states[0].expect("ch1").soloed);
     }
 
     #[test]

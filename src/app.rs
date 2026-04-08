@@ -333,6 +333,18 @@ impl AppState {
                 slot.level = Some(state.level);
                 slot.pan = state.pan;
                 slot.muted = Some(state.muted);
+                slot.soloed = Some(state.soloed);
+            }
+        }
+
+        if let Some(readback) = reply.mixer_strip_readback() {
+            for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
+                for (index, state) in readback.surfaces[mixer.index()].into_iter().enumerate() {
+                    let Some(slot) = self.mixer_channels[mixer.index()].get_mut(index) else {
+                        continue;
+                    };
+                    slot.soloed = Some(state.soloed);
+                }
             }
         }
     }
@@ -436,6 +448,7 @@ enum PendingMutation {
         channel: u8,
         level: u8,
         pan: PanState,
+        muted: bool,
     },
     MixerLinkedLevel {
         mixer: MixerSurface,
@@ -444,6 +457,8 @@ enum PendingMutation {
         level: u8,
         left_pan: PanState,
         right_pan: PanState,
+        left_muted: bool,
+        right_muted: bool,
     },
     MixerMute {
         mixer: MixerSurface,
@@ -455,6 +470,17 @@ enum PendingMutation {
         left_channel: u8,
         right_channel: u8,
         muted: bool,
+    },
+    MixerSolo {
+        mixer: MixerSurface,
+        channel: u8,
+        soloed: bool,
+    },
+    MixerLinkedSolo {
+        mixer: MixerSurface,
+        left_channel: u8,
+        right_channel: u8,
+        soloed: bool,
     },
     MixerPan {
         mixer: MixerSurface,
@@ -618,6 +644,8 @@ impl Controller {
                 level,
                 left_pan: left.pan,
                 right_pan: right.pan,
+                left_muted: left.muted.unwrap_or(false),
+                right_muted: right.muted.unwrap_or(false),
             });
             self.transport
                 .write(&encode_command(Command::SetMixerLevel {
@@ -625,6 +653,8 @@ impl Controller {
                     channel: left_channel,
                     level,
                     pan_state: left.pan,
+                    muted: left.muted.unwrap_or(false),
+                    soloed: left.soloed.unwrap_or(false),
                 }))?;
             self.transport
                 .write(&encode_command(Command::SetMixerLevel {
@@ -632,6 +662,8 @@ impl Controller {
                     channel: right_channel,
                     level,
                     pan_state: right.pan,
+                    muted: right.muted.unwrap_or(false),
+                    soloed: right.soloed.unwrap_or(false),
                 }))?;
             self.pending_mutation = pending_mutation;
             self.state.last_message = format!(
@@ -646,6 +678,8 @@ impl Controller {
             channel,
             level,
             pan_state: active.pan,
+            muted: active.muted.unwrap_or(false),
+            soloed: active.soloed.unwrap_or(false),
         })
     }
 
@@ -693,6 +727,7 @@ impl Controller {
                     channel: left_channel,
                     muted,
                     pan_state: left.pan,
+                    soloed: left.soloed.unwrap_or(false),
                 }))?;
             self.transport
                 .write(&encode_command(Command::SetMixerMute {
@@ -700,6 +735,7 @@ impl Controller {
                     channel: right_channel,
                     muted,
                     pan_state: right.pan,
+                    soloed: right.soloed.unwrap_or(false),
                 }))?;
             self.pending_mutation = pending_mutation;
             self.state.last_message = format!(
@@ -713,6 +749,78 @@ impl Controller {
             mixer,
             channel,
             muted,
+            pan_state: active.pan,
+            soloed: active.soloed.unwrap_or(false),
+        })
+    }
+
+    pub fn send_mixer_solo_change(
+        &mut self,
+        mixer: MixerSurface,
+        channel: u8,
+        soloed: bool,
+    ) -> Result<()> {
+        let index = channel.saturating_sub(1) as usize;
+        let Some(active) = self.state.mixer_channels[mixer.index()].get(index).copied() else {
+            bail!("invalid mixer channel {channel}");
+        };
+
+        if active.linked == Some(true) {
+            let (left_channel, right_channel) = if channel % 2 == 1 {
+                (channel, channel.saturating_add(1))
+            } else {
+                (channel.saturating_sub(1), channel)
+            };
+            let left_index = left_channel.saturating_sub(1) as usize;
+            let right_index = right_channel.saturating_sub(1) as usize;
+            let Some(left) = self.state.mixer_channels[mixer.index()]
+                .get(left_index)
+                .copied()
+            else {
+                bail!("invalid linked left channel {left_channel}");
+            };
+            let Some(right) = self.state.mixer_channels[mixer.index()]
+                .get(right_index)
+                .copied()
+            else {
+                bail!("invalid linked right channel {right_channel}");
+            };
+
+            let pending_mutation = Some(PendingMutation::MixerLinkedSolo {
+                mixer,
+                left_channel,
+                right_channel,
+                soloed,
+            });
+            self.transport
+                .write(&encode_command(Command::SetMixerSolo {
+                    mixer,
+                    channel: left_channel,
+                    soloed,
+                    muted: left.muted.unwrap_or(false),
+                    pan_state: left.pan,
+                }))?;
+            self.transport
+                .write(&encode_command(Command::SetMixerSolo {
+                    mixer,
+                    channel: right_channel,
+                    soloed,
+                    muted: right.muted.unwrap_or(false),
+                    pan_state: right.pan,
+                }))?;
+            self.pending_mutation = pending_mutation;
+            self.state.last_message = format!(
+                "Sent linked mixer solo {:?} ch {}-{}",
+                mixer, left_channel, right_channel
+            );
+            return Ok(());
+        }
+
+        self.send(Command::SetMixerSolo {
+            mixer,
+            channel,
+            soloed,
+            muted: active.muted.unwrap_or(false),
             pan_state: active.pan,
         })
     }
@@ -780,12 +888,13 @@ impl Controller {
                 channel,
                 level,
                 pan,
+                muted,
             }) => {
                 if let Some(slot) = self.state.mixer_channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
                     slot.level = Some(level);
-                    slot.muted = Some(false);
+                    slot.muted = Some(muted);
                     slot.pan = pan;
                 }
             }
@@ -796,13 +905,18 @@ impl Controller {
                 level,
                 left_pan,
                 right_pan,
+                left_muted,
+                right_muted,
             }) => {
-                for (channel, pan) in [(left_channel, left_pan), (right_channel, right_pan)] {
+                for (channel, pan, muted) in [
+                    (left_channel, left_pan, left_muted),
+                    (right_channel, right_pan, right_muted),
+                ] {
                     if let Some(slot) = self.state.mixer_channels[mixer.index()]
                         .get_mut(channel.saturating_sub(1) as usize)
                     {
                         slot.level = Some(level);
-                        slot.muted = Some(false);
+                        slot.muted = Some(muted);
                         slot.pan = pan;
                     }
                 }
@@ -818,6 +932,17 @@ impl Controller {
                     slot.muted = Some(muted);
                 }
             }
+            Some(PendingMutation::MixerSolo {
+                mixer,
+                channel,
+                soloed,
+            }) => {
+                if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                    .get_mut(channel.saturating_sub(1) as usize)
+                {
+                    slot.soloed = Some(soloed);
+                }
+            }
             Some(PendingMutation::MixerLinkedMute {
                 mixer,
                 left_channel,
@@ -829,6 +954,20 @@ impl Controller {
                         .get_mut(channel.saturating_sub(1) as usize)
                     {
                         slot.muted = Some(muted);
+                    }
+                }
+            }
+            Some(PendingMutation::MixerLinkedSolo {
+                mixer,
+                left_channel,
+                right_channel,
+                soloed,
+            }) => {
+                for channel in [left_channel, right_channel] {
+                    if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                        .get_mut(channel.saturating_sub(1) as usize)
+                    {
+                        slot.soloed = Some(soloed);
                     }
                 }
             }
@@ -924,11 +1063,14 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
             channel,
             level,
             pan_state,
+            muted,
+            soloed: _,
         } => Some(PendingMutation::MixerLevel {
             mixer,
             channel,
             level,
             pan: pan_state,
+            muted,
         }),
         Command::SetMixerMute {
             mixer,
@@ -940,10 +1082,22 @@ fn pending_from_command(command: Command) -> Option<PendingMutation> {
             channel,
             muted,
         }),
+        Command::SetMixerSolo {
+            mixer,
+            channel,
+            soloed,
+            ..
+        } => Some(PendingMutation::MixerSolo {
+            mixer,
+            channel,
+            soloed,
+        }),
         Command::SetMixerPan {
             mixer,
             channel,
             pan,
+            muted: _,
+            soloed: _,
         } => Some(PendingMutation::MixerPan {
             mixer,
             channel,
@@ -1576,6 +1730,8 @@ mod tests {
                 channel: 3,
                 level: 0x2c,
                 pan_state: crate::protocol::PanState::left(),
+                muted: false,
+                soloed: false,
             })
             .expect("send mixer");
 
@@ -1670,6 +1826,73 @@ mod tests {
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][3].muted,
             Some(true)
+        );
+    }
+
+    #[test]
+    fn linked_mixer_solo_change_writes_and_updates_both_channels() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].linked = Some(true);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].linked = Some(true);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].muted = Some(false);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].muted = Some(false);
+
+        controller
+            .send_mixer_solo_change(MixerSurface::Mix1, 4, true)
+            .expect("send linked mixer solo");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x03, 0x00, 0x82]
+        );
+        assert_eq!(
+            &writes[1][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x04, 0x00, 0xbe]
+        );
+
+        controller.confirm_pending_write(snapshot());
+
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].soloed,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][3].soloed,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn queried_mixer_strip_readback_updates_solo_state() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        let mut body = [0x5a, 0x20].repeat(32);
+        body[0] = 0x10;
+        body[1] = 0xa0;
+        body[32] = 0x10;
+        body[33] = 0x20;
+
+        controller.state.observe_frame(
+            DeviceSnapshot::QueryReply(QueryReply75 {
+                query_id: 0x18,
+                sub_id: 0x00,
+                body,
+            }),
+            vec![0x75, 0x18, 0x00],
+        );
+
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][0].soloed,
+            Some(false)
         );
     }
 
@@ -1985,6 +2208,8 @@ mod tests {
                 mixer: MixerSurface::Mix1,
                 channel: 4,
                 pan: PanState::from_raw(0x08),
+                muted: false,
+                soloed: false,
             })
             .expect("mix1 pan");
         controller.confirm_pending_write(snapshot());
@@ -1994,6 +2219,8 @@ mod tests {
                 mixer: MixerSurface::Mix2,
                 channel: 4,
                 pan: PanState::from_raw(0x36),
+                muted: false,
+                soloed: false,
             })
             .expect("mix2 pan");
         controller.confirm_pending_write(snapshot());
@@ -2023,6 +2250,7 @@ mod tests {
                 channel: 7,
                 muted: true,
                 pan_state: crate::protocol::PanState::center(),
+                soloed: false,
             })
             .expect("send mute");
 
@@ -2043,6 +2271,7 @@ mod tests {
                 channel: 7,
                 muted: false,
                 pan_state: crate::protocol::PanState::center(),
+                soloed: false,
             })
             .expect("send unmute");
 
@@ -2069,6 +2298,8 @@ mod tests {
                 channel: 3,
                 level: 0x2c,
                 pan_state: crate::protocol::PanState::center(),
+                muted: false,
+                soloed: false,
             })
             .expect("mix1 send");
         controller.confirm_pending_write(snapshot());
@@ -2079,6 +2310,8 @@ mod tests {
                 channel: 3,
                 level: 0x10,
                 pan_state: crate::protocol::PanState::center(),
+                muted: false,
+                soloed: false,
             })
             .expect("mix2 send");
         controller.confirm_pending_write(snapshot());
@@ -2107,6 +2340,8 @@ mod tests {
                 channel,
                 level: 0x1f,
                 pan_state: crate::protocol::PanState::center(),
+                muted: false,
+                soloed: false,
             })
             .expect("send first adjustment");
 

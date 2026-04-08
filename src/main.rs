@@ -172,7 +172,7 @@ fn app_loop(
                     }
                     KeyCode::Char('?') => {
                         controller.state.last_message =
-                            "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ tabs, Query75 ←/→ history, b/x baseline. R sends the captured 0x74 refresh sweep.".to_string();
+                            "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m o [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ tabs, Query75 ←/→ history, b/x baseline. R sends the captured 0x74 refresh sweep.".to_string();
                         Ok(())
                     }
                     KeyCode::Left if controller.state.raw_view_open => {
@@ -206,6 +206,7 @@ fn app_loop(
                     KeyCode::Char('+') | KeyCode::Char('=') => adjust_focused(controller, true),
                     KeyCode::Char('-') => adjust_focused(controller, false),
                     KeyCode::Char('m') => toggle_mute(controller),
+                    KeyCode::Char('o') => toggle_mixer_solo(controller),
                     KeyCode::Char('d') => toggle_dim(controller),
                     KeyCode::Char('a') => cycle_mixer_assignment(controller),
                     KeyCode::Char('l') => toggle_mixer_link(controller),
@@ -419,7 +420,26 @@ fn adjust_mixer_pan(controller: &mut Controller, right: bool) -> Result<()> {
         mixer: MixerSurface::from_surface(controller.state.surface),
         channel: active_channel.channel,
         pan: PanState::from_raw(next),
+        muted: active_channel.muted.unwrap_or(false),
+        soloed: active_channel.soloed.unwrap_or(false),
     })?;
+    Ok(())
+}
+
+fn toggle_mixer_solo(controller: &mut Controller) -> Result<()> {
+    if controller.state.focus != FocusArea::Mixer {
+        return Ok(());
+    }
+
+    let active_channel =
+        controller.state.active_mixer_channels()[controller.state.selected_channel];
+    let mixer = MixerSurface::from_surface(controller.state.surface);
+    controller.send_mixer_solo_change(
+        mixer,
+        active_channel.channel,
+        !active_channel.soloed.unwrap_or(false),
+    )?;
+
     Ok(())
 }
 
@@ -510,6 +530,18 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
                 mixer,
                 channel,
                 !active_channel.muted.unwrap_or(false),
+            )?;
+        }
+        ui::MouseAction::ToggleMixerSolo(channel) => {
+            controller.state.focus = FocusArea::Mixer;
+            controller.state.selected_channel = channel.saturating_sub(1) as usize;
+            let mixer = MixerSurface::from_surface(controller.state.surface);
+            let active_channel =
+                controller.state.mixer_channels[mixer.index()][channel as usize - 1];
+            controller.send_mixer_solo_change(
+                mixer,
+                channel,
+                !active_channel.soloed.unwrap_or(false),
             )?;
         }
         ui::MouseAction::ToggleMixerLink(channel) => {
@@ -808,6 +840,26 @@ mod tests {
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x05]);
         assert_eq!(&writes[0][0x10 + 0x03..0x10 + 0x05], &[0x00, 0x01]);
+    }
+
+    #[test]
+    fn toggle_mixer_solo_sends_selected_channel_state() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.focus = FocusArea::Mixer;
+        controller.state.selected_channel = 0;
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+
+        toggle_mixer_solo(&mut controller).expect("toggle solo");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x01, 0x00, 0xa0]
+        );
     }
 
     #[test]
