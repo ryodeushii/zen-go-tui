@@ -126,8 +126,8 @@ fn preamp_bar_layout(area: Rect) -> Vec<Rect> {
 
 fn mixer_workspace_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(3)])
         .split(area)
         .to_vec()
 }
@@ -348,7 +348,7 @@ fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     let workspace = mixer_workspace_layout(main[1]);
     draw_mixer_main(frame, workspace[0], state);
-    draw_mixer_sidebar(frame, workspace[1], state);
+    draw_status_strip(frame, workspace[1], state);
 }
 
 fn draw_afx_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -514,56 +514,12 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     );
 }
 
-fn draw_mixer_sidebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(6),
-            Constraint::Length(5),
-            Constraint::Min(4),
-        ])
-        .split(area);
-    let output = state.outputs[state.selected_output];
-
+fn draw_status_strip(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(
-        Paragraph::new(render_output_card(
-            &output,
-            state.focus == FocusArea::Outputs,
-        ))
-        .block(panel_block(
-            "Selected Output",
-            Color::Rgb(70, 120, 90),
-            state.focus == FocusArea::Outputs,
-        ))
-        .wrap(Wrap { trim: false }),
-        layout[0],
-    );
-
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("SURFACE ", subdued_style()),
-                Span::styled(state.surface.label(), strong_style(Color::LightCyan)),
-            ]),
-            Line::from(vec![
-                Span::styled("OUT ", subdued_style()),
-                Span::styled(output.target.label(), strong_style(Color::LightGreen)),
-            ]),
-            Line::from(Span::styled(
-                render_experimental_pair_state_line(state),
-                muted_style(),
-            )),
-        ])
-        .block(panel_block("Mix", Color::LightBlue, false))
-        .wrap(Wrap { trim: true }),
-        layout[1],
-    );
-
-    frame.render_widget(
-        Paragraph::new(state.last_message.clone())
+        Paragraph::new(render_status_strip(state))
             .block(panel_block("Status", Color::DarkGray, false))
-            .wrap(Wrap { trim: true }),
-        layout[2],
+            .wrap(Wrap { trim: false }),
+        area,
     );
 }
 
@@ -1163,11 +1119,7 @@ fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
                 strong_style(Color::LightGreen),
             ),
         ]),
-        Line::from(vec![
-            Span::styled(format!("raw {:02x}", output.volume), muted_style()),
-            Span::raw("  "),
-            Span::styled(output.mode.label(), subdued_style()),
-        ]),
+        Line::from(""),
         Line::from(vec![
             chip("-", Color::Black, Color::Gray),
             Span::raw(" "),
@@ -1177,6 +1129,20 @@ fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
             Span::raw(" "),
             chip("MUTE", Color::Black, mute_bg),
         ]),
+    ])
+}
+
+fn render_status_strip(state: &AppState) -> Line<'static> {
+    let output = state.outputs[state.selected_output];
+    Line::from(vec![
+        Span::styled("STATUS ", subdued_style()),
+        Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
+        Span::raw("  "),
+        chip(state.surface.label(), Color::Black, Color::LightBlue),
+        Span::raw(" "),
+        chip(output.target.label(), Color::Black, Color::LightGreen),
+        Span::raw("  "),
+        Span::styled(render_experimental_pair_state_line(state), muted_style()),
     ])
 }
 
@@ -1758,6 +1724,22 @@ mod tests {
         assert!(rendered.contains(" + "));
         assert!(rendered.contains(" DIM "));
         assert!(rendered.contains(" MUTE "));
+        assert!(!rendered.contains("raw 30"));
+    }
+
+    #[test]
+    fn status_strip_surfaces_message_surface_and_output() {
+        let mut state = AppState::default();
+        state.surface = Surface::Hp2;
+        state.selected_output = 1;
+        state.last_message = "Applied dim change".to_string();
+
+        let rendered = render_status_strip(&state).to_string();
+
+        assert!(rendered.contains("STATUS"));
+        assert!(rendered.contains("Applied dim change"));
+        assert!(rendered.contains("HP2"));
+        assert!(rendered.contains("HP1"));
     }
 
     #[test]
@@ -2086,7 +2068,7 @@ mod tests {
 
     #[test]
     fn mouse_action_opens_assignment_picker_from_src_button() {
-        let area = Rect::new(0, 0, 120, 50);
+        let area = Rect::new(0, 0, 120, 60);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
         let main = mixer_main_layout(page[1]);
