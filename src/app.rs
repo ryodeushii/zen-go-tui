@@ -61,6 +61,12 @@ pub enum RawPacketTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainPage {
+    Mixer,
+    AfxDsp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AssignmentPickerState {
     pub strip: u8,
 }
@@ -84,6 +90,7 @@ pub struct AppState {
     pub selected_channel: usize,
     pub selected_preamp_input: usize,
     pub raw_view_open: bool,
+    pub page: MainPage,
     pub selected_raw_packet: RawPacketTab,
     pub last_message: String,
     pub last_auxiliary_len: Option<usize>,
@@ -126,6 +133,7 @@ impl Default for AppState {
             selected_channel: 0,
             selected_preamp_input: 0,
             raw_view_open: false,
+            page: MainPage::Mixer,
             selected_raw_packet: RawPacketTab::State73,
             last_message:
                 "Press ? for help. Device state is authoritative where decoding is confirmed."
@@ -359,7 +367,7 @@ impl AppState {
             FocusArea::Status => FocusArea::Outputs,
             FocusArea::Outputs => FocusArea::Mixer,
             FocusArea::Mixer => FocusArea::Preamp,
-            FocusArea::Preamp => FocusArea::Status,
+            FocusArea::Preamp => FocusArea::Outputs,
         };
     }
 
@@ -383,6 +391,15 @@ impl AppState {
             tabs[(index + 1) % tabs.len()]
         } else {
             tabs[index.checked_sub(1).unwrap_or(tabs.len() - 1)]
+        };
+    }
+
+    pub fn cycle_page(&mut self, forward: bool) {
+        self.page = match (self.page, forward) {
+            (MainPage::Mixer, true) => MainPage::AfxDsp,
+            (MainPage::AfxDsp, true) => MainPage::Mixer,
+            (MainPage::Mixer, false) => MainPage::AfxDsp,
+            (MainPage::AfxDsp, false) => MainPage::Mixer,
         };
     }
 
@@ -2685,7 +2702,7 @@ mod tests {
         state.cycle_focus();
         assert_eq!(state.focus, FocusArea::Preamp);
         state.cycle_focus();
-        assert_eq!(state.focus, FocusArea::Status);
+        assert_eq!(state.focus, FocusArea::Outputs);
     }
 
     #[test]
@@ -2703,5 +2720,21 @@ mod tests {
 
         state.toggle_raw_view();
         assert!(!state.raw_view_open);
+    }
+
+    #[test]
+    fn page_cycle_starts_on_mixer_and_toggles_afx_page() {
+        let mut state = AppState::default();
+
+        assert_eq!(state.page, MainPage::Mixer);
+
+        state.cycle_page(true);
+        assert_eq!(state.page, MainPage::AfxDsp);
+
+        state.cycle_page(true);
+        assert_eq!(state.page, MainPage::Mixer);
+
+        state.cycle_page(false);
+        assert_eq!(state.page, MainPage::AfxDsp);
     }
 }

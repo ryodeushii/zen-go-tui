@@ -15,7 +15,7 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use zen_go_tui::app::{Controller, FocusArea};
+use zen_go_tui::app::{Controller, FocusArea, MainPage};
 use zen_go_tui::protocol::{
     ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, OutputTarget, PanState,
     PreampMode, SampleRate, Surface,
@@ -167,12 +167,30 @@ fn app_loop(
                         Err(error) => Err(error),
                     },
                     KeyCode::Tab => {
-                        controller.state.cycle_focus();
+                        if !controller.state.raw_view_open
+                            && controller.state.assignment_picker.is_none()
+                        {
+                            controller.state.cycle_page(true);
+                        }
+                        Ok(())
+                    }
+                    KeyCode::BackTab => {
+                        if !controller.state.raw_view_open
+                            && controller.state.assignment_picker.is_none()
+                        {
+                            controller.state.cycle_page(false);
+                        }
+                        Ok(())
+                    }
+                    KeyCode::Char('f') => {
+                        if controller.state.page == MainPage::Mixer {
+                            controller.state.cycle_focus();
+                        }
                         Ok(())
                     }
                     KeyCode::Char('?') => {
                         controller.state.last_message =
-                            "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m o [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ tabs, Query75 ←/→ history, b/x baseline. R sends the captured 0x74 refresh sweep.".to_string();
+                            "Tab/Shift+Tab switch pages. f cycles mixer focus. Outputs: +/- m d. Mixer: +/- m o [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ tabs, Query75 ←/→ history, b/x baseline. R sends the captured 0x74 refresh sweep.".to_string();
                         Ok(())
                     }
                     KeyCode::Left if controller.state.raw_view_open => {
@@ -267,6 +285,10 @@ fn app_loop(
 }
 
 fn move_selection(controller: &mut Controller, right: bool) {
+    if controller.state.page != MainPage::Mixer {
+        return;
+    }
+
     match controller.state.focus {
         FocusArea::Outputs => {
             controller.state.selected_output = if right {
@@ -299,6 +321,10 @@ fn move_selection(controller: &mut Controller, right: bool) {
 }
 
 fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     match controller.state.focus {
         FocusArea::Outputs => {
             let index = controller.state.selected_output;
@@ -345,6 +371,10 @@ fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
 }
 
 fn toggle_mute(controller: &mut Controller) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     match controller.state.focus {
         FocusArea::Outputs => {
             let index = controller.state.selected_output;
@@ -383,6 +413,10 @@ fn toggle_mute(controller: &mut Controller) -> Result<()> {
 }
 
 fn toggle_dim(controller: &mut Controller) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     if controller.state.focus != FocusArea::Outputs {
         return Ok(());
     }
@@ -396,6 +430,10 @@ fn toggle_dim(controller: &mut Controller) -> Result<()> {
 }
 
 fn adjust_mixer_pan(controller: &mut Controller, right: bool) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     if controller.state.focus != FocusArea::Mixer {
         return Ok(());
     }
@@ -427,6 +465,10 @@ fn adjust_mixer_pan(controller: &mut Controller, right: bool) -> Result<()> {
 }
 
 fn toggle_mixer_solo(controller: &mut Controller) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     if controller.state.focus != FocusArea::Mixer {
         return Ok(());
     }
@@ -444,6 +486,10 @@ fn toggle_mixer_solo(controller: &mut Controller) -> Result<()> {
 }
 
 fn cycle_mixer_assignment(controller: &mut Controller) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     if controller.state.focus != FocusArea::Mixer {
         return Ok(());
     }
@@ -473,6 +519,10 @@ fn cycle_mixer_assignment(controller: &mut Controller) -> Result<()> {
 }
 
 fn toggle_mixer_link(controller: &mut Controller) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     if controller.state.focus != FocusArea::Mixer {
         return Ok(());
     }
@@ -508,6 +558,7 @@ fn handle_mouse_event(
 fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> Result<()> {
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
+        ui::MouseAction::SelectPage(page) => controller.state.page = page,
         ui::MouseAction::SelectRawPacketTab(tab) => controller.state.selected_raw_packet = tab,
         ui::MouseAction::SelectQueryReplyEntry(index) => {
             controller.state.selected_query_reply_entry = Some(index)
@@ -669,6 +720,10 @@ fn cycle_clock_source(controller: &mut Controller) -> Result<()> {
 }
 
 fn cycle_preamp_mode(controller: &mut Controller) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     if controller.state.focus != FocusArea::Preamp {
         return Ok(());
     }
@@ -689,6 +744,10 @@ fn cycle_preamp_mode(controller: &mut Controller) -> Result<()> {
 }
 
 fn toggle_preamp_phase(controller: &mut Controller) -> Result<()> {
+    if controller.state.page != MainPage::Mixer {
+        return Ok(());
+    }
+
     if controller.state.focus != FocusArea::Preamp {
         return Ok(());
     }

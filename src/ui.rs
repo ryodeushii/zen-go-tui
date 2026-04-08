@@ -1,20 +1,19 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph, Tabs, Wrap,
-};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{AppState, AssignmentPickerState, FocusArea, RawPacketTab};
+use crate::app::{AppState, AssignmentPickerState, FocusArea, MainPage, RawPacketTab};
 use crate::protocol::{
-    meter_display_db, meter_ratio, MixerAssignment, MixerSurface, OutputMode, PreampInputState,
-    PreampMode, Surface,
+    meter_display_db, meter_ratio, MixerAssignment, MixerSurface, OutputMode, OutputState,
+    PreampInputState, PreampMode, Surface,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     ToggleRawView,
+    SelectPage(MainPage),
     SelectRawPacketTab(RawPacketTab),
     SelectQueryReplyEntry(usize),
     SelectSurface(Surface),
@@ -46,9 +45,12 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
 
     let chunks = root_chunks(frame.area());
 
-    draw_status(frame, chunks[0], state);
-    draw_outputs(frame, chunks[1], state);
-    draw_mixer_and_preamp(frame, chunks[2], state);
+    draw_titlebar(frame, chunks[0], state);
+    draw_page_tabs(frame, chunks[1], state);
+    match state.page {
+        MainPage::Mixer => draw_mixer_page(frame, chunks[2], state),
+        MainPage::AfxDsp => draw_afx_page(frame, chunks[2], state),
+    }
     draw_footer(frame, chunks[3], state);
     draw_assignment_picker(frame, frame.area(), state);
 }
@@ -57,8 +59,8 @@ fn root_chunks(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),
-            Constraint::Length(7),
+            Constraint::Length(4),
+            Constraint::Length(3),
             Constraint::Min(14),
             Constraint::Length(3),
         ])
@@ -66,10 +68,50 @@ fn root_chunks(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
-fn mixer_preamp_sections(area: Rect) -> Vec<Rect> {
+fn titlebar_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .constraints([Constraint::Min(24), Constraint::Length(18)])
+        .split(area)
+        .to_vec()
+}
+
+fn page_tab_hit_areas(area: Rect) -> Vec<Rect> {
+    inline_chip_rects(
+        inner_area(area).x,
+        inner_area(area).y,
+        &["Mixer", "AFX / DSP"],
+    )
+}
+
+fn mixer_page_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(26), Constraint::Min(40)])
+        .split(area)
+        .to_vec()
+}
+
+fn mixer_main_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(10), Constraint::Min(12)])
+        .split(area)
+        .to_vec()
+}
+
+fn preamp_bar_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area)
+        .to_vec()
+}
+
+fn mixer_workspace_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(area)
         .to_vec()
 }
@@ -86,19 +128,6 @@ fn mixer_layout(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
-fn preamp_panel_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(9),
-            Constraint::Length(9),
-            Constraint::Length(4),
-            Constraint::Min(3),
-        ])
-        .split(area)
-        .to_vec()
-}
-
 fn preamp_card_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
@@ -107,18 +136,39 @@ fn preamp_card_layout(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
-fn preamp_button_rects(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Length(5),
-            Constraint::Length(10),
-            Constraint::Length(10),
-            Constraint::Min(12),
-        ])
-        .split(area)
-        .to_vec()
+fn preamp_button_rects(area: Rect, input: PreampInputState) -> Vec<Rect> {
+    let inner = inner_area(area);
+    inline_chip_rects(
+        inner.x,
+        inner.y,
+        &[
+            "-",
+            "+",
+            input.mode.label(),
+            preamp_phantom_label(input),
+            preamp_phase_label(input),
+        ],
+    )
+}
+
+fn surface_tab_hit_areas(area: Rect) -> Vec<Rect> {
+    inline_chip_rects(
+        inner_area(area).x,
+        inner_area(area).y,
+        &["MIX 1 / Monitor-HP1", "MIX 2 / HP2"],
+    )
+}
+
+fn inline_chip_rects(x: u16, y: u16, labels: &[&str]) -> Vec<Rect> {
+    let mut offset = x;
+    labels
+        .iter()
+        .map(|label| {
+            let rect = Rect::new(offset, y, chip_width(label), 1);
+            offset = offset.saturating_add(rect.width).saturating_add(1);
+            rect
+        })
+        .collect()
 }
 
 fn assignment_picker_area(area: Rect) -> Rect {
@@ -132,14 +182,6 @@ fn assignment_picker_area(area: Rect) -> Rect {
     }
 }
 
-fn status_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(20), Constraint::Length(18)])
-        .split(area)
-        .to_vec()
-}
-
 fn raw_header_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Horizontal)
@@ -149,21 +191,11 @@ fn raw_header_layout(area: Rect) -> Vec<Rect> {
 }
 
 fn raw_tab_hit_areas(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Length(8),
-            Constraint::Min(0),
-        ])
-        .split(inner_area(area))
-        .iter()
-        .copied()
-        .take(5)
-        .collect()
+    inline_chip_rects(
+        inner_area(area).x,
+        inner_area(area).y,
+        &["0x74", "0x73", "0x83", "0x75", "0x81"],
+    )
 }
 
 fn raw_page_layout(area: Rect) -> Vec<Rect> {
@@ -196,19 +228,24 @@ fn inner_area(area: Rect) -> Rect {
     }
 }
 
-fn draw_status(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let sections = status_layout(area);
-    let block = section_block("Status", state.focus == FocusArea::Status);
+fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let sections = titlebar_layout(area);
+    let product = state
+        .device
+        .metadata
+        .as_ref()
+        .map(|metadata| metadata.product_name.as_str())
+        .unwrap_or("ZEN GO SYNERGY CORE");
     let sample = state
         .device
         .sample_rate
         .map(|value| value.label())
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| "rate ?".to_string());
     let clock = state
         .device
         .clock_source
         .map(|value| value.label().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| "clock ?".to_string());
     let lock = if state.device.lock_known {
         if state.device.locked == Some(true) {
             "locked"
@@ -216,132 +253,236 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             "unlocked"
         }
     } else {
-        "experimental/unknown"
+        "lock ?"
     };
-    let connected = if state.connection.connected {
+    let connection = if state.connection.connected {
         "connected"
     } else {
-        "disconnected"
+        "waiting"
     };
-    let meta = state
-        .device
-        .metadata
-        .as_ref()
-        .map(|m| {
-            format!(
-                "{} hw {} serial {}",
-                m.product_name, m.hardware_version, m.serial
-            )
-        })
-        .unwrap_or_else(|| "metadata pending".to_string());
-    let query00 = state
-        .startup_query_summary(0x00)
-        .unwrap_or("Capability/default block pending");
-    let query11 = state
-        .startup_query_summary(0x11)
-        .unwrap_or("Status/capability value pending");
+    let page = match state.page {
+        MainPage::Mixer => "Mixer",
+        MainPage::AfxDsp => "AFX / DSP",
+    };
     let text = Paragraph::new(vec![
-        Line::from(vec![Span::raw(format!("Device: {}", meta))]),
-        Line::from(vec![Span::raw(format!(
-            "Clock: {}   Rate: {}   Lock: {}   Surface: {}",
-            clock,
-            sample,
-            lock,
-            state.surface.label()
-        ))]),
-        Line::from(vec![Span::raw(format!(
-            "Connection: {}   Last: {}",
-            connected, state.device.last_refresh_summary
-        ))]),
-        Line::from(vec![Span::raw(format!("Startup: {}", query00))]),
-        Line::from(vec![Span::raw(format!("         {}", query11))]),
+        Line::from(vec![
+            Span::styled(
+                product,
+                Style::default()
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            chip(connection.to_uppercase(), Color::Black, Color::LightGreen),
+            Span::raw(" "),
+            chip(sample, Color::Black, Color::Yellow),
+            Span::raw(" "),
+            chip(clock, Color::Black, Color::LightBlue),
+            Span::raw(" "),
+            chip(lock.to_uppercase(), Color::Black, Color::Magenta),
+        ]),
+        Line::from(vec![
+            Span::styled("SURFACE ", subdued_style()),
+            Span::styled(state.surface.label(), strong_style(Color::Cyan)),
+            Span::raw("   "),
+            Span::styled("PAGE ", subdued_style()),
+            Span::styled(page, strong_style(Color::LightGreen)),
+            Span::raw("   "),
+            Span::styled(state.device.last_refresh_summary.clone(), muted_style()),
+        ]),
     ])
-    .block(block)
+    .block(panel_block("Device", Color::DarkGray, true))
     .wrap(Wrap { trim: true });
     frame.render_widget(text, sections[0]);
     frame.render_widget(
-        Paragraph::new(if state.raw_view_open {
-            "Back To Main"
-        } else {
-            "Open Raw View"
-        })
-        .block(Block::default().borders(Borders::ALL).title("View"))
-        .wrap(Wrap { trim: true }),
+        Paragraph::new(vec![
+            Line::from(chip("RAW", Color::Black, Color::LightRed)),
+            Line::from(Span::styled("[r] inspector", muted_style())),
+        ])
+        .block(panel_block("Inspector", Color::LightRed, false))
+        .wrap(Wrap { trim: false }),
         sections[1],
     );
 }
 
-fn draw_outputs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+fn draw_page_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let line = Line::from(vec![
+        tab_chip("Mixer", state.page == MainPage::Mixer, Color::LightGreen),
+        Span::raw(" "),
+        tab_chip(
+            "AFX / DSP",
+            state.page == MainPage::AfxDsp,
+            Color::LightMagenta,
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line)
+            .block(panel_block("Pages", Color::DarkGray, false))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let sections = mixer_page_layout(area);
+    draw_output_panel(frame, sections[0], state);
+
+    let main = mixer_main_layout(sections[1]);
+    draw_preamp_bar(frame, main[0], state);
+
+    let workspace = mixer_workspace_layout(main[1]);
+    draw_mixer_main(frame, workspace[0], state);
+    draw_mixer_sidebar(frame, workspace[1], state);
+}
+
+fn draw_afx_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let placeholder = Paragraph::new(vec![
+        Line::from(vec![chip("AFX / DSP", Color::Black, Color::LightMagenta)]),
+        Line::from(""),
+        Line::from("Reserved for future DSP controls and insert-style visual routing."),
+        Line::from("Raw inspector remains available with `r`."),
+        Line::from(""),
+        Line::from(vec![
+            chip("PLANNED", Color::Black, Color::Yellow),
+            Span::raw(" "),
+            Span::styled(
+                "slots, returns, DSP chains, per-engine state",
+                muted_style(),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("STATUS ", subdued_style()),
+            Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
+        ]),
+    ])
+    .block(panel_block("AFX / DSP", Color::Magenta, true))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(placeholder, area);
+}
+
+fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(24),
-            Constraint::Length(24),
-            Constraint::Length(24),
-        ])
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(6)])
         .split(area);
 
-    for (index, output) in state.outputs.iter().enumerate() {
-        let title = if state.selected_output == index && state.focus == FocusArea::Outputs {
-            format!("{} ←", output.target.label())
-        } else {
-            output.target.label().to_string()
-        };
-        let gauge = Gauge::default()
-            .block(section_block(
-                &title,
+    let items = state
+        .outputs
+        .iter()
+        .enumerate()
+        .map(|(index, output)| {
+            ListItem::new(render_output_card(
+                output,
                 state.focus == FocusArea::Outputs && state.selected_output == index,
             ))
-            .gauge_style(Style::default().fg(match output.mode {
-                OutputMode::Normal => Color::Green,
-                OutputMode::Mute => Color::Red,
-                OutputMode::Dim => Color::Yellow,
-                OutputMode::Unknown(_) => Color::Gray,
-            }))
-            .label(format!(
-                "{} dB / {} / raw {:02x}",
-                output.display_db(),
-                output.mode.label(),
-                output.volume
-            ))
-            .ratio(output.gain_ratio());
-        frame.render_widget(gauge, sections[index]);
+        })
+        .collect::<Vec<_>>();
+
+    frame.render_widget(
+        List::new(items).block(panel_block(
+            "Outputs",
+            Color::Rgb(70, 120, 90),
+            state.focus == FocusArea::Outputs,
+        )),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                chip("f", Color::Black, Color::LightGreen),
+                Span::raw(" focus mixer"),
+            ]),
+            Line::from(vec![
+                chip("+/-", Color::Black, Color::Yellow),
+                Span::raw(" output level"),
+            ]),
+            Line::from(vec![
+                chip("m", Color::Black, Color::LightRed),
+                Span::raw(" mute   "),
+                chip("d", Color::Black, Color::Yellow),
+                Span::raw(" dim"),
+            ]),
+            Line::from(vec![
+                chip("1/2", Color::Black, Color::LightBlue),
+                Span::raw(" surface"),
+            ]),
+        ])
+        .block(panel_block("Keys", Color::DarkGray, false))
+        .wrap(Wrap { trim: false }),
+        sections[1],
+    );
+}
+
+fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let cards = preamp_bar_layout(area);
+    for (index, card) in cards.into_iter().enumerate() {
+        let parts = preamp_card_layout(card);
+        let input = if index == 0 {
+            state.preamp.input1
+        } else {
+            state.preamp.input2
+        };
+        let title = if state.focus == FocusArea::Preamp && state.selected_preamp_input == index {
+            if index == 0 {
+                "CH 1 ←"
+            } else {
+                "CH 2 ←"
+            }
+        } else if index == 0 {
+            "CH 1"
+        } else {
+            "CH 2"
+        };
+
+        frame.render_widget(
+            render_preamp_gauge(
+                title,
+                input,
+                state.focus == FocusArea::Preamp && state.selected_preamp_input == index,
+            ),
+            parts[0],
+        );
+        frame.render_widget(preamp_controls_paragraph(input), parts[1]);
+        if let Some(meter_area) = inner_bottom_line(parts[0]) {
+            frame.render_widget(render_preamp_observed_meter(input), meter_area);
+        }
     }
 }
 
-fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let sections = mixer_preamp_sections(area);
+fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let layout = mixer_layout(area);
 
-    let titles = ["MIX 1 / Monitor-HP1", "MIX 2 / HP2"];
-    let active = match MixerSurface::from_surface(state.surface) {
-        MixerSurface::Mix1 => 0,
-        MixerSurface::Mix2 => 1,
-    };
-    let mixer_layout = mixer_layout(sections[0]);
-
-    let tabs = Tabs::new(
-        titles
-            .iter()
-            .map(|title| Line::from(*title))
-            .collect::<Vec<_>>(),
-    )
-    .block(section_block(
-        "Mixer Surface",
-        state.focus == FocusArea::Mixer,
-    ))
-    .select(active)
-    .highlight_style(
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+    let surface = MixerSurface::from_surface(state.surface);
+    let line = Line::from(vec![
+        tab_chip(
+            "MIX 1 / Monitor-HP1",
+            surface == MixerSurface::Mix1,
+            Color::LightCyan,
+        ),
+        Span::raw(" "),
+        tab_chip(
+            "MIX 2 / HP2",
+            surface == MixerSurface::Mix2,
+            Color::LightBlue,
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line)
+            .block(panel_block(
+                "Mixer Surface",
+                Color::Rgb(80, 110, 150),
+                state.focus == FocusArea::Mixer,
+            ))
+            .wrap(Wrap { trim: false }),
+        layout[0],
     );
-    frame.render_widget(tabs, mixer_layout[0]);
 
     frame.render_widget(
         Paragraph::new(render_experimental_pair_state_line(state))
-            .block(Block::default().borders(Borders::ALL).title("Mix Meter"))
+            .block(panel_block("Mix Meter", Color::LightGreen, false))
             .wrap(Wrap { trim: true }),
-        mixer_layout[1],
+        layout[1],
     );
 
     let items: Vec<ListItem<'_>> = state
@@ -350,13 +491,67 @@ fn draw_mixer_and_preamp(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .enumerate()
         .map(|(index, channel)| ListItem::new(render_mixer_strip_item(state, index, channel)))
         .collect();
-    let list = List::new(items).block(section_block(
-        "Mixer Strips",
-        state.focus == FocusArea::Mixer,
-    ));
-    frame.render_widget(list, mixer_layout[2]);
+    frame.render_widget(
+        List::new(items).block(panel_block(
+            "Mixer Strips",
+            Color::Rgb(70, 100, 130),
+            state.focus == FocusArea::Mixer,
+        )),
+        layout[2],
+    );
+}
 
-    draw_preamp_panel(frame, sections[1], state);
+fn draw_mixer_sidebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6),
+            Constraint::Length(5),
+            Constraint::Min(4),
+        ])
+        .split(area);
+    let output = state.outputs[state.selected_output];
+
+    frame.render_widget(
+        Paragraph::new(render_output_card(
+            &output,
+            state.focus == FocusArea::Outputs,
+        ))
+        .block(panel_block(
+            "Selected Output",
+            Color::Rgb(70, 120, 90),
+            state.focus == FocusArea::Outputs,
+        ))
+        .wrap(Wrap { trim: false }),
+        layout[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("SURFACE ", subdued_style()),
+                Span::styled(state.surface.label(), strong_style(Color::LightCyan)),
+            ]),
+            Line::from(vec![
+                Span::styled("OUT ", subdued_style()),
+                Span::styled(output.target.label(), strong_style(Color::LightGreen)),
+            ]),
+            Line::from(Span::styled(
+                render_experimental_pair_state_line(state),
+                muted_style(),
+            )),
+        ])
+        .block(panel_block("Mix", Color::LightBlue, false))
+        .wrap(Wrap { trim: true }),
+        layout[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(state.last_message.clone())
+            .block(panel_block("Status", Color::DarkGray, false))
+            .wrap(Wrap { trim: true }),
+        layout[2],
+    );
 }
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -379,19 +574,20 @@ fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!("Assign CH {:02}", picker.strip)),
-        ),
+        List::new(items).block(panel_block(
+            &format!("Assign CH {:02}", picker.strip),
+            Color::Yellow,
+            true,
+        )),
         popup,
     );
 }
 
 pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<MouseAction> {
     let point = (x, y);
+    let chunks = root_chunks(area);
 
-    if contains_point(status_layout(root_chunks(area)[0])[1], point) {
+    if contains_point(titlebar_layout(chunks[0])[1], point) {
         return Some(MouseAction::ToggleRawView);
     }
 
@@ -399,13 +595,22 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
         return raw_mouse_action(area, state, point);
     }
 
+    if let Some(action) = page_tab_mouse_action(chunks[1], point) {
+        return Some(action);
+    }
+
     if let Some(picker) = state.assignment_picker {
         return assignment_picker_mouse_action(area, picker, point);
     }
 
-    let chunks = root_chunks(area);
-    let main_sections = mixer_preamp_sections(chunks[2]);
-    let mixer_sections = mixer_layout(main_sections[0]);
+    if state.page != MainPage::Mixer {
+        return None;
+    }
+
+    let page = mixer_page_layout(chunks[2]);
+    let main = mixer_main_layout(page[1]);
+    let workspace = mixer_workspace_layout(main[1]);
+    let mixer_sections = mixer_layout(workspace[0]);
 
     if let Some(action) = mixer_tab_mouse_action(mixer_sections[0], point) {
         return Some(action);
@@ -413,7 +618,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     if let Some(action) = mixer_list_mouse_action(mixer_sections[2], state, point) {
         return Some(action);
     }
-    if let Some(action) = preamp_mouse_action(main_sections[1], point) {
+    if let Some(action) = preamp_mouse_action(main[0], state, point) {
         return Some(action);
     }
 
@@ -489,15 +694,25 @@ fn assignment_picker_mouse_action(
     })
 }
 
+fn page_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let tabs = page_tab_hit_areas(area);
+    if contains_point(tabs[0], point) {
+        Some(MouseAction::SelectPage(MainPage::Mixer))
+    } else if contains_point(tabs[1], point) {
+        Some(MouseAction::SelectPage(MainPage::AfxDsp))
+    } else {
+        None
+    }
+}
+
 fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
     if !contains_point(area, point) {
         return None;
     }
-    let inner = inner_area(area);
-    let tabs = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(inner);
+    let tabs = surface_tab_hit_areas(area);
     if contains_point(tabs[0], point) {
         Some(MouseAction::SelectSurface(Surface::MonitorHp1))
     } else if contains_point(tabs[1], point) {
@@ -530,10 +745,10 @@ fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> O
 
     let controls = mixer_control_button_rects(row_area, channel % 2 == 1);
     if contains_point(controls[0], point) {
-        return Some(MouseAction::ToggleMixerMute(channel));
+        return Some(MouseAction::ToggleMixerSolo(channel));
     }
     if contains_point(controls[1], point) {
-        return Some(MouseAction::ToggleMixerSolo(channel));
+        return Some(MouseAction::ToggleMixerMute(channel));
     }
     if channel % 2 == 1 && contains_point(controls[2], point) {
         return Some(MouseAction::ToggleMixerLink(channel));
@@ -550,17 +765,22 @@ fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> O
     Some(MouseAction::SelectMixerChannel(index))
 }
 
-fn preamp_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
     if !contains_point(area, point) {
         return None;
     }
-    let layout = preamp_panel_layout(area);
-    for (input, card) in [layout[0], layout[1]].into_iter().enumerate() {
+    let layout = preamp_bar_layout(area);
+    for (input, card) in layout.into_iter().enumerate() {
         if !contains_point(card, point) {
             continue;
         }
         let parts = preamp_card_layout(card);
-        let buttons = preamp_button_rects(parts[1]);
+        let input_state = if input == 0 {
+            state.preamp.input1
+        } else {
+            state.preamp.input2
+        };
+        let buttons = preamp_button_rects(parts[1], input_state);
         if contains_point(buttons[0], point) {
             return Some(MouseAction::AdjustPreampGain {
                 input: input as u8,
@@ -591,33 +811,11 @@ fn preamp_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
 }
 
 fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
-    let controls = Rect {
-        x: area.x,
-        y: area.y + 1,
-        width: area.width,
-        height: 1,
-    };
+    let y = area.y + 1;
     if has_link {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(14),
-                Constraint::Length(14),
-                Constraint::Length(14),
-                Constraint::Min(18),
-            ])
-            .split(controls)
-            .to_vec()
+        inline_chip_rects(area.x, y, &["S", "M", "L", "SRC"])
     } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(14),
-                Constraint::Length(14),
-                Constraint::Min(18),
-            ])
-            .split(controls)
-            .to_vec()
+        inline_chip_rects(area.x, y, &["S", "M", "SRC"])
     }
 }
 
@@ -648,27 +846,36 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         header[1],
     );
 
-    let tabs = Tabs::new(vec![
-        Line::from("0x74"),
-        Line::from("0x73"),
-        Line::from("0x83"),
-        Line::from("0x75"),
-        Line::from("0x81"),
-    ])
-    .block(section_block("Packet Tabs", true))
-    .select(match state.selected_raw_packet {
-        RawPacketTab::Query74 => 0,
-        RawPacketTab::State73 => 1,
-        RawPacketTab::Auxiliary83 => 2,
-        RawPacketTab::Query75 => 3,
-        RawPacketTab::Notification81 => 4,
-    })
-    .highlight_style(
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+    let selected = state.selected_raw_packet;
+    let tabs = Line::from(vec![
+        tab_chip(
+            "0x74",
+            selected == RawPacketTab::Query74,
+            Color::LightYellow,
+        ),
+        Span::raw(" "),
+        tab_chip("0x73", selected == RawPacketTab::State73, Color::LightCyan),
+        Span::raw(" "),
+        tab_chip(
+            "0x83",
+            selected == RawPacketTab::Auxiliary83,
+            Color::LightBlue,
+        ),
+        Span::raw(" "),
+        tab_chip("0x75", selected == RawPacketTab::Query75, Color::LightGreen),
+        Span::raw(" "),
+        tab_chip(
+            "0x81",
+            selected == RawPacketTab::Notification81,
+            Color::LightMagenta,
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(tabs)
+            .block(section_block("Packet Tabs", true))
+            .wrap(Wrap { trim: false }),
+        layout[1],
     );
-    frame.render_widget(tabs, layout[1]);
 
     let (title, text) = match state.selected_raw_packet {
         RawPacketTab::Query74 => (
@@ -744,15 +951,144 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
 fn section_block(title: &str, focused: bool) -> Block<'_> {
     let style = if focused {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
+        strong_style(Color::LightCyan)
     } else {
-        Style::default()
+        muted_style()
     };
     Block::default()
         .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused {
+            Color::LightCyan
+        } else {
+            Color::DarkGray
+        }))
         .title(Span::styled(title, style))
+}
+
+fn panel_block<'a>(title: &'a str, accent: Color, focused: bool) -> Block<'a> {
+    let title_style = if focused {
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(accent)
+    };
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(if focused { accent } else { Color::DarkGray }))
+        .title(Span::styled(title, title_style))
+}
+
+fn chip_text(label: &str) -> String {
+    format!(" {} ", label)
+}
+
+fn chip_width(label: &str) -> u16 {
+    chip_text(label).chars().count() as u16
+}
+
+fn chip<T: Into<String>>(label: T, fg: Color, bg: Color) -> Span<'static> {
+    Span::styled(
+        chip_text(&label.into()),
+        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+    )
+}
+
+fn tab_chip(label: &str, active: bool, accent: Color) -> Span<'static> {
+    if active {
+        chip(label, Color::Black, accent)
+    } else {
+        Span::styled(chip_text(label), Style::default().fg(Color::Gray))
+    }
+}
+
+fn muted_style() -> Style {
+    Style::default().fg(Color::Gray)
+}
+
+fn subdued_style() -> Style {
+    Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn strong_style(color: Color) -> Style {
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+fn render_level_bar(ratio: f64, width: usize) -> String {
+    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+    let mut out = String::with_capacity(width);
+    for index in 0..width {
+        out.push(if index < filled { '#' } else { '.' });
+    }
+    out
+}
+
+fn truncate_label(label: &str, width: usize) -> String {
+    if label.chars().count() <= width {
+        return label.to_string();
+    }
+    label
+        .chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>()
+        + "~"
+}
+
+fn output_mode_colors(mode: OutputMode) -> (Color, Color, &'static str) {
+    match mode {
+        OutputMode::Normal => (Color::Black, Color::LightGreen, "LIVE"),
+        OutputMode::Mute => (Color::Black, Color::LightRed, "MUTE"),
+        OutputMode::Dim => (Color::Black, Color::Yellow, "DIM"),
+        OutputMode::Unknown(_) => (Color::Black, Color::Gray, "UNK"),
+    }
+}
+
+fn preamp_phantom_label(input: PreampInputState) -> &'static str {
+    if matches!(input.mode, PreampMode::Mic) {
+        "48V"
+    } else {
+        "N/A"
+    }
+}
+
+fn preamp_phase_label(input: PreampInputState) -> &'static str {
+    if input.mode_raw & 0x40 != 0 {
+        "INV"
+    } else {
+        "NORM"
+    }
+}
+
+fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
+    let (mode_fg, mode_bg, mode_label) = output_mode_colors(output.mode);
+    let mut header = vec![
+        chip(output.target.label(), Color::Black, Color::LightBlue),
+        Span::raw(" "),
+        chip(mode_label, mode_fg, mode_bg),
+    ];
+    if active {
+        header.push(Span::raw(" "));
+        header.push(chip("ACTIVE", Color::Black, Color::LightGreen));
+    }
+    Text::from(vec![
+        Line::from(header),
+        Line::from(vec![
+            Span::styled(
+                format!("LEVEL {:>3} dB", output.display_db()),
+                strong_style(Color::White),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                render_level_bar(output.gain_ratio(), 10),
+                strong_style(Color::LightGreen),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("raw {:02x}", output.volume), muted_style()),
+            Span::raw("  "),
+            Span::styled(output.mode.label(), subdued_style()),
+        ]),
+    ])
 }
 
 fn render_thin_bar(ratio: f64) -> String {
@@ -766,30 +1102,57 @@ fn render_thin_bar(ratio: f64) -> String {
 }
 
 pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab focus | mouse: preamp buttons, mixer mute/solo/link/src, tabs | r raw view | R refresh queries | +/- adjust | m mute/phantom | o solo | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
+    "Tab page | f focus | mouse: raw button, page tabs, preamp buttons, mixer mute/solo/link/src | r raw view | R refresh queries | +/- adjust | m mute/phantom | o solo | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
 
 fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
     let phantom = if matches!(input.mode, PreampMode::Mic) {
         if input.phantom_on {
-            "[48V on]"
+            chip(preamp_phantom_label(input), Color::Black, Color::LightRed)
         } else {
-            "[48V off]"
+            chip(preamp_phantom_label(input), Color::Black, Color::DarkGray)
         }
     } else {
-        "[48V n/a]"
+        chip(preamp_phantom_label(input), Color::Black, Color::Gray)
     };
     let phase = if input.mode_raw & 0x40 != 0 {
-        "[Phase inv]"
+        chip(preamp_phase_label(input), Color::Black, Color::Yellow)
     } else {
-        "[Phase norm]"
+        chip(preamp_phase_label(input), Color::Black, Color::LightGreen)
     };
-    Text::from(vec![Line::from(format!(
-        "[-] [+] [Mode {}] {} {}",
-        input.mode.label(),
-        phantom,
-        phase
-    ))])
+    Text::from(vec![
+        Line::from(vec![
+            chip("-", Color::Black, Color::Gray),
+            Span::raw(" "),
+            chip("+", Color::Black, Color::Gray),
+            Span::raw(" "),
+            chip(
+                input.mode.label(),
+                Color::Black,
+                style_for_preamp_mode(input.mode),
+            ),
+            Span::raw(" "),
+            phantom,
+            Span::raw(" "),
+            phase,
+        ]),
+        Line::from(vec![
+            Span::styled("GAIN ", subdued_style()),
+            Span::styled(input.gain_db_label(), strong_style(Color::White)),
+            Span::raw("  "),
+            Span::styled(format!("raw {:02x}", input.gain_raw), muted_style()),
+        ]),
+    ])
+}
+
+fn preamp_controls_paragraph(input: PreampInputState) -> Paragraph<'static> {
+    Paragraph::new(render_preamp_controls_text(input))
+        .block(panel_block(
+            "Controls",
+            style_for_preamp_mode(input.mode),
+            false,
+        ))
+        .wrap(Wrap { trim: false })
 }
 
 fn render_query_reply_panel(_state_bytes: &[u8], state: &AppState) -> Text<'static> {
@@ -839,12 +1202,105 @@ fn render_mixer_strip_item(
     index: usize,
     channel: &crate::protocol::MixerChannelState,
 ) -> Text<'static> {
-    Text::from(vec![
-        Line::from(render_mixer_strip_line(state, index, channel)),
-        Line::from(render_mixer_strip_controls(state, index, channel)),
-    ])
+    let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
+    let source = channel
+        .assignment
+        .map(|value| value.label())
+        .unwrap_or_else(|| "assignment?".to_string());
+    let meter_bar = render_level_bar(channel.meter_ratio().unwrap_or(0.0), 8);
+    let level_bar = render_level_bar(channel.gain_ratio().unwrap_or(0.0), 8);
+    let pan = channel.pan.display_percent();
+    let pan_label = if pan < 0 {
+        format!("L{}", pan.unsigned_abs())
+    } else if pan > 0 {
+        format!("R{}", pan)
+    } else {
+        "C".to_string()
+    };
+    let solo_on = channel.soloed == Some(true);
+    let mute_on = channel.muted == Some(true);
+    let link_on = channel.linked == Some(true);
+
+    let mut header = vec![chip(
+        format!("CH {:02}", channel.channel),
+        Color::Black,
+        if selected {
+            Color::LightGreen
+        } else {
+            Color::Gray
+        },
+    )];
+    header.push(Span::raw(" "));
+    header.push(Span::styled(
+        truncate_label(&source, 18),
+        strong_style(Color::LightCyan),
+    ));
+    header.push(Span::raw("  "));
+    header.push(chip(
+        format!("PAN {pan_label}"),
+        Color::Black,
+        Color::LightBlue,
+    ));
+    header.push(Span::raw(" "));
+    header.push(chip(
+        channel
+            .display_db()
+            .map(|value| format!("{} dB", value))
+            .unwrap_or_else(|| "LEVEL ?".to_string()),
+        Color::Black,
+        Color::Yellow,
+    ));
+
+    let mut controls = vec![
+        chip(
+            "S",
+            Color::Black,
+            if solo_on {
+                Color::LightGreen
+            } else {
+                Color::DarkGray
+            },
+        ),
+        Span::raw(" "),
+        chip(
+            "M",
+            Color::Black,
+            if mute_on {
+                Color::LightRed
+            } else {
+                Color::DarkGray
+            },
+        ),
+    ];
+    if channel.channel % 2 == 1 {
+        controls.push(Span::raw(" "));
+        controls.push(chip(
+            "L",
+            Color::Black,
+            if link_on {
+                Color::LightBlue
+            } else {
+                Color::DarkGray
+            },
+        ));
+    }
+    controls.push(Span::raw("  "));
+    controls.push(chip("SRC", Color::Black, Color::Gray));
+    controls.push(Span::raw("  "));
+    controls.push(Span::styled(
+        format!("LVL {}", level_bar),
+        strong_style(Color::Yellow),
+    ));
+    controls.push(Span::raw("  "));
+    controls.push(Span::styled(
+        format!("MTR {}", meter_bar),
+        strong_style(Color::LightGreen),
+    ));
+
+    Text::from(vec![Line::from(header), Line::from(controls)])
 }
 
+#[cfg(test)]
 fn render_mixer_strip_controls(
     _state: &AppState,
     _index: usize,
@@ -914,6 +1370,7 @@ fn render_mix_meter(raw: u8) -> String {
     }
 }
 
+#[cfg(test)]
 fn render_mixer_strip_line(
     state: &AppState,
     index: usize,
@@ -968,75 +1425,6 @@ fn render_mixer_strip_line(
     )
 }
 
-fn draw_preamp_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let layout = preamp_panel_layout(area);
-
-    let input1_title = if state.focus == FocusArea::Preamp && state.selected_preamp_input == 0 {
-        "A1 ←"
-    } else {
-        "A1"
-    };
-    let input2_title = if state.focus == FocusArea::Preamp && state.selected_preamp_input == 1 {
-        "A2 ←"
-    } else {
-        "A2"
-    };
-
-    let input1_layout = preamp_card_layout(layout[0]);
-    let input2_layout = preamp_card_layout(layout[1]);
-
-    frame.render_widget(
-        render_preamp_gauge(
-            input1_title,
-            state.preamp.input1,
-            state.focus == FocusArea::Preamp && state.selected_preamp_input == 0,
-        ),
-        input1_layout[0],
-    );
-    frame.render_widget(
-        Paragraph::new(render_preamp_controls_text(state.preamp.input1))
-            .block(Block::default().borders(Borders::ALL).title("Controls"))
-            .wrap(Wrap { trim: true }),
-        input1_layout[1],
-    );
-    frame.render_widget(
-        render_preamp_gauge(
-            input2_title,
-            state.preamp.input2,
-            state.focus == FocusArea::Preamp && state.selected_preamp_input == 1,
-        ),
-        input2_layout[0],
-    );
-    frame.render_widget(
-        Paragraph::new(render_preamp_controls_text(state.preamp.input2))
-            .block(Block::default().borders(Borders::ALL).title("Controls"))
-            .wrap(Wrap { trim: true }),
-        input2_layout[1],
-    );
-    if let Some(area) = inner_bottom_line(input1_layout[0]) {
-        frame.render_widget(render_preamp_observed_meter(state.preamp.input1), area);
-    }
-    if let Some(area) = inner_bottom_line(input2_layout[0]) {
-        frame.render_widget(render_preamp_observed_meter(state.preamp.input2), area);
-    }
-
-    let status = Paragraph::new(vec![
-        Line::from("Preamp Controls"),
-        Line::from("Left/Right select input   +/- gain   3 mode   m phantom   p phase"),
-        Line::from(format!("Raw cluster: {:02x?}", state.dsp_cluster)),
-    ])
-    .block(section_block("Preamp", state.focus == FocusArea::Preamp))
-    .wrap(Wrap { trim: true });
-    frame.render_widget(status, layout[2]);
-
-    frame.render_widget(
-        Paragraph::new(state.last_message.clone())
-            .block(Block::default().borders(Borders::ALL).title("Status"))
-            .wrap(Wrap { trim: true }),
-        layout[3],
-    );
-}
-
 fn render_preamp_gauge<'a>(title: &'a str, input: PreampInputState, focused: bool) -> Gauge<'a> {
     let phase_on = input.mode_raw & 0x40 != 0;
     let phantom = if matches!(input.mode, PreampMode::Mic) {
@@ -1057,11 +1445,16 @@ fn render_preamp_gauge<'a>(title: &'a str, input: PreampInputState, focused: boo
 
     Gauge::default()
         .block(block)
-        .gauge_style(Style::default().fg(style_for_preamp_mode(input.mode)))
+        .gauge_style(
+            Style::default()
+                .fg(style_for_preamp_mode(input.mode))
+                .bg(Color::Black)
+                .add_modifier(Modifier::BOLD),
+        )
         .label(format!(
-            "{}  {}  phantom:{}  phase:{}  raw {:02x}",
-            input.mode.label(),
+            "GAIN {}  {}  48V:{}  PH:{}  {:02x}",
             input.gain_db_label(),
+            input.mode.label(),
             phantom,
             if phase_on { "inv" } else { "norm" },
             input.gain_raw,
@@ -1229,7 +1622,10 @@ fn style_for_ascii_byte(byte: u8, changed: bool) -> Style {
 
 #[cfg(test)]
 mod tests {
-    use crate::app::AppState;
+    use ratatui::buffer::Buffer;
+    use ratatui::widgets::Widget;
+
+    use crate::app::{AppState, MainPage};
     use crate::protocol::{
         ClockSource, MixerAssignment, MixerLinkTarget, MixerSurface, OutputMode, OutputState,
         OutputTarget, PanState, PreampInputState, SampleRate, Surface,
@@ -1256,6 +1652,18 @@ mod tests {
         assert!(footer.contains("d dim"));
         assert!(footer.contains("0x75/0x81"));
         assert!(footer.contains("q quit"));
+    }
+
+    #[test]
+    fn output_card_rendering_surfaces_level_mode_and_focus() {
+        let output = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Mute);
+
+        let rendered = render_output_card(&output, true).to_string();
+
+        assert!(rendered.contains("HP1"));
+        assert!(rendered.contains("MUTE"));
+        assert!(rendered.contains("48 dB"));
+        assert!(rendered.contains("ACTIVE"));
     }
 
     #[test]
@@ -1307,6 +1715,7 @@ mod tests {
         let footer = render_footer_text(&AppState::default());
 
         assert!(footer.contains("mouse:"));
+        assert!(footer.contains("Tab page"));
         assert!(footer.contains("r raw view"));
         assert!(footer.contains("a assign"));
         assert!(footer.contains("[ ] pan"));
@@ -1349,7 +1758,7 @@ mod tests {
     #[test]
     fn mouse_action_hits_status_raw_view_toggle() {
         let area = Rect::new(0, 0, 120, 50);
-        let button = status_layout(root_chunks(area)[0])[1];
+        let button = titlebar_layout(root_chunks(area)[0])[1];
         let point = (button.x + button.width / 2, button.y + 1);
 
         assert_eq!(
@@ -1378,6 +1787,34 @@ mod tests {
         assert_eq!(
             mouse_action(area, &state, point.0, point.1),
             Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75))
+        );
+    }
+
+    #[test]
+    fn mouse_action_selects_afx_page_tab() {
+        let area = Rect::new(0, 0, 120, 50);
+        let tabs = page_tab_hit_areas(root_chunks(area)[1]);
+        let point = (tabs[1].x + tabs[1].width / 2, tabs[1].y);
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), point.0, point.1),
+            Some(MouseAction::SelectPage(MainPage::AfxDsp))
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_visible_surface_tab_position() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let page = mixer_page_layout(chunks[2]);
+        let main = mixer_main_layout(page[1]);
+        let workspace = mixer_workspace_layout(main[1]);
+        let mixer = mixer_layout(workspace[0]);
+        let tabs = surface_tab_hit_areas(mixer[0]);
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), tabs[1].x + 1, tabs[1].y),
+            Some(MouseAction::SelectSurface(Surface::Hp2))
         );
     }
 
@@ -1412,10 +1849,11 @@ mod tests {
     fn mouse_action_hits_preamp_gain_plus_button() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let sections = mixer_preamp_sections(chunks[2]);
-        let preamp = preamp_panel_layout(sections[1]);
-        let card = preamp_card_layout(preamp[0]);
-        let buttons = preamp_button_rects(card[1]);
+        let page = mixer_page_layout(chunks[2]);
+        let main = mixer_main_layout(page[1]);
+        let cards = preamp_bar_layout(main[0]);
+        let card = preamp_card_layout(cards[0]);
+        let buttons = preamp_button_rects(card[1], AppState::default().preamp.input1);
         let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
 
         assert_eq!(
@@ -1428,11 +1866,48 @@ mod tests {
     }
 
     #[test]
+    fn mouse_action_hits_visible_preamp_mode_chip_position() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let page = mixer_page_layout(chunks[2]);
+        let main = mixer_main_layout(page[1]);
+        let cards = preamp_bar_layout(main[0]);
+        let card = preamp_card_layout(cards[0]);
+        let state = AppState::default();
+        let controls = render_preamp_controls_text(state.preamp.input1);
+        let rendered: String = controls.lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let mode_chip = format!(" {} ", state.preamp.input1.mode.label());
+        let chip_x = rendered.find(&mode_chip).expect("mode chip") as u16;
+        let inner = inner_area(card[1]);
+
+        assert_eq!(
+            mouse_action(area, &state, inner.x + chip_x, inner.y),
+            Some(MouseAction::CyclePreampMode(0))
+        );
+    }
+
+    #[test]
+    fn preamp_control_row_keeps_leading_chip_padding_when_rendered() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 3));
+        preamp_controls_paragraph(AppState::default().preamp.input1)
+            .render(Rect::new(0, 0, 40, 3), &mut buffer);
+
+        assert_eq!(buffer[(1, 1)].symbol(), " ");
+        assert_eq!(buffer[(2, 1)].symbol(), "-");
+    }
+
+    #[test]
     fn mouse_action_hits_mixer_link_button_on_odd_strip() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let sections = mixer_preamp_sections(chunks[2]);
-        let mixer = mixer_layout(sections[0]);
+        let page = mixer_page_layout(chunks[2]);
+        let main = mixer_main_layout(page[1]);
+        let workspace = mixer_workspace_layout(main[1]);
+        let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[2]);
         let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
         let buttons = mixer_control_button_rects(row_area, true);
@@ -1448,12 +1923,14 @@ mod tests {
     fn mouse_action_hits_mixer_solo_button() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let sections = mixer_preamp_sections(chunks[2]);
-        let mixer = mixer_layout(sections[0]);
+        let page = mixer_page_layout(chunks[2]);
+        let main = mixer_main_layout(page[1]);
+        let workspace = mixer_workspace_layout(main[1]);
+        let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[2]);
         let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
         let buttons = mixer_control_button_rects(row_area, true);
-        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+        let point = (buttons[0].x + buttons[0].width / 2, buttons[0].y);
 
         assert_eq!(
             mouse_action(area, &AppState::default(), point.0, point.1),
@@ -1462,20 +1939,52 @@ mod tests {
     }
 
     #[test]
+    fn mouse_action_hits_visible_mixer_solo_chip_position() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let page = mixer_page_layout(chunks[2]);
+        let main = mixer_main_layout(page[1]);
+        let workspace = mixer_workspace_layout(main[1]);
+        let mixer = mixer_layout(workspace[0]);
+        let list_inner = inner_area(mixer[2]);
+        let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
+        let state = AppState::default();
+        let line = render_mixer_strip_item(&state, 0, &state.mixer_channels[0][0]);
+        let rendered: String = line.lines[1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let chip_x = rendered.find(" S ").expect("solo chip") as u16;
+
+        assert_eq!(
+            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 1),
+            Some(MouseAction::ToggleMixerSolo(1))
+        );
+    }
+
+    #[test]
     fn mouse_action_opens_assignment_picker_from_src_button() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let sections = mixer_preamp_sections(chunks[2]);
-        let mixer = mixer_layout(sections[0]);
+        let page = mixer_page_layout(chunks[2]);
+        let main = mixer_main_layout(page[1]);
+        let workspace = mixer_workspace_layout(main[1]);
+        let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[2]);
         let row_area = Rect::new(list_inner.x, list_inner.y + 20, list_inner.width, 2);
-        let buttons = mixer_control_button_rects(row_area, false);
-        let point = (buttons[2].x + buttons[2].width / 2, buttons[2].y);
         let mut state = AppState::default();
         state.selected_channel = 10;
+        let line = render_mixer_strip_item(&state, 10, &state.mixer_channels[0][10]);
+        let rendered: String = line.lines[1]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let chip_x = rendered.find(" SRC ").expect("src chip") as u16;
 
         assert_eq!(
-            mouse_action(area, &state, point.0, point.1),
+            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 1),
             Some(MouseAction::OpenAssignmentPicker(11))
         );
     }
