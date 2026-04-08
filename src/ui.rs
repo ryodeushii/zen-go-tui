@@ -728,7 +728,11 @@ fn device_header_mouse_action(
     }
     let chips = device_header_hit_areas(area, state);
     if contains_point(chips[1], point) {
-        Some(MouseAction::OpenSampleRateSelector)
+        if state.device.clock_source == Some(ClockSource::Internal) {
+            Some(MouseAction::OpenSampleRateSelector)
+        } else {
+            None
+        }
     } else if contains_point(chips[2], point) {
         Some(MouseAction::OpenClockSourceSelector)
     } else {
@@ -2029,13 +2033,24 @@ mod tests {
     #[test]
     fn mouse_action_opens_sample_rate_selector_from_device_chip() {
         let area = Rect::new(0, 0, 120, 50);
-        let state = AppState::default();
+        let mut state = AppState::default();
+        state.device.clock_source = Some(ClockSource::Internal);
         let chips = device_header_hit_areas(titlebar_layout(root_chunks(area)[0])[0], &state);
 
         assert_eq!(
             mouse_action(area, &state, chips[1].x + 1, chips[1].y),
             Some(MouseAction::OpenSampleRateSelector)
         );
+    }
+
+    #[test]
+    fn mouse_action_does_not_open_sample_rate_selector_when_clock_is_external() {
+        let area = Rect::new(0, 0, 120, 50);
+        let mut state = AppState::default();
+        state.device.clock_source = Some(ClockSource::Usb);
+        let chips = device_header_hit_areas(titlebar_layout(root_chunks(area)[0])[0], &state);
+
+        assert_eq!(mouse_action(area, &state, chips[1].x + 1, chips[1].y), None);
     }
 
     #[test]

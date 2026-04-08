@@ -572,9 +572,11 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
         ui::MouseAction::OpenSampleRateSelector => {
-            controller.state.selector_popup = Some(SelectorPopupState {
-                kind: SelectorPopupKind::SampleRate,
-            });
+            if controller.state.device.clock_source == Some(ClockSource::Internal) {
+                controller.state.selector_popup = Some(SelectorPopupState {
+                    kind: SelectorPopupKind::SampleRate,
+                });
+            }
         }
         ui::MouseAction::OpenClockSourceSelector => {
             controller.state.selector_popup = Some(SelectorPopupState {
@@ -775,6 +777,10 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
 }
 
 fn cycle_sample_rate(controller: &mut Controller) -> Result<()> {
+    if controller.state.device.clock_source != Some(ClockSource::Internal) {
+        return Ok(());
+    }
+
     let current = controller
         .state
         .device
@@ -1053,6 +1059,7 @@ mod tests {
     fn mouse_sample_rate_selector_opens_and_pick_sends_exact_rate() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.device.clock_source = Some(ClockSource::Internal);
 
         apply_mouse_action(&mut controller, ui::MouseAction::OpenSampleRateSelector)
             .expect("open sample rate selector");
@@ -1073,6 +1080,21 @@ mod tests {
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x12], &[0x03, 0x02]);
+    }
+
+    #[test]
+    fn sample_rate_controls_are_disabled_when_clock_source_is_not_internal() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.device.clock_source = Some(ClockSource::Usb);
+        controller.state.device.sample_rate = Some(SampleRate::Hz192000);
+
+        apply_mouse_action(&mut controller, ui::MouseAction::OpenSampleRateSelector)
+            .expect("open sample rate selector");
+        assert_eq!(controller.state.selector_popup, None);
+
+        cycle_sample_rate(&mut controller).expect("cycle sample rate should no-op");
+        assert!(transport.take_writes().is_empty());
     }
 
     #[test]
