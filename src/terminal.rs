@@ -1,6 +1,5 @@
 use std::io::stdout;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use anyhow::Result;
 use ratatui::style::{Color, Modifier, Style};
@@ -126,10 +125,6 @@ pub fn adapt_style_for_profile(profile: TermProfile, mut style: Style) -> Style 
         style.sub_modifier = Modifier::empty();
     }
     style
-}
-
-pub fn poll_input(timeout: Duration) -> Result<bool> {
-    Ok(crossterm::event::poll(timeout)?)
 }
 
 pub fn read_input_event() -> Result<Option<AppInputEvent>> {

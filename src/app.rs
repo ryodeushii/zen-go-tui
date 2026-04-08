@@ -124,6 +124,7 @@ pub struct AppState {
     pub last_message: String,
     pub last_auxiliary_len: Option<usize>,
     pub dsp_cluster: [u8; 4],
+    pub latest_snapshot_73: Option<Snapshot73>,
     pub latest_raw_73: Option<Vec<u8>>,
     pub latest_raw_83: Option<Vec<u8>>,
     pub latest_raw_74: Option<Vec<u8>>,
@@ -179,6 +180,7 @@ impl Default for AppState {
                     .to_string(),
             last_auxiliary_len: None,
             dsp_cluster: [0; 4],
+            latest_snapshot_73: None,
             latest_raw_73: None,
             latest_raw_83: None,
             latest_raw_74: None,
@@ -341,19 +343,28 @@ impl AppState {
         self.preamp.input2.observed_meter = observed_meter_input2;
     }
 
-    pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: Vec<u8>) {
+    pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: Vec<u8>) -> bool {
+        let was_connected = self.connection.connected;
         self.connection.connected = true;
         self.connection.last_snapshot_at = Some(Instant::now());
         match frame {
             DeviceSnapshot::Snapshot(snapshot) => {
+                let changed = !was_connected
+                    || self.latest_snapshot_73.as_ref() != Some(&snapshot)
+                    || (self.raw_view_open && self.latest_raw_73.as_ref() != Some(&raw));
                 self.connection.last_frame_type = Some("0x73 snapshot");
+                self.latest_snapshot_73 = Some(snapshot.clone());
                 self.latest_raw_73 = Some(raw);
                 self.apply_snapshot(snapshot);
+                changed
             }
             DeviceSnapshot::Auxiliary83(bytes) => {
+                let changed = !was_connected
+                    || (self.raw_view_open && self.latest_raw_83.as_ref() != Some(&raw));
                 self.connection.last_frame_type = Some("0x83 auxiliary");
                 self.last_auxiliary_len = Some(bytes.len());
                 self.latest_raw_83 = Some(raw);
+                changed
             }
             DeviceSnapshot::QueryReply(reply) => {
                 self.connection.last_frame_type = Some("0x75 query reply");
@@ -368,10 +379,13 @@ impl AppState {
                     );
                     self.device.metadata = Some(metadata);
                 }
+                true
             }
             DeviceSnapshot::Notification(_) => {
+                let changed = !was_connected || self.raw_view_open;
                 self.connection.last_frame_type = Some("0x81 notification");
                 self.latest_raw_81 = Some(raw);
+                changed
             }
         }
     }
@@ -1131,7 +1145,7 @@ impl Controller {
                 if let DeviceSnapshot::Snapshot(snapshot73) = &snapshot {
                     self.confirm_pending_write(snapshot73.clone());
                 }
-                self.state.observe_frame(snapshot, raw);
+                observed_frame |= self.state.observe_frame(snapshot, raw);
             }
         }
 
@@ -2771,6 +2785,59 @@ mod tests {
 
         assert!(state.connection.connected);
         assert!(state.connection.last_snapshot_at.is_some());
+    }
+
+    #[test]
+    fn identical_snapshot_does_not_report_visible_change_twice() {
+        let mut state = AppState::default();
+        let raw = vec![0x73, 0, 0, 0];
+
+        assert!(state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw.clone()));
+        assert!(!state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw));
+    }
+
+    #[test]
+    fn raw_only_snapshot_difference_is_not_visible_when_raw_view_is_closed() {
+        let mut state = AppState::default();
+        state.connection.connected = true;
+        state.latest_snapshot_73 = Some(snapshot());
+        state.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
+
+        assert!(!state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 1],));
+    }
+
+    #[test]
+    fn raw_only_snapshot_difference_is_visible_when_raw_view_is_open() {
+        let mut state = AppState::default();
+        state.connection.connected = true;
+        state.raw_view_open = true;
+        state.latest_snapshot_73 = Some(snapshot());
+        state.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
+
+        assert!(state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 1],));
+    }
+
+    #[test]
+    fn auxiliary_frame_is_not_visible_when_raw_view_is_closed() {
+        let mut state = AppState::default();
+        state.connection.connected = true;
+
+        assert!(!state.observe_frame(
+            DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
+            vec![0x83, 0, 0, 0],
+        ));
+    }
+
+    #[test]
+    fn auxiliary_frame_is_visible_when_raw_view_is_open() {
+        let mut state = AppState::default();
+        state.connection.connected = true;
+        state.raw_view_open = true;
+
+        assert!(state.observe_frame(
+            DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
+            vec![0x83, 0, 0, 0],
+        ));
     }
 
     #[test]

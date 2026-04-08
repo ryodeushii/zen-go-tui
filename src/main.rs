@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,9 @@ struct Cli {
     #[arg(long)]
     mock: bool,
 
+    #[arg(long)]
+    headless: bool,
+
     #[command(subcommand)]
     command: Option<CliCommand>,
 }
@@ -56,11 +60,11 @@ enum ProfileCommand {
 
 const ZEN_GO_VID: u16 = 0x23e5;
 const ZEN_GO_PID: u16 = 0xa015;
-const DEVICE_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+const INITIAL_DEVICE_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+const BACKOFF_DEVICE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(16);
-const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
-const DIRTY_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
-const IDLE_REDRAW_INTERVAL: Duration = Duration::from_millis(250);
+const DIRTY_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
+const IDLE_REDRAW_INTERVAL: Duration = Duration::from_secs(1);
 
 fn should_draw_frame(last_draw_at: Option<Instant>, needs_redraw: bool, now: Instant) -> bool {
     let Some(last_draw_at) = last_draw_at else {
@@ -71,12 +75,65 @@ fn should_draw_frame(last_draw_at: Option<Instant>, needs_redraw: bool, now: Ins
     (needs_redraw && elapsed >= DIRTY_REDRAW_INTERVAL) || elapsed >= IDLE_REDRAW_INTERVAL
 }
 
+fn should_probe_reconnect(last_probe_at: Option<Instant>, attempts: usize, now: Instant) -> bool {
+    let Some(last_probe_at) = last_probe_at else {
+        return true;
+    };
+
+    now.duration_since(last_probe_at) >= device_retry_interval(attempts.saturating_add(1))
+}
+
+fn device_retry_interval(retries: usize) -> Duration {
+    if retries <= 1 {
+        INITIAL_DEVICE_RETRY_INTERVAL
+    } else {
+        BACKOFF_DEVICE_RETRY_INTERVAL
+    }
+}
+
+#[derive(Debug)]
+enum InputThreadMessage {
+    Event(AppInputEvent),
+    Error(String),
+}
+
+fn spawn_input_reader() -> Receiver<InputThreadMessage> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || loop {
+        match terminal::read_input_event() {
+            Ok(Some(event)) => {
+                if sender.send(InputThreadMessage::Event(event)).is_err() {
+                    break;
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let _ = sender.send(InputThreadMessage::Error(error.to_string()));
+                break;
+            }
+        }
+    });
+    receiver
+}
+
+fn collect_pending_input(receiver: &Receiver<InputThreadMessage>) -> Result<Vec<AppInputEvent>> {
+    let mut events = Vec::new();
+    loop {
+        match receiver.try_recv() {
+            Ok(InputThreadMessage::Event(event)) => events.push(event),
+            Ok(InputThreadMessage::Error(message)) => return Err(anyhow::anyhow!(message)),
+            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return Ok(events),
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let transport = open_transport(cli.mock)?;
 
     match cli.command {
         Some(CliCommand::Profile { command }) => run_profile_command(transport, command),
+        None if cli.headless => run_headless_app(transport),
         None => run_app(transport),
     }
 }
@@ -91,7 +148,7 @@ fn open_transport(mock: bool) -> Result<Box<dyn Transport>> {
                 if attempt == 1 {
                     eprintln!("Waiting for Zen Go device...\n{error:#}");
                 }
-                thread::sleep(DEVICE_RETRY_INTERVAL);
+                thread::sleep(device_retry_interval(attempt));
                 Ok(())
             },
         )?
@@ -333,14 +390,60 @@ fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
+    let input_rx = spawn_input_reader();
     let mut controller = Controller::new(transport);
     controller.bootstrap()?;
-    let result = app_loop(&mut terminal, &mut controller);
+    let result = app_loop(&mut terminal, &mut controller, &input_rx);
     disable_raw_mode()?;
     terminal.show_cursor()?;
     io::stdout().execute(DisableMouseCapture)?;
     io::stdout().execute(LeaveAlternateScreen)?;
     result
+}
+
+fn run_headless_app(transport: Box<dyn Transport>) -> Result<()> {
+    eprintln!("Headless mode active. Press Ctrl+C to stop.");
+    let mut controller = Controller::new(transport);
+    controller.bootstrap()?;
+    headless_loop(&mut controller)
+}
+
+fn headless_loop(controller: &mut Controller) -> Result<()> {
+    let mut reconnect_refresh_pending = false;
+    let mut last_reconnect_probe_at = None;
+    let mut reconnect_probe_attempts = 0;
+
+    loop {
+        let now = Instant::now();
+        if reconnect_refresh_pending {
+            if should_probe_reconnect(last_reconnect_probe_at, reconnect_probe_attempts, now) {
+                refresh_after_reconnect_if_needed(controller, &mut reconnect_refresh_pending)?;
+                last_reconnect_probe_at = Some(now);
+                reconnect_probe_attempts += 1;
+                if !reconnect_refresh_pending {
+                    last_reconnect_probe_at = None;
+                    reconnect_probe_attempts = 0;
+                }
+            } else if let Some(last_probe_at) = last_reconnect_probe_at {
+                let wait = device_retry_interval(reconnect_probe_attempts.saturating_add(1))
+                    .saturating_sub(now.duration_since(last_probe_at));
+                thread::sleep(wait);
+                continue;
+            }
+        }
+
+        match controller.poll_device(DEVICE_POLL_INTERVAL) {
+            Ok(_) => {}
+            Err(error) => {
+                if is_device_error(&error) {
+                    reconnect_refresh_pending = true;
+                    last_reconnect_probe_at = None;
+                    reconnect_probe_attempts = 0;
+                }
+                handle_runtime_error(controller, error)?;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -536,24 +639,42 @@ fn handle_key_press(
 fn app_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controller: &mut Controller,
+    input_rx: &Receiver<InputThreadMessage>,
 ) -> Result<()> {
     let mut reconnect_refresh_pending = false;
+    let mut last_reconnect_probe_at = None;
+    let mut reconnect_probe_attempts = 0;
     let mut last_draw_at = None;
     let mut needs_redraw = true;
 
-    loop {
-        refresh_after_reconnect_if_needed(controller, &mut reconnect_refresh_pending)?;
-
-        match controller.poll_device(DEVICE_POLL_INTERVAL) {
-            Ok(observed_frame) => {
-                needs_redraw |= observed_frame;
+    'app: loop {
+        let now = Instant::now();
+        if reconnect_refresh_pending
+            && should_probe_reconnect(last_reconnect_probe_at, reconnect_probe_attempts, now)
+        {
+            refresh_after_reconnect_if_needed(controller, &mut reconnect_refresh_pending)?;
+            last_reconnect_probe_at = Some(now);
+            reconnect_probe_attempts += 1;
+            if !reconnect_refresh_pending {
+                last_reconnect_probe_at = None;
+                reconnect_probe_attempts = 0;
             }
-            Err(error) => {
-                if is_device_error(&error) {
-                    reconnect_refresh_pending = true;
+        }
+
+        if !reconnect_refresh_pending {
+            match controller.poll_device(DEVICE_POLL_INTERVAL) {
+                Ok(observed_frame) => {
+                    needs_redraw |= observed_frame;
                 }
-                handle_runtime_error(controller, error)?;
-                needs_redraw = true;
+                Err(error) => {
+                    if is_device_error(&error) {
+                        reconnect_refresh_pending = true;
+                        last_reconnect_probe_at = None;
+                        reconnect_probe_attempts = 0;
+                    }
+                    handle_runtime_error(controller, error)?;
+                    needs_redraw = true;
+                }
             }
         }
 
@@ -574,56 +695,58 @@ fn app_loop(
             needs_redraw = false;
         }
 
-        if !terminal::poll_input(INPUT_POLL_INTERVAL)? {
+        let input_events = collect_pending_input(input_rx)?;
+        if input_events.is_empty() {
             continue;
         }
 
-        match terminal::read_input_event()? {
-            Some(AppInputEvent::Key(key)) => {
-                if key.kind != AppKeyEventKind::Press {
-                    continue;
-                }
-                let size = terminal.size()?;
-                let action = handle_key_press(
-                    controller,
-                    key.code,
-                    ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                )?;
+        for event in input_events {
+            match event {
+                AppInputEvent::Key(key) => {
+                    if key.kind != AppKeyEventKind::Press {
+                        continue;
+                    }
+                    let size = terminal.size()?;
+                    let action = handle_key_press(
+                        controller,
+                        key.code,
+                        ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                    )?;
 
-                if action == KeyAction::Quit {
-                    break;
-                }
+                    if action == KeyAction::Quit {
+                        break 'app;
+                    }
 
-                if action == KeyAction::ReconnectPending {
-                    reconnect_refresh_pending = true;
-                }
-
-                needs_redraw = true;
-            }
-            Some(AppInputEvent::Mouse(mouse)) => {
-                let size = terminal.size()?;
-                if let Err(error) = handle_mouse_event(
-                    ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                    controller,
-                    mouse,
-                ) {
-                    if is_device_error(&error) {
+                    if action == KeyAction::ReconnectPending {
                         reconnect_refresh_pending = true;
                     }
-                    handle_runtime_error(controller, error)?;
+
+                    needs_redraw = true;
                 }
-                needs_redraw = true;
-            }
-            Some(AppInputEvent::Paste(text)) => {
-                if controller.state.profile_editor.is_some() {
-                    append_profile_editor_text(controller, &text);
+                AppInputEvent::Mouse(mouse) => {
+                    let size = terminal.size()?;
+                    if let Err(error) = handle_mouse_event(
+                        ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                        controller,
+                        mouse,
+                    ) {
+                        if is_device_error(&error) {
+                            reconnect_refresh_pending = true;
+                        }
+                        handle_runtime_error(controller, error)?;
+                    }
+                    needs_redraw = true;
                 }
-                needs_redraw = true;
+                AppInputEvent::Paste(text) => {
+                    if controller.state.profile_editor.is_some() {
+                        append_profile_editor_text(controller, &text);
+                    }
+                    needs_redraw = true;
+                }
+                AppInputEvent::Resize { .. }
+                | AppInputEvent::FocusGained
+                | AppInputEvent::FocusLost => needs_redraw = true,
             }
-            Some(AppInputEvent::Resize { .. })
-            | Some(AppInputEvent::FocusGained)
-            | Some(AppInputEvent::FocusLost) => needs_redraw = true,
-            None => {}
         }
     }
 
@@ -2220,6 +2343,15 @@ mod tests {
     }
 
     #[test]
+    fn cli_accepts_headless_flag() {
+        let cli = Cli::try_parse_from(["zen-go-tui", "--headless"]).expect("parse cli");
+
+        assert!(cli.headless);
+        assert!(!cli.mock);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
     fn handle_runtime_error_marks_controller_disconnected_for_device_errors() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
@@ -2267,15 +2399,84 @@ mod tests {
             true,
             now,
         ));
-        assert!(should_draw_frame(
+        assert!(!should_draw_frame(
             Some(now - Duration::from_millis(40)),
             true,
             now,
         ));
         assert!(should_draw_frame(
-            Some(now - Duration::from_millis(300)),
+            Some(now - Duration::from_millis(60)),
+            true,
+            now,
+        ));
+        assert!(should_draw_frame(
+            Some(now - Duration::from_millis(1200)),
             false,
             now,
         ));
+    }
+
+    #[test]
+    fn reconnect_probe_scheduler_backs_off_between_attempts() {
+        let now = Instant::now();
+
+        assert!(should_probe_reconnect(None, 0, now));
+        assert!(!should_probe_reconnect(
+            Some(now - Duration::from_millis(300)),
+            0,
+            now,
+        ));
+        assert!(should_probe_reconnect(
+            Some(now - Duration::from_millis(600)),
+            0,
+            now,
+        ));
+        assert!(!should_probe_reconnect(
+            Some(now - Duration::from_millis(1500)),
+            1,
+            now,
+        ));
+        assert!(should_probe_reconnect(
+            Some(now - Duration::from_millis(2500)),
+            1,
+            now,
+        ));
+    }
+
+    #[test]
+    fn device_retry_interval_backs_off_after_first_wait() {
+        assert_eq!(device_retry_interval(1), Duration::from_millis(500));
+        assert_eq!(device_retry_interval(2), Duration::from_secs(2));
+        assert_eq!(device_retry_interval(8), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn collect_pending_input_drains_channel_in_order() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(InputThreadMessage::Event(AppInputEvent::FocusGained))
+            .expect("send focus gained");
+        sender
+            .send(InputThreadMessage::Event(AppInputEvent::FocusLost))
+            .expect("send focus lost");
+
+        let events = collect_pending_input(&receiver).expect("collect input");
+
+        assert_eq!(
+            events,
+            vec![AppInputEvent::FocusGained, AppInputEvent::FocusLost]
+        );
+    }
+
+    #[test]
+    fn collect_pending_input_surfaces_reader_error() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender
+            .send(InputThreadMessage::Error("broken input".to_string()))
+            .expect("send error");
+
+        let error = collect_pending_input(&receiver).expect_err("reader error should bubble up");
+
+        assert!(error.to_string().contains("broken input"));
     }
 }
