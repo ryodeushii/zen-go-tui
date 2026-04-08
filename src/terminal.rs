@@ -26,8 +26,11 @@ pub enum AppKeyCode {
     Char(char),
     Tab,
     BackTab,
+    Up,
+    Down,
     Left,
     Right,
+    Enter,
     Esc,
     Unknown,
 }
@@ -157,8 +160,11 @@ fn normalize_key(key: KeyEvent) -> AppKeyEvent {
         KeyCode::Char(ch) => AppKeyCode::Char(ch),
         KeyCode::Tab if modifiers.shift => AppKeyCode::BackTab,
         KeyCode::Tab => AppKeyCode::Tab,
+        KeyCode::Up => AppKeyCode::Up,
+        KeyCode::Down => AppKeyCode::Down,
         KeyCode::Left => AppKeyCode::Left,
         KeyCode::Right => AppKeyCode::Right,
+        KeyCode::Enter => AppKeyCode::Enter,
         KeyCode::Esc => AppKeyCode::Esc,
         _ => AppKeyCode::Unknown,
     };
@@ -377,6 +383,38 @@ mod tests {
             normalize_crossterm_event(event).expect("normalize"),
             Some(AppInputEvent::Key(AppKeyEvent {
                 code: AppKeyCode::Tab,
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Press,
+            }))
+        );
+    }
+
+    #[test]
+    fn normalize_crossterm_event_maps_popup_navigation_keys() {
+        let up = CrosstermEvent::Key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let down = CrosstermEvent::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let enter = CrosstermEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(
+            normalize_crossterm_event(up).expect("normalize up"),
+            Some(AppInputEvent::Key(AppKeyEvent {
+                code: AppKeyCode::Up,
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Press,
+            }))
+        );
+        assert_eq!(
+            normalize_crossterm_event(down).expect("normalize down"),
+            Some(AppInputEvent::Key(AppKeyEvent {
+                code: AppKeyCode::Down,
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Press,
+            }))
+        );
+        assert_eq!(
+            normalize_crossterm_event(enter).expect("normalize enter"),
+            Some(AppInputEvent::Key(AppKeyEvent {
+                code: AppKeyCode::Enter,
                 modifiers: AppModifiers::default(),
                 kind: AppKeyEventKind::Press,
             }))

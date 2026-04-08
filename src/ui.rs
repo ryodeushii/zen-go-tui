@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Widget, Wrap};
 use ratatui::Frame;
 use tui_slider::{Slider, SliderOrientation, SliderState};
 
@@ -312,6 +312,10 @@ fn assignment_picker_area(area: Rect) -> Rect {
     }
 }
 
+fn popup_list_inner_area(popup: Rect, title: &str) -> Rect {
+    panel_block(title, Color::Yellow, true).inner(popup)
+}
+
 fn hotkeys_popup_area(area: Rect) -> Rect {
     let width = area.width.min(86).max(54);
     let height = area.height.min(16).max(10);
@@ -598,15 +602,29 @@ fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .iter()
         .map(|assignment| ListItem::new(assignment.label()))
         .collect::<Vec<_>>();
+    let mut list_state = ListState::default();
+    list_state.select(Some(
+        state
+            .popup_selected_index
+            .min(items.len().saturating_sub(1)),
+    ));
 
     frame.render_widget(Clear, popup);
-    frame.render_widget(
-        List::new(items).block(panel_block(
-            &format!("Assign CH {:02}", picker.strip),
-            Color::Yellow,
-            true,
-        )),
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(panel_block(
+                &format!("Assign CH {:02}", picker.strip),
+                Color::Yellow,
+                true,
+            ))
+            .highlight_style(terminal::adapt_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
         popup,
+        &mut list_state,
     );
 }
 
@@ -641,10 +659,24 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 .collect::<Vec<_>>(),
         ),
     };
+    let mut list_state = ListState::default();
+    list_state.select(Some(
+        state
+            .popup_selected_index
+            .min(items.len().saturating_sub(1)),
+    ));
 
-    frame.render_widget(
-        List::new(items).block(panel_block(title, Color::Yellow, true)),
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(panel_block(title, Color::Yellow, true))
+            .highlight_style(terminal::adapt_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
         popup,
+        &mut list_state,
     );
 }
 
@@ -777,7 +809,7 @@ fn assignment_picker_mouse_action(
         return Some(MouseAction::CloseAssignmentPicker);
     }
 
-    let inner = inner_area(popup);
+    let inner = popup_list_inner_area(popup, &format!("Assign CH {:02}", picker.strip));
     if point.1 < inner.y {
         return None;
     }
@@ -799,7 +831,12 @@ fn selector_popup_mouse_action(
         return Some(MouseAction::CloseSelectorPopup);
     }
 
-    let inner = inner_area(popup_area);
+    let title = match popup.kind {
+        SelectorPopupKind::SampleRate => "Sample Rate",
+        SelectorPopupKind::ClockSource => "Clock Source",
+        SelectorPopupKind::PreampMode { .. } => "Preamp Mode",
+    };
+    let inner = popup_list_inner_area(popup_area, title);
     if point.1 < inner.y {
         return None;
     }
@@ -3059,13 +3096,30 @@ mod tests {
             kind: SelectorPopupKind::PreampMode { input: 0 },
         });
         let popup = assignment_picker_area(area);
-        let inner = inner_area(popup);
+        let inner = popup_list_inner_area(popup, "Preamp Mode");
 
         assert_eq!(
             mouse_action(area, &state, inner.x + 1, inner.y + 1),
             Some(MouseAction::PickPreampMode {
                 input: 0,
                 mode: PreampMode::Line,
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_action_picks_first_assignment_from_first_popup_row() {
+        let area = Rect::new(0, 0, 120, 50);
+        let popup = assignment_picker_area(area);
+        let inner = popup_list_inner_area(popup, "Assign CH 11");
+        let mut state = AppState::default();
+        state.assignment_picker = Some(AssignmentPickerState { strip: 11 });
+
+        assert_eq!(
+            mouse_action(area, &state, inner.x + 1, inner.y),
+            Some(MouseAction::PickAssignment {
+                strip: 11,
+                assignment: MixerAssignment::Mute,
             })
         );
     }
@@ -3162,7 +3216,7 @@ mod tests {
     fn mouse_action_picks_assignment_from_modal() {
         let area = Rect::new(0, 0, 120, 50);
         let popup = assignment_picker_area(area);
-        let inner = inner_area(popup);
+        let inner = popup_list_inner_area(popup, "Assign CH 11");
         let mut state = AppState::default();
         state.assignment_picker = Some(AssignmentPickerState { strip: 11 });
 

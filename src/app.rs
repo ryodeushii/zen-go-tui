@@ -126,6 +126,7 @@ pub struct AppState {
     pub baseline_raw_81: Option<Vec<u8>>,
     pub assignment_picker: Option<AssignmentPickerState>,
     pub selector_popup: Option<SelectorPopupState>,
+    pub popup_selected_index: usize,
     pub hotkeys_popup_open: bool,
 }
 
@@ -174,6 +175,7 @@ impl Default for AppState {
             baseline_raw_81: None,
             assignment_picker: None,
             selector_popup: None,
+            popup_selected_index: 0,
             hotkeys_popup_open: false,
         }
     }

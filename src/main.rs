@@ -206,6 +206,26 @@ fn app_loop(
                         controller.state.toggle_hotkeys_popup();
                         Ok(())
                     }
+                    AppKeyCode::Up
+                        if controller.state.assignment_picker.is_some()
+                            || controller.state.selector_popup.is_some() =>
+                    {
+                        move_popup_selection(controller, false);
+                        Ok(())
+                    }
+                    AppKeyCode::Down
+                        if controller.state.assignment_picker.is_some()
+                            || controller.state.selector_popup.is_some() =>
+                    {
+                        move_popup_selection(controller, true);
+                        Ok(())
+                    }
+                    AppKeyCode::Enter
+                        if controller.state.assignment_picker.is_some()
+                            || controller.state.selector_popup.is_some() =>
+                    {
+                        activate_popup_selection(controller)
+                    }
                     AppKeyCode::Left if controller.state.raw_view_open => {
                         if controller.state.selected_raw_packet
                             == zen_go_tui::app::RawPacketTab::Query75
@@ -251,12 +271,12 @@ fn app_loop(
                     AppKeyCode::Char('m') => toggle_mute(controller),
                     AppKeyCode::Char('o') => toggle_mixer_solo(controller),
                     AppKeyCode::Char('d') => toggle_dim(controller),
-                    AppKeyCode::Char('a') => cycle_mixer_assignment(controller),
+                    AppKeyCode::Char('a') => open_mixer_assignment_picker(controller),
                     AppKeyCode::Char('l') => toggle_mixer_link(controller),
                     AppKeyCode::Char('[') => adjust_mixer_pan(controller, false),
                     AppKeyCode::Char(']') => adjust_mixer_pan(controller, true),
                     AppKeyCode::Char('p') => toggle_preamp_phase(controller),
-                    AppKeyCode::Char('3') => cycle_preamp_mode(controller),
+                    AppKeyCode::Char('3') => open_preamp_mode_selector(controller),
                     AppKeyCode::Char('s') => cycle_sample_rate(controller),
                     AppKeyCode::Char('c') => cycle_clock_source(controller),
                     AppKeyCode::Char('1') => {
@@ -281,6 +301,7 @@ fn app_loop(
                     {
                         controller.state.assignment_picker = None;
                         controller.state.selector_popup = None;
+                        controller.state.popup_selected_index = 0;
                         controller.state.hotkeys_popup_open = false;
                         controller.state.last_message = "Closed popup".to_string();
                         Ok(())
@@ -357,6 +378,79 @@ fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layou
         }
         _ => {}
     }
+}
+
+fn popup_item_count(controller: &Controller) -> usize {
+    if controller.state.assignment_picker.is_some() {
+        MixerAssignment::grounded_choices().len()
+    } else if let Some(popup) = controller.state.selector_popup {
+        match popup.kind {
+            SelectorPopupKind::SampleRate => SampleRate::all_confirmed().len(),
+            SelectorPopupKind::ClockSource => ClockSource::all_confirmed().len(),
+            SelectorPopupKind::PreampMode { .. } => 3,
+        }
+    } else {
+        0
+    }
+}
+
+fn move_popup_selection(controller: &mut Controller, down: bool) {
+    let item_count = popup_item_count(controller);
+    if item_count == 0 {
+        return;
+    }
+
+    controller.state.popup_selected_index = if down {
+        (controller.state.popup_selected_index + 1) % item_count
+    } else {
+        controller
+            .state
+            .popup_selected_index
+            .checked_sub(1)
+            .unwrap_or(item_count - 1)
+    };
+}
+
+fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
+    if let Some(picker) = controller.state.assignment_picker {
+        if let Some(assignment) = MixerAssignment::grounded_choices()
+            .get(controller.state.popup_selected_index)
+            .copied()
+        {
+            return apply_mouse_action(
+                controller,
+                ui::MouseAction::PickAssignment {
+                    strip: picker.strip,
+                    assignment,
+                },
+            );
+        }
+    }
+
+    if let Some(popup) = controller.state.selector_popup {
+        let action = match popup.kind {
+            SelectorPopupKind::SampleRate => SampleRate::all_confirmed()
+                .get(controller.state.popup_selected_index)
+                .copied()
+                .map(ui::MouseAction::PickSampleRate),
+            SelectorPopupKind::ClockSource => ClockSource::all_confirmed()
+                .get(controller.state.popup_selected_index)
+                .copied()
+                .map(ui::MouseAction::PickClockSource),
+            SelectorPopupKind::PreampMode { input } => {
+                [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
+                    .get(controller.state.popup_selected_index)
+                    .copied()
+                    .map(|mode| ui::MouseAction::PickPreampMode { input, mode })
+            }
+        };
+
+        if let Some(action) = action {
+            return apply_mouse_action(controller, action);
+        }
+    }
+
+    Ok(())
 }
 
 fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
@@ -524,7 +618,7 @@ fn toggle_mixer_solo(controller: &mut Controller) -> Result<()> {
     Ok(())
 }
 
-fn cycle_mixer_assignment(controller: &mut Controller) -> Result<()> {
+fn open_mixer_assignment_picker(controller: &mut Controller) -> Result<()> {
     if controller.state.page != MainPage::Mixer {
         return Ok(());
     }
@@ -537,24 +631,14 @@ fn cycle_mixer_assignment(controller: &mut Controller) -> Result<()> {
         controller.state.active_mixer_channels()[controller.state.selected_channel];
     if !zen_go_tui::protocol::MixerStrip::assignment_write_is_grounded(active_channel.channel) {
         controller.state.last_message =
-            "Assignment cycling is not grounded for the selected strip.".to_string();
+            "Assignment picking is not grounded for the selected strip.".to_string();
         return Ok(());
     }
 
-    let choices = MixerAssignment::grounded_choices();
-    let current = active_channel
-        .assignment
-        .and_then(|assignment| {
-            choices
-                .iter()
-                .position(|candidate| *candidate == assignment)
-        })
-        .unwrap_or(0);
-    let next = choices[(current + 1) % choices.len()];
-    controller.send(Command::SetMixerAssignment {
-        strip: active_channel.channel,
-        assignment: next,
-    })
+    apply_mouse_action(
+        controller,
+        ui::MouseAction::OpenAssignmentPicker(active_channel.channel),
+    )
 }
 
 fn toggle_mixer_link(controller: &mut Controller) -> Result<()> {
@@ -619,12 +703,32 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         ui::MouseAction::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
         ui::MouseAction::OpenSampleRateSelector => {
             if controller.state.device.clock_source == Some(ClockSource::Internal) {
+                controller.state.popup_selected_index = controller
+                    .state
+                    .device
+                    .sample_rate
+                    .and_then(|current| {
+                        SampleRate::all_confirmed()
+                            .iter()
+                            .position(|rate| *rate == current)
+                    })
+                    .unwrap_or(0);
                 controller.state.selector_popup = Some(SelectorPopupState {
                     kind: SelectorPopupKind::SampleRate,
                 });
             }
         }
         ui::MouseAction::OpenClockSourceSelector => {
+            controller.state.popup_selected_index = controller
+                .state
+                .device
+                .clock_source
+                .and_then(|current| {
+                    ClockSource::all_confirmed()
+                        .iter()
+                        .position(|source| *source == current)
+                })
+                .unwrap_or(0);
             controller.state.selector_popup = Some(SelectorPopupState {
                 kind: SelectorPopupKind::ClockSource,
             });
@@ -721,6 +825,16 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
                 controller.state.last_message =
                     "Assignment picking is not grounded for the selected strip.".to_string();
             } else {
+                controller.state.popup_selected_index = controller.state.mixer_channels
+                    [MixerSurface::from_surface(controller.state.surface).index()]
+                    [controller.state.selected_channel]
+                    .assignment
+                    .and_then(|current| {
+                        MixerAssignment::grounded_choices()
+                            .iter()
+                            .position(|assignment| *assignment == current)
+                    })
+                    .unwrap_or(0);
                 controller.state.assignment_picker =
                     Some(zen_go_tui::app::AssignmentPickerState { strip });
                 controller.state.last_message = format!("Pick source assignment for CH {strip:02}");
@@ -728,14 +842,17 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         }
         ui::MouseAction::PickAssignment { strip, assignment } => {
             controller.state.assignment_picker = None;
+            controller.state.popup_selected_index = 0;
             controller.send(Command::SetMixerAssignment { strip, assignment })?;
         }
         ui::MouseAction::CloseAssignmentPicker => {
             controller.state.assignment_picker = None;
+            controller.state.popup_selected_index = 0;
             controller.state.last_message = "Closed assignment picker".to_string();
         }
         ui::MouseAction::CloseSelectorPopup => {
             controller.state.selector_popup = None;
+            controller.state.popup_selected_index = 0;
             controller.state.last_message = "Closed selector".to_string();
         }
         ui::MouseAction::SelectPreampInput(input) => {
@@ -758,6 +875,16 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         ui::MouseAction::OpenPreampModeSelector(input) => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
+            let current = if input == 0 {
+                controller.state.preamp.input1.mode
+            } else {
+                controller.state.preamp.input2.mode
+            };
+            controller.state.popup_selected_index =
+                [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
+                    .iter()
+                    .position(|mode| *mode == current)
+                    .unwrap_or(0);
             controller.state.selector_popup = Some(SelectorPopupState {
                 kind: SelectorPopupKind::PreampMode { input },
             });
@@ -779,14 +906,17 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         }
         ui::MouseAction::PickSampleRate(rate) => {
             controller.state.selector_popup = None;
+            controller.state.popup_selected_index = 0;
             controller.send(Command::SetSampleRate(rate))?;
         }
         ui::MouseAction::PickClockSource(source) => {
             controller.state.selector_popup = None;
+            controller.state.popup_selected_index = 0;
             controller.send(Command::SetClockSource(source))?;
         }
         ui::MouseAction::PickPreampMode { input, mode } => {
             controller.state.selector_popup = None;
+            controller.state.popup_selected_index = 0;
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
             controller.send(Command::SetPreampMode { input, mode })?;
@@ -855,7 +985,7 @@ fn cycle_clock_source(controller: &mut Controller) -> Result<()> {
     Ok(())
 }
 
-fn cycle_preamp_mode(controller: &mut Controller) -> Result<()> {
+fn open_preamp_mode_selector(controller: &mut Controller) -> Result<()> {
     if controller.state.page != MainPage::Mixer {
         return Ok(());
     }
@@ -865,18 +995,7 @@ fn cycle_preamp_mode(controller: &mut Controller) -> Result<()> {
     }
 
     let input = controller.state.selected_preamp_input as u8;
-    let current = if input == 0 {
-        controller.state.preamp.input1.mode
-    } else {
-        controller.state.preamp.input2.mode
-    };
-    let next = match current {
-        PreampMode::Mic => PreampMode::Line,
-        PreampMode::Line => PreampMode::HiZ,
-        PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
-    };
-    controller.send(Command::SetPreampMode { input, mode: next })?;
-    Ok(())
+    apply_mouse_action(controller, ui::MouseAction::OpenPreampModeSelector(input))
 }
 
 fn toggle_preamp_phase(controller: &mut Controller) -> Result<()> {
@@ -1022,7 +1141,7 @@ mod tests {
     }
 
     #[test]
-    fn cycle_mixer_assignment_sends_next_assignment_for_early_strip() {
+    fn opening_assignment_picker_from_keyboard_does_not_send_assignment_change() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
@@ -1031,12 +1150,33 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
             Some(MixerAssignment::Preamp(1));
 
-        cycle_mixer_assignment(&mut controller).expect("cycle assignment");
+        open_mixer_assignment_picker(&mut controller).expect("open assignment picker");
 
-        let writes = transport.take_writes();
-        assert_eq!(writes.len(), 1);
-        assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x05]);
-        assert_eq!(&writes[0][0x10 + 0x03..0x10 + 0x05], &[0x00, 0x01]);
+        assert!(transport.take_writes().is_empty());
+        assert_eq!(
+            controller.state.assignment_picker,
+            Some(AssignmentPickerState { strip: 1 })
+        );
+    }
+
+    #[test]
+    fn opening_preamp_mode_selector_from_keyboard_does_not_send_mode_change() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.focus = FocusArea::Preamp;
+        controller.state.selected_preamp_input = 1;
+        controller.state.preamp.input2.mode = PreampMode::Line;
+
+        open_preamp_mode_selector(&mut controller).expect("open preamp mode selector");
+
+        assert!(transport.take_writes().is_empty());
+        assert_eq!(
+            controller.state.selector_popup,
+            Some(SelectorPopupState {
+                kind: SelectorPopupKind::PreampMode { input: 1 }
+            })
+        );
+        assert_eq!(controller.state.popup_selected_index, 1);
     }
 
     #[test]
@@ -1085,6 +1225,20 @@ mod tests {
         assert_eq!(writes.len(), 5);
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
         assert_eq!(&writes[0][0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
+    }
+
+    #[test]
+    fn opening_assignment_picker_preselects_current_assignment() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.surface = Surface::MonitorHp1;
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][4].assignment =
+            Some(MixerAssignment::Oscillator(1));
+
+        apply_mouse_action(&mut controller, ui::MouseAction::OpenAssignmentPicker(5))
+            .expect("open picker");
+
+        assert_eq!(controller.state.popup_selected_index, 13);
     }
 
     #[test]
@@ -1184,6 +1338,39 @@ mod tests {
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x4f, 0x01, 0x02]);
+    }
+
+    #[test]
+    fn popup_selection_wraps_with_keyboard_navigation() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.assignment_picker = Some(AssignmentPickerState { strip: 1 });
+
+        move_popup_selection(&mut controller, false);
+        assert_eq!(
+            controller.state.popup_selected_index,
+            MixerAssignment::grounded_choices().len() - 1
+        );
+
+        move_popup_selection(&mut controller, true);
+        assert_eq!(controller.state.popup_selected_index, 0);
+    }
+
+    #[test]
+    fn activating_popup_selection_submits_highlighted_assignment() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        seed_shared_assignments(&mut controller);
+        controller.state.assignment_picker = Some(AssignmentPickerState { strip: 5 });
+        controller.state.popup_selected_index = 13;
+
+        activate_popup_selection(&mut controller).expect("activate popup selection");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 5);
+        assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
+        assert_eq!(&writes[0][0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
+        assert_eq!(controller.state.assignment_picker, None);
     }
 
     #[test]
