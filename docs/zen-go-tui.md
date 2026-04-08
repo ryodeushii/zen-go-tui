@@ -18,6 +18,45 @@ The implementation follows the reverse-engineered USB HID protocol documented in
 The concrete HID implementation uses the `hidapi` crate.
 That choice is pragmatic for Linux HID access in Rust, but the app is structured around the `Transport` trait so HID access can be swapped without touching protocol or UI code.
 
+## Install
+
+### Install from GitHub with Cargo
+
+Install the current-host binary directly from GitHub:
+
+```bash
+cargo install --git https://github.com/ryodeushii/antelope-analysis-gpt54.git --bin zen-go-tui
+```
+
+That installs the executable as `zen-go-tui` in Cargo's bin directory.
+
+## Build
+
+### Linux release binary
+
+```bash
+cargo build --release
+```
+
+Output:
+
+- `target/release/zen-go-tui`
+
+### Windows release binary
+
+The documented Windows build path is the GNU target:
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+cargo build --target x86_64-pc-windows-gnu --release
+```
+
+Output:
+
+- `target/x86_64-pc-windows-gnu/release/zen-go-tui.exe`
+
+If you build the Windows binary from Linux, make sure a MinGW-w64 cross linker/toolchain is installed so Cargo can invoke the `x86_64-w64-mingw32-*` tools.
+
 ## Run
 
 ### Linux device permissions

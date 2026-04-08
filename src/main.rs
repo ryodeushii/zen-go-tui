@@ -14,8 +14,8 @@ use ratatui::Terminal;
 
 use zen_go_tui::app::{Controller, FocusArea, MainPage, SelectorPopupKind, SelectorPopupState};
 use zen_go_tui::protocol::{
-    ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, OutputTarget, PanState,
-    PreampMode, SampleRate, Surface,
+    ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, PanState, PreampMode,
+    SampleRate, Surface,
 };
 use zen_go_tui::terminal::{
     self, AppInputEvent, AppKeyCode, AppKeyEventKind, AppMouseButton, AppMouseEvent,
@@ -1155,7 +1155,7 @@ mod tests {
 
     use zen_go_tui::app::AssignmentPickerState;
     use zen_go_tui::protocol::{
-        control_panel_startup_queries, MixerAssignment, MixerSurface, OutputState,
+        control_panel_startup_queries, MixerAssignment, MixerSurface, OutputState, OutputTarget,
     };
     use zen_go_tui::transport::TransportError;
 
