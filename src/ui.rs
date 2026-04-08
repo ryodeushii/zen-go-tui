@@ -942,6 +942,7 @@ fn contains_point(area: Rect, point: (u16, u16)) -> bool {
 }
 
 const SIGNAL_LABEL_WIDTH: u16 = 12;
+const MAX_SIGNAL_ROW_WIDTH: u16 = 40;
 
 fn slider_state(ratio: Option<f64>) -> SliderState {
     SliderState::new(ratio.unwrap_or(0.0).clamp(0.0, 1.0) * 100.0, 0.0, 100.0)
@@ -964,13 +965,29 @@ fn level_slider(ratio: Option<f64>, color: Color) -> Slider<'static> {
     Slider::from_state(&state)
         .orientation(SliderOrientation::Horizontal)
         .show_value(false)
-        .show_handle(true)
+        .show_handle(false)
         .filled_symbol("─")
         .empty_symbol("┄")
-        .handle_symbol("●")
         .filled_color(terminal::adapt_color(color))
         .empty_color(terminal::adapt_color(Color::DarkGray))
-        .handle_color(terminal::adapt_color(Color::White))
+}
+
+fn render_level_slider(area: Rect, buffer: &mut Buffer, ratio: Option<f64>, color: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let ratio = ratio.unwrap_or(0.0).clamp(0.0, 1.0);
+    level_slider(Some(ratio), color).render(area, buffer);
+
+    let handle_x = area.x + ((area.width.saturating_sub(1)) as f64 * ratio).round() as u16;
+    let handle_y = area.y + area.height / 2;
+    buffer.set_string(
+        handle_x,
+        handle_y,
+        "●",
+        terminal::adapt_style(Style::default().fg(Color::White)),
+    );
 }
 
 fn signal_slider_label(prefix: &str, value: Option<String>) -> String {
@@ -991,6 +1008,15 @@ fn meter_slider_label(prefix: &str, value: Option<i16>) -> String {
     format!("{prefix} {}", format_meter_value_label(value))
 }
 
+fn bounded_signal_area(area: Rect) -> Rect {
+    Rect::new(
+        area.x,
+        area.y,
+        area.width.min(MAX_SIGNAL_ROW_WIDTH),
+        area.height,
+    )
+}
+
 fn render_labeled_slider(
     area: Rect,
     buffer: &mut Buffer,
@@ -1002,6 +1028,7 @@ fn render_labeled_slider(
     if area.width == 0 || area.height == 0 {
         return;
     }
+    let area = bounded_signal_area(area);
     let label_width = SIGNAL_LABEL_WIDTH.min(area.width.saturating_sub(1)).max(1);
     let sections = Layout::default()
         .direction(Direction::Horizontal)
@@ -1013,7 +1040,7 @@ fn render_labeled_slider(
     )))
     .render(sections[0], buffer);
     if show_handle {
-        level_slider(ratio, color).render(sections[1], buffer);
+        render_level_slider(sections[1], buffer, ratio, color);
     } else {
         meter_slider(ratio, color).render(sections[1], buffer);
     }
@@ -2281,6 +2308,39 @@ mod tests {
         });
 
         assert!(rendered.contains("MTR  -∞ dB"));
+    }
+
+    #[test]
+    fn mixer_strip_widget_clamps_signal_rows_in_wide_area() {
+        let mut state = AppState::default();
+        state.focus = FocusArea::Mixer;
+        state.selected_channel = 0;
+        state.mixer_channels[0][0].level = Some(0x00);
+        state.mixer_channels[0][0].meter = Some(0x10);
+
+        let area = Rect::new(0, 0, 120, mixer_strip_height());
+        let mut buffer = Buffer::empty(area);
+        render_mixer_strip_widget(area, &mut buffer, &state, 0, &state.mixer_channels[0][0]);
+
+        assert_eq!(buffer[(110, 1)].symbol(), " ");
+        assert_eq!(buffer[(110, 2)].symbol(), " ");
+    }
+
+    #[test]
+    fn labeled_level_slider_keeps_handle_visible_at_maximum() {
+        let area = Rect::new(0, 0, 24, 1);
+        let mut buffer = Buffer::empty(area);
+
+        render_labeled_slider(
+            area,
+            &mut buffer,
+            "LVL   0 dB",
+            Some(1.0),
+            Color::Yellow,
+            true,
+        );
+
+        assert_eq!(buffer[(23, 0)].symbol(), "●");
     }
 
     #[test]
