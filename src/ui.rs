@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap};
@@ -85,7 +85,7 @@ fn root_chunks(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Min(14),
             Constraint::Length(3),
@@ -97,13 +97,21 @@ fn root_chunks(area: Rect) -> Vec<Rect> {
 fn titlebar_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(24), Constraint::Length(18)])
+        .constraints([Constraint::Min(24), Constraint::Length(21)])
         .split(area)
         .to_vec()
 }
 
+fn device_panel_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(24), Constraint::Length(26)])
+        .split(inner_area(area))
+        .to_vec()
+}
+
 fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
-    let inner = inner_area(area);
+    let inner = device_panel_layout(area)[0];
     let product = state
         .device
         .metadata
@@ -137,16 +145,16 @@ fn page_tab_hit_areas(area: Rect) -> Vec<Rect> {
 
 fn mixer_page_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(26), Constraint::Min(40)])
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(14), Constraint::Length(8)])
         .split(area)
         .to_vec()
 }
 
 fn output_panel_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(6)])
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(40), Constraint::Length(18)])
         .split(area)
         .to_vec()
 }
@@ -275,27 +283,34 @@ fn query_reply_history_layout(area: Rect) -> Vec<Rect> {
 }
 
 fn inner_area(area: Rect) -> Rect {
+    let vertical_inset = if area.height >= 6 { 2 } else { 1 };
+    let vertical_padding = vertical_inset * 2;
     Rect {
-        x: area.x.saturating_add(1),
-        y: area.y.saturating_add(1),
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+        x: area.x.saturating_add(2),
+        y: area.y.saturating_add(vertical_inset),
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(vertical_padding),
     }
 }
 
 fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = titlebar_layout(area);
-    let text = Paragraph::new(render_device_header(state))
-        .block(panel_block("Device", Color::DarkGray, true))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(text, sections[0]);
+    frame.render_widget(panel_block("Device", Color::DarkGray, true), sections[0]);
+    let device_sections = device_panel_layout(sections[0]);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(chip("RAW", Color::Black, Color::LightRed)),
-            Line::from(Span::styled("[r] inspector", muted_style())),
-        ])
-        .block(panel_block("Inspector", Color::LightRed, false))
-        .wrap(Wrap { trim: false }),
+        Paragraph::new(render_device_header(state)).wrap(Wrap { trim: false }),
+        device_sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(render_device_metadata(state))
+            .alignment(Alignment::Right)
+            .wrap(Wrap { trim: false }),
+        device_sections[1],
+    );
+    frame.render_widget(
+        Paragraph::new(render_inspector_summary())
+            .block(panel_block("Inspector", Color::LightRed, false))
+            .wrap(Wrap { trim: false }),
         sections[1],
     );
 }
@@ -320,14 +335,13 @@ fn draw_page_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
 fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = mixer_page_layout(area);
-    draw_output_panel(frame, sections[0], state);
-
-    let main = mixer_main_layout(sections[1]);
+    let main = mixer_main_layout(sections[0]);
     draw_preamp_bar(frame, main[0], state);
 
     let workspace = mixer_workspace_layout(main[1]);
     draw_mixer_main(frame, workspace[0], state);
     draw_status_strip(frame, workspace[1], state);
+    draw_output_panel(frame, sections[1], state);
 }
 
 fn draw_afx_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -367,13 +381,14 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         sections[0],
     );
     let inner = inner_area(sections[0]);
-    for (index, output) in state.outputs.iter().enumerate() {
-        let y = inner.y + index as u16 * output_card_height();
-        if y + output_card_height() > inner.y + inner.height {
-            break;
-        }
+    for (index, (output, card)) in state
+        .outputs
+        .iter()
+        .zip(output_card_areas(inner).into_iter())
+        .enumerate()
+    {
         render_output_card_widget(
-            Rect::new(inner.x, y, inner.width, output_card_height()),
+            card,
             frame.buffer_mut(),
             output,
             state.focus == FocusArea::Outputs && state.selected_output == index,
@@ -597,11 +612,11 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     }
 
     let page = mixer_page_layout(chunks[2]);
-    let main = mixer_main_layout(page[1]);
+    let main = mixer_main_layout(page[0]);
     let workspace = mixer_workspace_layout(main[1]);
     let mixer_sections = mixer_layout(workspace[0]);
 
-    if let Some(action) = output_list_mouse_action(page[0], state, point) {
+    if let Some(action) = output_list_mouse_action(page[1], state, point) {
         return Some(action);
     }
 
@@ -870,15 +885,11 @@ fn output_list_mouse_action(
         return None;
     }
 
-    let row = point.1.saturating_sub(inner.y) / output_card_height();
-    let index = row as usize;
+    let (index, card) = output_card_areas(inner)
+        .into_iter()
+        .enumerate()
+        .find(|(_, card)| contains_point(*card, point))?;
     state.outputs.get(index)?;
-    let card = Rect::new(
-        inner.x,
-        inner.y + row * output_card_height(),
-        inner.width,
-        output_card_height(),
-    );
     let controls = output_control_rects(card);
 
     if contains_point(controls[0], point) {
@@ -914,6 +925,18 @@ fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
 
 fn output_card_height() -> u16 {
     4
+}
+
+fn output_card_areas(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(34),
+            Constraint::Percentage(33),
+            Constraint::Percentage(33),
+        ])
+        .split(Rect::new(area.x, area.y, area.width, output_card_height()))
+        .to_vec()
 }
 
 fn mixer_strip_height() -> u16 {
@@ -1569,7 +1592,7 @@ fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
     ])
 }
 
-fn render_device_header(state: &AppState) -> Text<'static> {
+fn render_device_header(state: &AppState) -> Line<'static> {
     let product = state
         .device
         .metadata
@@ -1596,7 +1619,25 @@ fn render_device_header(state: &AppState) -> Text<'static> {
     } else {
         "waiting"
     };
-    let metadata_line = if let Some(metadata) = state.device.metadata.as_ref() {
+    Line::from(vec![
+        Span::styled(product, strong_style(Color::LightGreen)),
+        Span::raw("  "),
+        chip(
+            connection.to_uppercase(),
+            Color::Black,
+            connection_badge_color(state),
+        ),
+        Span::raw(" "),
+        chip(sample, Color::Black, Color::Yellow),
+        Span::raw(" "),
+        chip(clock, Color::Black, Color::LightBlue),
+        Span::raw(" "),
+        chip(lock.to_uppercase(), Color::Black, Color::Magenta),
+    ])
+}
+
+fn render_device_metadata(state: &AppState) -> Line<'static> {
+    if let Some(metadata) = state.device.metadata.as_ref() {
         Line::from(vec![
             chip(
                 format!("SN {}", metadata.serial),
@@ -1612,25 +1653,14 @@ fn render_device_header(state: &AppState) -> Text<'static> {
         ])
     } else {
         Line::from(Span::styled("metadata pending", muted_style()))
-    };
+    }
+}
 
-    Text::from(vec![
-        Line::from(vec![
-            Span::styled(product, strong_style(Color::LightGreen)),
-            Span::raw("  "),
-            chip(
-                connection.to_uppercase(),
-                Color::Black,
-                connection_badge_color(state),
-            ),
-            Span::raw(" "),
-            chip(sample, Color::Black, Color::Yellow),
-            Span::raw(" "),
-            chip(clock, Color::Black, Color::LightBlue),
-            Span::raw(" "),
-            chip(lock.to_uppercase(), Color::Black, Color::Magenta),
-        ]),
-        metadata_line,
+fn render_inspector_summary() -> Line<'static> {
+    Line::from(vec![
+        chip("RAW", Color::Black, Color::LightRed),
+        Span::raw(" "),
+        Span::styled("[r] inspector", muted_style()),
     ])
 }
 
@@ -2193,6 +2223,17 @@ mod tests {
     }
 
     #[test]
+    fn output_card_areas_split_horizontally_across_bottom_panel() {
+        let areas = output_card_areas(Rect::new(10, 5, 90, output_card_height()));
+
+        assert_eq!(areas.len(), 3);
+        assert_eq!(areas[0].y, areas[1].y);
+        assert_eq!(areas[1].y, areas[2].y);
+        assert!(areas[0].x < areas[1].x);
+        assert!(areas[1].x < areas[2].x);
+    }
+
+    #[test]
     fn meter_value_labels_reserve_width_and_use_negative_infinity() {
         assert_eq!(format_meter_value_label(Some(0)), "  0 dB");
         assert_eq!(format_meter_value_label(Some(-48)), "-48 dB");
@@ -2326,12 +2367,14 @@ mod tests {
         state.device.locked = Some(true);
 
         let rendered = render_device_header(&state).to_string();
+        let metadata = render_device_metadata(&state).to_string();
 
-        assert!(rendered.contains("1234567890"));
-        assert!(rendered.contains("6.6"));
+        assert!(metadata.contains("1234567890"));
+        assert!(metadata.contains("6.6"));
         assert!(!rendered.contains("SURFACE"));
         assert!(!rendered.contains("PAGE"));
         assert!(!rendered.contains("Last"));
+        assert!(!rendered.contains('\n'));
     }
 
     #[test]
@@ -2344,6 +2387,15 @@ mod tests {
 
         assert!(rendered.contains("44.1 kHz"));
         assert!(!rendered.contains("96000 Hz"));
+    }
+
+    #[test]
+    fn titlebar_renders_inspector_hint_on_single_row() {
+        let rendered = render_inspector_summary().to_string();
+
+        assert!(rendered.contains("RAW"));
+        assert!(rendered.contains("[r] inspector"));
+        assert!(!rendered.contains('\n'));
     }
 
     #[test]
@@ -2523,7 +2575,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
-        let main = mixer_main_layout(page[1]);
+        let main = mixer_main_layout(page[0]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let tabs = surface_tab_hit_areas(mixer[0]);
@@ -2538,14 +2590,9 @@ mod tests {
     fn mouse_action_hits_visible_output_dim_chip_position() {
         let area = Rect::new(0, 0, 120, 50);
         let page = mixer_page_layout(root_chunks(area)[2]);
-        let outputs = output_panel_layout(page[0]);
+        let outputs = output_panel_layout(page[1]);
         let list_inner = inner_area(outputs[0]);
-        let row_area = Rect::new(
-            list_inner.x,
-            list_inner.y,
-            list_inner.width,
-            output_card_height(),
-        );
+        let row_area = output_card_areas(list_inner)[0];
         let state = AppState::default();
         let line = render_output_card(&state.outputs[0], true);
         let rendered: String = line.lines[3]
@@ -2565,14 +2612,9 @@ mod tests {
     fn mouse_action_hits_visible_output_mute_chip_position_on_hp1() {
         let area = Rect::new(0, 0, 120, 50);
         let page = mixer_page_layout(root_chunks(area)[2]);
-        let outputs = output_panel_layout(page[0]);
+        let outputs = output_panel_layout(page[1]);
         let list_inner = inner_area(outputs[0]);
-        let row_area = Rect::new(
-            list_inner.x,
-            list_inner.y + output_card_height(),
-            list_inner.width,
-            output_card_height(),
-        );
+        let row_area = output_card_areas(list_inner)[1];
         let state = AppState::default();
         let line = render_output_card(&state.outputs[1], false);
         let rendered: String = line.lines[3]
@@ -2620,7 +2662,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
-        let main = mixer_main_layout(page[1]);
+        let main = mixer_main_layout(page[0]);
         let cards = preamp_bar_layout(main[0]);
         let buttons = preamp_button_rects(cards[0], AppState::default().preamp.input1);
         let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
@@ -2639,7 +2681,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
-        let main = mixer_main_layout(page[1]);
+        let main = mixer_main_layout(page[0]);
         let cards = preamp_bar_layout(main[0]);
         let state = AppState::default();
         let controls = render_preamp_controls_text(state.preamp.input1);
@@ -2694,7 +2736,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
-        let main = mixer_main_layout(page[1]);
+        let main = mixer_main_layout(page[0]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[1]);
@@ -2718,7 +2760,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
-        let main = mixer_main_layout(page[1]);
+        let main = mixer_main_layout(page[0]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[1]);
@@ -2742,7 +2784,7 @@ mod tests {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
-        let main = mixer_main_layout(page[1]);
+        let main = mixer_main_layout(page[0]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[1]);
@@ -2772,19 +2814,19 @@ mod tests {
         let area = Rect::new(0, 0, 120, 60);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
-        let main = mixer_main_layout(page[1]);
+        let main = mixer_main_layout(page[0]);
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[1]);
         let row_area = Rect::new(
             list_inner.x,
-            list_inner.y + 10 * mixer_strip_height(),
+            list_inner.y + 3 * mixer_strip_height(),
             list_inner.width,
             mixer_strip_height(),
         );
         let mut state = AppState::default();
-        state.selected_channel = 10;
-        let line = render_mixer_strip_item(&state, 10, &state.mixer_channels[0][10]);
+        state.selected_channel = 3;
+        let line = render_mixer_strip_item(&state, 3, &state.mixer_channels[0][3]);
         let rendered: String = line.lines[1]
             .spans
             .iter()
@@ -2794,7 +2836,7 @@ mod tests {
 
         assert_eq!(
             mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 1),
-            Some(MouseAction::OpenAssignmentPicker(11))
+            Some(MouseAction::OpenAssignmentPicker(4))
         );
     }
 
