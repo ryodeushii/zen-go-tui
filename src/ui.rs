@@ -22,6 +22,8 @@ use crate::terminal;
 pub enum MouseAction {
     ToggleRawView,
     ToggleHotkeysPopup,
+    OpenRoutingPopup,
+    CloseRoutingPopup,
     OpenSampleRateSelector,
     OpenClockSourceSelector,
     SelectPage(MainPage),
@@ -73,11 +75,8 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     let chunks = root_chunks(frame.area());
 
     draw_titlebar(frame, chunks[0], state);
-    draw_page_tabs(frame, chunks[1], state);
-    match state.page {
-        MainPage::Mixer => draw_mixer_page(frame, chunks[2], state),
-        MainPage::AfxDsp => draw_afx_page(frame, chunks[2], state),
-    }
+    draw_mixer_page(frame, chunks[1], state);
+    draw_routing_popup(frame, frame.area(), state);
     draw_assignment_picker(frame, frame.area(), state);
     draw_selector_popup(frame, frame.area(), state);
     draw_hotkeys_popup(frame, frame.area(), state);
@@ -86,11 +85,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
 fn root_chunks(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(17),
-        ])
+        .constraints([Constraint::Length(3), Constraint::Min(17)])
         .split(area)
         .to_vec()
 }
@@ -134,14 +129,6 @@ fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
     let clock_rect = Rect::new(x, inner.y, chip_width(&clock), 1);
 
     vec![connection_rect, sample_rect, clock_rect]
-}
-
-fn page_tab_hit_areas(area: Rect) -> Vec<Rect> {
-    inline_chip_rects(
-        inner_area(area).x,
-        inner_area(area).y,
-        &["Mixer", "AFX / DSP"],
-    )
 }
 
 fn mixer_page_layout(area: Rect) -> Vec<Rect> {
@@ -282,10 +269,18 @@ fn preamp_button_rects(area: Rect, input: PreampInputState) -> Vec<Rect> {
 }
 
 fn surface_tab_hit_areas(area: Rect) -> Vec<Rect> {
-    inline_chip_rects(
-        inner_area(area).x,
-        inner_area(area).y,
-        &["MIX 1 / Monitor-HP1", "MIX 2 / HP2"],
+    let inner = inner_area(area);
+    inline_chip_rects(inner.x, inner.y, &["MIX 1 / Monitor-HP1", "MIX 2 / HP2"])
+}
+
+fn routing_button_rect(area: Rect) -> Rect {
+    let inner = inner_area(area);
+    let width = chip_width("ROUTING").min(inner.width);
+    Rect::new(
+        inner.x + inner.width.saturating_sub(width),
+        inner.y,
+        width,
+        1,
     )
 }
 
@@ -397,24 +392,6 @@ fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     );
 }
 
-fn draw_page_tabs(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let line = Line::from(vec![
-        tab_chip("Mixer", state.page == MainPage::Mixer, Color::LightGreen),
-        Span::raw(" "),
-        tab_chip(
-            "AFX / DSP",
-            state.page == MainPage::AfxDsp,
-            Color::LightMagenta,
-        ),
-    ]);
-    frame.render_widget(
-        Paragraph::new(line)
-            .block(panel_block("Pages", Color::DarkGray, false))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
 fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = mixer_page_layout(area);
     let main = mixer_main_layout(sections[0]);
@@ -424,30 +401,300 @@ fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     draw_output_panel(frame, sections[1], state);
 }
 
-fn draw_afx_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let placeholder = Paragraph::new(vec![
-        Line::from(vec![chip("AFX / DSP", Color::Black, Color::LightMagenta)]),
+fn routing_popup_area(area: Rect) -> Rect {
+    let width = area.width.min(58).max(44);
+    let height = area.height.min(14).max(11);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if !state.routing_popup_open {
+        return;
+    }
+
+    let popup = routing_popup_area(area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(panel_block("Routing", Color::Magenta, true), popup);
+
+    let rows = afx_routing_layout(popup);
+    Paragraph::new(Line::from(vec![chip(
+        "ROUTING",
+        Color::Black,
+        Color::LightMagenta,
+    )]))
+    .render(rows[0], frame.buffer_mut());
+    Paragraph::new(Line::from(
+        "Zen Go USB recordings mirror mixer strip assignments instead of using a separate routing matrix.",
+    ))
+    .wrap(Wrap { trim: false })
+    .render(rows[1], frame.buffer_mut());
+    Paragraph::new(Line::from("Edit here and mixer strips update immediately."))
+        .wrap(Wrap { trim: false })
+        .render(rows[2], frame.buffer_mut());
+    Paragraph::new(Line::from(vec![
+        Span::styled("PAIR", subdued_style()),
+        Span::raw("  "),
+        Span::styled("REC 1", strong_style(Color::LightCyan)),
+        Span::raw(" / "),
+        Span::styled("REC 2", strong_style(Color::LightCyan)),
+    ]))
+    .render(rows[3], frame.buffer_mut());
+
+    for pair in 0..4 {
+        let pair_area = rows[4 + pair];
+        render_afx_routing_row(pair_area, frame.buffer_mut(), state, pair);
+    }
+
+    Paragraph::new(Line::from(vec![
+        Span::styled("TIP ", subdued_style()),
+        Span::styled(
+            "click a source chip or press `a` for the selected channel",
+            muted_style(),
+        ),
+    ]))
+    .wrap(Wrap { trim: false })
+    .render(rows[8], frame.buffer_mut());
+    Paragraph::new(Line::from(vec![
+        Span::styled("STATUS ", subdued_style()),
+        Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
+    ]))
+    .wrap(Wrap { trim: false })
+    .render(rows[9], frame.buffer_mut());
+}
+
+fn afx_routing_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner_area(area))
+        .to_vec()
+}
+
+fn afx_routing_pair_channels(pair: usize) -> (usize, usize) {
+    (pair * 2, pair * 2 + 1)
+}
+
+fn afx_routing_row_columns(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(7),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(6),
+            Constraint::Length(6),
+        ])
+        .split(area)
+        .to_vec()
+}
+
+fn afx_routing_row_labels(state: &AppState, pair: usize) -> [String; 5] {
+    let assignments = &state.mixer_channels[MixerSurface::Mix1.index()];
+    let (left_index, right_index) = afx_routing_pair_channels(pair);
+    let left = &assignments[left_index];
+    let right = &assignments[right_index];
+    [
+        format!("USB {}/{}", left.channel, right.channel),
+        format!("REC {}", left.channel),
+        left.assignment
+            .map(|assignment| assignment.short_label())
+            .unwrap_or_else(|| "?".to_string()),
+        format!("REC {}", right.channel),
+        right
+            .assignment
+            .map(|assignment| assignment.short_label())
+            .unwrap_or_else(|| "?".to_string()),
+    ]
+}
+
+fn afx_routing_row_rects(area: Rect, state: &AppState, pair: usize) -> Vec<Rect> {
+    let columns = afx_routing_row_columns(area);
+    vec![
+        Rect::new(
+            columns[0].x,
+            columns[0].y,
+            chip_width("USB 7/8").min(columns[0].width),
+            1,
+        ),
+        Rect::new(
+            columns[1].x,
+            columns[1].y,
+            chip_width("REC 8").min(columns[1].width),
+            1,
+        ),
+        Rect::new(
+            columns[2].x,
+            columns[2].y,
+            columns[2]
+                .width
+                .min(chip_width(&afx_routing_row_labels(state, pair)[2])),
+            1,
+        ),
+        Rect::new(
+            columns[3].x,
+            columns[3].y,
+            chip_width("REC 8").min(columns[3].width),
+            1,
+        ),
+        Rect::new(
+            columns[4].x,
+            columns[4].y,
+            columns[4]
+                .width
+                .min(chip_width(&afx_routing_row_labels(state, pair)[4])),
+            1,
+        ),
+    ]
+}
+
+fn render_afx_routing_row(area: Rect, buffer: &mut Buffer, state: &AppState, pair: usize) {
+    let labels = afx_routing_row_labels(state, pair);
+    let (left_index, right_index) = afx_routing_pair_channels(pair);
+    let selected_left = state.focus == FocusArea::Mixer && state.selected_channel == left_index;
+    let selected_right = state.focus == FocusArea::Mixer && state.selected_channel == right_index;
+    let columns = afx_routing_row_columns(area);
+    let row_style = terminal::adapt_style(Style::default().fg(if pair % 2 == 0 {
+        Color::DarkGray
+    } else {
+        Color::Gray
+    }));
+    for x in area.x..area.x + area.width {
+        buffer[(x, area.y)].set_style(row_style);
+    }
+
+    Paragraph::new(Line::from(vec![chip(
+        labels[0].clone(),
+        Color::Black,
+        Color::LightMagenta,
+    )]))
+    .render(columns[0], buffer);
+    Paragraph::new(Line::from(vec![chip(
+        labels[1].clone(),
+        Color::Black,
+        Color::Gray,
+    )]))
+    .render(columns[1], buffer);
+    Paragraph::new(Line::from(vec![chip(
+        labels[2].clone(),
+        Color::Black,
+        if selected_left {
+            Color::Yellow
+        } else {
+            Color::LightCyan
+        },
+    )]))
+    .render(columns[2], buffer);
+    Paragraph::new(Line::from(vec![chip(
+        labels[3].clone(),
+        Color::Black,
+        Color::Gray,
+    )]))
+    .render(columns[3], buffer);
+    Paragraph::new(Line::from(vec![chip(
+        labels[4].clone(),
+        Color::Black,
+        if selected_right {
+            Color::Yellow
+        } else {
+            Color::LightCyan
+        },
+    )]))
+    .render(columns[4], buffer);
+}
+
+#[cfg(test)]
+fn afx_routing_source_label(assignment: Option<MixerAssignment>) -> String {
+    assignment
+        .map(|assignment| assignment.label())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+#[cfg(test)]
+fn render_afx_routing_text(state: &AppState) -> Text<'static> {
+    let assignments = &state.mixer_channels[MixerSurface::Mix1.index()];
+    let mut lines = vec![
+        Line::from(vec![chip("ROUTING", Color::Black, Color::LightMagenta)]),
         Line::from(""),
-        Line::from("Reserved for future DSP controls and insert-style visual routing."),
-        Line::from("Raw inspector remains available with `r`."),
+        Line::from("Zen Go USB recordings mirror mixer strip assignments instead of using a separate routing matrix."),
+        Line::from("This view reformats shared CH 01-08 assignments into the 4 stereo recording pairs exposed to the host."),
         Line::from(""),
         Line::from(vec![
-            chip("PLANNED", Color::Black, Color::Yellow),
-            Span::raw(" "),
-            Span::styled(
-                "slots, returns, DSP chains, per-engine state",
-                muted_style(),
-            ),
+            Span::styled("PAIR    ", subdued_style()),
+            Span::styled("LEFT", strong_style(Color::LightCyan)),
+            Span::styled("                           ", subdued_style()),
+            Span::styled("RIGHT", strong_style(Color::LightCyan)),
         ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("STATUS ", subdued_style()),
-            Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
-        ]),
-    ])
-    .block(panel_block("AFX / DSP", Color::Magenta, true))
-    .wrap(Wrap { trim: false });
-    frame.render_widget(placeholder, area);
+    ];
+
+    for pair in 0..4 {
+        let left = &assignments[pair * 2];
+        let right = &assignments[pair * 2 + 1];
+        lines.push(Line::from(format!(
+            "USB {:>1}/{:>1}  Zen Go Recording {:>1} <- {:<18}  Zen Go Recording {:>1} <- {}",
+            left.channel,
+            right.channel,
+            left.channel,
+            afx_routing_source_label(left.assignment),
+            right.channel,
+            afx_routing_source_label(right.assignment),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("STATUS ", subdued_style()),
+        Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
+    ]));
+    Text::from(lines)
+}
+
+fn afx_routing_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+
+    let rows = afx_routing_layout(area);
+    for pair in 0..4 {
+        let row_area = rows[4 + pair];
+        if !contains_point(row_area, point) {
+            continue;
+        }
+
+        let rects = afx_routing_row_rects(row_area, state, pair);
+        let (left_index, right_index) = afx_routing_pair_channels(pair);
+        if contains_point(rects[2], point) {
+            return Some(MouseAction::OpenAssignmentPicker((left_index + 1) as u8));
+        }
+        if contains_point(rects[4], point) {
+            return Some(MouseAction::OpenAssignmentPicker((right_index + 1) as u8));
+        }
+        if point.0 < rects[3].x {
+            return Some(MouseAction::SelectMixerChannel(left_index));
+        }
+        return Some(MouseAction::SelectMixerChannel(right_index));
+    }
+
+    None
 }
 
 fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -542,6 +789,17 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .wrap(Wrap { trim: false }),
         layout[0],
     );
+    Paragraph::new(Line::from(vec![chip(
+        "ROUTING",
+        Color::Black,
+        if state.routing_popup_open {
+            Color::Yellow
+        } else {
+            Color::LightMagenta
+        },
+    )]))
+    .alignment(Alignment::Right)
+    .render(routing_button_rect(layout[0]), frame.buffer_mut());
 
     let content = mixer_strip_panel_layout(layout[1], experimental_mix_meter(state).is_some());
     let inner = content[0];
@@ -719,19 +977,15 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
         return selector_popup_mouse_action(area, popup, point);
     }
 
-    if let Some(action) = page_tab_mouse_action(chunks[1], point) {
-        return Some(action);
-    }
-
     if let Some(picker) = state.assignment_picker {
         return assignment_picker_mouse_action(area, picker, point);
     }
 
-    if state.page != MainPage::Mixer {
-        return None;
+    if state.routing_popup_open {
+        return routing_popup_mouse_action(area, state, point);
     }
 
-    let page = mixer_page_layout(chunks[2]);
+    let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout(page[0]);
     let mixer_sections = mixer_layout(main[1]);
 
@@ -750,6 +1004,18 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     }
 
     None
+}
+
+fn routing_popup_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let popup = routing_popup_area(area);
+    if !contains_point(popup, point) {
+        return Some(MouseAction::CloseRoutingPopup);
+    }
+    afx_routing_mouse_action(popup, state, point)
 }
 
 fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
@@ -881,23 +1147,12 @@ fn device_header_mouse_action(
     }
 }
 
-fn page_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
-    if !contains_point(area, point) {
-        return None;
-    }
-    let tabs = page_tab_hit_areas(area);
-    if contains_point(tabs[0], point) {
-        Some(MouseAction::SelectPage(MainPage::Mixer))
-    } else if contains_point(tabs[1], point) {
-        Some(MouseAction::SelectPage(MainPage::AfxDsp))
-    } else {
-        None
-    }
-}
-
 fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
     if !contains_point(area, point) {
         return None;
+    }
+    if contains_point(routing_button_rect(area), point) {
+        return Some(MouseAction::OpenRoutingPopup);
     }
     let tabs = surface_tab_hit_areas(area);
     if contains_point(tabs[0], point) {
@@ -1063,7 +1318,7 @@ fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
 
 pub fn mixer_strip_viewport_capacity(area: Rect, state: &AppState) -> usize {
     let chunks = root_chunks(area);
-    let page = mixer_page_layout(chunks[2]);
+    let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout(page[0]);
     let mixer = mixer_layout(main[1]);
     let list = mixer_strip_panel_layout(mixer[1], experimental_mix_meter(state).is_some());
@@ -1072,7 +1327,7 @@ pub fn mixer_strip_viewport_capacity(area: Rect, state: &AppState) -> usize {
 
 pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) -> bool {
     let chunks = root_chunks(area);
-    let page = mixer_page_layout(chunks[2]);
+    let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout(page[0]);
     let mixer = mixer_layout(main[1]);
     let list = mixer_strip_panel_layout(mixer[1], experimental_mix_meter(state).is_some());
@@ -2014,12 +2269,13 @@ fn render_status_strip(state: &AppState) -> Line<'static> {
 fn render_hotkeys_popup_text() -> Text<'static> {
     Text::from(vec![
         Line::from("Global"),
-        Line::from("  q quit   ? hotkeys   Esc close popup   Tab / Shift+Tab switch pages"),
+        Line::from("  q quit   ? hotkeys   Esc close popup"),
         Line::from(""),
         Line::from("Mixer Page"),
-        Line::from("  f focus cycle   Left/Right move selection   +/- adjust focused control"),
+        Line::from("  Tab focus cycle   Left/Right move selection   +/- adjust focused control"),
         Line::from("  Outputs: m mute   d dim"),
         Line::from("  Mixer: o solo   a assignment   l link   [ ] pan   1/2 surface"),
+        Line::from("  Routing: click ROUTING in Mixer Surface header, then a opens source picker"),
         Line::from("  Preamp: m phantom   p phase   3 mode"),
         Line::from(""),
         Line::from("Device / Inspector"),
@@ -2481,7 +2737,7 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
 
-    use crate::app::{AppState, FocusArea, MainPage};
+    use crate::app::{AppState, FocusArea};
     use crate::protocol::{
         ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
         OutputState, OutputTarget, PanState, PreampInputState, SampleRate, Surface,
@@ -2547,7 +2803,7 @@ mod tests {
     #[test]
     fn mouse_action_hits_output_hotkeys_button() {
         let area = Rect::new(0, 0, 120, 50);
-        let page = mixer_page_layout(root_chunks(area)[2]);
+        let page = mixer_page_layout(root_chunks(area)[1]);
         let button = output_hotkeys_button_rect(page[1]);
 
         assert_eq!(
@@ -2794,6 +3050,27 @@ mod tests {
     }
 
     #[test]
+    fn afx_page_renders_usb_recording_pairs_from_mixer_assignments() {
+        let mut state = AppState::default();
+        state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
+            Some(MixerAssignment::Preamp(1));
+        state.mixer_channels[MixerSurface::Mix1.index()][1].assignment =
+            Some(MixerAssignment::Preamp(2));
+        for channel in 2..8 {
+            state.mixer_channels[MixerSurface::Mix1.index()][channel].assignment =
+                Some(MixerAssignment::Mute);
+        }
+
+        let rendered = render_afx_routing_text(&state).to_string();
+
+        assert!(rendered.contains("Zen Go USB recordings mirror mixer strip assignments"));
+        assert!(rendered.contains("USB 1/2  Zen Go Recording 1 <- Preamp 1"));
+        assert!(rendered.contains("Zen Go Recording 2 <- Preamp 2"));
+        assert!(rendered.contains("USB 7/8  Zen Go Recording 7 <- Mute"));
+        assert!(rendered.contains("Zen Go Recording 8 <- Mute"));
+    }
+
+    #[test]
     fn titlebar_renders_inspector_hint_on_single_row() {
         let rendered = render_inspector_summary().to_string();
 
@@ -2927,15 +3204,58 @@ mod tests {
     }
 
     #[test]
-    fn mouse_action_selects_afx_page_tab() {
+    fn mouse_action_opens_routing_popup_from_mixer_surface_button() {
         let area = Rect::new(0, 0, 120, 50);
-        let tabs = page_tab_hit_areas(root_chunks(area)[1]);
-        let point = (tabs[1].x + tabs[1].width / 2, tabs[1].y);
+        let page = mixer_page_layout(root_chunks(area)[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let button = routing_button_rect(mixer[0]);
+        let point = (button.x + button.width / 2, button.y);
 
         assert_eq!(
             mouse_action(area, &AppState::default(), point.0, point.1),
-            Some(MouseAction::SelectPage(MainPage::AfxDsp))
+            Some(MouseAction::OpenRoutingPopup)
         );
+    }
+
+    #[test]
+    fn mouse_action_opens_assignment_picker_from_afx_routing_source_chip() {
+        let area = Rect::new(0, 0, 120, 50);
+        let mut state = AppState::default();
+        state.routing_popup_open = true;
+        state.focus = FocusArea::Mixer;
+        state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
+            Some(MixerAssignment::Preamp(1));
+        state.mixer_channels[MixerSurface::Mix1.index()][1].assignment =
+            Some(MixerAssignment::Preamp(2));
+        let row_area = afx_routing_layout(routing_popup_area(area))[4];
+        let rects = afx_routing_row_rects(row_area, &state, 0);
+        let point = (rects[2].x + rects[2].width / 2, rects[2].y);
+
+        assert_eq!(
+            mouse_action(area, &state, point.0, point.1),
+            Some(MouseAction::OpenAssignmentPicker(1))
+        );
+    }
+
+    #[test]
+    fn afx_routing_source_columns_stay_aligned_for_different_label_lengths() {
+        let area = Rect::new(0, 0, 120, 1);
+        let mut state = AppState::default();
+        state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
+            Some(MixerAssignment::Mute);
+        state.mixer_channels[MixerSurface::Mix1.index()][1].assignment =
+            Some(MixerAssignment::Preamp(2));
+        state.mixer_channels[MixerSurface::Mix1.index()][2].assignment =
+            Some(MixerAssignment::ComputerPlay(8));
+        state.mixer_channels[MixerSurface::Mix1.index()][3].assignment =
+            Some(MixerAssignment::Oscillator(1));
+
+        let first = afx_routing_row_rects(area, &state, 0);
+        let second = afx_routing_row_rects(area, &state, 1);
+
+        assert_eq!(first[2].x, second[2].x);
+        assert_eq!(first[4].x, second[4].x);
     }
 
     #[test]
@@ -2965,7 +3285,7 @@ mod tests {
     fn mouse_action_hits_visible_surface_tab_position() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let page = mixer_page_layout(chunks[2]);
+        let page = mixer_page_layout(chunks[1]);
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let tabs = surface_tab_hit_areas(mixer[0]);
@@ -2979,7 +3299,7 @@ mod tests {
     #[test]
     fn mouse_action_hits_visible_output_dim_chip_position() {
         let area = Rect::new(0, 0, 120, 50);
-        let page = mixer_page_layout(root_chunks(area)[2]);
+        let page = mixer_page_layout(root_chunks(area)[1]);
         let list_inner = inner_area(page[1]);
         let row_area = output_card_areas(list_inner)[0];
         let state = AppState::default();
@@ -3000,7 +3320,7 @@ mod tests {
     #[test]
     fn mouse_action_hits_visible_output_mute_chip_position_on_hp1() {
         let area = Rect::new(0, 0, 120, 50);
-        let page = mixer_page_layout(root_chunks(area)[2]);
+        let page = mixer_page_layout(root_chunks(area)[1]);
         let list_inner = inner_area(page[1]);
         let row_area = output_card_areas(list_inner)[1];
         let state = AppState::default();
@@ -3049,7 +3369,7 @@ mod tests {
     fn mouse_action_hits_preamp_gain_plus_button() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let page = mixer_page_layout(chunks[2]);
+        let page = mixer_page_layout(chunks[1]);
         let main = mixer_main_layout(page[0]);
         let cards = preamp_bar_layout(main[0]);
         let buttons = preamp_button_rects(cards[0], AppState::default().preamp.input1);
@@ -3068,7 +3388,7 @@ mod tests {
     fn mouse_action_hits_visible_preamp_mode_chip_position() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let page = mixer_page_layout(chunks[2]);
+        let page = mixer_page_layout(chunks[1]);
         let main = mixer_main_layout(page[0]);
         let cards = preamp_bar_layout(main[0]);
         let state = AppState::default();
@@ -3140,7 +3460,7 @@ mod tests {
     fn mouse_action_hits_mixer_link_button_on_odd_strip() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let page = mixer_page_layout(chunks[2]);
+        let page = mixer_page_layout(chunks[1]);
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
@@ -3158,7 +3478,7 @@ mod tests {
     fn mouse_action_hits_mixer_solo_button() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let page = mixer_page_layout(chunks[2]);
+        let page = mixer_page_layout(chunks[1]);
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
@@ -3176,7 +3496,7 @@ mod tests {
     fn mouse_action_hits_visible_mixer_solo_chip_position() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
-        let page = mixer_page_layout(chunks[2]);
+        let page = mixer_page_layout(chunks[1]);
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
@@ -3195,7 +3515,7 @@ mod tests {
     fn mouse_action_opens_assignment_picker_from_src_button() {
         let area = Rect::new(0, 0, 120, 60);
         let chunks = root_chunks(area);
-        let page = mixer_page_layout(chunks[2]);
+        let page = mixer_page_layout(chunks[1]);
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];

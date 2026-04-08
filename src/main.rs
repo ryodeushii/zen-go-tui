@@ -179,29 +179,12 @@ fn app_loop(
                         Err(error) => Err(error),
                     },
                     AppKeyCode::Tab => {
-                        if !controller.state.raw_view_open
-                            && controller.state.assignment_picker.is_none()
-                            && controller.state.selector_popup.is_none()
-                        {
-                            controller.state.cycle_page(true);
-                        }
-                        Ok(())
-                    }
-                    AppKeyCode::BackTab => {
-                        if !controller.state.raw_view_open
-                            && controller.state.assignment_picker.is_none()
-                            && controller.state.selector_popup.is_none()
-                        {
-                            controller.state.cycle_page(false);
-                        }
-                        Ok(())
-                    }
-                    AppKeyCode::Char('f') => {
                         if controller.state.page == MainPage::Mixer {
                             controller.state.cycle_focus();
                         }
                         Ok(())
                     }
+                    AppKeyCode::BackTab => Ok(()),
                     AppKeyCode::Char('?') => {
                         controller.state.toggle_hotkeys_popup();
                         Ok(())
@@ -297,10 +280,12 @@ fn app_loop(
                     AppKeyCode::Esc
                         if controller.state.assignment_picker.is_some()
                             || controller.state.selector_popup.is_some()
+                            || controller.state.routing_popup_open
                             || controller.state.hotkeys_popup_open =>
                     {
                         controller.state.assignment_picker = None;
                         controller.state.selector_popup = None;
+                        controller.state.routing_popup_open = false;
                         controller.state.popup_selected_index = 0;
                         controller.state.hotkeys_popup_open = false;
                         controller.state.last_message = "Closed popup".to_string();
@@ -701,6 +686,18 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
         ui::MouseAction::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
+        ui::MouseAction::OpenRoutingPopup => {
+            controller.state.routing_popup_open = true;
+            controller.state.focus = FocusArea::Mixer;
+            controller.state.selected_channel = controller.state.selected_channel.min(7);
+            controller.state.last_message =
+                "Routing popup mirrors mixer assignments for USB recording channels 1-8"
+                    .to_string();
+        }
+        ui::MouseAction::CloseRoutingPopup => {
+            controller.state.routing_popup_open = false;
+            controller.state.last_message = "Closed routing popup".to_string();
+        }
         ui::MouseAction::OpenSampleRateSelector => {
             if controller.state.device.clock_source == Some(ClockSource::Internal) {
                 controller.state.popup_selected_index = controller
@@ -1156,6 +1153,25 @@ mod tests {
         assert_eq!(
             controller.state.assignment_picker,
             Some(AssignmentPickerState { strip: 1 })
+        );
+    }
+
+    #[test]
+    fn opening_assignment_picker_from_routing_popup_uses_selected_routing_channel() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        seed_shared_assignments(&mut controller);
+        controller.state.routing_popup_open = true;
+        controller.state.focus = FocusArea::Mixer;
+        controller.state.selected_channel = 5;
+
+        open_mixer_assignment_picker(&mut controller)
+            .expect("open assignment picker from routing popup");
+
+        assert!(transport.take_writes().is_empty());
+        assert_eq!(
+            controller.state.assignment_picker,
+            Some(AssignmentPickerState { strip: 6 })
         );
     }
 

@@ -126,6 +126,7 @@ pub struct AppState {
     pub baseline_raw_81: Option<Vec<u8>>,
     pub assignment_picker: Option<AssignmentPickerState>,
     pub selector_popup: Option<SelectorPopupState>,
+    pub routing_popup_open: bool,
     pub popup_selected_index: usize,
     pub hotkeys_popup_open: bool,
 }
@@ -175,6 +176,7 @@ impl Default for AppState {
             baseline_raw_81: None,
             assignment_picker: None,
             selector_popup: None,
+            routing_popup_open: false,
             popup_selected_index: 0,
             hotkeys_popup_open: false,
         }
@@ -457,12 +459,8 @@ impl AppState {
     }
 
     pub fn cycle_page(&mut self, forward: bool) {
-        self.page = match (self.page, forward) {
-            (MainPage::Mixer, true) => MainPage::AfxDsp,
-            (MainPage::AfxDsp, true) => MainPage::Mixer,
-            (MainPage::Mixer, false) => MainPage::AfxDsp,
-            (MainPage::AfxDsp, false) => MainPage::Mixer,
-        };
+        let _ = forward;
+        self.page = MainPage::Mixer;
     }
 
     pub fn cycle_query_reply_entry(&mut self, forward: bool) {
@@ -2839,19 +2837,19 @@ mod tests {
     }
 
     #[test]
-    fn page_cycle_starts_on_mixer_and_toggles_afx_page() {
+    fn page_cycle_stays_on_mixer() {
         let mut state = AppState::default();
 
         assert_eq!(state.page, MainPage::Mixer);
 
         state.cycle_page(true);
-        assert_eq!(state.page, MainPage::AfxDsp);
+        assert_eq!(state.page, MainPage::Mixer);
 
         state.cycle_page(true);
         assert_eq!(state.page, MainPage::Mixer);
 
         state.cycle_page(false);
-        assert_eq!(state.page, MainPage::AfxDsp);
+        assert_eq!(state.page, MainPage::Mixer);
     }
 
     #[test]
