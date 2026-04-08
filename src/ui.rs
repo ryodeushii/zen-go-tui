@@ -15,6 +15,13 @@ use crate::terminal;
 pub enum MouseAction {
     ToggleRawView,
     SelectPage(MainPage),
+    SelectOutput(usize),
+    AdjustOutputLevel {
+        index: usize,
+        increase: bool,
+    },
+    ToggleOutputDim(usize),
+    ToggleOutputMute(usize),
     SelectRawPacketTab(RawPacketTab),
     SelectQueryReplyEntry(usize),
     SelectSurface(Surface),
@@ -89,6 +96,14 @@ fn mixer_page_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(26), Constraint::Min(40)])
+        .split(area)
+        .to_vec()
+}
+
+fn output_panel_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(8), Constraint::Length(6)])
         .split(area)
         .to_vec()
 }
@@ -363,10 +378,7 @@ fn draw_afx_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(6)])
-        .split(area);
+    let sections = output_panel_layout(area);
 
     let items = state
         .outputs
@@ -613,6 +625,10 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     let workspace = mixer_workspace_layout(main[1]);
     let mixer_sections = mixer_layout(workspace[0]);
 
+    if let Some(action) = output_list_mouse_action(page[0], state, point) {
+        return Some(action);
+    }
+
     if let Some(action) = mixer_tab_mouse_action(mixer_sections[0], point) {
         return Some(action);
     }
@@ -811,6 +827,55 @@ fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Optio
     None
 }
 
+fn output_list_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let layout = output_panel_layout(area);
+    let list_area = layout[0];
+    if !contains_point(list_area, point) {
+        return None;
+    }
+
+    let inner = inner_area(list_area);
+    if point.1 < inner.y {
+        return None;
+    }
+
+    let row = point.1.saturating_sub(inner.y) / output_card_height();
+    let index = row as usize;
+    state.outputs.get(index)?;
+    let card = Rect::new(
+        inner.x,
+        inner.y + row * output_card_height(),
+        inner.width,
+        output_card_height(),
+    );
+    let controls = output_control_rects(card);
+
+    if contains_point(controls[0], point) {
+        return Some(MouseAction::AdjustOutputLevel {
+            index,
+            increase: false,
+        });
+    }
+    if contains_point(controls[1], point) {
+        return Some(MouseAction::AdjustOutputLevel {
+            index,
+            increase: true,
+        });
+    }
+    if contains_point(controls[2], point) {
+        return Some(MouseAction::ToggleOutputDim(index));
+    }
+    if contains_point(controls[3], point) {
+        return Some(MouseAction::ToggleOutputMute(index));
+    }
+
+    Some(MouseAction::SelectOutput(index))
+}
+
 fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
     let y = area.y + 1;
     if has_link {
@@ -818,6 +883,18 @@ fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
     } else {
         inline_chip_rects(area.x, y, &["S", "M", "SRC"])
     }
+}
+
+fn output_card_height() -> u16 {
+    4
+}
+
+fn output_control_rects(area: Rect) -> Vec<Rect> {
+    inline_chip_rects(
+        area.x,
+        area.y + output_card_height() - 1,
+        &["-", "+", "DIM", "MUTE"],
+    )
 }
 
 fn contains_point(area: Rect, point: (u16, u16)) -> bool {
@@ -1041,15 +1118,6 @@ fn truncate_label(label: &str, width: usize) -> String {
         + "~"
 }
 
-fn output_mode_colors(mode: OutputMode) -> (Color, Color, &'static str) {
-    match mode {
-        OutputMode::Normal => (Color::Black, Color::LightGreen, "LIVE"),
-        OutputMode::Mute => (Color::Black, Color::LightRed, "MUTE"),
-        OutputMode::Dim => (Color::Black, Color::Yellow, "DIM"),
-        OutputMode::Unknown(_) => (Color::Black, Color::Gray, "UNK"),
-    }
-}
-
 fn preamp_phantom_label(input: PreampInputState) -> &'static str {
     if matches!(input.mode, PreampMode::Mic) {
         "48V"
@@ -1067,12 +1135,17 @@ fn preamp_phase_label(input: PreampInputState) -> &'static str {
 }
 
 fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
-    let (mode_fg, mode_bg, mode_label) = output_mode_colors(output.mode);
-    let mut header = vec![
-        chip(output.target.label(), Color::Black, Color::LightBlue),
-        Span::raw(" "),
-        chip(mode_label, mode_fg, mode_bg),
-    ];
+    let dim_bg = if output.mode == OutputMode::Dim {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+    let mute_bg = if output.mode == OutputMode::Mute {
+        Color::LightRed
+    } else {
+        Color::DarkGray
+    };
+    let mut header = vec![chip(output.target.label(), Color::Black, Color::LightBlue)];
     if active {
         header.push(Span::raw(" "));
         header.push(chip("ACTIVE", Color::Black, Color::LightGreen));
@@ -1094,6 +1167,15 @@ fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
             Span::styled(format!("raw {:02x}", output.volume), muted_style()),
             Span::raw("  "),
             Span::styled(output.mode.label(), subdued_style()),
+        ]),
+        Line::from(vec![
+            chip("-", Color::Black, Color::Gray),
+            Span::raw(" "),
+            chip("+", Color::Black, Color::Gray),
+            Span::raw(" "),
+            chip("DIM", Color::Black, dim_bg),
+            Span::raw(" "),
+            chip("MUTE", Color::Black, mute_bg),
         ]),
     ])
 }
@@ -1670,9 +1752,12 @@ mod tests {
         let rendered = render_output_card(&output, true).to_string();
 
         assert!(rendered.contains("HP1"));
-        assert!(rendered.contains("MUTE"));
         assert!(rendered.contains("48 dB"));
         assert!(rendered.contains("ACTIVE"));
+        assert!(rendered.contains(" - "));
+        assert!(rendered.contains(" + "));
+        assert!(rendered.contains(" DIM "));
+        assert!(rendered.contains(" MUTE "));
     }
 
     #[test]
@@ -1824,6 +1909,33 @@ mod tests {
         assert_eq!(
             mouse_action(area, &AppState::default(), tabs[1].x + 1, tabs[1].y),
             Some(MouseAction::SelectSurface(Surface::Hp2))
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_visible_output_dim_chip_position() {
+        let area = Rect::new(0, 0, 120, 50);
+        let page = mixer_page_layout(root_chunks(area)[2]);
+        let outputs = output_panel_layout(page[0]);
+        let list_inner = inner_area(outputs[0]);
+        let row_area = Rect::new(
+            list_inner.x,
+            list_inner.y,
+            list_inner.width,
+            output_card_height(),
+        );
+        let state = AppState::default();
+        let line = render_output_card(&state.outputs[0], true);
+        let rendered: String = line.lines[3]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let chip_x = rendered.find(" DIM ").expect("dim chip") as u16;
+
+        assert_eq!(
+            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 3),
+            Some(MouseAction::ToggleOutputDim(0))
         );
     }
 

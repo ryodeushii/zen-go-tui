@@ -566,6 +566,42 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
         ui::MouseAction::SelectPage(page) => controller.state.page = page,
+        ui::MouseAction::SelectOutput(index) => {
+            controller.state.focus = FocusArea::Outputs;
+            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
+        }
+        ui::MouseAction::AdjustOutputLevel { index, increase } => {
+            controller.state.focus = FocusArea::Outputs;
+            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
+            let output = controller.state.outputs[controller.state.selected_output];
+            let next = if increase {
+                output.volume.saturating_sub(1)
+            } else {
+                output.volume.saturating_add(1).min(0x60)
+            };
+            controller.send(Command::SetOutputVolume {
+                target: OutputTarget::from_index(controller.state.selected_output),
+                step: next,
+            })?;
+        }
+        ui::MouseAction::ToggleOutputDim(index) => {
+            controller.state.focus = FocusArea::Outputs;
+            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
+            let output = controller.state.outputs[controller.state.selected_output];
+            controller.send(Command::SetOutputDim {
+                target: OutputTarget::from_index(controller.state.selected_output),
+                enabled: output.mode != OutputMode::Dim,
+            })?;
+        }
+        ui::MouseAction::ToggleOutputMute(index) => {
+            controller.state.focus = FocusArea::Outputs;
+            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
+            let output = controller.state.outputs[controller.state.selected_output];
+            controller.send(Command::SetOutputMute {
+                target: OutputTarget::from_index(controller.state.selected_output),
+                enabled: output.mode != OutputMode::Mute,
+            })?;
+        }
         ui::MouseAction::SelectRawPacketTab(tab) => controller.state.selected_raw_packet = tab,
         ui::MouseAction::SelectQueryReplyEntry(index) => {
             controller.state.selected_query_reply_entry = Some(index)
