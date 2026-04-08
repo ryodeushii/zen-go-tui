@@ -24,6 +24,8 @@ pub enum MouseAction {
     ToggleHotkeysPopup,
     OpenRoutingPopup,
     CloseRoutingPopup,
+    PageMixerStripsLeft,
+    PageMixerStripsRight,
     OpenSampleRateSelector,
     OpenClockSourceSelector,
     SelectPage(MainPage),
@@ -309,6 +311,18 @@ fn routing_button_rect(area: Rect) -> Rect {
         width,
         1,
     )
+}
+
+fn mixer_strip_page_button_rects(area: Rect) -> Vec<Rect> {
+    let labels = ["←", "→"];
+    let total_width = inline_chip_rects(0, 0, &labels)
+        .last()
+        .map(|rect| rect.x + rect.width)
+        .unwrap_or(0);
+    let x = area
+        .x
+        .saturating_add(area.width.saturating_sub(total_width.saturating_add(2)));
+    inline_chip_rects(x, area.y, &labels)
 }
 
 fn inline_chip_rects(x: u16, y: u16, labels: &[&str]) -> Vec<Rect> {
@@ -850,6 +864,29 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ),
         layout[1],
     );
+    let page_buttons = mixer_strip_page_button_rects(layout[1]);
+    let can_page_left = state.mixer_strip_scroll >= 8;
+    let can_page_right = state.mixer_strip_scroll + 8 < total;
+    Paragraph::new(Line::from(vec![chip(
+        "←",
+        Color::Black,
+        if can_page_left {
+            Color::LightBlue
+        } else {
+            Color::DarkGray
+        },
+    )]))
+    .render(page_buttons[0], frame.buffer_mut());
+    Paragraph::new(Line::from(vec![chip(
+        "→",
+        Color::Black,
+        if can_page_right {
+            Color::LightBlue
+        } else {
+            Color::DarkGray
+        },
+    )]))
+    .render(page_buttons[1], frame.buffer_mut());
 
     for (slot, (index, channel)) in state
         .active_mixer_channels()
@@ -1021,6 +1058,9 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     }
 
     if let Some(action) = mixer_tab_mouse_action(mixer_sections[0], point) {
+        return Some(action);
+    }
+    if let Some(action) = mixer_panel_mouse_action(mixer_sections[1], point) {
         return Some(action);
     }
     if let Some(action) = mixer_list_mouse_action(mixer_sections[1], state, point) {
@@ -1239,6 +1279,20 @@ fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> 
     }
 }
 
+fn mixer_panel_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let buttons = mixer_strip_page_button_rects(area);
+    if contains_point(buttons[0], point) {
+        Some(MouseAction::PageMixerStripsLeft)
+    } else if contains_point(buttons[1], point) {
+        Some(MouseAction::PageMixerStripsRight)
+    } else {
+        None
+    }
+}
+
 fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
     if !contains_point(area, point) {
         return None;
@@ -1419,7 +1473,7 @@ fn preamp_slider_mouse_action(
 
 fn preamp_slider_wheel_action(
     area: Rect,
-    state: &AppState,
+    _state: &AppState,
     point: (u16, u16),
     increase: bool,
 ) -> Option<MouseAction> {
@@ -1432,7 +1486,7 @@ fn preamp_slider_wheel_action(
             continue;
         }
         let track = preamp_gain_slider_rect(card);
-        if contains_point(track, point) {
+        if contains_point(wheel_hitbox(track), point) {
             return Some(MouseAction::AdjustPreampGain {
                 input: input as u8,
                 increase,
@@ -1496,7 +1550,7 @@ fn output_list_mouse_action(
 
 fn output_list_slider_mouse_action(
     area: Rect,
-    state: &AppState,
+    _state: &AppState,
     point: (u16, u16),
 ) -> Option<MouseAction> {
     if !contains_point(area, point) {
@@ -1512,13 +1566,12 @@ fn output_list_slider_mouse_action(
         .into_iter()
         .enumerate()
         .find(|(_, card)| contains_point(*card, point))?;
-    state.outputs.get(index)?;
     output_card_slider_mouse_action(card, index, point)
 }
 
 fn output_list_slider_wheel_action(
     area: Rect,
-    state: &AppState,
+    _state: &AppState,
     point: (u16, u16),
     increase: bool,
 ) -> Option<MouseAction> {
@@ -1535,9 +1588,9 @@ fn output_list_slider_wheel_action(
         .into_iter()
         .enumerate()
         .find(|(_, card)| contains_point(*card, point))?;
-    state.outputs.get(index)?;
     let track = output_level_slider_rect(card);
-    contains_point(track, point).then_some(MouseAction::AdjustOutputLevel { index, increase })
+    contains_point(wheel_hitbox(track), point)
+        .then_some(MouseAction::AdjustOutputLevel { index, increase })
 }
 
 fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
@@ -1623,6 +1676,24 @@ fn contains_point(area: Rect, point: (u16, u16)) -> bool {
         && point.0 < area.x.saturating_add(area.width)
         && point.1 >= area.y
         && point.1 < area.y.saturating_add(area.height)
+}
+
+fn wheel_hitbox(area: Rect) -> Rect {
+    const MIN_WHEEL_HIT_WIDTH: u16 = 5;
+
+    if area.width == 0 || area.width >= MIN_WHEEL_HIT_WIDTH {
+        return area;
+    }
+
+    let extra = MIN_WHEEL_HIT_WIDTH - area.width;
+    let left = extra / 2;
+    let right = extra - left;
+    Rect::new(
+        area.x.saturating_sub(left),
+        area.y,
+        area.width.saturating_add(left).saturating_add(right),
+        area.height,
+    )
 }
 
 fn slider_ratio_for_horizontal_point(area: Rect, point: (u16, u16)) -> Option<f64> {
@@ -1810,7 +1881,7 @@ fn mixer_strip_slider_wheel_action(
     increase: bool,
 ) -> Option<MouseAction> {
     let pan = mixer_pan_slider_rect(area);
-    if contains_point(pan, point) {
+    if contains_point(wheel_hitbox(pan), point) {
         return Some(MouseAction::AdjustMixerPan {
             index,
             right: increase,
@@ -1818,7 +1889,8 @@ fn mixer_strip_slider_wheel_action(
     }
 
     let level = mixer_level_slider_rect(area);
-    contains_point(level, point).then_some(MouseAction::AdjustMixerLevel { index, increase })
+    contains_point(wheel_hitbox(level), point)
+        .then_some(MouseAction::AdjustMixerLevel { index, increase })
 }
 
 const SIGNAL_LABEL_WIDTH: u16 = 12;
@@ -3654,6 +3726,44 @@ mod tests {
     }
 
     #[test]
+    fn mouse_action_pages_mixer_strips_left_from_panel_button() {
+        let area = Rect::new(0, 0, 120, 50);
+        let page = mixer_page_layout(root_chunks(area)[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let button = mixer_strip_page_button_rects(mixer[1])[0];
+
+        assert_eq!(
+            mouse_action(
+                area,
+                &AppState::default(),
+                button.x + button.width / 2,
+                button.y
+            ),
+            Some(MouseAction::PageMixerStripsLeft)
+        );
+    }
+
+    #[test]
+    fn mouse_action_pages_mixer_strips_right_from_panel_button() {
+        let area = Rect::new(0, 0, 120, 50);
+        let page = mixer_page_layout(root_chunks(area)[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let button = mixer_strip_page_button_rects(mixer[1])[1];
+
+        assert_eq!(
+            mouse_action(
+                area,
+                &AppState::default(),
+                button.x + button.width / 2,
+                button.y
+            ),
+            Some(MouseAction::PageMixerStripsRight)
+        );
+    }
+
+    #[test]
     fn mouse_action_opens_assignment_picker_from_afx_routing_source_chip() {
         let area = Rect::new(0, 0, 120, 50);
         let mut state = AppState::default();
@@ -3892,6 +4002,32 @@ mod tests {
 
         assert_eq!(
             slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
+            Some(MouseAction::AdjustMixerLevel {
+                index: 0,
+                increase: true,
+            })
+        );
+    }
+
+    #[test]
+    fn slider_wheel_action_uses_wider_hitbox_for_thin_mixer_level_slider() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let page = mixer_page_layout(chunks[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
+        let card = mixer_strip_card_area(list_inner, 0);
+        let track = mixer_level_slider_rect(card);
+
+        assert_eq!(
+            slider_wheel_action(
+                area,
+                &AppState::default(),
+                track.x.saturating_sub(1),
+                track.y,
+                true
+            ),
             Some(MouseAction::AdjustMixerLevel {
                 index: 0,
                 increase: true,

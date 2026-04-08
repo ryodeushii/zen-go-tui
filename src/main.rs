@@ -680,19 +680,6 @@ fn handle_mouse_event(
                 apply_mouse_action(controller, action)?;
                 return Ok(());
             }
-
-            if controller.state.page == MainPage::Mixer
-                && !controller.state.raw_view_open
-                && ui::mixer_strip_panel_contains(area, &controller.state, mouse.column, mouse.row)
-            {
-                let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
-                let delta = match mouse.kind {
-                    AppMouseEventKind::ScrollLeft | AppMouseEventKind::ScrollUp => -1,
-                    AppMouseEventKind::ScrollRight | AppMouseEventKind::ScrollDown => 1,
-                    _ => 0,
-                };
-                controller.state.scroll_mixer_strip_viewport(delta, visible);
-            }
         }
         _ => {}
     }
@@ -715,6 +702,14 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         ui::MouseAction::CloseRoutingPopup => {
             controller.state.routing_popup_open = false;
             controller.state.last_message = "Closed routing popup".to_string();
+        }
+        ui::MouseAction::PageMixerStripsLeft => {
+            controller.state.focus = FocusArea::Mixer;
+            controller.state.page_mixer_strip_viewport(false);
+        }
+        ui::MouseAction::PageMixerStripsRight => {
+            controller.state.focus = FocusArea::Mixer;
+            controller.state.page_mixer_strip_viewport(true);
         }
         ui::MouseAction::OpenSampleRateSelector => {
             if controller.state.device.clock_source == Some(ClockSource::Internal) {
@@ -1588,6 +1583,39 @@ mod tests {
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x47, 0x00, 0x2f]);
+    }
+
+    #[test]
+    fn page_mixer_strips_right_moves_to_second_bank() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+
+        apply_mouse_action(&mut controller, ui::MouseAction::PageMixerStripsRight)
+            .expect("page strips right");
+
+        assert_eq!(controller.state.mixer_strip_scroll, 8);
+    }
+
+    #[test]
+    fn handle_mouse_event_scroll_in_strip_panel_does_not_scroll_viewport() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.mixer_strip_scroll = 8;
+        let area = ratatui::layout::Rect::new(0, 0, 120, 50);
+
+        handle_mouse_event(
+            area,
+            &mut controller,
+            AppMouseEvent {
+                kind: AppMouseEventKind::ScrollDown,
+                column: 60,
+                row: 18,
+                modifiers: Default::default(),
+            },
+        )
+        .expect("scroll strip panel");
+
+        assert_eq!(controller.state.mixer_strip_scroll, 8);
     }
 
     #[test]

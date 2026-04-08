@@ -131,6 +131,8 @@ pub struct AppState {
     pub hotkeys_popup_open: bool,
 }
 
+const MIXER_STRIP_PAGE_SIZE: usize = 8;
+
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -235,6 +237,30 @@ impl AppState {
             self.mixer_strip_scroll
                 .saturating_sub(delta.saturating_abs() as usize)
         };
+    }
+
+    pub fn page_mixer_strip_viewport(&mut self, right: bool) {
+        let total = self.active_mixer_channels().len();
+        let max_page_start = total
+            .saturating_sub(1)
+            .checked_div(MIXER_STRIP_PAGE_SIZE)
+            .unwrap_or(0)
+            * MIXER_STRIP_PAGE_SIZE;
+
+        self.mixer_strip_scroll = if right {
+            self.mixer_strip_scroll
+                .saturating_add(MIXER_STRIP_PAGE_SIZE)
+                .min(max_page_start)
+        } else {
+            self.mixer_strip_scroll
+                .saturating_sub(MIXER_STRIP_PAGE_SIZE)
+        };
+
+        if self.selected_channel < self.mixer_strip_scroll
+            || self.selected_channel >= self.mixer_strip_scroll + MIXER_STRIP_PAGE_SIZE
+        {
+            self.selected_channel = self.mixer_strip_scroll.min(total.saturating_sub(1));
+        }
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Snapshot73) {
@@ -2870,6 +2896,20 @@ mod tests {
         assert_eq!(state.mixer_strip_scroll, 11);
 
         state.scroll_mixer_strip_viewport(-99, 5);
+        assert_eq!(state.mixer_strip_scroll, 0);
+    }
+
+    #[test]
+    fn mixer_strip_viewport_paging_moves_between_eight_strip_banks() {
+        let mut state = AppState::default();
+
+        state.page_mixer_strip_viewport(true);
+        assert_eq!(state.mixer_strip_scroll, 8);
+
+        state.page_mixer_strip_viewport(true);
+        assert_eq!(state.mixer_strip_scroll, 8);
+
+        state.page_mixer_strip_viewport(false);
         assert_eq!(state.mixer_strip_scroll, 0);
     }
 }
