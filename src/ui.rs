@@ -4,9 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{
-    Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph, Widget, Wrap,
-};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Widget, Wrap};
 use ratatui::Frame;
 use tui_slider::{Slider, SliderOrientation, SliderState};
 
@@ -943,6 +941,8 @@ fn contains_point(area: Rect, point: (u16, u16)) -> bool {
         && point.1 < area.y.saturating_add(area.height)
 }
 
+const SIGNAL_LABEL_WIDTH: u16 = 12;
+
 fn slider_state(ratio: Option<f64>) -> SliderState {
     SliderState::new(ratio.unwrap_or(0.0).clamp(0.0, 1.0) * 100.0, 0.0, 100.0)
 }
@@ -980,6 +980,17 @@ fn signal_slider_label(prefix: &str, value: Option<String>) -> String {
         .unwrap_or_else(|| prefix.to_string())
 }
 
+fn format_meter_value_label(value: Option<i16>) -> String {
+    let mapped = value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-∞".to_string());
+    format!("{:>3} dB", mapped)
+}
+
+fn meter_slider_label(prefix: &str, value: Option<i16>) -> String {
+    format!("{prefix} {}", format_meter_value_label(value))
+}
+
 fn render_labeled_slider(
     area: Rect,
     buffer: &mut Buffer,
@@ -991,10 +1002,7 @@ fn render_labeled_slider(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let label_width = (label.chars().count() as u16 + 1)
-        .min(12)
-        .min(area.width.saturating_sub(1))
-        .max(1);
+    let label_width = SIGNAL_LABEL_WIDTH.min(area.width.saturating_sub(1)).max(1);
     let sections = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(label_width), Constraint::Min(1)])
@@ -1142,12 +1150,7 @@ fn render_preamp_visual_widget(
     render_stacked_signal_rows(
         rows[1],
         buffer,
-        &signal_slider_label(
-            "OBS",
-            input
-                .observed_meter_db()
-                .map(|value| format!("{} dB", value)),
-        ),
+        &meter_slider_label("OBS", input.observed_meter_db()),
         input.observed_meter_ratio(),
         &signal_slider_label("GAIN", Some(input.gain_db_label())),
         Some(input.gain_ratio()),
@@ -1280,10 +1283,7 @@ fn render_mixer_strip_widget(
     render_stacked_signal_rows(
         slider_area,
         buffer,
-        &signal_slider_label(
-            "MTR",
-            channel.meter_db().map(|value| format!("{} dB", value)),
-        ),
+        &meter_slider_label("MTR", channel.meter_db()),
         channel.meter_ratio(),
         &signal_slider_label(
             "LVL",
@@ -1940,10 +1940,11 @@ fn render_experimental_pair_state_line(state: &AppState) -> String {
 
 fn render_mix_meter(raw: u8) -> String {
     let bar = render_symbol_bar(meter_ratio(raw), 8, '█', '░');
-    match meter_display_db(raw) {
-        Some(db) => format!("{} {} dB", bar, db),
-        None => bar,
-    }
+    format!(
+        "{} {}",
+        bar,
+        format_meter_value_label(meter_display_db(raw))
+    )
 }
 
 #[cfg(test)]
@@ -1999,53 +2000,6 @@ fn render_mixer_strip_line(
             .unwrap_or("unknown"),
         if selected { "←" } else { "" }
     )
-}
-
-#[cfg(test)]
-fn render_preamp_gauge<'a>(title: &'a str, input: PreampInputState, focused: bool) -> Gauge<'a> {
-    let phase_on = input.mode_raw & 0x40 != 0;
-    let phantom = if matches!(input.mode, PreampMode::Mic) {
-        if input.phantom_on {
-            "48V"
-        } else {
-            "48v off"
-        }
-    } else {
-        "n/a"
-    };
-
-    let block = if input.phantom_on {
-        warning_section_block(title, focused)
-    } else {
-        section_block(title, focused)
-    };
-
-    Gauge::default()
-        .block(block)
-        .gauge_style(
-            Style::default()
-                .fg(style_for_preamp_mode(input.mode))
-                .bg(Color::Black)
-                .add_modifier(Modifier::BOLD),
-        )
-        .label(format!(
-            "GAIN {}  {}  48V:{}  PH:{}  {:02x}",
-            input.gain_db_label(),
-            input.mode.label(),
-            phantom,
-            if phase_on { "inv" } else { "norm" },
-            input.gain_raw,
-        ))
-        .ratio(input.gain_ratio())
-}
-
-#[cfg(test)]
-fn render_preamp_observed_meter<'a>(input: PreampInputState) -> LineGauge<'a> {
-    LineGauge::default()
-        .filled_style(Style::default().fg(Color::LightCyan))
-        .unfilled_style(Style::default().fg(Color::DarkGray))
-        .label(observed_meter_label(input))
-        .ratio(input.observed_meter_ratio().unwrap_or(0.0))
 }
 
 #[cfg(test)]
@@ -2260,6 +2214,16 @@ mod tests {
     }
 
     #[test]
+    fn meter_value_labels_reserve_width_and_use_negative_infinity() {
+        assert_eq!(format_meter_value_label(Some(0)), "  0 dB");
+        assert_eq!(format_meter_value_label(Some(-48)), "-48 dB");
+        assert_eq!(format_meter_value_label(None), " -∞ dB");
+        assert_eq!(format_meter_value_label(Some(0)).chars().count(), 6);
+        assert_eq!(format_meter_value_label(Some(-48)).chars().count(), 6);
+        assert_eq!(format_meter_value_label(None).chars().count(), 6);
+    }
+
+    #[test]
     fn mixer_strip_widget_stacks_meter_and_level_in_one_signal_area() {
         let mut state = AppState::default();
         state.focus = FocusArea::Mixer;
@@ -2302,6 +2266,21 @@ mod tests {
         assert!(rendered.contains("█"));
         assert!(rendered.contains("─"));
         assert!(rendered.contains("●"));
+    }
+
+    #[test]
+    fn mixer_strip_widget_uses_reserved_meter_width_for_silence() {
+        let mut state = AppState::default();
+        state.focus = FocusArea::Mixer;
+        state.selected_channel = 0;
+        state.mixer_channels[0][0].level = Some(0x00);
+        state.mixer_channels[0][0].meter = Some(0x60);
+
+        let rendered = render_buffer(Rect::new(0, 0, 72, mixer_strip_height()), |area, buffer| {
+            render_mixer_strip_widget(area, buffer, &state, 0, &state.mixer_channels[0][0]);
+        });
+
+        assert!(rendered.contains("MTR  -∞ dB"));
     }
 
     #[test]
@@ -2932,7 +2911,7 @@ mod tests {
 
         assert!(line.contains("MIX 1"));
         assert!(line.contains("L ███████░ -10 dB"));
-        assert!(line.contains("R ███████░ -5 dB"));
+        assert!(line.contains("R ███████░  -5 dB"));
     }
 
     #[test]
@@ -2951,8 +2930,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 2"));
-        assert!(line.contains("L ████████ 0 dB"));
-        assert!(line.contains("R ███████░ -6 dB"));
+        assert!(line.contains("L ████████   0 dB"));
+        assert!(line.contains("R ███████░  -6 dB"));
     }
 
     #[test]
@@ -2972,8 +2951,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 2"));
-        assert!(line.contains("L ░░░░░░░░"));
-        assert!(line.contains("R ░░░░░░░░"));
+        assert!(line.contains("L ░░░░░░░░  -∞ dB"));
+        assert!(line.contains("R ░░░░░░░░  -∞ dB"));
     }
 
     #[test]
