@@ -153,6 +153,17 @@ fn app_loop(
                     continue;
                 }
 
+                if controller.state.hotkeys_popup_open {
+                    match key.code {
+                        AppKeyCode::Char('q') => break,
+                        AppKeyCode::Char('?') | AppKeyCode::Esc => {
+                            controller.state.toggle_hotkeys_popup();
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 let result = match key.code {
                     AppKeyCode::Char('q') => break,
                     AppKeyCode::Char('r') => {
@@ -192,8 +203,7 @@ fn app_loop(
                         Ok(())
                     }
                     AppKeyCode::Char('?') => {
-                        controller.state.last_message =
-                            "Tab/Shift+Tab switch pages. f cycles mixer focus. Outputs: +/- m d. Mixer: +/- m o [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ tabs, Query75 ←/→ history, b/x baseline. R sends the captured 0x74 refresh sweep.".to_string();
+                        controller.state.toggle_hotkeys_popup();
                         Ok(())
                     }
                     AppKeyCode::Left if controller.state.raw_view_open => {
@@ -256,11 +266,13 @@ fn app_loop(
                     }
                     AppKeyCode::Esc
                         if controller.state.assignment_picker.is_some()
-                            || controller.state.selector_popup.is_some() =>
+                            || controller.state.selector_popup.is_some()
+                            || controller.state.hotkeys_popup_open =>
                     {
                         controller.state.assignment_picker = None;
                         controller.state.selector_popup = None;
-                        controller.state.last_message = "Closed assignment picker".to_string();
+                        controller.state.hotkeys_popup_open = false;
+                        controller.state.last_message = "Closed popup".to_string();
                         Ok(())
                     }
                     _ => Ok(()),
@@ -571,6 +583,7 @@ fn handle_mouse_event(
 fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> Result<()> {
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
+        ui::MouseAction::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
         ui::MouseAction::OpenSampleRateSelector => {
             if controller.state.device.clock_source == Some(ClockSource::Internal) {
                 controller.state.selector_popup = Some(SelectorPopupState {
@@ -1053,6 +1066,20 @@ mod tests {
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x48, 0x01, 0x01]);
+    }
+
+    #[test]
+    fn mouse_hotkeys_toggle_flips_popup_state() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+
+        apply_mouse_action(&mut controller, ui::MouseAction::ToggleHotkeysPopup)
+            .expect("open hotkeys");
+        assert!(controller.state.hotkeys_popup_open);
+
+        apply_mouse_action(&mut controller, ui::MouseAction::ToggleHotkeysPopup)
+            .expect("close hotkeys");
+        assert!(!controller.state.hotkeys_popup_open);
     }
 
     #[test]

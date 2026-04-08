@@ -125,6 +125,7 @@ pub struct AppState {
     pub baseline_raw_81: Option<Vec<u8>>,
     pub assignment_picker: Option<AssignmentPickerState>,
     pub selector_popup: Option<SelectorPopupState>,
+    pub hotkeys_popup_open: bool,
 }
 
 impl Default for AppState {
@@ -171,6 +172,7 @@ impl Default for AppState {
             baseline_raw_81: None,
             assignment_picker: None,
             selector_popup: None,
+            hotkeys_popup_open: false,
         }
     }
 }
@@ -390,6 +392,10 @@ impl AppState {
 
     pub fn toggle_raw_view(&mut self) {
         self.raw_view_open = !self.raw_view_open;
+    }
+
+    pub fn toggle_hotkeys_popup(&mut self) {
+        self.hotkeys_popup_open = !self.hotkeys_popup_open;
     }
 
     pub fn cycle_raw_packet(&mut self, forward: bool) {

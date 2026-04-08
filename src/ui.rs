@@ -21,6 +21,7 @@ use crate::terminal;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     ToggleRawView,
+    ToggleHotkeysPopup,
     OpenSampleRateSelector,
     OpenClockSourceSelector,
     SelectPage(MainPage),
@@ -65,6 +66,7 @@ pub enum MouseAction {
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     if state.raw_view_open {
         draw_raw_page(frame, frame.area(), state);
+        draw_hotkeys_popup(frame, frame.area(), state);
         return;
     }
 
@@ -76,9 +78,9 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
         MainPage::Mixer => draw_mixer_page(frame, chunks[2], state),
         MainPage::AfxDsp => draw_afx_page(frame, chunks[2], state),
     }
-    draw_footer(frame, chunks[3], state);
     draw_assignment_picker(frame, frame.area(), state);
     draw_selector_popup(frame, frame.area(), state);
+    draw_hotkeys_popup(frame, frame.area(), state);
 }
 
 fn root_chunks(area: Rect) -> Vec<Rect> {
@@ -87,8 +89,7 @@ fn root_chunks(area: Rect) -> Vec<Rect> {
         .constraints([
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Min(14),
-            Constraint::Length(3),
+            Constraint::Min(17),
         ])
         .split(area)
         .to_vec()
@@ -147,14 +148,6 @@ fn mixer_page_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(14), Constraint::Length(8)])
-        .split(area)
-        .to_vec()
-}
-
-fn output_panel_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(40), Constraint::Length(18)])
         .split(area)
         .to_vec()
 }
@@ -245,6 +238,17 @@ fn inline_chip_rects(x: u16, y: u16, labels: &[&str]) -> Vec<Rect> {
 fn assignment_picker_area(area: Rect) -> Rect {
     let width = area.width.min(42).max(28);
     let height = area.height.min(22).max(8);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn hotkeys_popup_area(area: Rect) -> Rect {
+    let width = area.width.min(86).max(54);
+    let height = area.height.min(16).max(10);
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -377,16 +381,15 @@ fn draw_afx_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let sections = output_panel_layout(area);
     frame.render_widget(
         panel_block(
             "Outputs",
             Color::Rgb(70, 120, 90),
             state.focus == FocusArea::Outputs,
         ),
-        sections[0],
+        area,
     );
-    let inner = inner_area(sections[0]);
+    let inner = inner_area(area);
     for (index, (output, card)) in state
         .outputs
         .iter()
@@ -400,31 +403,16 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state.focus == FocusArea::Outputs && state.selected_output == index,
         );
     }
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec![
-                chip("f", Color::Black, Color::LightGreen),
-                Span::raw(" focus mixer"),
-            ]),
-            Line::from(vec![
-                chip("+/-", Color::Black, Color::Yellow),
-                Span::raw(" output level"),
-            ]),
-            Line::from(vec![
-                chip("m", Color::Black, Color::LightRed),
-                Span::raw(" mute   "),
-                chip("d", Color::Black, Color::Yellow),
-                Span::raw(" dim"),
-            ]),
-            Line::from(vec![
-                chip("1/2", Color::Black, Color::LightBlue),
-                Span::raw(" surface"),
-            ]),
-        ])
-        .block(panel_block("Keys", Color::DarkGray, false))
-        .wrap(Wrap { trim: false }),
-        sections[1],
-    );
+    let help_button = output_hotkeys_button_rect(area);
+    if help_button.height > 0 {
+        Paragraph::new(Line::from(chip(
+            "? HOTKEYS",
+            Color::Black,
+            Color::LightYellow,
+        )))
+        .alignment(Alignment::Right)
+        .render(help_button, frame.buffer_mut());
+    }
 }
 
 fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -519,12 +507,6 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     }
 }
 
-fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let footer = Paragraph::new(render_footer_text(state))
-        .block(Block::default().borders(Borders::ALL).title("Help"));
-    frame.render_widget(footer, area);
-}
-
 fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let Some(picker) = state.assignment_picker else {
         return;
@@ -586,9 +568,28 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     );
 }
 
+fn draw_hotkeys_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if !state.hotkeys_popup_open {
+        return;
+    }
+
+    let popup = hotkeys_popup_area(area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(render_hotkeys_popup_text())
+            .block(panel_block("Hotkeys", Color::Yellow, true))
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
 pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<MouseAction> {
     let point = (x, y);
     let chunks = root_chunks(area);
+
+    if state.hotkeys_popup_open {
+        return Some(MouseAction::ToggleHotkeysPopup);
+    }
 
     if let Some(action) = device_header_mouse_action(titlebar_layout(chunks[0])[0], state, point) {
         return Some(action);
@@ -883,13 +884,15 @@ fn output_list_mouse_action(
     state: &AppState,
     point: (u16, u16),
 ) -> Option<MouseAction> {
-    let layout = output_panel_layout(area);
-    let list_area = layout[0];
-    if !contains_point(list_area, point) {
+    if !contains_point(area, point) {
         return None;
     }
 
-    let inner = inner_area(list_area);
+    if contains_point(output_hotkeys_button_rect(area), point) {
+        return Some(MouseAction::ToggleHotkeysPopup);
+    }
+
+    let inner = inner_area(area);
     if point.1 < inner.y {
         return None;
     }
@@ -946,6 +949,22 @@ fn output_card_areas(area: Rect) -> Vec<Rect> {
         ])
         .split(Rect::new(area.x, area.y, area.width, output_card_height()))
         .to_vec()
+}
+
+fn output_hotkeys_button_rect(area: Rect) -> Rect {
+    let inner = inner_area(area);
+    let y = inner.y.saturating_add(output_card_height());
+    if inner.height <= output_card_height() {
+        return Rect::new(inner.x, y, 0, 0);
+    }
+
+    let width = chip_width("? HOTKEYS");
+    Rect::new(
+        inner.x + inner.width.saturating_sub(width),
+        y,
+        width.min(inner.width),
+        1,
+    )
 }
 
 fn mixer_strip_height() -> u16 {
@@ -1432,12 +1451,6 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             layout[2],
         );
     }
-
-    frame.render_widget(
-        Paragraph::new(render_footer_text(state))
-            .block(Block::default().borders(Borders::ALL).title("Help")),
-        layout[3],
-    );
 }
 
 fn section_block(title: &str, focused: bool) -> Block<'_> {
@@ -1706,6 +1719,28 @@ fn render_status_strip(state: &AppState) -> Line<'static> {
     ))
 }
 
+fn render_hotkeys_popup_text() -> Text<'static> {
+    Text::from(vec![
+        Line::from("Global"),
+        Line::from("  q quit   ? hotkeys   Esc close popup   Tab / Shift+Tab switch pages"),
+        Line::from(""),
+        Line::from("Mixer Page"),
+        Line::from("  f focus cycle   Left/Right move selection   +/- adjust focused control"),
+        Line::from("  Outputs: m mute   d dim"),
+        Line::from("  Mixer: o solo   a assignment   l link   [ ] pan   1/2 surface"),
+        Line::from("  Preamp: m phantom   p phase   3 mode"),
+        Line::from(""),
+        Line::from("Device / Inspector"),
+        Line::from("  s sample rate   c clock source   r raw inspector   R refresh queries"),
+        Line::from("  Raw view: Left/Right tabs or Query75 history   b capture baseline   x clear"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Click ? HOTKEYS or press ? again to close.",
+            muted_style(),
+        )),
+    ])
+}
+
 const MIX_METER_YELLOW_START_RATIO: f64 = 0.8;
 const MIX_METER_RED_START_RATIO: f64 = 0.95;
 const MIX_METER_CHANNEL_LABEL_WIDTH: u16 = 2;
@@ -1804,10 +1839,6 @@ fn experimental_mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
         )),
         _ => None,
     }
-}
-
-pub fn render_footer_text(_state: &AppState) -> String {
-    "Tab page | f focus | mouse: raw button, page tabs, preamp buttons, mixer mute/solo/link/src | r raw view | R refresh queries | +/- adjust | m mute/phantom | o solo | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
 
 fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
@@ -2284,27 +2315,6 @@ mod tests {
     }
 
     #[test]
-    fn footer_contains_keybindings() {
-        let mut state = AppState::default();
-        state.device.sample_rate = Some(SampleRate::Hz48000);
-        state.device.clock_source = Some(ClockSource::Internal);
-        state.outputs = [
-            OutputState::new(OutputTarget::Monitor, 0x40, OutputMode::Normal),
-            OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Mute),
-            OutputState::new(OutputTarget::Hp2, 0x20, OutputMode::Dim),
-        ];
-        state.surface = Surface::MonitorHp1;
-
-        let footer = render_footer_text(&state);
-        assert!(footer.contains("Tab"));
-        assert!(footer.contains("m mute"));
-        assert!(footer.contains("o solo"));
-        assert!(footer.contains("d dim"));
-        assert!(footer.contains("0x75/0x81"));
-        assert!(footer.contains("q quit"));
-    }
-
-    #[test]
     fn output_card_rendering_surfaces_level_mode_and_focus() {
         let output = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Mute);
 
@@ -2334,6 +2344,28 @@ mod tests {
         assert_eq!(areas[1].y, areas[2].y);
         assert!(areas[0].x < areas[1].x);
         assert!(areas[1].x < areas[2].x);
+    }
+
+    #[test]
+    fn hotkeys_popup_text_lists_core_shortcuts() {
+        let rendered = render_hotkeys_popup_text().to_string();
+
+        assert!(rendered.contains("Global"));
+        assert!(rendered.contains("? hotkeys"));
+        assert!(rendered.contains("Outputs: m mute   d dim"));
+        assert!(rendered.contains("r raw inspector"));
+    }
+
+    #[test]
+    fn mouse_action_hits_output_hotkeys_button() {
+        let area = Rect::new(0, 0, 120, 50);
+        let page = mixer_page_layout(root_chunks(area)[2]);
+        let button = output_hotkeys_button_rect(page[1]);
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), button.x + 1, button.y),
+            Some(MouseAction::ToggleHotkeysPopup)
+        );
     }
 
     #[test]
@@ -2622,19 +2654,6 @@ mod tests {
     }
 
     #[test]
-    fn footer_mentions_assignment_pan_and_link_controls() {
-        let footer = render_footer_text(&AppState::default());
-
-        assert!(footer.contains("mouse:"));
-        assert!(footer.contains("Tab page"));
-        assert!(footer.contains("r raw view"));
-        assert!(footer.contains("a assign"));
-        assert!(footer.contains("[ ] pan"));
-        assert!(footer.contains("l link"));
-        assert!(footer.contains("Raw shows 0x74/0x73/0x83/0x75/0x81"));
-    }
-
-    #[test]
     fn query_reply_panel_includes_recent_reply_log() {
         let mut state = AppState::default();
         state.recent_query_reply_entries = vec![
@@ -2755,8 +2774,7 @@ mod tests {
     fn mouse_action_hits_visible_output_dim_chip_position() {
         let area = Rect::new(0, 0, 120, 50);
         let page = mixer_page_layout(root_chunks(area)[2]);
-        let outputs = output_panel_layout(page[1]);
-        let list_inner = inner_area(outputs[0]);
+        let list_inner = inner_area(page[1]);
         let row_area = output_card_areas(list_inner)[0];
         let state = AppState::default();
         let line = render_output_card(&state.outputs[0], true);
@@ -2777,8 +2795,7 @@ mod tests {
     fn mouse_action_hits_visible_output_mute_chip_position_on_hp1() {
         let area = Rect::new(0, 0, 120, 50);
         let page = mixer_page_layout(root_chunks(area)[2]);
-        let outputs = output_panel_layout(page[1]);
-        let list_inner = inner_area(outputs[0]);
+        let list_inner = inner_area(page[1]);
         let row_area = output_card_areas(list_inner)[1];
         let state = AppState::default();
         let line = render_output_card(&state.outputs[1], false);
