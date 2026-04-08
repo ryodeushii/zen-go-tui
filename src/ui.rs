@@ -175,20 +175,28 @@ fn preamp_bar_layout(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
-fn mixer_workspace_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(4)])
-        .split(area)
-        .to_vec()
-}
-
 fn mixer_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(9)])
         .split(area)
         .to_vec()
+}
+
+fn mixer_strip_panel_layout(area: Rect, with_mix_meter: bool) -> Vec<Rect> {
+    let inner = inner_area(area);
+    if with_mix_meter && inner.height >= 3 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .split(inner)
+            .to_vec()
+    } else {
+        vec![
+            inner,
+            Rect::new(inner.x, inner.y + inner.height, inner.width, 0),
+        ]
+    }
 }
 
 fn preamp_card_inner_layout(area: Rect) -> Vec<Rect> {
@@ -338,9 +346,7 @@ fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let main = mixer_main_layout(sections[0]);
     draw_preamp_bar(frame, main[0], state);
 
-    let workspace = mixer_workspace_layout(main[1]);
-    draw_mixer_main(frame, workspace[0], state);
-    draw_status_strip(frame, workspace[1], state);
+    draw_mixer_main(frame, main[1], state);
     draw_output_panel(frame, sections[1], state);
 }
 
@@ -487,7 +493,8 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ),
         layout[1],
     );
-    let inner = inner_area(layout[1]);
+    let content = mixer_strip_panel_layout(layout[1], experimental_mix_meter(state).is_some());
+    let inner = content[0];
     for (index, channel) in state.active_mixer_channels().iter().enumerate() {
         let y = inner.y + index as u16 * mixer_strip_height();
         if y + mixer_strip_height() > inner.y + inner.height {
@@ -501,17 +508,13 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             channel,
         );
     }
-}
 
-fn draw_status_strip(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    frame.render_widget(panel_block("Mix", Color::DarkGray, false), area);
-    let inner = inner_area(area);
-    if let Some((label, left_raw, right_raw)) = experimental_mix_meter(state) {
-        render_mix_meter_widget(inner, frame.buffer_mut(), label, left_raw, right_raw);
-    } else {
+    if let Some((_, left_raw, right_raw)) = experimental_mix_meter(state) {
+        render_mix_meter_widget(content[1], frame.buffer_mut(), left_raw, right_raw);
+    } else if content[1].height > 0 {
         frame.render_widget(
             Paragraph::new(render_status_strip(state)).wrap(Wrap { trim: false }),
-            inner,
+            content[1],
         );
     }
 }
@@ -617,8 +620,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
 
     let page = mixer_page_layout(chunks[2]);
     let main = mixer_main_layout(page[0]);
-    let workspace = mixer_workspace_layout(main[1]);
-    let mixer_sections = mixer_layout(workspace[0]);
+    let mixer_sections = mixer_layout(main[1]);
 
     if let Some(action) = output_list_mouse_action(page[1], state, point) {
         return Some(action);
@@ -793,7 +795,10 @@ fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> O
     if !contains_point(area, point) {
         return None;
     }
-    let inner = inner_area(area);
+    let inner = mixer_strip_panel_layout(area, experimental_mix_meter(state).is_some())[0];
+    if !contains_point(inner, point) {
+        return None;
+    }
     if point.1 < inner.y {
         return None;
     }
@@ -1709,69 +1714,28 @@ fn render_status_strip(state: &AppState) -> Line<'static> {
 
 const MIX_METER_YELLOW_START_RATIO: f64 = 0.8;
 const MIX_METER_RED_START_RATIO: f64 = 0.95;
-const MIX_METER_LABEL_WIDTH: u16 = 6;
 const MIX_METER_CHANNEL_LABEL_WIDTH: u16 = 2;
 const MIX_METER_DB_WIDTH: u16 = 7;
 
-fn render_mix_meter_widget(
-    area: Rect,
-    buffer: &mut Buffer,
-    label: &'static str,
-    left_raw: u8,
-    right_raw: u8,
-) {
+fn render_mix_meter_widget(area: Rect, buffer: &mut Buffer, left_raw: u8, right_raw: u8) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
     if area.height < 2 {
-        let sections = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(MIX_METER_LABEL_WIDTH),
-                Constraint::Min(1),
-            ])
-            .split(area);
-        Paragraph::new(Line::from(Span::styled(
-            label,
-            strong_style(Color::LightCyan),
-        )))
-        .render(sections[0], buffer);
-
         let channels = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(sections[1]);
+            .split(area);
         render_mix_meter_channel(channels[0], buffer, "L", left_raw);
         render_mix_meter_channel(channels[1], buffer, "R", right_raw);
         return;
     }
 
-    let sections = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(MIX_METER_LABEL_WIDTH),
-            Constraint::Min(1),
-        ])
-        .split(area);
-    Paragraph::new(Line::from(Span::styled(
-        label,
-        strong_style(Color::LightCyan),
-    )))
-    .render(
-        Rect::new(sections[0].x, sections[0].y, sections[0].width, 1),
-        buffer,
-    );
-
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(Rect::new(
-            sections[1].x,
-            sections[1].y,
-            sections[1].width,
-            2,
-        ));
+        .split(Rect::new(area.x, area.y, area.width, 2));
     render_mix_meter_channel(rows[0], buffer, "L", left_raw);
     render_mix_meter_channel(rows[1], buffer, "R", right_raw);
 }
@@ -2513,12 +2477,42 @@ mod tests {
     }
 
     #[test]
+    fn mixer_strip_panel_layout_reserves_two_rows_for_embedded_mix_meter() {
+        let layout = mixer_strip_panel_layout(Rect::new(0, 0, 80, 14), true);
+
+        assert_eq!(layout[1].height, 2);
+        assert_eq!(
+            layout[0].height + layout[1].height,
+            inner_area(Rect::new(0, 0, 80, 14)).height
+        );
+    }
+
+    #[test]
+    fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
+        let mut state = AppState::default();
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        frame[0x10 + 0x6a] = 0x0f;
+        frame[0x10 + 0xda] = 0x0a;
+        frame[0x10 + 0xdb] = 0x05;
+        state.latest_raw_73 = Some(frame);
+
+        let mixer = mixer_layout(Rect::new(0, 0, 100, 20));
+        let meter_area = mixer_strip_panel_layout(mixer[1], true)[1];
+
+        assert_eq!(
+            mixer_list_mouse_action(mixer[1], &state, (meter_area.x + 1, meter_area.y)),
+            None
+        );
+    }
+
+    #[test]
     fn mix_meter_widget_renders_two_row_stereo_bar_and_fixed_db_labels() {
         let rendered = render_buffer(Rect::new(0, 0, 56, 2), |area, buffer| {
-            render_mix_meter_widget(area, buffer, "MIX 2", 0x00, 0x3c);
+            render_mix_meter_widget(area, buffer, 0x00, 0x3c);
         });
 
-        assert!(rendered.contains("MIX 2"));
         assert!(rendered.contains("L"));
         assert!(rendered.contains("R"));
         assert!(rendered.contains("  0 dB"));
@@ -2754,8 +2748,7 @@ mod tests {
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
         let main = mixer_main_layout(page[0]);
-        let workspace = mixer_workspace_layout(main[1]);
-        let mixer = mixer_layout(workspace[0]);
+        let mixer = mixer_layout(main[1]);
         let tabs = surface_tab_hit_areas(mixer[0]);
 
         assert_eq!(
@@ -2915,9 +2908,8 @@ mod tests {
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
         let main = mixer_main_layout(page[0]);
-        let workspace = mixer_workspace_layout(main[1]);
-        let mixer = mixer_layout(workspace[0]);
-        let list_inner = inner_area(mixer[1]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
         let row_area = Rect::new(
             list_inner.x,
             list_inner.y,
@@ -2939,9 +2931,8 @@ mod tests {
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
         let main = mixer_main_layout(page[0]);
-        let workspace = mixer_workspace_layout(main[1]);
-        let mixer = mixer_layout(workspace[0]);
-        let list_inner = inner_area(mixer[1]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
         let row_area = Rect::new(
             list_inner.x,
             list_inner.y,
@@ -2963,9 +2954,8 @@ mod tests {
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
         let main = mixer_main_layout(page[0]);
-        let workspace = mixer_workspace_layout(main[1]);
-        let mixer = mixer_layout(workspace[0]);
-        let list_inner = inner_area(mixer[1]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
         let row_area = Rect::new(
             list_inner.x,
             list_inner.y,
@@ -2993,9 +2983,8 @@ mod tests {
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[2]);
         let main = mixer_main_layout(page[0]);
-        let workspace = mixer_workspace_layout(main[1]);
-        let mixer = mixer_layout(workspace[0]);
-        let list_inner = inner_area(mixer[1]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
         let row_area = Rect::new(
             list_inner.x,
             list_inner.y + 3 * mixer_strip_height(),
