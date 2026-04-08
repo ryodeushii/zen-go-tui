@@ -178,7 +178,7 @@ fn preamp_bar_layout(area: Rect) -> Vec<Rect> {
 fn mixer_workspace_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(8), Constraint::Length(3)])
+        .constraints([Constraint::Min(8), Constraint::Length(4)])
         .split(area)
         .to_vec()
 }
@@ -504,12 +504,16 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_status_strip(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    frame.render_widget(
-        Paragraph::new(render_status_strip(state))
-            .block(panel_block("Mix", Color::DarkGray, false))
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    frame.render_widget(panel_block("Mix", Color::DarkGray, false), area);
+    let inner = inner_area(area);
+    if let Some((label, left_raw, right_raw)) = experimental_mix_meter(state) {
+        render_mix_meter_widget(inner, frame.buffer_mut(), label, left_raw, right_raw);
+    } else {
+        frame.render_widget(
+            Paragraph::new(render_status_strip(state)).wrap(Wrap { trim: false }),
+            inner,
+        );
+    }
 }
 
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -1703,6 +1707,147 @@ fn render_status_strip(state: &AppState) -> Line<'static> {
     ))
 }
 
+const MIX_METER_YELLOW_START_RATIO: f64 = 0.8;
+const MIX_METER_RED_START_RATIO: f64 = 0.95;
+const MIX_METER_LABEL_WIDTH: u16 = 6;
+const MIX_METER_CHANNEL_LABEL_WIDTH: u16 = 2;
+const MIX_METER_DB_WIDTH: u16 = 7;
+
+fn render_mix_meter_widget(
+    area: Rect,
+    buffer: &mut Buffer,
+    label: &'static str,
+    left_raw: u8,
+    right_raw: u8,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    if area.height < 2 {
+        let sections = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(MIX_METER_LABEL_WIDTH),
+                Constraint::Min(1),
+            ])
+            .split(area);
+        Paragraph::new(Line::from(Span::styled(
+            label,
+            strong_style(Color::LightCyan),
+        )))
+        .render(sections[0], buffer);
+
+        let channels = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(sections[1]);
+        render_mix_meter_channel(channels[0], buffer, "L", left_raw);
+        render_mix_meter_channel(channels[1], buffer, "R", right_raw);
+        return;
+    }
+
+    let sections = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(MIX_METER_LABEL_WIDTH),
+            Constraint::Min(1),
+        ])
+        .split(area);
+    Paragraph::new(Line::from(Span::styled(
+        label,
+        strong_style(Color::LightCyan),
+    )))
+    .render(
+        Rect::new(sections[0].x, sections[0].y, sections[0].width, 1),
+        buffer,
+    );
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(Rect::new(
+            sections[1].x,
+            sections[1].y,
+            sections[1].width,
+            2,
+        ));
+    render_mix_meter_channel(rows[0], buffer, "L", left_raw);
+    render_mix_meter_channel(rows[1], buffer, "R", right_raw);
+}
+
+fn render_mix_meter_channel(area: Rect, buffer: &mut Buffer, label: &str, raw: u8) {
+    if area.width <= MIX_METER_CHANNEL_LABEL_WIDTH + MIX_METER_DB_WIDTH {
+        let text = format!("{label} {}", render_mix_meter(raw));
+        Paragraph::new(Line::from(Span::styled(text, muted_style()))).render(area, buffer);
+        return;
+    }
+
+    let sections = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(MIX_METER_CHANNEL_LABEL_WIDTH),
+            Constraint::Min(1),
+            Constraint::Length(MIX_METER_DB_WIDTH),
+        ])
+        .split(area);
+    Paragraph::new(Line::from(Span::styled(label, strong_style(Color::White))))
+        .render(sections[0], buffer);
+    render_colored_meter_bar(sections[1], buffer, meter_ratio(raw));
+    Paragraph::new(Line::from(Span::styled(
+        format_meter_value_label(meter_display_db(raw)),
+        muted_style(),
+    )))
+    .alignment(Alignment::Right)
+    .render(sections[2], buffer);
+}
+
+fn render_colored_meter_bar(area: Rect, buffer: &mut Buffer, ratio: f64) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let filled_cells = (ratio.clamp(0.0, 1.0) * area.width as f64).round() as u16;
+    let yellow_start = (area.width as f64 * MIX_METER_YELLOW_START_RATIO).floor() as u16;
+    let red_start = (area.width as f64 * MIX_METER_RED_START_RATIO).floor() as u16;
+
+    for offset in 0..area.width {
+        let x = area.x + offset;
+        let filled = offset < filled_cells;
+        let color = if !filled {
+            Color::DarkGray
+        } else if offset >= red_start {
+            Color::LightRed
+        } else if offset >= yellow_start {
+            Color::Yellow
+        } else {
+            Color::LightGreen
+        };
+        buffer[(x, area.y)]
+            .set_symbol(if filled { "█" } else { "░" })
+            .set_style(terminal::adapt_style(Style::default().fg(color)));
+    }
+}
+
+fn experimental_mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
+    let bytes = state.latest_raw_73.as_deref()?;
+    let payload = bytes.get(0x10..)?;
+
+    match payload.get(0x6a).copied() {
+        Some(0x0f) => Some((
+            "MIX 1",
+            payload.get(0xda).copied().unwrap_or(0),
+            payload.get(0xdb).copied().unwrap_or(0),
+        )),
+        Some(0x0c) => Some((
+            "MIX 2",
+            payload.get(0xde).copied().unwrap_or(0),
+            payload.get(0xdf).copied().unwrap_or(0),
+        )),
+        _ => None,
+    }
+}
+
 pub fn render_footer_text(_state: &AppState) -> String {
     "Tab page | f focus | mouse: raw button, page tabs, preamp buttons, mixer mute/solo/link/src | r raw view | R refresh queries | +/- adjust | m mute/phantom | o solo | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
@@ -2351,6 +2496,39 @@ mod tests {
         assert!(!rendered.contains("STATUS"));
         assert!(!rendered.contains("Applied dim change"));
         assert_eq!(rendered, render_experimental_pair_state_line(&state));
+    }
+
+    #[test]
+    fn experimental_mix_meter_extracts_mix1_lane_pair() {
+        let mut state = AppState::default();
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        frame[0x10 + 0x6a] = 0x0f;
+        frame[0x10 + 0xda] = 0x0a;
+        frame[0x10 + 0xdb] = 0x05;
+        state.latest_raw_73 = Some(frame);
+
+        assert_eq!(experimental_mix_meter(&state), Some(("MIX 1", 0x0a, 0x05)));
+    }
+
+    #[test]
+    fn mix_meter_widget_renders_two_row_stereo_bar_and_fixed_db_labels() {
+        let rendered = render_buffer(Rect::new(0, 0, 56, 2), |area, buffer| {
+            render_mix_meter_widget(area, buffer, "MIX 2", 0x00, 0x3c);
+        });
+
+        assert!(rendered.contains("MIX 2"));
+        assert!(rendered.contains("L"));
+        assert!(rendered.contains("R"));
+        assert!(rendered.contains("  0 dB"));
+        assert!(rendered.contains("-60 dB"));
+        assert!(rendered.contains("█"));
+        assert!(rendered.contains("░"));
+        let lines = rendered.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("L"));
+        assert!(lines[1].contains("R"));
     }
 
     #[test]
