@@ -1630,7 +1630,8 @@ impl MixerChannelState {
 }
 
 pub fn control_panel_startup_queries() -> &'static [QueryRequest74] {
-    const QUERIES: [QueryRequest74; 46] = [
+    const QUERIES: [QueryRequest74; 47] = [
+        QueryRequest74::new(0x01, 0x00),
         QueryRequest74::new(0x11, 0x00),
         QueryRequest74::new(0x0a, 0x00),
         QueryRequest74::new(0x17, 0x00),

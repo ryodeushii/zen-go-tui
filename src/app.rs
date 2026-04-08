@@ -1528,12 +1528,25 @@ mod tests {
             .expect("write command");
 
         let writes = transport.take_writes();
-        assert_eq!(writes.len(), 47);
-        assert_eq!(&writes[0][0x08..0x10], &[0x11, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&writes[1][0x08..0x10], &[0x0a, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&writes[2][0x08..0x10], &[0x17, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&writes[45][0x08..0x10], &[0x12, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&writes[46][0x10..0x12], &[0x04, 0x02]);
+        assert_eq!(writes.len(), 48);
+        assert_eq!(&writes[0][0x08..0x10], &[0x01, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[1][0x08..0x10], &[0x11, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[2][0x08..0x10], &[0x0a, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[46][0x08..0x10], &[0x12, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[47][0x10..0x12], &[0x04, 0x02]);
+    }
+
+    #[test]
+    fn bootstrap_queries_include_metadata_request() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        controller.bootstrap().expect("bootstrap");
+
+        let writes = transport.take_writes();
+        assert!(writes
+            .iter()
+            .any(|frame| &frame[0x08..0x10] == [0x01, 0, 0, 0, 0, 0, 0, 0]));
     }
 
     #[test]
@@ -1546,10 +1559,10 @@ mod tests {
             .expect("select surface");
 
         let writes = transport.take_writes();
-        assert_eq!(writes.len(), 47);
+        assert_eq!(writes.len(), 48);
         assert_eq!(&writes[0][0x10..0x13], &[0x49, 0x00, Surface::Hp2.code()]);
-        assert_eq!(&writes[1][0x08..0x10], &[0x11, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&writes[46][0x08..0x10], &[0x12, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[1][0x08..0x10], &[0x01, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&writes[47][0x08..0x10], &[0x12, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]
