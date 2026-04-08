@@ -933,7 +933,7 @@ fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
 }
 
 fn output_card_height() -> u16 {
-    4
+    3
 }
 
 fn output_card_areas(area: Rect) -> Vec<Rect> {
@@ -1110,7 +1110,6 @@ fn render_output_card_widget(area: Rect, buffer: &mut Buffer, output: &OutputSta
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(1),
         ])
         .split(area);
 
@@ -1130,13 +1129,8 @@ fn render_output_card_widget(area: Rect, buffer: &mut Buffer, output: &OutputSta
         header.push(chip("ACTIVE", Color::Black, Color::LightGreen));
     }
     Paragraph::new(Line::from(header)).render(rows[0], buffer);
-    Paragraph::new(Line::from(vec![Span::styled(
-        format!("LEVEL {:>3} dB", output.display_db()),
-        strong_style(Color::White),
-    )]))
-    .render(rows[1], buffer);
     render_labeled_slider(
-        rows[2],
+        rows[1],
         buffer,
         &signal_slider_label("LVL", Some(format!("{} dB", output.display_db()))),
         Some(output.gain_ratio()),
@@ -1152,7 +1146,7 @@ fn render_output_card_widget(area: Rect, buffer: &mut Buffer, output: &OutputSta
         Span::raw(" "),
         chip("MUTE", Color::Black, mute_bg),
     ]))
-    .render(rows[3], buffer);
+    .render(rows[2], buffer);
 }
 
 fn render_preamp_visual_widget(
@@ -1578,17 +1572,17 @@ fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
     Text::from(vec![
         Line::from(header),
         Line::from(vec![
+            Span::styled("LVL ", strong_style(Color::LightGreen)),
             Span::styled(
-                format!("LEVEL {:>3} dB", output.display_db()),
+                format!("{} dB", output.display_db()),
                 strong_style(Color::White),
             ),
             Span::raw("  "),
             Span::styled(
-                render_level_bar(output.gain_ratio(), 10),
+                render_level_bar(output.gain_ratio(), 8),
                 strong_style(Color::LightGreen),
             ),
         ]),
-        Line::from(""),
         Line::from(vec![
             chip("-", Color::Black, Color::Gray),
             Span::raw(" "),
@@ -2766,7 +2760,7 @@ mod tests {
         let row_area = output_card_areas(list_inner)[0];
         let state = AppState::default();
         let line = render_output_card(&state.outputs[0], true);
-        let rendered: String = line.lines[3]
+        let rendered: String = line.lines[2]
             .spans
             .iter()
             .map(|span| span.content.as_ref())
@@ -2774,7 +2768,7 @@ mod tests {
         let chip_x = rendered.find(" DIM ").expect("dim chip") as u16;
 
         assert_eq!(
-            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 3),
+            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 2),
             Some(MouseAction::ToggleOutputDim(0))
         );
     }
@@ -2788,7 +2782,7 @@ mod tests {
         let row_area = output_card_areas(list_inner)[1];
         let state = AppState::default();
         let line = render_output_card(&state.outputs[1], false);
-        let rendered: String = line.lines[3]
+        let rendered: String = line.lines[2]
             .spans
             .iter()
             .map(|span| span.content.as_ref())
@@ -2796,7 +2790,7 @@ mod tests {
         let chip_x = rendered.find(" MUTE ").expect("mute chip") as u16;
 
         assert_eq!(
-            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 3),
+            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 2),
             Some(MouseAction::ToggleOutputMute(1))
         );
     }
