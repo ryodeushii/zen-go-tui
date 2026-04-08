@@ -20,11 +20,30 @@ That choice is pragmatic for Linux HID access in Rust, but the app is structured
 
 ## Run
 
+### Linux device permissions
+
+To use the TUI with the real Zen Go device on Linux without `sudo`, install the bundled udev rule first:
+
+```bash
+sudo cp udev_rules/99-antelope.rules /etc/udev/rules.d/99-antelope.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Then unplug and reconnect the interface so the new permissions are applied.
+
+The bundled rule grants access to the Zen Go USB and `hidraw` nodes for:
+
+- VID: `0x23e5`
+- PID: `0xa015`
+
 ### Real device
 
 ```bash
 cargo run
 ```
+
+If the rule is installed correctly, the TUI should open the device without `sudo`.
 
 ### Mock mode
 
