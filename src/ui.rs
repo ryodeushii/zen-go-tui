@@ -194,7 +194,7 @@ fn mixer_strip_panel_layout(area: Rect, with_mix_meter: bool) -> Vec<Rect> {
 
 const MIXER_STRIP_CARD_WIDTH: u16 = 18;
 const MIXER_STRIP_GAP: u16 = 1;
-const MIXER_STRIP_DB_MARKERS: [i16; 5] = [-60, -30, -15, -5, 0];
+const MIXER_STRIP_DB_MARKERS: [i16; 8] = [0, 5, 10, 15, 20, 30, 40, 60];
 
 fn mixer_strip_card_width(area: Rect) -> u16 {
     area.width.min(MIXER_STRIP_CARD_WIDTH).max(1)
@@ -1076,7 +1076,7 @@ fn output_hotkeys_button_rect(area: Rect) -> Rect {
 
 #[cfg(test)]
 fn mixer_strip_height() -> u16 {
-    16
+    18
 }
 
 fn output_control_rects(area: Rect) -> Vec<Rect> {
@@ -1099,18 +1099,6 @@ const MAX_SIGNAL_ROW_WIDTH: u16 = 40;
 
 fn slider_state(ratio: Option<f64>) -> SliderState {
     SliderState::new(ratio.unwrap_or(0.0).clamp(0.0, 1.0) * 100.0, 0.0, 100.0)
-}
-
-fn meter_slider(ratio: Option<f64>, color: Color) -> Slider<'static> {
-    let state = slider_state(ratio);
-    Slider::from_state(&state)
-        .orientation(SliderOrientation::Horizontal)
-        .show_value(false)
-        .show_handle(false)
-        .filled_symbol("█")
-        .empty_symbol("░")
-        .filled_color(terminal::adapt_color(color))
-        .empty_color(terminal::adapt_color(Color::DarkGray))
 }
 
 fn level_slider(ratio: Option<f64>, color: Color) -> Slider<'static> {
@@ -1195,7 +1183,7 @@ fn render_labeled_slider(
     if show_handle {
         render_level_slider(sections[1], buffer, ratio, color);
     } else {
-        meter_slider(ratio, color).render(sections[1], buffer);
+        render_colored_meter_bar(sections[1], buffer, ratio.unwrap_or(0.0));
     }
 }
 
@@ -1309,14 +1297,7 @@ fn render_preamp_visual_widget(
 }
 
 fn mixer_pan_label(channel: &crate::protocol::MixerChannelState) -> String {
-    let pan = channel.pan.display_percent();
-    if pan < 0 {
-        format!("PAN L{}", pan.unsigned_abs())
-    } else if pan > 0 {
-        format!("PAN R{}", pan)
-    } else {
-        "PAN C".to_string()
-    }
+    format!("PAN {}", channel.pan.display_percent())
 }
 
 fn mixer_level_value_label(channel: &crate::protocol::MixerChannelState) -> String {
@@ -1367,7 +1348,20 @@ fn render_pan_slider(area: Rect, buffer: &mut Buffer, ratio: f64) {
         area.x + ((area.width.saturating_sub(1)) as f64 * ratio.clamp(0.0, 1.0)).round() as u16;
     buffer[(handle_x, y)]
         .set_symbol("●")
-        .set_style(terminal::adapt_style(Style::default().fg(Color::White)));
+        .set_style(terminal::adapt_style(Style::default().fg(Color::LightBlue)));
+}
+
+fn render_pan_scale(area: Rect, buffer: &mut Buffer) {
+    if area.width < 5 || area.height == 0 {
+        return;
+    }
+
+    let style = terminal::adapt_style(Style::default().fg(Color::DarkGray));
+    buffer.set_string(area.x, area.y, "-30", style);
+    let center = area.x + area.width / 2;
+    buffer.set_string(center, area.y, "0", style);
+    let right_x = area.x + area.width.saturating_sub(2);
+    buffer.set_string(right_x, area.y, "30", style);
 }
 
 fn render_vertical_combo_strip(
@@ -1380,25 +1374,40 @@ fn render_vertical_combo_strip(
         return;
     }
 
+    let content_width = 6.min(area.width);
+    let content_area = Rect::new(
+        area.x + area.width.saturating_sub(content_width) / 2,
+        area.y,
+        content_width,
+        area.height,
+    );
+
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(4),
+            Constraint::Length(2),
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
-        .split(area);
+        .split(content_area);
     let scale = columns[0];
-    let meter = columns[1];
-    let level = columns[3];
+    let level = columns[2];
+    let meter = columns[4];
 
+    let mut previous_y: Option<u16> = None;
     for marker in MIXER_STRIP_DB_MARKERS {
-        let y = vertical_ratio_row(scale, strip_db_ratio(Some(marker)).unwrap_or(0.0));
+        let mut y = vertical_ratio_row(scale, strip_db_ratio(Some(-marker)).unwrap_or(0.0));
+        if let Some(prev) = previous_y {
+            y = y.max(prev.saturating_add(1));
+        }
+        y = y.min(scale.y + scale.height.saturating_sub(1));
+        previous_y = Some(y);
         buffer.set_string(
             scale.x,
             y,
-            format!("{:>3}", marker),
+            format!("{:>2}", marker),
             terminal::adapt_style(Style::default().fg(Color::DarkGray)),
         );
     }
@@ -1482,6 +1491,7 @@ fn render_mixer_strip_widget(
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(3),
             Constraint::Length(1),
             Constraint::Length(1),
@@ -1514,20 +1524,21 @@ fn render_mixer_strip_widget(
     .alignment(Alignment::Center)
     .render(rows[1], buffer);
     render_pan_slider(rows[2], buffer, channel.pan.ratio());
+    render_pan_scale(rows[3], buffer);
     Paragraph::new(Line::from(Span::styled(
         format_meter_value_label(channel.meter_db()),
         strong_style(Color::LightGreen),
     )))
     .alignment(Alignment::Center)
-    .render(rows[3], buffer);
-    render_vertical_combo_strip(rows[4], buffer, channel.meter_db(), channel.display_db());
+    .render(rows[4], buffer);
+    render_vertical_combo_strip(rows[5], buffer, channel.meter_db(), channel.display_db());
 
     Paragraph::new(Line::from(Span::styled(
         mixer_level_value_label(channel),
         strong_style(Color::Yellow),
     )))
     .alignment(Alignment::Center)
-    .render(rows[5], buffer);
+    .render(rows[6], buffer);
 
     let solo_on = channel.soloed == Some(true);
     let mute_on = channel.muted == Some(true);
@@ -1566,7 +1577,7 @@ fn render_mixer_strip_widget(
     ));
     Paragraph::new(Line::from(controls))
         .alignment(Alignment::Center)
-        .render(rows[6], buffer);
+        .render(rows[7], buffer);
 }
 
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -1733,6 +1744,24 @@ fn chip<T: Into<String>>(label: T, fg: Color, bg: Color) -> Span<'static> {
     )
 }
 
+fn labeled_value_chip(
+    label: &str,
+    value: &str,
+    min_value_width: usize,
+    fg: Color,
+    bg: Color,
+) -> Span<'static> {
+    chip(
+        format!(
+            "{label} {:>width$}",
+            value,
+            width = value.chars().count().max(min_value_width)
+        ),
+        fg,
+        bg,
+    )
+}
+
 fn tab_chip(label: &str, active: bool, accent: Color) -> Span<'static> {
     if active {
         chip(label, Color::Black, accent)
@@ -1769,18 +1798,6 @@ fn render_symbol_bar(ratio: f64, width: usize, filled: char, empty: char) -> Str
 #[cfg(test)]
 fn render_level_bar(ratio: f64, width: usize) -> String {
     render_symbol_bar(ratio, width, '#', '.')
-}
-
-#[cfg(test)]
-fn truncate_label(label: &str, width: usize) -> String {
-    if label.chars().count() <= width {
-        return label.to_string();
-    }
-    label
-        .chars()
-        .take(width.saturating_sub(1))
-        .collect::<String>()
-        + "~"
 }
 
 fn preamp_phantom_label(input: PreampInputState) -> &'static str {
@@ -1889,14 +1906,18 @@ fn render_device_header(state: &AppState) -> Line<'static> {
 fn render_device_metadata(state: &AppState) -> Line<'static> {
     if let Some(metadata) = state.device.metadata.as_ref() {
         Line::from(vec![
-            chip(
-                format!("SN {}", metadata.serial),
+            labeled_value_chip(
+                "SN",
+                &metadata.serial,
+                metadata.serial.chars().count(),
                 Color::Black,
                 Color::LightCyan,
             ),
             Span::raw(" "),
-            chip(
-                format!("HW {}", metadata.hardware_version),
+            labeled_value_chip(
+                "HW",
+                &metadata.hardware_version,
+                4,
                 Color::Black,
                 Color::LightMagenta,
             ),
@@ -2147,110 +2168,6 @@ fn render_query_reply_history_list(state: &AppState) -> Text<'static> {
         lines.push(Line::from(format!("{} {}", marker, entry.summary)));
     }
     Text::from(lines)
-}
-
-#[cfg(test)]
-fn render_mixer_strip_item(
-    state: &AppState,
-    index: usize,
-    channel: &crate::protocol::MixerChannelState,
-) -> Text<'static> {
-    let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
-    let source = channel
-        .assignment
-        .map(|value| value.label())
-        .unwrap_or_else(|| "assignment?".to_string());
-    let meter_bar = render_level_bar(channel.meter_ratio().unwrap_or(0.0), 8);
-    let level_bar = render_level_bar(channel.gain_ratio().unwrap_or(0.0), 8);
-    let pan = channel.pan.display_percent();
-    let pan_label = if pan < 0 {
-        format!("L{}", pan.unsigned_abs())
-    } else if pan > 0 {
-        format!("R{}", pan)
-    } else {
-        "C".to_string()
-    };
-    let solo_on = channel.soloed == Some(true);
-    let mute_on = channel.muted == Some(true);
-    let link_on = channel.linked == Some(true);
-
-    let mut header = vec![chip(
-        format!("CH {:02}", channel.channel),
-        Color::Black,
-        if selected {
-            Color::LightGreen
-        } else {
-            Color::Gray
-        },
-    )];
-    header.push(Span::raw(" "));
-    header.push(Span::styled(
-        truncate_label(&source, 18),
-        strong_style(Color::LightCyan),
-    ));
-    header.push(Span::raw("  "));
-    header.push(chip(
-        format!("PAN {pan_label}"),
-        Color::Black,
-        Color::LightBlue,
-    ));
-    header.push(Span::raw(" "));
-    header.push(chip(
-        channel
-            .display_db()
-            .map(|value| format!("{} dB", value))
-            .unwrap_or_else(|| "LEVEL ?".to_string()),
-        Color::Black,
-        Color::Yellow,
-    ));
-
-    let mut controls = vec![
-        chip(
-            "S",
-            Color::Black,
-            if solo_on {
-                Color::LightGreen
-            } else {
-                Color::DarkGray
-            },
-        ),
-        Span::raw(" "),
-        chip(
-            "M",
-            Color::Black,
-            if mute_on {
-                Color::LightRed
-            } else {
-                Color::DarkGray
-            },
-        ),
-    ];
-    if channel.channel % 2 == 1 {
-        controls.push(Span::raw(" "));
-        controls.push(chip(
-            "L",
-            Color::Black,
-            if link_on {
-                Color::LightBlue
-            } else {
-                Color::DarkGray
-            },
-        ));
-    }
-    controls.push(Span::raw("  "));
-    controls.push(chip("SRC", Color::Black, Color::Gray));
-    controls.push(Span::raw("  "));
-    controls.push(Span::styled(
-        format!("LVL {}", level_bar),
-        strong_style(Color::Yellow),
-    ));
-    controls.push(Span::raw("  "));
-    controls.push(Span::styled(
-        format!("MTR {}", meter_bar),
-        strong_style(Color::LightGreen),
-    ));
-
-    Text::from(vec![Line::from(header), Line::from(controls)])
 }
 
 #[cfg(test)]
@@ -2635,13 +2552,18 @@ mod tests {
         assert!(rendered.contains("CH 11"));
         assert!(rendered.contains(" C8 "));
         assert!(!rendered.contains("Computer Play 8"));
-        assert!(rendered.contains("PAN R30"));
+        assert!(rendered.contains("PAN 30"));
+        assert!(rendered.contains("-30"));
+        assert!(rendered.contains(" 30"));
         assert!(rendered.contains("-48 dB"));
         assert!(rendered.contains("-16 dB"));
-        assert!(rendered.contains("-60"));
-        assert!(rendered.contains("-30"));
-        assert!(rendered.contains("-15"));
-        assert!(rendered.contains(" -5"));
+        assert!(rendered.contains(" 60"));
+        assert!(rendered.contains(" 40"));
+        assert!(rendered.contains(" 30"));
+        assert!(rendered.contains(" 20"));
+        assert!(rendered.contains(" 15"));
+        assert!(rendered.contains(" 10"));
+        assert!(rendered.contains("  5"));
         assert!(rendered.contains("  0"));
         assert!(rendered.contains("█"));
         assert!(rendered.contains("●"));
@@ -2660,6 +2582,7 @@ mod tests {
         assert!(rendered.contains("GAIN 20 dB"));
         assert!(rendered.contains("OBS -48 dB"));
         assert!(rendered.contains("█"));
+        assert!(rendered.contains("░"));
         assert!(rendered.contains("─"));
         assert!(rendered.contains("●"));
         assert!(!rendered.contains("48V:"));
@@ -2697,8 +2620,8 @@ mod tests {
             },
         );
 
-        assert!(rendered.contains("-60"));
-        assert!(rendered.contains("-30"));
+        assert!(rendered.contains("60"));
+        assert!(rendered.contains("30"));
         assert!(rendered.contains("LVL 0 dB"));
     }
 
@@ -2814,6 +2737,7 @@ mod tests {
 
         assert!(metadata.contains("1234567890"));
         assert!(metadata.contains("6.6"));
+        assert!(metadata.contains(" HW  6.6 "));
         assert!(!rendered.contains("SURFACE"));
         assert!(!rendered.contains("PAGE"));
         assert!(!rendered.contains("Last"));
