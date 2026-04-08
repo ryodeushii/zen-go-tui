@@ -106,11 +106,7 @@ fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
         .as_ref()
         .map(|metadata| metadata.product_name.clone())
         .unwrap_or_else(|| "ZEN GO SYNERGY CORE".to_string());
-    let sample = state
-        .device
-        .sample_rate
-        .map(|value| value.label())
-        .unwrap_or_else(|| "rate ?".to_string());
+    let sample = current_sample_rate_label(state);
     let clock = state
         .device
         .clock_source
@@ -1212,11 +1208,7 @@ fn render_device_header(state: &AppState) -> Text<'static> {
         .as_ref()
         .map(|metadata| metadata.product_name.clone())
         .unwrap_or_else(|| "ZEN GO SYNERGY CORE".to_string());
-    let sample = state
-        .device
-        .sample_rate
-        .map(|value| value.label())
-        .unwrap_or_else(|| "rate ?".to_string());
+    let sample = current_sample_rate_label(state);
     let clock = state
         .device
         .clock_source
@@ -1268,6 +1260,22 @@ fn render_device_header(state: &AppState) -> Text<'static> {
         ]),
         metadata_line,
     ])
+}
+
+fn current_sample_rate_label(state: &AppState) -> String {
+    if let Some(hz) = state.device.sample_rate_hz {
+        if hz % 1000 == 0 {
+            return format!("{} kHz", hz / 1000);
+        }
+        let khz = hz as f64 / 1000.0;
+        return format!("{khz:.1} kHz");
+    }
+
+    state
+        .device
+        .sample_rate
+        .map(|value| value.label())
+        .unwrap_or_else(|| "rate ?".to_string())
 }
 
 fn render_status_strip(state: &AppState) -> Line<'static> {
@@ -1892,6 +1900,18 @@ mod tests {
         assert!(!rendered.contains("SURFACE"));
         assert!(!rendered.contains("PAGE"));
         assert!(!rendered.contains("Last"));
+    }
+
+    #[test]
+    fn device_header_prefers_live_sample_rate_readout_over_configured_rate() {
+        let mut state = AppState::default();
+        state.device.sample_rate = Some(SampleRate::Hz96000);
+        state.device.sample_rate_hz = Some(44_100);
+
+        let rendered = render_device_header(&state).to_string();
+
+        assert!(rendered.contains("44.1 kHz"));
+        assert!(!rendered.contains("96000 Hz"));
     }
 
     #[test]

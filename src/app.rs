@@ -14,6 +14,7 @@ use crate::transport::Transport;
 #[derive(Debug, Clone)]
 pub struct DeviceStatus {
     pub sample_rate: Option<SampleRate>,
+    pub sample_rate_hz: Option<u32>,
     pub clock_source: Option<ClockSource>,
     pub lock_known: bool,
     pub locked: Option<bool>,
@@ -26,6 +27,7 @@ impl Default for DeviceStatus {
     fn default() -> Self {
         Self {
             sample_rate: None,
+            sample_rate_hz: None,
             clock_source: None,
             lock_known: false,
             locked: None,
@@ -194,6 +196,7 @@ impl AppState {
 
     pub fn apply_snapshot(&mut self, snapshot: Snapshot73) {
         self.device.sample_rate = Some(snapshot.sample_rate);
+        self.device.sample_rate_hz = Some(snapshot.sample_rate_hz);
         self.device.clock_source = Some(snapshot.clock_source);
         self.device.last_refresh_summary = format!(
             "snapshot {} / {} / surface {}",
@@ -634,6 +637,7 @@ impl Controller {
             }
             Command::SetSampleRate(rate) => {
                 self.state.device.sample_rate = Some(rate);
+                self.state.device.sample_rate_hz = rate.hz();
             }
             _ => {}
         }
