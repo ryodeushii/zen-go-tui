@@ -1133,14 +1133,11 @@ fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
 }
 
 fn render_status_strip(state: &AppState) -> Line<'static> {
-    let output = state.outputs[state.selected_output];
     Line::from(vec![
         Span::styled("STATUS ", subdued_style()),
         Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
         Span::raw("  "),
         chip(state.surface.label(), Color::Black, Color::LightBlue),
-        Span::raw(" "),
-        chip(output.target.label(), Color::Black, Color::LightGreen),
         Span::raw("  "),
         Span::styled(render_experimental_pair_state_line(state), muted_style()),
     ])
@@ -1739,7 +1736,7 @@ mod tests {
         assert!(rendered.contains("STATUS"));
         assert!(rendered.contains("Applied dim change"));
         assert!(rendered.contains("HP2"));
-        assert!(rendered.contains("HP1"));
+        assert!(!rendered.contains("HP1"));
     }
 
     #[test]
@@ -1918,6 +1915,33 @@ mod tests {
         assert_eq!(
             mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 3),
             Some(MouseAction::ToggleOutputDim(0))
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_visible_output_mute_chip_position_on_hp1() {
+        let area = Rect::new(0, 0, 120, 50);
+        let page = mixer_page_layout(root_chunks(area)[2]);
+        let outputs = output_panel_layout(page[0]);
+        let list_inner = inner_area(outputs[0]);
+        let row_area = Rect::new(
+            list_inner.x,
+            list_inner.y + output_card_height(),
+            list_inner.width,
+            output_card_height(),
+        );
+        let state = AppState::default();
+        let line = render_output_card(&state.outputs[1], false);
+        let rendered: String = line.lines[3]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let chip_x = rendered.find(" MUTE ").expect("mute chip") as u16;
+
+        assert_eq!(
+            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 3),
+            Some(MouseAction::ToggleOutputMute(1))
         );
     }
 

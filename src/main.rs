@@ -342,7 +342,7 @@ fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
                 output.volume.saturating_add(1).min(0x60)
             };
             controller.send(Command::SetOutputVolume {
-                target: OutputTarget::from_index(index),
+                target: output.target,
                 step: next,
             })?;
         }
@@ -387,7 +387,7 @@ fn toggle_mute(controller: &mut Controller) -> Result<()> {
             let index = controller.state.selected_output;
             let output = controller.state.outputs[index];
             controller.send(Command::SetOutputMute {
-                target: OutputTarget::from_index(index),
+                target: output.target,
                 enabled: output.mode != OutputMode::Mute,
             })?;
         }
@@ -430,7 +430,7 @@ fn toggle_dim(controller: &mut Controller) -> Result<()> {
     let index = controller.state.selected_output;
     let output = controller.state.outputs[index];
     controller.send(Command::SetOutputDim {
-        target: OutputTarget::from_index(index),
+        target: output.target,
         enabled: output.mode != OutputMode::Dim,
     })?;
     Ok(())
@@ -580,7 +580,7 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
                 output.volume.saturating_add(1).min(0x60)
             };
             controller.send(Command::SetOutputVolume {
-                target: OutputTarget::from_index(controller.state.selected_output),
+                target: output.target,
                 step: next,
             })?;
         }
@@ -589,7 +589,7 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
             controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
             let output = controller.state.outputs[controller.state.selected_output];
             controller.send(Command::SetOutputDim {
-                target: OutputTarget::from_index(controller.state.selected_output),
+                target: output.target,
                 enabled: output.mode != OutputMode::Dim,
             })?;
         }
@@ -598,7 +598,7 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
             controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
             let output = controller.state.outputs[controller.state.selected_output];
             controller.send(Command::SetOutputMute {
-                target: OutputTarget::from_index(controller.state.selected_output),
+                target: output.target,
                 enabled: output.mode != OutputMode::Mute,
             })?;
         }
@@ -844,7 +844,9 @@ mod tests {
     use std::time::Duration;
 
     use zen_go_tui::app::AssignmentPickerState;
-    use zen_go_tui::protocol::{control_panel_startup_queries, MixerAssignment, MixerSurface};
+    use zen_go_tui::protocol::{
+        control_panel_startup_queries, MixerAssignment, MixerSurface, OutputState,
+    };
     use zen_go_tui::transport::TransportError;
 
     #[derive(Clone, Default)]
@@ -990,6 +992,20 @@ mod tests {
         assert_eq!(writes.len(), 5);
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
         assert_eq!(&writes[0][0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
+    }
+
+    #[test]
+    fn mouse_output_mute_uses_selected_output_target() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.outputs[1] = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
+
+        apply_mouse_action(&mut controller, ui::MouseAction::ToggleOutputMute(1))
+            .expect("toggle output mute");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0x48, 0x01, 0x01]);
     }
 
     #[test]
