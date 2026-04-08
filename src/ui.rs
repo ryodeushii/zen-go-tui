@@ -154,7 +154,7 @@ fn output_panel_layout(area: Rect) -> Vec<Rect> {
 fn mixer_main_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(12)])
+        .constraints([Constraint::Length(5), Constraint::Min(12)])
         .split(area)
         .to_vec()
 }
@@ -183,19 +183,19 @@ fn mixer_layout(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
-fn preamp_card_layout(area: Rect) -> Vec<Rect> {
+fn preamp_card_inner_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Length(3)])
-        .split(area)
+        .constraints([Constraint::Length(2), Constraint::Length(1)])
+        .split(inner_area(area))
         .to_vec()
 }
 
 fn preamp_button_rects(area: Rect, input: PreampInputState) -> Vec<Rect> {
-    let inner = inner_area(area);
+    let controls = preamp_card_inner_layout(area)[1];
     inline_chip_rects(
-        inner.x,
-        inner.y,
+        controls.x,
+        controls.y,
         &[
             "-",
             "+",
@@ -409,7 +409,6 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let cards = preamp_bar_layout(area);
     for (index, card) in cards.into_iter().enumerate() {
-        let parts = preamp_card_layout(card);
         let input = if index == 0 {
             state.preamp.input1
         } else {
@@ -417,24 +416,23 @@ fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         };
         let title = if state.focus == FocusArea::Preamp && state.selected_preamp_input == index {
             if index == 0 {
-                "CH 1 ←"
+                "Preamp 1 ←"
             } else {
-                "CH 2 ←"
+                "Preamp 2 ←"
             }
         } else if index == 0 {
-            "CH 1"
+            "Preamp 1"
         } else {
-            "CH 2"
+            "Preamp 2"
         };
 
         render_preamp_visual_widget(
-            parts[0],
+            card,
             frame.buffer_mut(),
             title,
             input,
             state.focus == FocusArea::Preamp && state.selected_preamp_input == index,
         );
-        frame.render_widget(preamp_controls_paragraph(input), parts[1]);
     }
 }
 
@@ -824,13 +822,12 @@ fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Optio
         if !contains_point(card, point) {
             continue;
         }
-        let parts = preamp_card_layout(card);
         let input_state = if input == 0 {
             state.preamp.input1
         } else {
             state.preamp.input2
         };
-        let buttons = preamp_button_rects(parts[1], input_state);
+        let buttons = preamp_button_rects(card, input_state);
         if contains_point(buttons[0], point) {
             return Some(MouseAction::AdjustPreampGain {
                 input: input as u8,
@@ -851,9 +848,6 @@ fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Optio
         }
         if contains_point(buttons[4], point) {
             return Some(MouseAction::TogglePreampPhase(input as u8));
-        }
-        if contains_point(parts[0], point) {
-            return Some(MouseAction::SelectPreampInput(input));
         }
         return Some(MouseAction::SelectPreampInput(input));
     }
@@ -1129,19 +1123,6 @@ fn render_output_card_widget(area: Rect, buffer: &mut Buffer, output: &OutputSta
     .render(rows[3], buffer);
 }
 
-fn preamp_slider_label(input: PreampInputState) -> String {
-    let phantom = preamp_phantom_label(input);
-    let phase = preamp_phase_label(input);
-    format!(
-        "GAIN {}  {}  48V:{}  PH:{}  {:02x}",
-        input.gain_db_label(),
-        input.mode.label(),
-        phantom,
-        phase,
-        input.gain_raw,
-    )
-}
-
 fn render_preamp_visual_widget(
     area: Rect,
     buffer: &mut Buffer,
@@ -1161,21 +1142,9 @@ fn render_preamp_visual_widget(
         return;
     }
 
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(2),
-            Constraint::Min(1),
-        ])
-        .split(inner);
-    Paragraph::new(Line::from(vec![Span::styled(
-        preamp_slider_label(input),
-        strong_style(style_for_preamp_mode(input.mode)),
-    )]))
-    .render(rows[0], buffer);
+    let sections = preamp_card_inner_layout(area);
     render_stacked_signal_rows(
-        rows[1],
+        sections[0],
         buffer,
         &meter_slider_label("OBS", input.observed_meter_db()),
         input.observed_meter_ratio(),
@@ -1183,6 +1152,7 @@ fn render_preamp_visual_widget(
         Some(input.gain_ratio()),
         style_for_preamp_mode(input.mode),
     );
+    Paragraph::new(render_preamp_controls_text(input)).render(sections[1], buffer);
 }
 
 fn mixer_controls_line(channel: &crate::protocol::MixerChannelState) -> Line<'static> {
@@ -1722,39 +1692,21 @@ fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
     } else {
         chip(preamp_phase_label(input), Color::Black, Color::LightGreen)
     };
-    Text::from(vec![
-        Line::from(vec![
-            chip("-", Color::Black, Color::Gray),
-            Span::raw(" "),
-            chip("+", Color::Black, Color::Gray),
-            Span::raw(" "),
-            chip(
-                input.mode.label(),
-                Color::Black,
-                style_for_preamp_mode(input.mode),
-            ),
-            Span::raw(" "),
-            phantom,
-            Span::raw(" "),
-            phase,
-        ]),
-        Line::from(vec![
-            Span::styled("GAIN ", subdued_style()),
-            Span::styled(input.gain_db_label(), strong_style(Color::White)),
-            Span::raw("  "),
-            Span::styled(format!("raw {:02x}", input.gain_raw), muted_style()),
-        ]),
-    ])
-}
-
-fn preamp_controls_paragraph(input: PreampInputState) -> Paragraph<'static> {
-    Paragraph::new(render_preamp_controls_text(input))
-        .block(panel_block(
-            "Controls",
+    Text::from(Line::from(vec![
+        chip("-", Color::Black, Color::Gray),
+        Span::raw(" "),
+        chip("+", Color::Black, Color::Gray),
+        Span::raw(" "),
+        chip(
+            input.mode.label(),
+            Color::Black,
             style_for_preamp_mode(input.mode),
-            false,
-        ))
-        .wrap(Wrap { trim: false })
+        ),
+        Span::raw(" "),
+        phantom,
+        Span::raw(" "),
+        phase,
+    ]))
 }
 
 fn render_query_reply_panel(_state_bytes: &[u8], state: &AppState) -> Text<'static> {
@@ -2283,16 +2235,19 @@ mod tests {
         let mut input = PreampInputState::from_raw(0x14, 0x10);
         input.observed_meter = Some(0x30);
 
-        let rendered = render_buffer(Rect::new(0, 0, 44, 6), |area, buffer| {
-            render_preamp_visual_widget(area, buffer, "CH 1", input, true);
+        let rendered = render_buffer(Rect::new(0, 0, 44, 5), |area, buffer| {
+            render_preamp_visual_widget(area, buffer, "Preamp 1", input, true);
         });
 
-        assert!(rendered.contains("CH 1"));
+        assert!(rendered.contains("Preamp 1"));
         assert!(rendered.contains("GAIN 20 dB"));
         assert!(rendered.contains("OBS -48 dB"));
         assert!(rendered.contains("█"));
         assert!(rendered.contains("─"));
         assert!(rendered.contains("●"));
+        assert!(!rendered.contains("48V:"));
+        assert!(!rendered.contains("PH:"));
+        assert!(!rendered.contains("raw "));
     }
 
     #[test]
@@ -2667,8 +2622,7 @@ mod tests {
         let page = mixer_page_layout(chunks[2]);
         let main = mixer_main_layout(page[1]);
         let cards = preamp_bar_layout(main[0]);
-        let card = preamp_card_layout(cards[0]);
-        let buttons = preamp_button_rects(card[1], AppState::default().preamp.input1);
+        let buttons = preamp_button_rects(cards[0], AppState::default().preamp.input1);
         let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
 
         assert_eq!(
@@ -2687,7 +2641,6 @@ mod tests {
         let page = mixer_page_layout(chunks[2]);
         let main = mixer_main_layout(page[1]);
         let cards = preamp_bar_layout(main[0]);
-        let card = preamp_card_layout(cards[0]);
         let state = AppState::default();
         let controls = render_preamp_controls_text(state.preamp.input1);
         let rendered: String = controls.lines[0]
@@ -2697,10 +2650,10 @@ mod tests {
             .collect();
         let mode_chip = format!(" {} ", state.preamp.input1.mode.label());
         let chip_x = rendered.find(&mode_chip).expect("mode chip") as u16;
-        let inner = inner_area(card[1]);
+        let controls_area = preamp_card_inner_layout(cards[0])[1];
 
         assert_eq!(
-            mouse_action(area, &state, inner.x + chip_x, inner.y),
+            mouse_action(area, &state, controls_area.x + chip_x, controls_area.y),
             Some(MouseAction::OpenPreampModeSelector(0))
         );
     }
@@ -2726,12 +2679,14 @@ mod tests {
 
     #[test]
     fn preamp_control_row_keeps_leading_chip_padding_when_rendered() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 3));
-        preamp_controls_paragraph(AppState::default().preamp.input1)
-            .render(Rect::new(0, 0, 40, 3), &mut buffer);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 1));
+        Paragraph::new(render_preamp_controls_text(
+            AppState::default().preamp.input1,
+        ))
+        .render(Rect::new(0, 0, 40, 1), &mut buffer);
 
-        assert_eq!(buffer[(1, 1)].symbol(), " ");
-        assert_eq!(buffer[(2, 1)].symbol(), "-");
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+        assert_eq!(buffer[(1, 0)].symbol(), "-");
     }
 
     #[test]
