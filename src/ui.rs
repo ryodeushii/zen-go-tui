@@ -9,8 +9,8 @@ use ratatui::Frame;
 use tui_slider::{Slider, SliderOrientation, SliderState};
 
 use crate::app::{
-    AppState, AssignmentPickerState, FocusArea, MainPage, RawPacketTab, SelectorPopupKind,
-    SelectorPopupState,
+    AppState, AssignmentPickerState, FocusArea, MainPage, ProfileEditorMode, RawPacketTab,
+    SelectorPopupKind, SelectorPopupState,
 };
 use crate::protocol::{
     meter_db_ratio, meter_display_db, meter_ratio, ClockSource, MixerAssignment, MixerSurface,
@@ -22,8 +22,15 @@ use crate::terminal;
 pub enum MouseAction {
     ToggleRawView,
     ToggleHotkeysPopup,
+    OpenProfilesPopup,
+    CloseProfilesPopup,
     OpenRoutingPopup,
     CloseRoutingPopup,
+    SelectProfile(usize),
+    LoadSelectedProfile,
+    StartSaveProfile,
+    StartRenameProfile,
+    DeleteSelectedProfile,
     PageMixerStripsLeft,
     PageMixerStripsRight,
     OpenSampleRateSelector,
@@ -103,6 +110,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     draw_titlebar(frame, chunks[0], state);
     draw_mixer_page(frame, chunks[1], state);
     draw_routing_popup(frame, frame.area(), state);
+    draw_profiles_popup(frame, frame.area(), state);
     draw_assignment_picker(frame, frame.area(), state);
     draw_selector_popup(frame, frame.area(), state);
     draw_hotkeys_popup(frame, frame.area(), state);
@@ -124,16 +132,28 @@ fn titlebar_layout(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
-fn device_panel_layout(area: Rect) -> Vec<Rect> {
+fn device_metadata_width(state: &AppState) -> u16 {
+    let Some(metadata) = state.device.metadata.as_ref() else {
+        return "metadata pending".chars().count() as u16;
+    };
+
+    chip_width(&format!("SN {}", metadata.serial))
+        .saturating_add(1)
+        .saturating_add(chip_width(&format!("HW {}", metadata.hardware_version)))
+}
+
+fn device_panel_layout(area: Rect, state: &AppState) -> Vec<Rect> {
+    let inner = inner_area(area);
+    let metadata_width = device_metadata_width(state).min(inner.width.saturating_sub(24));
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(24), Constraint::Length(26)])
-        .split(inner_area(area))
+        .constraints([Constraint::Min(24), Constraint::Length(metadata_width)])
+        .split(inner)
         .to_vec()
 }
 
 fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
-    let inner = device_panel_layout(area)[0];
+    let inner = device_panel_layout(area, state)[0];
     let product = state
         .device
         .metadata
@@ -302,15 +322,15 @@ fn surface_tab_hit_areas(area: Rect) -> Vec<Rect> {
     inline_chip_rects(inner.x, inner.y, &["MIX 1 / Monitor-HP1", "MIX 2 / HP2"])
 }
 
-fn routing_button_rect(area: Rect) -> Rect {
+fn mixer_header_button_rects(area: Rect) -> Vec<Rect> {
     let inner = inner_area(area);
-    let width = chip_width("ROUTING").min(inner.width);
-    Rect::new(
-        inner.x + inner.width.saturating_sub(width),
-        inner.y,
-        width,
-        1,
-    )
+    let labels = ["PROFILES", "ROUTING"];
+    let total_width = inline_chip_rects(0, 0, &labels)
+        .last()
+        .map(|rect| rect.x + rect.width)
+        .unwrap_or(0);
+    let start_x = inner.x + inner.width.saturating_sub(total_width);
+    inline_chip_rects(start_x, inner.y, &labels)
 }
 
 fn mixer_strip_page_button_rects(area: Rect) -> Vec<Rect> {
@@ -414,7 +434,7 @@ fn inner_area(area: Rect) -> Rect {
 fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = titlebar_layout(area);
     frame.render_widget(panel_block("Device", Color::DarkGray, true), sections[0]);
-    let device_sections = device_panel_layout(sections[0]);
+    let device_sections = device_panel_layout(sections[0], state);
     frame.render_widget(
         Paragraph::new(render_device_header(state)).wrap(Wrap { trim: false }),
         device_sections[0],
@@ -506,6 +526,161 @@ fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     ]))
     .wrap(Wrap { trim: false })
     .render(rows[9], frame.buffer_mut());
+}
+
+fn profiles_popup_area(area: Rect) -> Rect {
+    let width = area.width.min(64).max(44);
+    let height = area.height.min(16).max(12);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn profiles_popup_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(5),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner_area(area))
+        .to_vec()
+}
+
+fn profiles_popup_button_rects(area: Rect) -> Vec<Rect> {
+    let row = profiles_popup_layout(area)[1];
+    inline_chip_rects(row.x, row.y, &["LOAD", "SAVE", "RENAME", "DELETE", "CLOSE"])
+}
+
+fn profile_editor_area(area: Rect) -> Rect {
+    let popup = profiles_popup_area(area);
+    let width = popup.width.saturating_sub(8).min(40).max(28);
+    let height = 5;
+    Rect {
+        x: popup.x + popup.width.saturating_sub(width) / 2,
+        y: popup.y + popup.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if !state.profiles_popup_open {
+        return;
+    }
+
+    let popup = profiles_popup_area(area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(panel_block("Profiles", Color::LightGreen, true), popup);
+
+    let sections = profiles_popup_layout(popup);
+    if state.profile_names.is_empty() {
+        Paragraph::new(Line::from(Span::styled(
+            "No saved profiles yet.",
+            muted_style(),
+        )))
+        .render(sections[0], frame.buffer_mut());
+    } else {
+        let items = state
+            .profile_names
+            .iter()
+            .map(|name| ListItem::new(name.clone()))
+            .collect::<Vec<_>>();
+        let mut list_state = ListState::default();
+        list_state.select(Some(
+            state
+                .popup_selected_index
+                .min(items.len().saturating_sub(1)),
+        ));
+        frame.render_stateful_widget(
+            List::new(items).highlight_style(terminal::adapt_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            sections[0],
+            &mut list_state,
+        );
+    }
+
+    let has_selection = state.selected_profile_name().is_some();
+    let button_rects = profiles_popup_button_rects(popup);
+    let button_specs = [
+        ("LOAD", has_selection, Color::LightCyan),
+        ("SAVE", true, Color::LightGreen),
+        ("RENAME", has_selection, Color::Yellow),
+        ("DELETE", has_selection, Color::LightRed),
+        ("CLOSE", true, Color::Gray),
+    ];
+    for (rect, (label, enabled, color)) in button_rects.into_iter().zip(button_specs) {
+        Paragraph::new(Line::from(vec![chip(
+            label,
+            Color::Black,
+            if enabled { color } else { Color::DarkGray },
+        )]))
+        .render(rect, frame.buffer_mut());
+    }
+
+    Paragraph::new(Line::from(vec![
+        Span::styled("ENTER ", subdued_style()),
+        Span::styled("load selected", muted_style()),
+        Span::raw("   "),
+        Span::styled("s/r/d ", subdued_style()),
+        Span::styled("save, rename, delete", muted_style()),
+    ]))
+    .wrap(Wrap { trim: false })
+    .render(sections[2], frame.buffer_mut());
+
+    if let Some(editor) = state.profile_editor.as_ref() {
+        let editor_area = profile_editor_area(area);
+        frame.render_widget(Clear, editor_area);
+        frame.render_widget(
+            panel_block(
+                match editor.mode {
+                    ProfileEditorMode::Save => "Save Profile",
+                    ProfileEditorMode::Rename => "Rename Profile",
+                },
+                Color::Yellow,
+                true,
+            ),
+            editor_area,
+        );
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner_area(editor_area));
+        Paragraph::new(Line::from(Span::styled(
+            if editor.value.is_empty() {
+                "profile name"
+            } else {
+                &editor.value
+            },
+            strong_style(Color::LightYellow),
+        )))
+        .render(rows[0], frame.buffer_mut());
+        Paragraph::new(Line::from(Span::styled(
+            "letters, digits, - and _",
+            muted_style(),
+        )))
+        .render(rows[1], frame.buffer_mut());
+        Paragraph::new(Line::from(vec![
+            Span::styled("ENTER ", subdued_style()),
+            Span::styled("confirm", muted_style()),
+            Span::raw("   "),
+            Span::styled("ESC ", subdued_style()),
+            Span::styled("cancel", muted_style()),
+        ]))
+        .render(rows[2], frame.buffer_mut());
+    }
 }
 
 fn afx_routing_layout(area: Rect) -> Vec<Rect> {
@@ -830,6 +1005,17 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .wrap(Wrap { trim: false }),
         layout[0],
     );
+    let header_buttons = mixer_header_button_rects(layout[0]);
+    Paragraph::new(Line::from(vec![chip(
+        "PROFILES",
+        Color::Black,
+        if state.profiles_popup_open {
+            Color::Yellow
+        } else {
+            Color::LightGreen
+        },
+    )]))
+    .render(header_buttons[0], frame.buffer_mut());
     Paragraph::new(Line::from(vec![chip(
         "ROUTING",
         Color::Black,
@@ -839,8 +1025,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             Color::LightMagenta
         },
     )]))
-    .alignment(Alignment::Right)
-    .render(routing_button_rect(layout[0]), frame.buffer_mut());
+    .render(header_buttons[1], frame.buffer_mut());
 
     let content = mixer_strip_panel_layout(layout[1], experimental_mix_meter(state).is_some());
     let inner = content[0];
@@ -1037,6 +1222,14 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
         return raw_mouse_action(area, state, point);
     }
 
+    if state.profile_editor.is_some() {
+        return profile_editor_mouse_action(area, point);
+    }
+
+    if state.profiles_popup_open {
+        return profiles_popup_mouse_action(area, state, point);
+    }
+
     if let Some(popup) = state.selector_popup {
         return selector_popup_mouse_action(area, popup, point);
     }
@@ -1076,6 +1269,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
 pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<MouseAction> {
     if state.hotkeys_popup_open
         || state.raw_view_open
+        || state.profiles_popup_open
         || state.selector_popup.is_some()
         || state.assignment_picker.is_some()
         || state.routing_popup_open
@@ -1103,6 +1297,7 @@ pub fn slider_wheel_action(
 ) -> Option<MouseAction> {
     if state.hotkeys_popup_open
         || state.raw_view_open
+        || state.profiles_popup_open
         || state.selector_popup.is_some()
         || state.assignment_picker.is_some()
         || state.routing_popup_open
@@ -1131,6 +1326,52 @@ fn routing_popup_mouse_action(
         return Some(MouseAction::CloseRoutingPopup);
     }
     afx_routing_mouse_action(popup, state, point)
+}
+
+fn profiles_popup_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let popup = profiles_popup_area(area);
+    if !contains_point(popup, point) {
+        return Some(MouseAction::CloseProfilesPopup);
+    }
+
+    let button_rects = profiles_popup_button_rects(popup);
+    if contains_point(button_rects[0], point) {
+        return Some(MouseAction::LoadSelectedProfile);
+    }
+    if contains_point(button_rects[1], point) {
+        return Some(MouseAction::StartSaveProfile);
+    }
+    if contains_point(button_rects[2], point) {
+        return Some(MouseAction::StartRenameProfile);
+    }
+    if contains_point(button_rects[3], point) {
+        return Some(MouseAction::DeleteSelectedProfile);
+    }
+    if contains_point(button_rects[4], point) {
+        return Some(MouseAction::CloseProfilesPopup);
+    }
+
+    let list_area = profiles_popup_layout(popup)[0];
+    if !contains_point(list_area, point) || state.profile_names.is_empty() {
+        return None;
+    }
+    let index = point.1.saturating_sub(list_area.y) as usize;
+    state
+        .profile_names
+        .get(index)
+        .map(|_| MouseAction::SelectProfile(index))
+}
+
+fn profile_editor_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+    if contains_point(profile_editor_area(area), point) {
+        None
+    } else {
+        Some(MouseAction::CloseProfilesPopup)
+    }
 }
 
 fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
@@ -1266,7 +1507,11 @@ fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> 
     if !contains_point(area, point) {
         return None;
     }
-    if contains_point(routing_button_rect(area), point) {
+    let buttons = mixer_header_button_rects(area);
+    if contains_point(buttons[0], point) {
+        return Some(MouseAction::OpenProfilesPopup);
+    }
+    if contains_point(buttons[1], point) {
         return Some(MouseAction::OpenRoutingPopup);
     }
     let tabs = surface_tab_hit_areas(area);
@@ -2788,7 +3033,7 @@ fn render_hotkeys_popup_text() -> Text<'static> {
         ),
         Line::from("  Outputs: m mute   d dim"),
         Line::from("  Mixer: o solo   a assignment   l link   [ ] pan   1/2 surface"),
-        Line::from("  Routing: click ROUTING in Mixer Surface header, then a opens source picker"),
+        Line::from("  Routing/Profiles: click ROUTING or PROFILES in Mixer Surface header"),
         Line::from("  Preamp: m phantom   p phase   3 mode"),
         Line::from(""),
         Line::from("Device / Inspector"),
@@ -3551,6 +3796,21 @@ mod tests {
     }
 
     #[test]
+    fn device_panel_layout_reserves_full_width_for_serial_and_hw_chips() {
+        let mut state = AppState::default();
+        state.device.metadata = Some(crate::protocol::DeviceMetadata {
+            product_name: "Zen Go Synergy Core".to_string(),
+            serial: "1234567890".to_string(),
+            hardware_version: "6.6".to_string(),
+        });
+
+        let device = titlebar_layout(Rect::new(0, 0, 90, 3))[0];
+        let metadata = device_panel_layout(device, &state)[1];
+
+        assert!(metadata.width >= chip_width("SN 1234567890") + 1 + chip_width("HW 6.6"));
+    }
+
+    #[test]
     fn device_header_prefers_live_sample_rate_readout_over_configured_rate() {
         let mut state = AppState::default();
         state.device.sample_rate = Some(SampleRate::Hz96000);
@@ -3722,12 +3982,27 @@ mod tests {
         let page = mixer_page_layout(root_chunks(area)[1]);
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
-        let button = routing_button_rect(mixer[0]);
+        let button = mixer_header_button_rects(mixer[0])[1];
         let point = (button.x + button.width / 2, button.y);
 
         assert_eq!(
             mouse_action(area, &AppState::default(), point.0, point.1),
             Some(MouseAction::OpenRoutingPopup)
+        );
+    }
+
+    #[test]
+    fn mouse_action_opens_profiles_popup_from_mixer_surface_button() {
+        let area = Rect::new(0, 0, 120, 50);
+        let page = mixer_page_layout(root_chunks(area)[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let button = mixer_header_button_rects(mixer[0])[0];
+        let point = (button.x + button.width / 2, button.y);
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), point.0, point.1),
+            Some(MouseAction::OpenProfilesPopup)
         );
     }
 

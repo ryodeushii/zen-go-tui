@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 
+use crate::profile::{preamp_mode_raw, DeviceProfile};
 use crate::protocol::{
     control_panel_startup_queries, encode_command, encode_link_companion,
     encode_mixer_assignment_frames_with_table, encode_query, ClockSource, Command, DeviceMetadata,
@@ -91,6 +92,19 @@ pub struct QueryReplyLogEntry {
     pub raw: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileEditorMode {
+    Save,
+    Rename,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfileEditorState {
+    pub mode: ProfileEditorMode,
+    pub original_name: Option<String>,
+    pub value: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub device: DeviceStatus,
@@ -127,6 +141,9 @@ pub struct AppState {
     pub assignment_picker: Option<AssignmentPickerState>,
     pub selector_popup: Option<SelectorPopupState>,
     pub routing_popup_open: bool,
+    pub profiles_popup_open: bool,
+    pub profile_names: Vec<String>,
+    pub profile_editor: Option<ProfileEditorState>,
     pub popup_selected_index: usize,
     pub hotkeys_popup_open: bool,
 }
@@ -179,6 +196,9 @@ impl Default for AppState {
             assignment_picker: None,
             selector_popup: None,
             routing_popup_open: false,
+            profiles_popup_open: false,
+            profile_names: Vec::new(),
+            profile_editor: None,
             popup_selected_index: 0,
             hotkeys_popup_open: false,
         }
@@ -465,6 +485,22 @@ impl AppState {
         self.hotkeys_popup_open = !self.hotkeys_popup_open;
     }
 
+    pub fn selected_profile_name(&self) -> Option<&str> {
+        self.profile_names
+            .get(self.popup_selected_index)
+            .map(String::as_str)
+    }
+
+    pub fn clamp_profile_selection(&mut self) {
+        if self.profile_names.is_empty() {
+            self.popup_selected_index = 0;
+        } else {
+            self.popup_selected_index = self
+                .popup_selected_index
+                .min(self.profile_names.len().saturating_sub(1));
+        }
+    }
+
     pub fn cycle_raw_packet(&mut self, forward: bool) {
         let tabs = [
             RawPacketTab::Query74,
@@ -662,6 +698,112 @@ impl Controller {
             self.state.observe_query_request(frame.clone());
             self.transport.write(&frame)?;
         }
+        Ok(())
+    }
+
+    pub fn apply_profile(&mut self, profile: &DeviceProfile) -> Result<()> {
+        profile.validate()?;
+
+        for (target, output) in [
+            (OutputTarget::Monitor, &profile.outputs.monitor),
+            (OutputTarget::Hp1, &profile.outputs.hp1),
+            (OutputTarget::Hp2, &profile.outputs.hp2),
+        ] {
+            self.send(Command::SetOutputVolume {
+                target,
+                step: output.volume_step,
+            })?;
+            self.send(Command::SetOutputDim {
+                target,
+                enabled: false,
+            })?;
+            self.send(Command::SetOutputMute {
+                target,
+                enabled: false,
+            })?;
+            match output.mode.into_device() {
+                OutputMode::Normal => {}
+                OutputMode::Mute => self.send(Command::SetOutputMute {
+                    target,
+                    enabled: true,
+                })?,
+                OutputMode::Dim => self.send(Command::SetOutputDim {
+                    target,
+                    enabled: true,
+                })?,
+                OutputMode::Unknown(_) => unreachable!(),
+            }
+        }
+
+        for (input, preamp) in [
+            (0_u8, &profile.preamps.input1),
+            (1_u8, &profile.preamps.input2),
+        ] {
+            self.send(Command::SetPreampMode {
+                input,
+                mode: preamp.mode.into_device(),
+            })?;
+            self.send(Command::SetPreampGain {
+                input,
+                raw: preamp.gain_raw,
+            })?;
+            self.send(Command::SetPreampPhantom {
+                input,
+                enabled: preamp.phantom_on,
+            })?;
+            self.send(Command::SetPreampPhase {
+                input,
+                enabled: preamp.phase_inverted,
+            })?;
+        }
+
+        let assignments = profile.assignment_table()?;
+        for entry in &profile.assignments {
+            for frame in encode_mixer_assignment_frames_with_table(
+                entry.channel,
+                entry.source.into_device(),
+                &assignments,
+            ) {
+                self.transport.write(&frame)?;
+            }
+        }
+
+        for (mixer, strips) in [
+            (MixerSurface::Mix1, &profile.mixers.mix1),
+            (MixerSurface::Mix2, &profile.mixers.mix2),
+        ] {
+            for strip in strips.iter().step_by(2) {
+                self.send_mixer_link_change(mixer, strip.channel, strip.linked)?;
+            }
+            for strip in strips {
+                self.send(Command::SetMixerLevel {
+                    mixer,
+                    channel: strip.channel,
+                    level: strip.level_raw,
+                    pan_state: PanState::from_raw(strip.pan_raw),
+                    muted: strip.muted,
+                    soloed: strip.soloed,
+                })?;
+            }
+        }
+
+        profile.apply_to_state(&mut self.state);
+        self.pending_mutation = None;
+        self.state.preamp.cluster = [
+            self.state.preamp.input1.gain_raw,
+            self.state.preamp.input2.gain_raw,
+            preamp_mode_raw(
+                profile.preamps.input1.mode,
+                profile.preamps.input1.phantom_on,
+                profile.preamps.input1.phase_inverted,
+            ),
+            preamp_mode_raw(
+                profile.preamps.input2.mode,
+                profile.preamps.input2.phantom_on,
+                profile.preamps.input2.phase_inverted,
+            ),
+        ];
+        self.state.last_message = "Applied profile".to_string();
         Ok(())
     }
 
@@ -1278,6 +1420,11 @@ fn link_pair_from_selector(mixer: MixerSurface, selector: u8) -> Option<(u8, u8)
 
 #[cfg(test)]
 mod tests {
+    use crate::profile::{
+        DeviceProfile, MixerAssignmentEntry, MixerAssignmentProfile, MixerProfiles,
+        MixerStripProfile, OutputModeProfile, OutputProfile, OutputProfiles, PreampInputProfile,
+        PreampModeProfile, PreampProfiles,
+    };
     use crate::protocol::{
         ClockSource, Command, DeviceSnapshot, MixerAssignment, MixerChannelState, MixerStrip,
         MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState,
@@ -1784,6 +1931,108 @@ mod tests {
             .expect("send preamp phase");
         controller.confirm_pending_write(snapshot());
         assert_eq!(controller.state.dsp_cluster[3], 0x40);
+    }
+
+    #[test]
+    fn apply_profile_updates_known_controls_and_writes_commands() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        let profile = DeviceProfile {
+            outputs: OutputProfiles {
+                monitor: OutputProfile {
+                    volume_step: 0x12,
+                    mode: OutputModeProfile::Dim,
+                },
+                hp1: OutputProfile {
+                    volume_step: 0x24,
+                    mode: OutputModeProfile::Mute,
+                },
+                hp2: OutputProfile {
+                    volume_step: 0x08,
+                    mode: OutputModeProfile::Normal,
+                },
+            },
+            preamps: PreampProfiles {
+                input1: PreampInputProfile {
+                    gain_raw: 0x20,
+                    mode: PreampModeProfile::Mic,
+                    phantom_on: true,
+                    phase_inverted: true,
+                },
+                input2: PreampInputProfile {
+                    gain_raw: 0x10,
+                    mode: PreampModeProfile::Line,
+                    phantom_on: false,
+                    phase_inverted: false,
+                },
+            },
+            assignments: (1..=16)
+                .map(|channel| MixerAssignmentEntry {
+                    channel,
+                    source: if channel == 1 {
+                        MixerAssignmentProfile::Preamp(1)
+                    } else {
+                        MixerAssignmentProfile::Mute
+                    },
+                })
+                .collect(),
+            mixers: MixerProfiles {
+                mix1: (1..=16)
+                    .map(|channel| MixerStripProfile {
+                        channel,
+                        level_raw: channel - 1,
+                        pan_raw: if channel == 1 {
+                            PanState::right().raw()
+                        } else {
+                            PanState::center().raw()
+                        },
+                        muted: channel % 2 == 0,
+                        soloed: channel == 2,
+                        linked: channel <= 2,
+                    })
+                    .collect(),
+                mix2: (1..=16)
+                    .map(|channel| MixerStripProfile {
+                        channel,
+                        level_raw: 0x30,
+                        pan_raw: PanState::left().raw(),
+                        muted: false,
+                        soloed: false,
+                        linked: false,
+                    })
+                    .collect(),
+            },
+        };
+
+        controller.apply_profile(&profile).expect("apply profile");
+
+        assert_eq!(controller.state.outputs[0].volume, 0x12);
+        assert_eq!(controller.state.outputs[0].mode, OutputMode::Dim);
+        assert_eq!(controller.state.outputs[1].mode, OutputMode::Mute);
+        assert_eq!(controller.state.preamp.input1.mode, PreampMode::Mic);
+        assert!(controller.state.preamp.input1.phantom_on);
+        assert_eq!(controller.state.preamp.input1.mode_raw & 0x40, 0x40);
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment,
+            Some(MixerAssignment::Preamp(1))
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan,
+            PanState::right()
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][1].soloed,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer_channels[MixerSurface::Mix2.index()][0].pan,
+            PanState::left()
+        );
+        assert!(!transport.take_writes().is_empty());
     }
 
     #[test]

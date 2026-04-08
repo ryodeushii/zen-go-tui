@@ -2,8 +2,8 @@ use std::io;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
-use clap::Parser;
+use anyhow::{bail, Result};
+use clap::{Parser, Subcommand};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -12,7 +12,13 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use zen_go_tui::app::{Controller, FocusArea, MainPage, SelectorPopupKind, SelectorPopupState};
+use zen_go_tui::app::{
+    Controller, FocusArea, MainPage, ProfileEditorMode, ProfileEditorState, SelectorPopupKind,
+    SelectorPopupState,
+};
+use zen_go_tui::profile::{
+    delete_profile, list_profile_names, profile_path, rename_profile, DeviceProfile,
+};
 use zen_go_tui::protocol::{
     ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, PanState, PreampMode,
     SampleRate, Surface,
@@ -29,6 +35,23 @@ use zen_go_tui::ui;
 struct Cli {
     #[arg(long)]
     mock: bool,
+
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum CliCommand {
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ProfileCommand {
+    Save { name: String },
+    Load { name: String },
 }
 
 const ZEN_GO_VID: u16 = 0x23e5;
@@ -50,7 +73,16 @@ fn should_draw_frame(last_draw_at: Option<Instant>, needs_redraw: bool, now: Ins
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let transport: Box<dyn Transport> = if cli.mock {
+    let transport = open_transport(cli.mock)?;
+
+    match cli.command {
+        Some(CliCommand::Profile { command }) => run_profile_command(transport, command),
+        None => run_app(transport),
+    }
+}
+
+fn open_transport(mock: bool) -> Result<Box<dyn Transport>> {
+    let transport: Box<dyn Transport> = if mock {
         Box::new(MockTransport::default())
     } else {
         wait_for_transport(
@@ -65,7 +97,177 @@ fn main() -> Result<()> {
         )?
     };
 
-    run_app(transport)
+    Ok(transport)
+}
+
+fn run_profile_command(transport: Box<dyn Transport>, command: ProfileCommand) -> Result<()> {
+    match command {
+        ProfileCommand::Save { name } => {
+            let mut controller = Controller::new(transport);
+            collect_profile_state(&mut controller)?;
+            let profile = DeviceProfile::capture(&controller.state)?;
+            let path = profile.write_named(&name)?;
+            println!("Saved profile to {}", path.display());
+            Ok(())
+        }
+        ProfileCommand::Load { name } => {
+            let profile = DeviceProfile::read_named(&name)?;
+            let path = profile_path(&name)?;
+            let mut controller = Controller::new(transport);
+            controller.apply_profile(&profile)?;
+            println!("Loaded profile from {}", path.display());
+            Ok(())
+        }
+    }
+}
+
+fn collect_profile_state(controller: &mut Controller) -> Result<()> {
+    const PROFILE_CAPTURE_TIMEOUT: Duration = Duration::from_secs(2);
+    const PROFILE_CAPTURE_POLL: Duration = Duration::from_millis(50);
+    const PROFILE_CAPTURE_IDLE_POLLS: usize = 2;
+
+    controller.bootstrap()?;
+
+    let deadline = Instant::now() + PROFILE_CAPTURE_TIMEOUT;
+    let mut idle_polls = 0;
+    while Instant::now() < deadline && idle_polls < PROFILE_CAPTURE_IDLE_POLLS {
+        if controller.poll_device(PROFILE_CAPTURE_POLL)? {
+            idle_polls = 0;
+        } else {
+            idle_polls += 1;
+        }
+    }
+
+    Ok(())
+}
+
+fn refresh_profile_names(controller: &mut Controller) -> Result<()> {
+    controller.state.profile_names = list_profile_names()?;
+    controller.state.clamp_profile_selection();
+    Ok(())
+}
+
+fn open_profiles_popup(controller: &mut Controller) -> Result<()> {
+    refresh_profile_names(controller)?;
+    controller.state.assignment_picker = None;
+    controller.state.selector_popup = None;
+    controller.state.routing_popup_open = false;
+    controller.state.profile_editor = None;
+    controller.state.profiles_popup_open = true;
+    controller.state.last_message = if controller.state.profile_names.is_empty() {
+        "No saved profiles yet. Use SAVE to create one.".to_string()
+    } else {
+        "Select a profile to load, or use SAVE/RENAME/DELETE.".to_string()
+    };
+    Ok(())
+}
+
+fn close_profiles_popup(controller: &mut Controller, message: &str) {
+    controller.state.profiles_popup_open = false;
+    controller.state.profile_editor = None;
+    controller.state.last_message = message.to_string();
+}
+
+fn start_profile_editor(controller: &mut Controller, mode: ProfileEditorMode) {
+    let current_name = controller.state.selected_profile_name().map(str::to_string);
+    let value = match mode {
+        ProfileEditorMode::Save => current_name.clone().unwrap_or_default(),
+        ProfileEditorMode::Rename => current_name.clone().unwrap_or_default(),
+    };
+    controller.state.profile_editor = Some(ProfileEditorState {
+        mode,
+        original_name: current_name,
+        value,
+    });
+    controller.state.last_message = match mode {
+        ProfileEditorMode::Save => "Enter a profile name, then press Enter to save.".to_string(),
+        ProfileEditorMode::Rename => {
+            "Edit the profile name, then press Enter to rename.".to_string()
+        }
+    };
+}
+
+fn append_profile_editor_text(controller: &mut Controller, text: &str) {
+    let Some(editor) = controller.state.profile_editor.as_mut() else {
+        return;
+    };
+
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            editor.value.push(ch);
+        }
+    }
+}
+
+fn commit_profile_editor(controller: &mut Controller) -> Result<()> {
+    let Some(editor) = controller.state.profile_editor.clone() else {
+        return Ok(());
+    };
+
+    match editor.mode {
+        ProfileEditorMode::Save => {
+            let profile = DeviceProfile::capture(&controller.state)?;
+            let path = profile.write_named(&editor.value)?;
+            refresh_profile_names(controller)?;
+            controller.state.popup_selected_index = controller
+                .state
+                .profile_names
+                .iter()
+                .position(|name| *name == editor.value)
+                .unwrap_or(0);
+            controller.state.profile_editor = None;
+            controller.state.last_message = format!("Saved profile to {}", path.display());
+        }
+        ProfileEditorMode::Rename => {
+            let Some(original_name) = editor.original_name.as_deref() else {
+                bail!("no profile selected to rename")
+            };
+            let path = rename_profile(original_name, &editor.value)?;
+            refresh_profile_names(controller)?;
+            controller.state.popup_selected_index = controller
+                .state
+                .profile_names
+                .iter()
+                .position(|name| *name == editor.value)
+                .unwrap_or(0);
+            controller.state.profile_editor = None;
+            controller.state.last_message = format!("Renamed profile to {}", path.display());
+        }
+    }
+
+    Ok(())
+}
+
+fn load_selected_profile(controller: &mut Controller) -> Result<()> {
+    let Some(name) = controller.state.selected_profile_name().map(str::to_string) else {
+        controller.state.last_message = "No profile selected to load.".to_string();
+        return Ok(());
+    };
+    let profile = DeviceProfile::read_named(&name)?;
+    controller.apply_profile(&profile)?;
+    close_profiles_popup(controller, &format!("Loaded profile {name}"));
+    Ok(())
+}
+
+fn delete_selected_profile(controller: &mut Controller) -> Result<()> {
+    let Some(name) = controller.state.selected_profile_name().map(str::to_string) else {
+        controller.state.last_message = "No profile selected to delete.".to_string();
+        return Ok(());
+    };
+    delete_profile(&name)?;
+    refresh_profile_names(controller)?;
+    controller.state.last_message = format!("Deleted profile {name}");
+    Ok(())
+}
+
+fn handle_profile_result(controller: &mut Controller, result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            controller.state.last_message = format!("Profile error: {error}");
+            Ok(())
+        }
+    }
 }
 
 fn wait_for_transport<T, F, R>(mut open: F, mut on_retry: R) -> Result<T>
@@ -155,6 +357,53 @@ fn handle_key_press(
         match key_code {
             AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
             AppKeyCode::Char('?') | AppKeyCode::Esc => controller.state.toggle_hotkeys_popup(),
+            _ => {}
+        }
+        return Ok(KeyAction::Continue);
+    }
+
+    if controller.state.profile_editor.is_some() {
+        match key_code {
+            AppKeyCode::Char(ch) => append_profile_editor_text(controller, &ch.to_string()),
+            AppKeyCode::Backspace => {
+                if let Some(editor) = controller.state.profile_editor.as_mut() {
+                    editor.value.pop();
+                }
+            }
+            AppKeyCode::Enter => {
+                let result = commit_profile_editor(controller);
+                handle_profile_result(controller, result)?
+            }
+            AppKeyCode::Esc => {
+                controller.state.profile_editor = None;
+                controller.state.last_message = "Cancelled profile edit".to_string();
+            }
+            _ => {}
+        }
+        return Ok(KeyAction::Continue);
+    }
+
+    if controller.state.profiles_popup_open {
+        match key_code {
+            AppKeyCode::Up => move_popup_selection(controller, false),
+            AppKeyCode::Down => move_popup_selection(controller, true),
+            AppKeyCode::Enter => {
+                let result = load_selected_profile(controller);
+                handle_profile_result(controller, result)?
+            }
+            AppKeyCode::Char('s') => start_profile_editor(controller, ProfileEditorMode::Save),
+            AppKeyCode::Char('r') => {
+                if controller.state.selected_profile_name().is_some() {
+                    start_profile_editor(controller, ProfileEditorMode::Rename);
+                } else {
+                    controller.state.last_message = "No profile selected to rename.".to_string();
+                }
+            }
+            AppKeyCode::Char('d') => {
+                let result = delete_selected_profile(controller);
+                handle_profile_result(controller, result)?
+            }
+            AppKeyCode::Esc => close_profiles_popup(controller, "Closed profiles popup"),
             _ => {}
         }
         return Ok(KeyAction::Continue);
@@ -353,10 +602,15 @@ fn app_loop(
                 }
                 needs_redraw = true;
             }
+            Some(AppInputEvent::Paste(text)) => {
+                if controller.state.profile_editor.is_some() {
+                    append_profile_editor_text(controller, &text);
+                }
+                needs_redraw = true;
+            }
             Some(AppInputEvent::Resize { .. })
             | Some(AppInputEvent::FocusGained)
-            | Some(AppInputEvent::FocusLost)
-            | Some(AppInputEvent::Paste(_)) => needs_redraw = true,
+            | Some(AppInputEvent::FocusLost) => needs_redraw = true,
             None => {}
         }
     }
@@ -407,6 +661,8 @@ fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layou
 fn popup_item_count(controller: &Controller) -> usize {
     if controller.state.assignment_picker.is_some() {
         MixerAssignment::grounded_choices().len()
+    } else if controller.state.profiles_popup_open {
+        controller.state.profile_names.len()
     } else if let Some(popup) = controller.state.selector_popup {
         match popup.kind {
             SelectorPopupKind::SampleRate => SampleRate::all_confirmed().len(),
@@ -449,6 +705,10 @@ fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
                 },
             );
         }
+    }
+
+    if controller.state.profiles_popup_open {
+        return load_selected_profile(controller);
     }
 
     if let Some(popup) = controller.state.selector_popup {
@@ -730,7 +990,16 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
         ui::MouseAction::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
+        ui::MouseAction::OpenProfilesPopup => {
+            let result = open_profiles_popup(controller);
+            handle_profile_result(controller, result)?
+        }
+        ui::MouseAction::CloseProfilesPopup => {
+            close_profiles_popup(controller, "Closed profiles popup");
+        }
         ui::MouseAction::OpenRoutingPopup => {
+            controller.state.profiles_popup_open = false;
+            controller.state.profile_editor = None;
             controller.state.routing_popup_open = true;
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = controller.state.selected_channel.min(7);
@@ -741,6 +1010,30 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         ui::MouseAction::CloseRoutingPopup => {
             controller.state.routing_popup_open = false;
             controller.state.last_message = "Closed routing popup".to_string();
+        }
+        ui::MouseAction::SelectProfile(index) => {
+            controller.state.popup_selected_index =
+                index.min(controller.state.profile_names.len().saturating_sub(1));
+        }
+        ui::MouseAction::LoadSelectedProfile => {
+            let result = load_selected_profile(controller);
+            handle_profile_result(controller, result)?
+        }
+        ui::MouseAction::StartSaveProfile => {
+            if controller.state.profiles_popup_open {
+                start_profile_editor(controller, ProfileEditorMode::Save);
+            }
+        }
+        ui::MouseAction::StartRenameProfile => {
+            if controller.state.selected_profile_name().is_some() {
+                start_profile_editor(controller, ProfileEditorMode::Rename);
+            } else {
+                controller.state.last_message = "No profile selected to rename.".to_string();
+            }
+        }
+        ui::MouseAction::DeleteSelectedProfile => {
+            let result = delete_selected_profile(controller);
+            handle_profile_result(controller, result)?
         }
         ui::MouseAction::PageMixerStripsLeft => {
             controller.state.focus = FocusArea::Mixer;
@@ -1192,7 +1485,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use zen_go_tui::app::AssignmentPickerState;
+    use zen_go_tui::app::{AssignmentPickerState, ProfileEditorMode, ProfileEditorState};
     use zen_go_tui::protocol::{
         control_panel_startup_queries, MixerAssignment, MixerSurface, OutputState, OutputTarget,
     };
@@ -1823,6 +2116,53 @@ mod tests {
 
         move_popup_selection(&mut controller, true);
         assert_eq!(controller.state.popup_selected_index, 0);
+    }
+
+    #[test]
+    fn profile_popup_selection_uses_saved_profile_list() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.profiles_popup_open = true;
+        controller.state.profile_names = vec!["tracking".to_string(), "mixdown".to_string()];
+
+        move_popup_selection(&mut controller, false);
+        assert_eq!(controller.state.popup_selected_index, 1);
+
+        move_popup_selection(&mut controller, true);
+        assert_eq!(controller.state.popup_selected_index, 0);
+    }
+
+    #[test]
+    fn profile_editor_accepts_characters_and_backspace() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.profile_editor = Some(ProfileEditorState {
+            mode: ProfileEditorMode::Save,
+            original_name: None,
+            value: "mix".to_string(),
+        });
+
+        handle_key_press(
+            &mut controller,
+            AppKeyCode::Char('1'),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("append profile name char");
+        handle_key_press(
+            &mut controller,
+            AppKeyCode::Backspace,
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("backspace profile name char");
+
+        assert_eq!(
+            controller
+                .state
+                .profile_editor
+                .as_ref()
+                .map(|editor| &editor.value),
+            Some(&"mix".to_string())
+        );
     }
 
     #[test]
