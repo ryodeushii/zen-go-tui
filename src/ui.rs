@@ -226,7 +226,12 @@ fn draw_status(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .device
         .metadata
         .as_ref()
-        .map(|m| format!("{} v{}", m.product_name, m.version))
+        .map(|m| {
+            format!(
+                "{} hw {} serial {}",
+                m.product_name, m.hardware_version, m.serial
+            )
+        })
         .unwrap_or_else(|| "metadata pending".to_string());
     let query00 = state
         .startup_query_summary(0x00)

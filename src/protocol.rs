@@ -764,7 +764,7 @@ impl Snapshot73 {
 pub struct DeviceMetadata {
     pub product_name: String,
     pub serial: String,
-    pub version: String,
+    pub hardware_version: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -887,7 +887,7 @@ impl QueryReply75 {
         Some(DeviceMetadata {
             product_name: parts[0].clone(),
             serial: parts[1].clone(),
-            version: parts[2].clone(),
+            hardware_version: parts[2].clone(),
         })
     }
 
@@ -951,10 +951,10 @@ impl QueryReply75 {
                 .metadata()
                 .map(|metadata| {
                     format!(
-                        "{}: {} ({}, serial {})",
+                        "{}: {} (hw {}, serial {})",
                         self.kind().label(),
                         metadata.product_name,
-                        metadata.version,
+                        metadata.hardware_version,
                         metadata.serial
                     )
                 })
@@ -2342,7 +2342,7 @@ mod tests {
 
         assert_eq!(metadata.product_name, "Zen Go Synergy Core");
         assert_eq!(metadata.serial, "4502721001300");
-        assert_eq!(metadata.version, "6.6");
+        assert_eq!(metadata.hardware_version, "6.6");
     }
 
     #[test]

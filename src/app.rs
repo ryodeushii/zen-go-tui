@@ -249,8 +249,8 @@ impl AppState {
                 self.push_query_reply_log(&reply, raw);
                 if let Some(metadata) = reply.metadata() {
                     self.last_message = format!(
-                        "Connected to {} ({})",
-                        metadata.product_name, metadata.version
+                        "Connected to {} (hw {}, serial {})",
+                        metadata.product_name, metadata.hardware_version, metadata.serial
                     );
                     self.device.metadata = Some(metadata);
                 }
@@ -2292,6 +2292,37 @@ mod tests {
         assert_eq!(
             state.startup_query_summary(0x11),
             Some("Status/capability value: 1 bytes [12]")
+        );
+    }
+
+    #[test]
+    fn metadata_reply_updates_serial_and_hardware_version() {
+        let mut state = AppState::default();
+
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                query_id: 0x01,
+                sub_id: 0x00,
+                body: [
+                    b"Zen Go Synergy Core".as_slice(),
+                    b"\0".as_slice(),
+                    b"4502721001300".as_slice(),
+                    b"\0".as_slice(),
+                    b"6.6".as_slice(),
+                    b"\0".as_slice(),
+                ]
+                .concat(),
+            }),
+            vec![0x75, 0, 0, 0],
+        );
+
+        let metadata = state.device.metadata.expect("metadata");
+        assert_eq!(metadata.product_name, "Zen Go Synergy Core");
+        assert_eq!(metadata.serial, "4502721001300");
+        assert_eq!(metadata.hardware_version, "6.6");
+        assert_eq!(
+            state.last_message,
+            "Connected to Zen Go Synergy Core (hw 6.6, serial 4502721001300)"
         );
     }
 
