@@ -546,13 +546,14 @@ impl Controller {
     }
 
     pub fn send(&mut self, command: Command) -> Result<()> {
-        self.pending_mutation = pending_from_command(command);
+        let pending_mutation = pending_from_command(command);
         if let Command::SetMixerAssignment { strip, assignment } = command {
             let assignments = self.shared_assignment_table()?;
             for frame in encode_mixer_assignment_frames_with_table(strip, assignment, &assignments)
             {
                 self.transport.write(&frame)?;
             }
+            self.pending_mutation = pending_mutation;
             self.state.last_message = format!("Sent {:?}", command);
             return Ok(());
         }
@@ -569,6 +570,7 @@ impl Controller {
         if matches!(command, Command::SelectSurface(_)) {
             self.refresh_queried_state()?;
         }
+        self.pending_mutation = pending_mutation;
         self.state.last_message = format!("Sent {:?}", command);
         Ok(())
     }
@@ -605,7 +607,7 @@ impl Controller {
                 bail!("invalid linked right channel {right_channel}");
             };
 
-            self.pending_mutation = Some(PendingMutation::MixerLinkedLevel {
+            let pending_mutation = Some(PendingMutation::MixerLinkedLevel {
                 mixer,
                 left_channel,
                 right_channel,
@@ -627,6 +629,7 @@ impl Controller {
                     level,
                     pan_state: right.pan,
                 }))?;
+            self.pending_mutation = pending_mutation;
             self.state.last_message = format!(
                 "Sent linked mixer level {:?} ch {}-{}",
                 mixer, left_channel, right_channel
@@ -674,7 +677,7 @@ impl Controller {
                 bail!("invalid linked right channel {right_channel}");
             };
 
-            self.pending_mutation = Some(PendingMutation::MixerLinkedMute {
+            let pending_mutation = Some(PendingMutation::MixerLinkedMute {
                 mixer,
                 left_channel,
                 right_channel,
@@ -694,6 +697,7 @@ impl Controller {
                     muted,
                     pan_state: right.pan,
                 }))?;
+            self.pending_mutation = pending_mutation;
             self.state.last_message = format!(
                 "Sent linked mixer mute {:?} ch {}-{}",
                 mixer, left_channel, right_channel
@@ -718,7 +722,7 @@ impl Controller {
         let Some(target) = MixerLinkTarget::from_channel(mixer, channel) else {
             bail!("invalid mixer link channel {channel}");
         };
-        self.pending_mutation = Some(PendingMutation::MixerLinkExplicit {
+        let pending_mutation = Some(PendingMutation::MixerLinkExplicit {
             mixer,
             left_channel: target.left_channel,
             right_channel: target.right_channel,
@@ -734,6 +738,7 @@ impl Controller {
                 enabled,
                 companion_bank: None,
             }))?;
+        self.pending_mutation = pending_mutation;
         self.state.last_message = format!(
             "Sent mixer link {:?} ch {}-{}",
             mixer, target.left_channel, target.right_channel

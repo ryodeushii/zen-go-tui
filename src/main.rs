@@ -1,4 +1,5 @@
 use std::io;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -19,7 +20,7 @@ use zen_go_tui::protocol::{
     ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, OutputTarget, PanState,
     PreampMode, SampleRate, Surface,
 };
-use zen_go_tui::transport::{HidTransport, MockTransport, Transport};
+use zen_go_tui::transport::{is_device_error, HidTransport, MockTransport, Transport};
 use zen_go_tui::ui;
 
 #[derive(Parser, Debug)]
@@ -31,16 +32,55 @@ struct Cli {
 
 const ZEN_GO_VID: u16 = 0x23e5;
 const ZEN_GO_PID: u16 = 0xa015;
+const DEVICE_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let transport: Box<dyn Transport> = if cli.mock {
         Box::new(MockTransport::default())
     } else {
-        Box::new(HidTransport::open(ZEN_GO_VID, ZEN_GO_PID)?)
+        wait_for_transport(
+            || Ok(Box::new(HidTransport::open(ZEN_GO_VID, ZEN_GO_PID)?) as Box<dyn Transport>),
+            |attempt, _| {
+                if attempt == 1 {
+                    eprintln!("Waiting for Zen Go device...");
+                }
+                thread::sleep(DEVICE_RETRY_INTERVAL);
+                Ok(())
+            },
+        )?
     };
 
     run_app(transport)
+}
+
+fn wait_for_transport<T, F, R>(mut open: F, mut on_retry: R) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+    R: FnMut(usize, &anyhow::Error) -> Result<()>,
+{
+    let mut retries = 0;
+
+    loop {
+        match open() {
+            Ok(transport) => return Ok(transport),
+            Err(error) if is_device_error(&error) => {
+                retries += 1;
+                on_retry(retries, &error)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn handle_runtime_error(controller: &mut Controller, error: anyhow::Error) -> Result<()> {
+    if is_device_error(&error) {
+        controller.state.mark_disconnected();
+        controller.state.last_message = "Waiting for Zen Go device...".to_string();
+        return Ok(());
+    }
+
+    Err(error)
 }
 
 fn run_app(transport: Box<dyn Transport>) -> Result<()> {
@@ -64,7 +104,9 @@ fn app_loop(
     controller: &mut Controller,
 ) -> Result<()> {
     loop {
-        controller.poll_device(Duration::from_millis(5))?;
+        if let Err(error) = controller.poll_device(Duration::from_millis(5)) {
+            handle_runtime_error(controller, error)?;
+        }
         terminal.draw(|frame| ui::draw(frame, &controller.state))?;
 
         if !event::poll(Duration::from_millis(10))? {
@@ -77,18 +119,28 @@ fn app_loop(
                     continue;
                 }
 
-                match key.code {
+                let result = match key.code {
                     KeyCode::Char('q') => break,
-                    KeyCode::Char('r') => controller.state.toggle_raw_view(),
-                    KeyCode::Char('R') => {
-                        controller.refresh_queried_state()?;
-                        controller.state.last_message =
-                            "Sent captured 0x74 startup/state refresh sweep".to_string();
+                    KeyCode::Char('r') => {
+                        controller.state.toggle_raw_view();
+                        Ok(())
                     }
-                    KeyCode::Tab => controller.state.cycle_focus(),
+                    KeyCode::Char('R') => match controller.refresh_queried_state() {
+                        Ok(()) => {
+                            controller.state.last_message =
+                                "Sent captured 0x74 startup/state refresh sweep".to_string();
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    },
+                    KeyCode::Tab => {
+                        controller.state.cycle_focus();
+                        Ok(())
+                    }
                     KeyCode::Char('?') => {
                         controller.state.last_message =
                             "Status: s/c with grounded startup 0x75 summaries. Outputs: +/- m d. Mixer: +/- m [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ tabs, Query75 ←/→ history, b/x baseline. R sends the captured 0x74 refresh sweep.".to_string();
+                        Ok(())
                     }
                     KeyCode::Left if controller.state.raw_view_open => {
                         if controller.state.selected_raw_packet
@@ -98,6 +150,7 @@ fn app_loop(
                         } else {
                             controller.state.cycle_raw_packet(false)
                         }
+                        Ok(())
                     }
                     KeyCode::Right if controller.state.raw_view_open => {
                         if controller.state.selected_raw_packet
@@ -107,48 +160,64 @@ fn app_loop(
                         } else {
                             controller.state.cycle_raw_packet(true)
                         }
+                        Ok(())
                     }
-                    KeyCode::Left => move_selection(controller, false),
-                    KeyCode::Right => move_selection(controller, true),
-                    KeyCode::Char('+') | KeyCode::Char('=') => adjust_focused(controller, true)?,
-                    KeyCode::Char('-') => adjust_focused(controller, false)?,
-                    KeyCode::Char('m') => toggle_mute(controller)?,
-                    KeyCode::Char('d') => toggle_dim(controller)?,
-                    KeyCode::Char('a') => cycle_mixer_assignment(controller)?,
-                    KeyCode::Char('l') => toggle_mixer_link(controller)?,
-                    KeyCode::Char('[') => adjust_mixer_pan(controller, false)?,
-                    KeyCode::Char(']') => adjust_mixer_pan(controller, true)?,
-                    KeyCode::Char('p') => toggle_preamp_phase(controller)?,
-                    KeyCode::Char('3') => cycle_preamp_mode(controller)?,
-                    KeyCode::Char('s') => cycle_sample_rate(controller)?,
-                    KeyCode::Char('c') => cycle_clock_source(controller)?,
+                    KeyCode::Left => {
+                        move_selection(controller, false);
+                        Ok(())
+                    }
+                    KeyCode::Right => {
+                        move_selection(controller, true);
+                        Ok(())
+                    }
+                    KeyCode::Char('+') | KeyCode::Char('=') => adjust_focused(controller, true),
+                    KeyCode::Char('-') => adjust_focused(controller, false),
+                    KeyCode::Char('m') => toggle_mute(controller),
+                    KeyCode::Char('d') => toggle_dim(controller),
+                    KeyCode::Char('a') => cycle_mixer_assignment(controller),
+                    KeyCode::Char('l') => toggle_mixer_link(controller),
+                    KeyCode::Char('[') => adjust_mixer_pan(controller, false),
+                    KeyCode::Char(']') => adjust_mixer_pan(controller, true),
+                    KeyCode::Char('p') => toggle_preamp_phase(controller),
+                    KeyCode::Char('3') => cycle_preamp_mode(controller),
+                    KeyCode::Char('s') => cycle_sample_rate(controller),
+                    KeyCode::Char('c') => cycle_clock_source(controller),
                     KeyCode::Char('1') => {
-                        controller.send(Command::SelectSurface(Surface::MonitorHp1))?
+                        controller.send(Command::SelectSurface(Surface::MonitorHp1))
                     }
-                    KeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2))?,
+                    KeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2)),
                     KeyCode::Char('b') if controller.state.raw_view_open => {
                         controller.state.capture_raw_baseline();
                         controller.state.last_message =
                             "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
+                        Ok(())
                     }
                     KeyCode::Char('x') if controller.state.raw_view_open => {
                         controller.state.clear_raw_baseline();
                         controller.state.last_message = "Cleared raw baseline".to_string();
+                        Ok(())
                     }
                     KeyCode::Esc if controller.state.assignment_picker.is_some() => {
                         controller.state.assignment_picker = None;
                         controller.state.last_message = "Closed assignment picker".to_string();
+                        Ok(())
                     }
-                    _ => {}
+                    _ => Ok(()),
+                };
+
+                if let Err(error) = result {
+                    handle_runtime_error(controller, error)?;
                 }
             }
             Event::Mouse(mouse) => {
                 let size = terminal.size()?;
-                handle_mouse_event(
+                if let Err(error) = handle_mouse_event(
                     ratatui::layout::Rect::new(0, 0, size.width, size.height),
                     controller,
                     mouse,
-                )?
+                ) {
+                    handle_runtime_error(controller, error)?;
+                }
             }
             _ => {}
         }
@@ -601,6 +670,7 @@ mod tests {
 
     use zen_go_tui::app::AssignmentPickerState;
     use zen_go_tui::protocol::{MixerAssignment, MixerSurface};
+    use zen_go_tui::transport::TransportError;
 
     fn seed_shared_assignments(controller: &mut Controller) {
         let assignments = [
@@ -673,5 +743,46 @@ mod tests {
         assert_eq!(writes.len(), 5);
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
         assert_eq!(&writes[0][0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
+    }
+
+    #[test]
+    fn wait_for_transport_retries_until_device_appears() {
+        let mut attempts = 0;
+        let mut retries = 0;
+
+        let _transport = wait_for_transport(
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(TransportError::DeviceUnavailable.into())
+                } else {
+                    Ok(Box::new(MockTransport::default()) as Box<dyn Transport>)
+                }
+            },
+            |count, _| {
+                retries = count;
+                Ok(())
+            },
+        )
+        .expect("transport should eventually open");
+
+        assert_eq!(attempts, 3);
+        assert_eq!(retries, 2);
+    }
+
+    #[test]
+    fn handle_runtime_error_marks_controller_disconnected_for_device_errors() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.connection.connected = true;
+
+        handle_runtime_error(&mut controller, TransportError::DeviceDisconnected.into())
+            .expect("device errors should be swallowed");
+
+        assert!(!controller.state.connection.connected);
+        assert_eq!(
+            controller.state.last_message,
+            "Waiting for Zen Go device..."
+        );
     }
 }

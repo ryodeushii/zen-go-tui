@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
+use std::error::Error as StdError;
+use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use hidapi::{HidApi, HidDevice};
@@ -10,46 +12,141 @@ pub trait Transport: Send {
     fn read(&self, timeout: Duration) -> Result<Option<Vec<u8>>>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportError {
+    DeviceUnavailable,
+    DeviceDisconnected,
+}
+
+impl fmt::Display for TransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DeviceUnavailable => write!(f, "device unavailable"),
+            Self::DeviceDisconnected => write!(f, "device disconnected"),
+        }
+    }
+}
+
+impl StdError for TransportError {}
+
+pub fn is_device_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<TransportError>().is_some()
+}
+
+const HID_RECONNECT_INTERVAL: Duration = Duration::from_millis(500);
+
+#[derive(Default)]
+struct HidTransportState {
+    device: Option<HidDevice>,
+    last_open_attempt: Option<Instant>,
+}
+
 pub struct HidTransport {
-    device: Arc<Mutex<HidDevice>>,
+    vid: u16,
+    pid: u16,
+    state: Arc<Mutex<HidTransportState>>,
 }
 
 impl HidTransport {
     pub fn open(vid: u16, pid: u16) -> Result<Self> {
-        let api = HidApi::new()?;
-        let device = api.open(vid, pid)?;
+        let device = open_hid_device(vid, pid)?;
         Ok(Self {
-            device: Arc::new(Mutex::new(device)),
+            vid,
+            pid,
+            state: Arc::new(Mutex::new(HidTransportState {
+                device: Some(device),
+                last_open_attempt: None,
+            })),
         })
+    }
+
+    fn ensure_device(state: &mut HidTransportState, vid: u16, pid: u16) -> Result<bool> {
+        if state.device.is_some() {
+            return Ok(true);
+        }
+
+        if state
+            .last_open_attempt
+            .is_some_and(|instant| instant.elapsed() < HID_RECONNECT_INTERVAL)
+        {
+            return Ok(false);
+        }
+
+        state.last_open_attempt = Some(Instant::now());
+
+        match open_hid_device(vid, pid) {
+            Ok(device) => {
+                state.device = Some(device);
+                state.last_open_attempt = None;
+                Ok(true)
+            }
+            Err(error) if is_device_error(&error) => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 }
 
 impl Transport for HidTransport {
     fn write(&self, data: &[u8]) -> Result<()> {
-        let device = self
-            .device
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| anyhow!("hid device lock poisoned"))?;
-        device.write(data)?;
+
+        if !Self::ensure_device(&mut state, self.vid, self.pid)? {
+            return Err(TransportError::DeviceUnavailable.into());
+        }
+
+        let Some(device) = state.device.as_ref() else {
+            return Err(TransportError::DeviceUnavailable.into());
+        };
+
+        if device.write(data).is_err() {
+            state.device = None;
+            state.last_open_attempt = Some(Instant::now());
+            return Err(TransportError::DeviceDisconnected.into());
+        }
         Ok(())
     }
 
     fn read(&self, timeout: Duration) -> Result<Option<Vec<u8>>> {
-        let device = self
-            .device
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| anyhow!("hid device lock poisoned"))?;
+
+        if !Self::ensure_device(&mut state, self.vid, self.pid)? {
+            return Ok(None);
+        }
+
+        let Some(device) = state.device.as_ref() else {
+            return Ok(None);
+        };
+
         let mut buffer = vec![0_u8; 320];
-        let bytes = device.read_timeout(
+        let bytes = match device.read_timeout(
             &mut buffer,
             timeout.as_millis().clamp(0, i32::MAX as u128) as i32,
-        )?;
+        ) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                state.device = None;
+                state.last_open_attempt = Some(Instant::now());
+                return Err(TransportError::DeviceDisconnected.into());
+            }
+        };
         if bytes == 0 {
             return Ok(None);
         }
         buffer.truncate(bytes);
         Ok(Some(buffer))
     }
+}
+
+fn open_hid_device(vid: u16, pid: u16) -> Result<HidDevice> {
+    let api = HidApi::new()?;
+    api.open(vid, pid)
+        .map_err(|_| anyhow!(TransportError::DeviceUnavailable))
 }
 
 #[derive(Clone, Default)]
