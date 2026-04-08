@@ -14,10 +14,11 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
-crossterm = "0.28"
+crossterm = "0.29"
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
-ratatui = "0.29"
+ratatui = "0.30"
 termprofile = "0.2.2"
 terminput = "0.5.14"
-terminput-crossterm = { version = "0.4.10", default-features = false, features = ["crossterm_0_28"] }
+terminput-crossterm = { version = "0.4.10", default-features = false, features = ["crossterm_0_29"] }
 thiserror = "2.0"
+tui-slider = "0.3.2"

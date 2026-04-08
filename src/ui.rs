@@ -1,10 +1,14 @@
 use std::time::Duration;
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, Gauge, LineGauge, List, ListItem, Paragraph, Widget, Wrap,
+};
 use ratatui::Frame;
+use tui_slider::{Slider, SliderOrientation, SliderState};
 
 use crate::app::{
     AppState, AssignmentPickerState, FocusArea, MainPage, RawPacketTab, SelectorPopupKind,
@@ -356,27 +360,27 @@ fn draw_afx_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
 fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = output_panel_layout(area);
-
-    let items = state
-        .outputs
-        .iter()
-        .enumerate()
-        .map(|(index, output)| {
-            ListItem::new(render_output_card(
-                output,
-                state.focus == FocusArea::Outputs && state.selected_output == index,
-            ))
-        })
-        .collect::<Vec<_>>();
-
     frame.render_widget(
-        List::new(items).block(panel_block(
+        panel_block(
             "Outputs",
             Color::Rgb(70, 120, 90),
             state.focus == FocusArea::Outputs,
-        )),
+        ),
         sections[0],
     );
+    let inner = inner_area(sections[0]);
+    for (index, output) in state.outputs.iter().enumerate() {
+        let y = inner.y + index as u16 * output_card_height();
+        if y + output_card_height() > inner.y + inner.height {
+            break;
+        }
+        render_output_card_widget(
+            Rect::new(inner.x, y, inner.width, output_card_height()),
+            frame.buffer_mut(),
+            output,
+            state.focus == FocusArea::Outputs && state.selected_output == index,
+        );
+    }
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
@@ -425,18 +429,14 @@ fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             "CH 2"
         };
 
-        frame.render_widget(
-            render_preamp_gauge(
-                title,
-                input,
-                state.focus == FocusArea::Preamp && state.selected_preamp_input == index,
-            ),
+        render_preamp_visual_widget(
             parts[0],
+            frame.buffer_mut(),
+            title,
+            input,
+            state.focus == FocusArea::Preamp && state.selected_preamp_input == index,
         );
         frame.render_widget(preamp_controls_paragraph(input), parts[1]);
-        if let Some(meter_area) = inner_bottom_line(parts[0]) {
-            frame.render_widget(render_preamp_observed_meter(input), meter_area);
-        }
     }
 }
 
@@ -468,20 +468,28 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         layout[0],
     );
 
-    let items: Vec<ListItem<'_>> = state
-        .active_mixer_channels()
-        .iter()
-        .enumerate()
-        .map(|(index, channel)| ListItem::new(render_mixer_strip_item(state, index, channel)))
-        .collect();
     frame.render_widget(
-        List::new(items).block(panel_block(
+        panel_block(
             "Mixer Strips",
             Color::Rgb(70, 100, 130),
             state.focus == FocusArea::Mixer,
-        )),
+        ),
         layout[1],
     );
+    let inner = inner_area(layout[1]);
+    for (index, channel) in state.active_mixer_channels().iter().enumerate() {
+        let y = inner.y + index as u16 * mixer_strip_height();
+        if y + mixer_strip_height() > inner.y + inner.height {
+            break;
+        }
+        render_mixer_strip_widget(
+            Rect::new(inner.x, y, inner.width, mixer_strip_height()),
+            frame.buffer_mut(),
+            state,
+            index,
+            channel,
+        );
+    }
 }
 
 fn draw_status_strip(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -774,14 +782,14 @@ fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> O
     if point.1 < inner.y {
         return None;
     }
-    let row = point.1.saturating_sub(inner.y) / 2;
+    let row = point.1.saturating_sub(inner.y) / mixer_strip_height();
     let index = row as usize;
     let channel = state.active_mixer_channels().get(index)?.channel;
     let row_area = Rect {
         x: inner.x,
-        y: inner.y + row * 2,
+        y: inner.y + row * mixer_strip_height(),
         width: inner.width,
-        height: 2,
+        height: mixer_strip_height(),
     };
     if point.1 == row_area.y {
         return Some(MouseAction::SelectMixerChannel(index));
@@ -916,6 +924,10 @@ fn output_card_height() -> u16 {
     4
 }
 
+fn mixer_strip_height() -> u16 {
+    3
+}
+
 fn output_control_rects(area: Rect) -> Vec<Rect> {
     inline_chip_rects(
         area.x,
@@ -929,6 +941,357 @@ fn contains_point(area: Rect, point: (u16, u16)) -> bool {
         && point.0 < area.x.saturating_add(area.width)
         && point.1 >= area.y
         && point.1 < area.y.saturating_add(area.height)
+}
+
+fn slider_state(ratio: Option<f64>) -> SliderState {
+    SliderState::new(ratio.unwrap_or(0.0).clamp(0.0, 1.0) * 100.0, 0.0, 100.0)
+}
+
+fn meter_slider(ratio: Option<f64>, color: Color) -> Slider<'static> {
+    let state = slider_state(ratio);
+    Slider::from_state(&state)
+        .orientation(SliderOrientation::Horizontal)
+        .show_value(false)
+        .show_handle(false)
+        .filled_symbol("█")
+        .empty_symbol("░")
+        .filled_color(terminal::adapt_color(color))
+        .empty_color(terminal::adapt_color(Color::DarkGray))
+}
+
+fn level_slider(ratio: Option<f64>, color: Color) -> Slider<'static> {
+    let state = slider_state(ratio);
+    Slider::from_state(&state)
+        .orientation(SliderOrientation::Horizontal)
+        .show_value(false)
+        .show_handle(true)
+        .filled_symbol("─")
+        .empty_symbol("┄")
+        .handle_symbol("●")
+        .filled_color(terminal::adapt_color(color))
+        .empty_color(terminal::adapt_color(Color::DarkGray))
+        .handle_color(terminal::adapt_color(Color::White))
+}
+
+fn signal_slider_label(prefix: &str, value: Option<String>) -> String {
+    value
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("{prefix} {value}"))
+        .unwrap_or_else(|| prefix.to_string())
+}
+
+fn render_labeled_slider(
+    area: Rect,
+    buffer: &mut Buffer,
+    label: &str,
+    ratio: Option<f64>,
+    color: Color,
+    show_handle: bool,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let label_width = (label.chars().count() as u16 + 1)
+        .min(12)
+        .min(area.width.saturating_sub(1))
+        .max(1);
+    let sections = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(label_width), Constraint::Min(1)])
+        .split(area);
+    Paragraph::new(Line::from(Span::styled(
+        format!("{label} "),
+        strong_style(color),
+    )))
+    .render(sections[0], buffer);
+    if show_handle {
+        level_slider(ratio, color).render(sections[1], buffer);
+    } else {
+        meter_slider(ratio, color).render(sections[1], buffer);
+    }
+}
+
+fn render_stacked_signal_rows(
+    area: Rect,
+    buffer: &mut Buffer,
+    meter_label: &str,
+    meter_ratio: Option<f64>,
+    level_label: &str,
+    level_ratio: Option<f64>,
+    level_color: Color,
+) {
+    if area.width == 0 || area.height < 2 {
+        return;
+    }
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(area);
+    render_labeled_slider(
+        rows[0],
+        buffer,
+        meter_label,
+        meter_ratio,
+        Color::LightGreen,
+        false,
+    );
+    render_labeled_slider(rows[1], buffer, level_label, level_ratio, level_color, true);
+}
+
+fn render_output_card_widget(area: Rect, buffer: &mut Buffer, output: &OutputState, active: bool) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+
+    let dim_bg = if output.mode == OutputMode::Dim {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
+    let mute_bg = if output.mode == OutputMode::Mute {
+        Color::LightRed
+    } else {
+        Color::DarkGray
+    };
+    let mut header = vec![chip(output.target.label(), Color::Black, Color::LightBlue)];
+    if active {
+        header.push(Span::raw(" "));
+        header.push(chip("ACTIVE", Color::Black, Color::LightGreen));
+    }
+    Paragraph::new(Line::from(header)).render(rows[0], buffer);
+    Paragraph::new(Line::from(vec![Span::styled(
+        format!("LEVEL {:>3} dB", output.display_db()),
+        strong_style(Color::White),
+    )]))
+    .render(rows[1], buffer);
+    render_labeled_slider(
+        rows[2],
+        buffer,
+        &signal_slider_label("LVL", Some(format!("{} dB", output.display_db()))),
+        Some(output.gain_ratio()),
+        Color::LightGreen,
+        true,
+    );
+    Paragraph::new(Line::from(vec![
+        chip("-", Color::Black, Color::Gray),
+        Span::raw(" "),
+        chip("+", Color::Black, Color::Gray),
+        Span::raw(" "),
+        chip("DIM", Color::Black, dim_bg),
+        Span::raw(" "),
+        chip("MUTE", Color::Black, mute_bg),
+    ]))
+    .render(rows[3], buffer);
+}
+
+fn preamp_slider_label(input: PreampInputState) -> String {
+    let phantom = preamp_phantom_label(input);
+    let phase = preamp_phase_label(input);
+    format!(
+        "GAIN {}  {}  48V:{}  PH:{}  {:02x}",
+        input.gain_db_label(),
+        input.mode.label(),
+        phantom,
+        phase,
+        input.gain_raw,
+    )
+}
+
+fn render_preamp_visual_widget(
+    area: Rect,
+    buffer: &mut Buffer,
+    title: &str,
+    input: PreampInputState,
+    focused: bool,
+) {
+    let block = if input.phantom_on {
+        warning_section_block(title, focused)
+    } else {
+        section_block(title, focused)
+    };
+    block.render(area, buffer);
+
+    let inner = inner_area(area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Min(1),
+        ])
+        .split(inner);
+    Paragraph::new(Line::from(vec![Span::styled(
+        preamp_slider_label(input),
+        strong_style(style_for_preamp_mode(input.mode)),
+    )]))
+    .render(rows[0], buffer);
+    render_stacked_signal_rows(
+        rows[1],
+        buffer,
+        &signal_slider_label(
+            "OBS",
+            input
+                .observed_meter_db()
+                .map(|value| format!("{} dB", value)),
+        ),
+        input.observed_meter_ratio(),
+        &signal_slider_label("GAIN", Some(input.gain_db_label())),
+        Some(input.gain_ratio()),
+        style_for_preamp_mode(input.mode),
+    );
+}
+
+fn mixer_controls_line(channel: &crate::protocol::MixerChannelState) -> Line<'static> {
+    let solo_on = channel.soloed == Some(true);
+    let mute_on = channel.muted == Some(true);
+    let link_on = channel.linked == Some(true);
+    let mut controls = vec![
+        chip(
+            "S",
+            Color::Black,
+            if solo_on {
+                Color::LightGreen
+            } else {
+                Color::DarkGray
+            },
+        ),
+        Span::raw(" "),
+        chip(
+            "M",
+            Color::Black,
+            if mute_on {
+                Color::LightRed
+            } else {
+                Color::DarkGray
+            },
+        ),
+    ];
+    if channel.channel % 2 == 1 {
+        controls.push(Span::raw(" "));
+        controls.push(chip(
+            "L",
+            Color::Black,
+            if link_on {
+                Color::LightBlue
+            } else {
+                Color::DarkGray
+            },
+        ));
+    }
+    controls.push(Span::raw(" "));
+    controls.push(chip("SRC", Color::Black, Color::Gray));
+    Line::from(controls)
+}
+
+fn mixer_controls_width(has_link: bool) -> u16 {
+    let rects = if has_link {
+        inline_chip_rects(0, 0, &["S", "M", "L", "SRC"])
+    } else {
+        inline_chip_rects(0, 0, &["S", "M", "SRC"])
+    };
+    rects.last().map(|rect| rect.x + rect.width).unwrap_or(0)
+}
+
+fn render_mixer_strip_widget(
+    area: Rect,
+    buffer: &mut Buffer,
+    state: &AppState,
+    index: usize,
+    channel: &crate::protocol::MixerChannelState,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
+    let source = channel
+        .assignment
+        .map(|value| value.label())
+        .unwrap_or_else(|| "assignment?".to_string());
+    let pan = channel.pan.display_percent();
+    let pan_label = if pan < 0 {
+        format!("L{}", pan.unsigned_abs())
+    } else if pan > 0 {
+        format!("R{}", pan)
+    } else {
+        "C".to_string()
+    };
+    let header = Line::from(vec![
+        chip(
+            format!("CH {:02}", channel.channel),
+            Color::Black,
+            if selected {
+                Color::LightGreen
+            } else {
+                Color::Gray
+            },
+        ),
+        Span::raw(" "),
+        Span::styled(truncate_label(&source, 18), strong_style(Color::LightCyan)),
+        Span::raw(" "),
+        chip(format!("PAN {pan_label}"), Color::Black, Color::LightBlue),
+        Span::raw(" "),
+        chip(
+            channel
+                .display_db()
+                .map(|value| format!("{} dB", value))
+                .unwrap_or_else(|| "LEVEL ?".to_string()),
+            Color::Black,
+            Color::Yellow,
+        ),
+    ]);
+    Paragraph::new(header).render(Rect::new(area.x, area.y, area.width, 1), buffer);
+
+    let content_area = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
+    let controls_width = mixer_controls_width(channel.channel % 2 == 1).min(content_area.width);
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(controls_width), Constraint::Min(1)])
+        .split(content_area);
+    Paragraph::new(mixer_controls_line(channel)).render(columns[0], buffer);
+
+    if columns[1].width == 0 || columns[1].height < 2 {
+        return;
+    }
+    let slider_area = Rect::new(
+        columns[1].x.saturating_add(1),
+        columns[1].y,
+        columns[1].width.saturating_sub(1),
+        columns[1].height,
+    );
+    render_stacked_signal_rows(
+        slider_area,
+        buffer,
+        &signal_slider_label(
+            "MTR",
+            channel.meter_db().map(|value| format!("{} dB", value)),
+        ),
+        channel.meter_ratio(),
+        &signal_slider_label(
+            "LVL",
+            channel.display_db().map(|value| format!("{} dB", value)),
+        ),
+        channel.gain_ratio(),
+        Color::Yellow,
+    );
 }
 
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -1125,13 +1488,18 @@ fn strong_style(color: Color) -> Style {
     terminal::adapt_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
 }
 
-fn render_level_bar(ratio: f64, width: usize) -> String {
-    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+fn render_symbol_bar(ratio: f64, width: usize, filled: char, empty: char) -> String {
+    let filled_cells = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
     let mut out = String::with_capacity(width);
     for index in 0..width {
-        out.push(if index < filled { '#' } else { '.' });
+        out.push(if index < filled_cells { filled } else { empty });
     }
     out
+}
+
+#[cfg(test)]
+fn render_level_bar(ratio: f64, width: usize) -> String {
+    render_symbol_bar(ratio, width, '#', '.')
 }
 
 fn truncate_label(label: &str, width: usize) -> String {
@@ -1161,6 +1529,7 @@ fn preamp_phase_label(input: PreampInputState) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
     let dim_bg = if output.mode == OutputMode::Dim {
         Color::Yellow
@@ -1307,16 +1676,6 @@ fn render_status_strip(state: &AppState) -> Line<'static> {
     ))
 }
 
-fn render_thin_bar(ratio: f64) -> String {
-    const WIDTH: usize = 8;
-    let filled = (ratio.clamp(0.0, 1.0) * WIDTH as f64).round() as usize;
-    let mut out = String::with_capacity(WIDTH);
-    for index in 0..WIDTH {
-        out.push(if index < filled { '|' } else { '.' });
-    }
-    out
-}
-
 pub fn render_footer_text(_state: &AppState) -> String {
     "Tab page | f focus | mouse: raw button, page tabs, preamp buttons, mixer mute/solo/link/src | r raw view | R refresh queries | +/- adjust | m mute/phantom | o solo | d dim | [ ] pan | a assign | l link | 3 preamp mode | p preamp phase | s sample-rate | c clock | 1/2 surface | b baseline | x clear | Raw shows 0x74/0x73/0x83/0x75/0x81 | ? help | q quit".to_string()
 }
@@ -1413,6 +1772,7 @@ fn render_query_reply_history_list(state: &AppState) -> Text<'static> {
     Text::from(lines)
 }
 
+#[cfg(test)]
 fn render_mixer_strip_item(
     state: &AppState,
     index: usize,
@@ -1579,7 +1939,7 @@ fn render_experimental_pair_state_line(state: &AppState) -> String {
 }
 
 fn render_mix_meter(raw: u8) -> String {
-    let bar = render_thin_bar(meter_ratio(raw));
+    let bar = render_symbol_bar(meter_ratio(raw), 8, '█', '░');
     match meter_display_db(raw) {
         Some(db) => format!("{} {} dB", bar, db),
         None => bar,
@@ -1596,7 +1956,7 @@ fn render_mixer_strip_line(
     let bar = channel
         .meter_ratio()
         .or_else(|| channel.gain_ratio())
-        .map(render_thin_bar)
+        .map(|ratio| render_symbol_bar(ratio, 8, '|', '.'))
         .unwrap_or_else(|| "........".to_string());
     let assignment = channel
         .assignment
@@ -1641,6 +2001,7 @@ fn render_mixer_strip_line(
     )
 }
 
+#[cfg(test)]
 fn render_preamp_gauge<'a>(title: &'a str, input: PreampInputState, focused: bool) -> Gauge<'a> {
     let phase_on = input.mode_raw & 0x40 != 0;
     let phantom = if matches!(input.mode, PreampMode::Mic) {
@@ -1678,6 +2039,7 @@ fn render_preamp_gauge<'a>(title: &'a str, input: PreampInputState, focused: boo
         .ratio(input.gain_ratio())
 }
 
+#[cfg(test)]
 fn render_preamp_observed_meter<'a>(input: PreampInputState) -> LineGauge<'a> {
     LineGauge::default()
         .filled_style(Style::default().fg(Color::LightCyan))
@@ -1686,6 +2048,7 @@ fn render_preamp_observed_meter<'a>(input: PreampInputState) -> LineGauge<'a> {
         .ratio(input.observed_meter_ratio().unwrap_or(0.0))
 }
 
+#[cfg(test)]
 fn observed_meter_label(input: PreampInputState) -> String {
     match input.observed_meter {
         Some(_) => input
@@ -1694,19 +2057,6 @@ fn observed_meter_label(input: PreampInputState) -> String {
             .unwrap_or_default(),
         None => String::new(),
     }
-}
-
-fn inner_bottom_line(area: Rect) -> Option<Rect> {
-    if area.width <= 2 || area.height <= 2 {
-        return None;
-    }
-
-    Some(Rect {
-        x: area.x + 1,
-        y: area.y + area.height - 2,
-        width: area.width - 2,
-        height: 1,
-    })
 }
 
 fn style_for_preamp_mode(mode: PreampMode) -> Color {
@@ -1843,15 +2193,29 @@ mod tests {
     use std::time::Instant;
 
     use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
 
-    use crate::app::{AppState, MainPage};
+    use crate::app::{AppState, FocusArea, MainPage};
     use crate::protocol::{
-        ClockSource, MixerAssignment, MixerLinkTarget, MixerSurface, OutputMode, OutputState,
-        OutputTarget, PanState, PreampInputState, SampleRate, Surface,
+        ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
+        OutputState, OutputTarget, PanState, PreampInputState, SampleRate, Surface,
     };
 
     use super::*;
+
+    fn render_buffer(area: Rect, render: impl FnOnce(Rect, &mut Buffer)) -> String {
+        let mut buffer = Buffer::empty(area);
+        render(area, &mut buffer);
+        let mut out = String::new();
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
 
     #[test]
     fn footer_contains_keybindings() {
@@ -1878,16 +2242,66 @@ mod tests {
     fn output_card_rendering_surfaces_level_mode_and_focus() {
         let output = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Mute);
 
-        let rendered = render_output_card(&output, true).to_string();
+        let rendered = render_buffer(Rect::new(0, 0, 40, output_card_height()), |area, buffer| {
+            render_output_card_widget(area, buffer, &output, true);
+        });
 
         assert!(rendered.contains("HP1"));
         assert!(rendered.contains("48 dB"));
         assert!(rendered.contains("ACTIVE"));
+        assert!(rendered.contains("LVL -48 dB"));
+        assert!(rendered.contains("─"));
+        assert!(rendered.contains("●"));
         assert!(rendered.contains(" - "));
         assert!(rendered.contains(" + "));
         assert!(rendered.contains(" DIM "));
         assert!(rendered.contains(" MUTE "));
         assert!(!rendered.contains("raw 30"));
+    }
+
+    #[test]
+    fn mixer_strip_widget_stacks_meter_and_level_in_one_signal_area() {
+        let mut state = AppState::default();
+        state.focus = FocusArea::Mixer;
+        state.selected_channel = 10;
+        state.mixer_channels[0][10] = MixerChannelState {
+            channel: 11,
+            level: Some(0x10),
+            meter: Some(0x30),
+            muted: Some(false),
+            soloed: Some(true),
+            pan: PanState::from_raw(0x3e),
+            assignment: Some(MixerAssignment::ComputerPlay(8)),
+            linked: Some(true),
+        };
+
+        let rendered = render_buffer(Rect::new(0, 0, 72, mixer_strip_height()), |area, buffer| {
+            render_mixer_strip_widget(area, buffer, &state, 10, &state.mixer_channels[0][10]);
+        });
+
+        assert!(rendered.contains("Computer Play 8"));
+        assert!(rendered.contains("MTR -48 dB"));
+        assert!(rendered.contains("LVL -16 dB"));
+        assert!(rendered.contains("█"));
+        assert!(rendered.contains("─"));
+        assert!(rendered.contains("●"));
+    }
+
+    #[test]
+    fn preamp_visual_stacks_observed_meter_and_gain_sliders() {
+        let mut input = PreampInputState::from_raw(0x14, 0x10);
+        input.observed_meter = Some(0x30);
+
+        let rendered = render_buffer(Rect::new(0, 0, 44, 6), |area, buffer| {
+            render_preamp_visual_widget(area, buffer, "CH 1", input, true);
+        });
+
+        assert!(rendered.contains("CH 1"));
+        assert!(rendered.contains("GAIN 20 dB"));
+        assert!(rendered.contains("OBS -48 dB"));
+        assert!(rendered.contains("█"));
+        assert!(rendered.contains("─"));
+        assert!(rendered.contains("●"));
     }
 
     #[test]
@@ -2290,7 +2704,12 @@ mod tests {
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[1]);
-        let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
+        let row_area = Rect::new(
+            list_inner.x,
+            list_inner.y,
+            list_inner.width,
+            mixer_strip_height(),
+        );
         let buttons = mixer_control_button_rects(row_area, true);
         let point = (buttons[2].x + buttons[2].width / 2, buttons[2].y);
 
@@ -2309,7 +2728,12 @@ mod tests {
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[1]);
-        let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
+        let row_area = Rect::new(
+            list_inner.x,
+            list_inner.y,
+            list_inner.width,
+            mixer_strip_height(),
+        );
         let buttons = mixer_control_button_rects(row_area, true);
         let point = (buttons[0].x + buttons[0].width / 2, buttons[0].y);
 
@@ -2328,7 +2752,12 @@ mod tests {
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[1]);
-        let row_area = Rect::new(list_inner.x, list_inner.y, list_inner.width, 2);
+        let row_area = Rect::new(
+            list_inner.x,
+            list_inner.y,
+            list_inner.width,
+            mixer_strip_height(),
+        );
         let state = AppState::default();
         let line = render_mixer_strip_item(&state, 0, &state.mixer_channels[0][0]);
         let rendered: String = line.lines[1]
@@ -2353,7 +2782,12 @@ mod tests {
         let workspace = mixer_workspace_layout(main[1]);
         let mixer = mixer_layout(workspace[0]);
         let list_inner = inner_area(mixer[1]);
-        let row_area = Rect::new(list_inner.x, list_inner.y + 20, list_inner.width, 2);
+        let row_area = Rect::new(
+            list_inner.x,
+            list_inner.y + 10 * mixer_strip_height(),
+            list_inner.width,
+            mixer_strip_height(),
+        );
         let mut state = AppState::default();
         state.selected_channel = 10;
         let line = render_mixer_strip_item(&state, 10, &state.mixer_channels[0][10]);
@@ -2497,8 +2931,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 1"));
-        assert!(line.contains("L |||||||. -10 dB"));
-        assert!(line.contains("R |||||||. -5 dB"));
+        assert!(line.contains("L ███████░ -10 dB"));
+        assert!(line.contains("R ███████░ -5 dB"));
     }
 
     #[test]
@@ -2517,8 +2951,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 2"));
-        assert!(line.contains("L |||||||| 0 dB"));
-        assert!(line.contains("R |||||||. -6 dB"));
+        assert!(line.contains("L ████████ 0 dB"));
+        assert!(line.contains("R ███████░ -6 dB"));
     }
 
     #[test]
@@ -2538,8 +2972,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 2"));
-        assert!(line.contains("L ........"));
-        assert!(line.contains("R ........"));
+        assert!(line.contains("L ░░░░░░░░"));
+        assert!(line.contains("R ░░░░░░░░"));
     }
 
     #[test]
@@ -2555,8 +2989,8 @@ mod tests {
 
         let line = render_experimental_pair_state_line(&state);
 
-        assert!(line.contains("L ||||||.. -18 dB"));
-        assert!(line.contains("R |....... -52 dB"));
+        assert!(line.contains("L ██████░░ -18 dB"));
+        assert!(line.contains("R █░░░░░░░ -52 dB"));
     }
 
     #[test]
