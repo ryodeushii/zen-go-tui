@@ -523,6 +523,10 @@ impl Controller {
         self.refresh_queried_state()
     }
 
+    pub fn transport_available(&self) -> Result<bool> {
+        self.transport.is_available()
+    }
+
     pub fn refresh_queried_state(&mut self) -> Result<()> {
         for query in control_panel_startup_queries() {
             let frame = encode_query(*query);

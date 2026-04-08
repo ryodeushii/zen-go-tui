@@ -10,6 +10,10 @@ use hidapi::{HidApi, HidDevice};
 pub trait Transport: Send {
     fn write(&self, data: &[u8]) -> Result<()>;
     fn read(&self, timeout: Duration) -> Result<Option<Vec<u8>>>;
+
+    fn is_available(&self) -> Result<bool> {
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +145,14 @@ impl Transport for HidTransport {
         buffer.truncate(bytes);
         Ok(Some(buffer))
     }
+
+    fn is_available(&self) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("hid device lock poisoned"))?;
+        Self::ensure_device(&mut state, self.vid, self.pid)
+    }
 }
 
 fn open_hid_device(vid: u16, pid: u16) -> Result<HidDevice> {
@@ -191,6 +203,10 @@ impl Transport for MockTransport {
             .lock()
             .map_err(|_| anyhow!("mock transport lock poisoned"))?;
         Ok(inner.reads.pop_front())
+    }
+
+    fn is_available(&self) -> Result<bool> {
+        Ok(true)
     }
 }
 

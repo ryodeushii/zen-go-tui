@@ -83,6 +83,32 @@ fn handle_runtime_error(controller: &mut Controller, error: anyhow::Error) -> Re
     Err(error)
 }
 
+fn refresh_after_reconnect_if_needed(
+    controller: &mut Controller,
+    reconnect_refresh_pending: &mut bool,
+) -> Result<()> {
+    if !*reconnect_refresh_pending {
+        return Ok(());
+    }
+
+    if !controller.transport_available()? {
+        return Ok(());
+    }
+
+    match controller.refresh_queried_state() {
+        Ok(()) => {
+            controller.state.last_message = "Zen Go reconnected, refreshing state...".to_string();
+            *reconnect_refresh_pending = false;
+            Ok(())
+        }
+        Err(error) if is_device_error(&error) => {
+            handle_runtime_error(controller, error)?;
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -103,8 +129,15 @@ fn app_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controller: &mut Controller,
 ) -> Result<()> {
+    let mut reconnect_refresh_pending = false;
+
     loop {
+        refresh_after_reconnect_if_needed(controller, &mut reconnect_refresh_pending)?;
+
         if let Err(error) = controller.poll_device(Duration::from_millis(5)) {
+            if is_device_error(&error) {
+                reconnect_refresh_pending = true;
+            }
             handle_runtime_error(controller, error)?;
         }
         terminal.draw(|frame| ui::draw(frame, &controller.state))?;
@@ -206,6 +239,9 @@ fn app_loop(
                 };
 
                 if let Err(error) = result {
+                    if is_device_error(&error) {
+                        reconnect_refresh_pending = true;
+                    }
                     handle_runtime_error(controller, error)?;
                 }
             }
@@ -216,6 +252,9 @@ fn app_loop(
                     controller,
                     mouse,
                 ) {
+                    if is_device_error(&error) {
+                        reconnect_refresh_pending = true;
+                    }
                     handle_runtime_error(controller, error)?;
                 }
             }
@@ -667,10 +706,64 @@ fn next_preamp_gain_raw(input: zen_go_tui::protocol::PreampInputState, up: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use zen_go_tui::app::AssignmentPickerState;
-    use zen_go_tui::protocol::{MixerAssignment, MixerSurface};
+    use zen_go_tui::protocol::{control_panel_startup_queries, MixerAssignment, MixerSurface};
     use zen_go_tui::transport::TransportError;
+
+    #[derive(Clone, Default)]
+    struct AvailabilityTransport {
+        inner: Arc<Mutex<AvailabilityTransportInner>>,
+    }
+
+    #[derive(Default)]
+    struct AvailabilityTransportInner {
+        available: bool,
+        writes: Vec<Vec<u8>>,
+    }
+
+    impl AvailabilityTransport {
+        fn set_available(&self, available: bool) {
+            if let Ok(mut inner) = self.inner.lock() {
+                inner.available = available;
+            }
+        }
+
+        fn write_count(&self) -> usize {
+            self.inner
+                .lock()
+                .map(|inner| inner.writes.len())
+                .unwrap_or(0)
+        }
+    }
+
+    impl Transport for AvailabilityTransport {
+        fn write(&self, data: &[u8]) -> Result<()> {
+            let mut inner = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("lock poisoned"))?;
+            if !inner.available {
+                return Err(TransportError::DeviceUnavailable.into());
+            }
+            inner.writes.push(data.to_vec());
+            Ok(())
+        }
+
+        fn read(&self, _timeout: Duration) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        fn is_available(&self) -> Result<bool> {
+            Ok(self
+                .inner
+                .lock()
+                .map(|inner| inner.available)
+                .unwrap_or(false))
+        }
+    }
 
     fn seed_shared_assignments(controller: &mut Controller) {
         let assignments = [
@@ -783,6 +876,28 @@ mod tests {
         assert_eq!(
             controller.state.last_message,
             "Waiting for Zen Go device..."
+        );
+    }
+
+    #[test]
+    fn refresh_after_reconnect_runs_startup_query_sweep_once_device_returns() {
+        let transport = AvailabilityTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut pending = true;
+
+        refresh_after_reconnect_if_needed(&mut controller, &mut pending)
+            .expect("unavailable transport should not fail");
+        assert!(pending);
+        assert_eq!(transport.write_count(), 0);
+
+        transport.set_available(true);
+        refresh_after_reconnect_if_needed(&mut controller, &mut pending)
+            .expect("available transport should refresh");
+
+        assert!(!pending);
+        assert_eq!(
+            transport.write_count(),
+            control_panel_startup_queries().len()
         );
     }
 }
