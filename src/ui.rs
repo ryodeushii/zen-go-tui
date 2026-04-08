@@ -14,7 +14,7 @@ use crate::app::{
 };
 use crate::protocol::{
     meter_display_db, meter_ratio, ClockSource, MixerAssignment, MixerSurface, OutputMode,
-    OutputState, PreampInputState, PreampMode, SampleRate, Surface,
+    OutputState, PanState, PreampInputState, PreampMode, SampleRate, Surface,
 };
 use crate::terminal;
 
@@ -32,12 +32,32 @@ pub enum MouseAction {
         index: usize,
         increase: bool,
     },
+    SetOutputLevel {
+        index: usize,
+        step: u8,
+    },
     ToggleOutputDim(usize),
     ToggleOutputMute(usize),
     SelectRawPacketTab(RawPacketTab),
     SelectQueryReplyEntry(usize),
     SelectSurface(Surface),
     SelectMixerChannel(usize),
+    AdjustMixerLevel {
+        index: usize,
+        increase: bool,
+    },
+    SetMixerLevel {
+        index: usize,
+        level: u8,
+    },
+    AdjustMixerPan {
+        index: usize,
+        right: bool,
+    },
+    SetMixerPan {
+        index: usize,
+        pan: PanState,
+    },
     ToggleMixerMute(u8),
     ToggleMixerSolo(u8),
     ToggleMixerLink(u8),
@@ -51,6 +71,10 @@ pub enum MouseAction {
     AdjustPreampGain {
         input: u8,
         increase: bool,
+    },
+    SetPreampGain {
+        input: u8,
+        raw: u8,
     },
     OpenPreampModeSelector(u8),
     CyclePreampMode(u8),
@@ -253,14 +277,17 @@ fn preamp_card_inner_layout(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
+const ADJUST_DOWN_BUTTON_LABEL: &str = "↓";
+const ADJUST_UP_BUTTON_LABEL: &str = "↑";
+
 fn preamp_button_rects(area: Rect, input: PreampInputState) -> Vec<Rect> {
     let controls = preamp_card_inner_layout(area)[1];
     inline_chip_rects(
         controls.x,
         controls.y,
         &[
-            "-",
-            "+",
+            ADJUST_DOWN_BUTTON_LABEL,
+            ADJUST_UP_BUTTON_LABEL,
             input.mode.label(),
             preamp_phantom_label(input),
             preamp_phase_label(input),
@@ -1006,6 +1033,54 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     None
 }
 
+pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<MouseAction> {
+    if state.hotkeys_popup_open
+        || state.raw_view_open
+        || state.selector_popup.is_some()
+        || state.assignment_picker.is_some()
+        || state.routing_popup_open
+    {
+        return None;
+    }
+
+    let point = (x, y);
+    let chunks = root_chunks(area);
+    let page = mixer_page_layout(chunks[1]);
+    let main = mixer_main_layout(page[0]);
+    let mixer_sections = mixer_layout(main[1]);
+
+    output_list_slider_mouse_action(page[1], state, point)
+        .or_else(|| mixer_list_slider_mouse_action(mixer_sections[1], state, point))
+        .or_else(|| preamp_slider_mouse_action(main[0], state, point))
+}
+
+pub fn slider_wheel_action(
+    area: Rect,
+    state: &AppState,
+    x: u16,
+    y: u16,
+    increase: bool,
+) -> Option<MouseAction> {
+    if state.hotkeys_popup_open
+        || state.raw_view_open
+        || state.selector_popup.is_some()
+        || state.assignment_picker.is_some()
+        || state.routing_popup_open
+    {
+        return None;
+    }
+
+    let point = (x, y);
+    let chunks = root_chunks(area);
+    let page = mixer_page_layout(chunks[1]);
+    let main = mixer_main_layout(page[0]);
+    let mixer_sections = mixer_layout(main[1]);
+
+    output_list_slider_wheel_action(page[1], state, point, increase)
+        .or_else(|| mixer_list_slider_wheel_action(mixer_sections[1], state, point, increase))
+        .or_else(|| preamp_slider_wheel_action(main[0], state, point, increase))
+}
+
 fn routing_popup_mouse_action(
     area: Rect,
     state: &AppState,
@@ -1187,6 +1262,9 @@ fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> O
             .map(|value| value.short_label())
             .unwrap_or_else(|| "?".to_string());
         let (_, source_rect) = mixer_header_chip_rects(card, &source);
+        if let Some(action) = mixer_strip_slider_mouse_action(card, index, channel, point) {
+            return Some(action);
+        }
         if contains_point(source_rect, point) {
             return Some(MouseAction::OpenAssignmentPicker(channel.channel));
         }
@@ -1218,6 +1296,59 @@ fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> O
     None
 }
 
+fn mixer_list_slider_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let inner = mixer_strip_panel_layout(area, experimental_mix_meter(state).is_some())[0];
+    if !contains_point(inner, point) {
+        return None;
+    }
+    let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
+    for (slot, index) in (visible_start..visible_end).enumerate() {
+        let Some(channel) = state.active_mixer_channels().get(index) else {
+            continue;
+        };
+        let card = mixer_strip_card_area(inner, slot);
+        if !contains_point(card, point) {
+            continue;
+        }
+        return mixer_strip_slider_mouse_action(card, index, channel, point);
+    }
+    None
+}
+
+fn mixer_list_slider_wheel_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+    increase: bool,
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let inner = mixer_strip_panel_layout(area, experimental_mix_meter(state).is_some())[0];
+    if !contains_point(inner, point) {
+        return None;
+    }
+    let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
+    for (slot, index) in (visible_start..visible_end).enumerate() {
+        let Some(channel) = state.active_mixer_channels().get(index) else {
+            continue;
+        };
+        let card = mixer_strip_card_area(inner, slot);
+        if !contains_point(card, point) {
+            continue;
+        }
+        return mixer_strip_slider_wheel_action(card, index, channel, point, increase);
+    }
+    None
+}
+
 fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
     if !contains_point(area, point) {
         return None;
@@ -1232,6 +1363,10 @@ fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Optio
         } else {
             state.preamp.input2
         };
+        if let Some(action) = preamp_card_slider_mouse_action(card, input as u8, input_state, point)
+        {
+            return Some(action);
+        }
         let buttons = preamp_button_rects(card, input_state);
         if contains_point(buttons[0], point) {
             return Some(MouseAction::AdjustPreampGain {
@@ -1255,6 +1390,55 @@ fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Optio
             return Some(MouseAction::TogglePreampPhase(input as u8));
         }
         return Some(MouseAction::SelectPreampInput(input));
+    }
+    None
+}
+
+fn preamp_slider_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let layout = preamp_bar_layout(area);
+    for (input, card) in layout.into_iter().enumerate() {
+        if !contains_point(card, point) {
+            continue;
+        }
+        let input_state = if input == 0 {
+            state.preamp.input1
+        } else {
+            state.preamp.input2
+        };
+        return preamp_card_slider_mouse_action(card, input as u8, input_state, point);
+    }
+    None
+}
+
+fn preamp_slider_wheel_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+    increase: bool,
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let layout = preamp_bar_layout(area);
+    for (input, card) in layout.into_iter().enumerate() {
+        if !contains_point(card, point) {
+            continue;
+        }
+        let track = preamp_gain_slider_rect(card);
+        if contains_point(track, point) {
+            return Some(MouseAction::AdjustPreampGain {
+                input: input as u8,
+                increase,
+            });
+        }
+        return None;
     }
     None
 }
@@ -1284,6 +1468,10 @@ fn output_list_mouse_action(
     state.outputs.get(index)?;
     let controls = output_control_rects(card);
 
+    if let Some(action) = output_card_slider_mouse_action(card, index, point) {
+        return Some(action);
+    }
+
     if contains_point(controls[0], point) {
         return Some(MouseAction::AdjustOutputLevel {
             index,
@@ -1304,6 +1492,52 @@ fn output_list_mouse_action(
     }
 
     Some(MouseAction::SelectOutput(index))
+}
+
+fn output_list_slider_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+
+    let inner = inner_area(area);
+    if point.1 < inner.y {
+        return None;
+    }
+
+    let (index, card) = output_card_areas(inner)
+        .into_iter()
+        .enumerate()
+        .find(|(_, card)| contains_point(*card, point))?;
+    state.outputs.get(index)?;
+    output_card_slider_mouse_action(card, index, point)
+}
+
+fn output_list_slider_wheel_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+    increase: bool,
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+
+    let inner = inner_area(area);
+    if point.1 < inner.y {
+        return None;
+    }
+
+    let (index, card) = output_card_areas(inner)
+        .into_iter()
+        .enumerate()
+        .find(|(_, card)| contains_point(*card, point))?;
+    state.outputs.get(index)?;
+    let track = output_level_slider_rect(card);
+    contains_point(track, point).then_some(MouseAction::AdjustOutputLevel { index, increase })
 }
 
 fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
@@ -1375,7 +1609,12 @@ fn output_control_rects(area: Rect) -> Vec<Rect> {
     inline_chip_rects(
         area.x,
         area.y + output_card_height() - 1,
-        &["-", "+", "DIM", "MUTE"],
+        &[
+            ADJUST_DOWN_BUTTON_LABEL,
+            ADJUST_UP_BUTTON_LABEL,
+            "DIM",
+            "MUTE",
+        ],
     )
 }
 
@@ -1384,6 +1623,202 @@ fn contains_point(area: Rect, point: (u16, u16)) -> bool {
         && point.0 < area.x.saturating_add(area.width)
         && point.1 >= area.y
         && point.1 < area.y.saturating_add(area.height)
+}
+
+fn slider_ratio_for_horizontal_point(area: Rect, point: (u16, u16)) -> Option<f64> {
+    if !contains_point(area, point) || area.width == 0 {
+        return None;
+    }
+    if area.width <= 1 {
+        return Some(1.0);
+    }
+    Some(
+        ((point.0.saturating_sub(area.x)) as f64 / area.width.saturating_sub(1) as f64)
+            .clamp(0.0, 1.0),
+    )
+}
+
+fn slider_ratio_for_vertical_point(area: Rect, point: (u16, u16)) -> Option<f64> {
+    if !contains_point(area, point) || area.height == 0 {
+        return None;
+    }
+    if area.height <= 1 {
+        return Some(1.0);
+    }
+    Some(
+        (1.0 - (point.1.saturating_sub(area.y)) as f64 / area.height.saturating_sub(1) as f64)
+            .clamp(0.0, 1.0),
+    )
+}
+
+fn horizontal_labeled_slider_track(area: Rect) -> Rect {
+    let area = bounded_signal_area(area);
+    if area.width == 0 || area.height == 0 {
+        return Rect::new(area.x, area.y, 0, 0);
+    }
+    let label_width = SIGNAL_LABEL_WIDTH.min(area.width.saturating_sub(1)).max(1);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(label_width), Constraint::Min(1)])
+        .split(area)[1]
+}
+
+fn output_level_slider_rect(area: Rect) -> Rect {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    horizontal_labeled_slider_track(rows[1])
+}
+
+fn preamp_gain_slider_rect(area: Rect) -> Rect {
+    let signal = preamp_card_inner_layout(area)[0];
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(signal);
+    horizontal_labeled_slider_track(rows[1])
+}
+
+fn mixer_strip_rows(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(mixer_strip_inner_area(area))
+        .to_vec()
+}
+
+fn mixer_pan_slider_rect(area: Rect) -> Rect {
+    mixer_strip_rows(area)[2]
+}
+
+fn mixer_level_slider_rect(area: Rect) -> Rect {
+    let combo = mixer_strip_rows(area)[5];
+    if combo.width < 4 || combo.height == 0 {
+        return Rect::new(combo.x, combo.y, 0, 0);
+    }
+    let content_width = 6.min(combo.width);
+    let content_area = Rect::new(
+        combo.x + combo.width.saturating_sub(content_width) / 2,
+        combo.y,
+        content_width,
+        combo.height,
+    );
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(content_area)[2]
+}
+
+fn output_step_from_ratio(ratio: f64) -> u8 {
+    ((1.0 - ratio.clamp(0.0, 1.0)) * 96.0).round() as u8
+}
+
+fn mixer_level_from_ratio(ratio: f64) -> u8 {
+    ((1.0 - ratio.clamp(0.0, 1.0)) * 90.0).round() as u8
+}
+
+fn pan_from_ratio(ratio: f64) -> PanState {
+    let span = (PanState::MAX - PanState::MIN) as f64;
+    let raw = PanState::MIN as f64 + span * ratio.clamp(0.0, 1.0);
+    PanState::from_raw(raw.round() as u8)
+}
+
+fn preamp_gain_from_ratio(input: PreampInputState, ratio: f64) -> Option<u8> {
+    let ratio = ratio.clamp(0.0, 1.0);
+    match input.mode {
+        PreampMode::Mic => Some((ratio * 65.0).round() as u8),
+        PreampMode::Line => Some((-6 + (ratio * 26.0).round() as i8) as u8),
+        PreampMode::HiZ => Some((ratio * 45.0).round() as u8),
+        PreampMode::Unknown(_) => None,
+    }
+}
+
+fn output_card_slider_mouse_action(
+    area: Rect,
+    index: usize,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let track = output_level_slider_rect(area);
+    let ratio = slider_ratio_for_horizontal_point(track, point)?;
+    Some(MouseAction::SetOutputLevel {
+        index,
+        step: output_step_from_ratio(ratio).min(0x60),
+    })
+}
+
+fn preamp_card_slider_mouse_action(
+    area: Rect,
+    input: u8,
+    input_state: PreampInputState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let track = preamp_gain_slider_rect(area);
+    let ratio = slider_ratio_for_horizontal_point(track, point)?;
+    Some(MouseAction::SetPreampGain {
+        input,
+        raw: preamp_gain_from_ratio(input_state, ratio)?,
+    })
+}
+
+fn mixer_strip_slider_mouse_action(
+    area: Rect,
+    index: usize,
+    _channel: &crate::protocol::MixerChannelState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let pan = mixer_pan_slider_rect(area);
+    if let Some(ratio) = slider_ratio_for_horizontal_point(pan, point) {
+        return Some(MouseAction::SetMixerPan {
+            index,
+            pan: pan_from_ratio(ratio),
+        });
+    }
+
+    let level = mixer_level_slider_rect(area);
+    let ratio = slider_ratio_for_vertical_point(level, point)?;
+    Some(MouseAction::SetMixerLevel {
+        index,
+        level: mixer_level_from_ratio(ratio).min(0x5a),
+    })
+}
+
+fn mixer_strip_slider_wheel_action(
+    area: Rect,
+    index: usize,
+    _channel: &crate::protocol::MixerChannelState,
+    point: (u16, u16),
+    increase: bool,
+) -> Option<MouseAction> {
+    let pan = mixer_pan_slider_rect(area);
+    if contains_point(pan, point) {
+        return Some(MouseAction::AdjustMixerPan {
+            index,
+            right: increase,
+        });
+    }
+
+    let level = mixer_level_slider_rect(area);
+    contains_point(level, point).then_some(MouseAction::AdjustMixerLevel { index, increase })
 }
 
 const SIGNAL_LABEL_WIDTH: u16 = 12;
@@ -1545,9 +1980,9 @@ fn render_output_card_widget(area: Rect, buffer: &mut Buffer, output: &OutputSta
         true,
     );
     Paragraph::new(Line::from(vec![
-        chip("-", Color::Black, Color::Gray),
+        chip(ADJUST_DOWN_BUTTON_LABEL, Color::Black, Color::Gray),
         Span::raw(" "),
-        chip("+", Color::Black, Color::Gray),
+        chip(ADJUST_UP_BUTTON_LABEL, Color::Black, Color::Gray),
         Span::raw(" "),
         chip("DIM", Color::Black, dim_bg),
         Span::raw(" "),
@@ -2140,9 +2575,9 @@ fn render_output_card(output: &OutputState, active: bool) -> Text<'static> {
             ),
         ]),
         Line::from(vec![
-            chip("-", Color::Black, Color::Gray),
+            chip(ADJUST_DOWN_BUTTON_LABEL, Color::Black, Color::Gray),
             Span::raw(" "),
-            chip("+", Color::Black, Color::Gray),
+            chip(ADJUST_UP_BUTTON_LABEL, Color::Black, Color::Gray),
             Span::raw(" "),
             chip("DIM", Color::Black, dim_bg),
             Span::raw(" "),
@@ -2405,9 +2840,9 @@ fn render_preamp_controls_text(input: PreampInputState) -> Text<'static> {
         chip(preamp_phase_label(input), Color::Black, Color::LightGreen)
     };
     Text::from(Line::from(vec![
-        chip("-", Color::Black, Color::Gray),
+        chip(ADJUST_DOWN_BUTTON_LABEL, Color::Black, Color::Gray),
         Span::raw(" "),
-        chip("+", Color::Black, Color::Gray),
+        chip(ADJUST_UP_BUTTON_LABEL, Color::Black, Color::Gray),
         Span::raw(" "),
         chip(
             input.mode.label(),
@@ -3303,16 +3738,10 @@ mod tests {
         let list_inner = inner_area(page[1]);
         let row_area = output_card_areas(list_inner)[0];
         let state = AppState::default();
-        let line = render_output_card(&state.outputs[0], true);
-        let rendered: String = line.lines[2]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let chip_x = rendered.find(" DIM ").expect("dim chip") as u16;
+        let dim = output_control_rects(row_area)[2];
 
         assert_eq!(
-            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 2),
+            mouse_action(area, &state, dim.x + dim.width / 2, dim.y),
             Some(MouseAction::ToggleOutputDim(0))
         );
     }
@@ -3324,16 +3753,10 @@ mod tests {
         let list_inner = inner_area(page[1]);
         let row_area = output_card_areas(list_inner)[1];
         let state = AppState::default();
-        let line = render_output_card(&state.outputs[1], false);
-        let rendered: String = line.lines[2]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let chip_x = rendered.find(" MUTE ").expect("mute chip") as u16;
+        let mute = output_control_rects(row_area)[3];
 
         assert_eq!(
-            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 2),
+            mouse_action(area, &state, mute.x + mute.width / 2, mute.y),
             Some(MouseAction::ToggleOutputMute(1))
         );
     }
@@ -3366,7 +3789,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_action_hits_preamp_gain_plus_button() {
+    fn mouse_action_hits_preamp_gain_up_button() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
         let page = mixer_page_layout(chunks[1]);
@@ -3385,6 +3808,248 @@ mod tests {
     }
 
     #[test]
+    fn output_card_renders_arrow_adjust_buttons() {
+        let rendered = render_output_card(&AppState::default().outputs[0], true).to_string();
+
+        assert!(rendered.contains(" ↑ "));
+        assert!(rendered.contains(" ↓ "));
+        assert!(!rendered.contains(" + "));
+        assert!(!rendered.contains(" - "));
+    }
+
+    #[test]
+    fn preamp_controls_render_arrow_adjust_buttons() {
+        let rendered = render_preamp_controls_text(AppState::default().preamp.input1).to_string();
+
+        assert!(rendered.contains(" ↑ "));
+        assert!(rendered.contains(" ↓ "));
+        assert!(!rendered.contains(" + "));
+        assert!(!rendered.contains(" - "));
+    }
+
+    #[test]
+    fn slider_wheel_action_adjusts_output_level_one_step() {
+        let area = Rect::new(0, 0, 120, 50);
+        let page = mixer_page_layout(root_chunks(area)[1]);
+        let card = output_card_areas(inner_area(page[1]))[0];
+        let track = output_level_slider_rect(card);
+
+        assert_eq!(
+            slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
+            Some(MouseAction::AdjustOutputLevel {
+                index: 0,
+                increase: true,
+            })
+        );
+    }
+
+    #[test]
+    fn slider_wheel_action_adjusts_preamp_gain_one_step() {
+        let area = Rect::new(0, 0, 120, 50);
+        let card =
+            preamp_bar_layout(mixer_main_layout(mixer_page_layout(root_chunks(area)[1])[0])[0])[0];
+        let track = preamp_gain_slider_rect(card);
+
+        assert_eq!(
+            slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
+            Some(MouseAction::AdjustPreampGain {
+                input: 0,
+                increase: true,
+            })
+        );
+    }
+
+    #[test]
+    fn slider_wheel_action_adjusts_mixer_pan_inside_strip_panel() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let page = mixer_page_layout(chunks[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
+        let card = mixer_strip_card_area(list_inner, 0);
+        let track = mixer_pan_slider_rect(card);
+
+        assert_eq!(
+            slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
+            Some(MouseAction::AdjustMixerPan {
+                index: 0,
+                right: true,
+            })
+        );
+    }
+
+    #[test]
+    fn slider_wheel_action_adjusts_mixer_level_inside_strip_panel() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let page = mixer_page_layout(chunks[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
+        let card = mixer_strip_card_area(list_inner, 0);
+        let track = mixer_level_slider_rect(card);
+
+        assert_eq!(
+            slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
+            Some(MouseAction::AdjustMixerLevel {
+                index: 0,
+                increase: true,
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_visible_output_level_slider_position() {
+        let area = Rect::new(0, 0, 120, 50);
+        let page = mixer_page_layout(root_chunks(area)[1]);
+        let card = output_card_areas(inner_area(page[1]))[0];
+        let slider_row = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(card)[1];
+        let slider_area = bounded_signal_area(slider_row);
+        let label_width = SIGNAL_LABEL_WIDTH
+            .min(slider_area.width.saturating_sub(1))
+            .max(1);
+        let track = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(label_width), Constraint::Min(1)])
+            .split(slider_area)[1];
+
+        assert_eq!(
+            mouse_action(
+                area,
+                &AppState::default(),
+                track.x + track.width.saturating_sub(1),
+                track.y
+            ),
+            Some(MouseAction::SetOutputLevel { index: 0, step: 0 })
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_visible_preamp_gain_slider_position() {
+        let area = Rect::new(0, 0, 120, 50);
+        let card =
+            preamp_bar_layout(mixer_main_layout(mixer_page_layout(root_chunks(area)[1])[0])[0])[0];
+        let signal_area = preamp_card_inner_layout(card)[0];
+        let gain_row = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(signal_area)[1];
+        let slider_area = bounded_signal_area(gain_row);
+        let label_width = SIGNAL_LABEL_WIDTH
+            .min(slider_area.width.saturating_sub(1))
+            .max(1);
+        let track = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(label_width), Constraint::Min(1)])
+            .split(slider_area)[1];
+
+        assert_eq!(
+            mouse_action(
+                area,
+                &AppState::default(),
+                track.x + track.width.saturating_sub(1),
+                track.y
+            ),
+            Some(MouseAction::SetPreampGain {
+                input: 0,
+                raw: 0x41
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_visible_mixer_pan_slider_position() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let page = mixer_page_layout(chunks[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
+        let card = mixer_strip_card_area(list_inner, 0);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(mixer_strip_inner_area(card));
+
+        assert_eq!(
+            mouse_action(
+                area,
+                &AppState::default(),
+                rows[2].x + rows[2].width.saturating_sub(1),
+                rows[2].y
+            ),
+            Some(MouseAction::SetMixerPan {
+                index: 0,
+                pan: PanState::right(),
+            })
+        );
+    }
+
+    #[test]
+    fn mouse_action_hits_visible_mixer_level_slider_position() {
+        let area = Rect::new(0, 0, 120, 50);
+        let chunks = root_chunks(area);
+        let page = mixer_page_layout(chunks[1]);
+        let main = mixer_main_layout(page[0]);
+        let mixer = mixer_layout(main[1]);
+        let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
+        let card = mixer_strip_card_area(list_inner, 0);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(3),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(mixer_strip_inner_area(card));
+        let combo = rows[5];
+        let content_width = 6.min(combo.width);
+        let content_area = Rect::new(
+            combo.x + combo.width.saturating_sub(content_width) / 2,
+            combo.y,
+            content_width,
+            combo.height,
+        );
+        let level = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(content_area)[2];
+
+        assert_eq!(
+            mouse_action(area, &AppState::default(), level.x, level.y),
+            Some(MouseAction::SetMixerLevel { index: 0, level: 0 })
+        );
+    }
+
+    #[test]
     fn mouse_action_hits_visible_preamp_mode_chip_position() {
         let area = Rect::new(0, 0, 120, 50);
         let chunks = root_chunks(area);
@@ -3392,18 +4057,10 @@ mod tests {
         let main = mixer_main_layout(page[0]);
         let cards = preamp_bar_layout(main[0]);
         let state = AppState::default();
-        let controls = render_preamp_controls_text(state.preamp.input1);
-        let rendered: String = controls.lines[0]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let mode_chip = format!(" {} ", state.preamp.input1.mode.label());
-        let chip_x = rendered.find(&mode_chip).expect("mode chip") as u16;
-        let controls_area = preamp_card_inner_layout(cards[0])[1];
+        let mode = preamp_button_rects(cards[0], state.preamp.input1)[2];
 
         assert_eq!(
-            mouse_action(area, &state, controls_area.x + chip_x, controls_area.y),
+            mouse_action(area, &state, mode.x + mode.width / 2, mode.y),
             Some(MouseAction::OpenPreampModeSelector(0))
         );
     }
@@ -3453,7 +4110,7 @@ mod tests {
         .render(Rect::new(0, 0, 40, 1), &mut buffer);
 
         assert_eq!(buffer[(0, 0)].symbol(), " ");
-        assert_eq!(buffer[(1, 0)].symbol(), "-");
+        assert_eq!(buffer[(1, 0)].symbol(), "↓");
     }
 
     #[test]

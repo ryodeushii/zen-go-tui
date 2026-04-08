@@ -659,10 +659,28 @@ fn handle_mouse_event(
                 apply_mouse_action(controller, action)?;
             }
         }
+        AppMouseEventKind::Drag(AppMouseButton::Left) => {
+            if let Some(action) =
+                ui::slider_mouse_action(area, &controller.state, mouse.column, mouse.row)
+            {
+                apply_mouse_action(controller, action)?;
+            }
+        }
         AppMouseEventKind::ScrollLeft
         | AppMouseEventKind::ScrollRight
         | AppMouseEventKind::ScrollUp
         | AppMouseEventKind::ScrollDown => {
+            let increase = matches!(
+                mouse.kind,
+                AppMouseEventKind::ScrollUp | AppMouseEventKind::ScrollRight
+            );
+            if let Some(action) =
+                ui::slider_wheel_action(area, &controller.state, mouse.column, mouse.row, increase)
+            {
+                apply_mouse_action(controller, action)?;
+                return Ok(());
+            }
+
             if controller.state.page == MainPage::Mixer
                 && !controller.state.raw_view_open
                 && ui::mixer_strip_panel_contains(area, &controller.state, mouse.column, mouse.row)
@@ -749,6 +767,15 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
                 step: next,
             })?;
         }
+        ui::MouseAction::SetOutputLevel { index, step } => {
+            controller.state.focus = FocusArea::Outputs;
+            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
+            let output = controller.state.outputs[controller.state.selected_output];
+            controller.send(Command::SetOutputVolume {
+                target: output.target,
+                step: step.min(0x60),
+            })?;
+        }
         ui::MouseAction::ToggleOutputDim(index) => {
             controller.state.focus = FocusArea::Outputs;
             controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
@@ -778,6 +805,77 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         ui::MouseAction::SelectMixerChannel(index) => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = index;
+        }
+        ui::MouseAction::AdjustMixerLevel { index, increase } => {
+            controller.state.focus = FocusArea::Mixer;
+            controller.state.selected_channel =
+                index.min(controller.state.active_mixer_channels().len() - 1);
+            let active_channel =
+                controller.state.active_mixer_channels()[controller.state.selected_channel];
+            let current = active_channel.level.unwrap_or(0x20);
+            let next = if increase {
+                current.saturating_sub(1)
+            } else {
+                current.saturating_add(1).min(0x60)
+            };
+            controller.send_mixer_level_change(
+                MixerSurface::from_surface(controller.state.surface),
+                active_channel.channel,
+                next,
+            )?;
+        }
+        ui::MouseAction::SetMixerLevel { index, level } => {
+            controller.state.focus = FocusArea::Mixer;
+            controller.state.selected_channel =
+                index.min(controller.state.active_mixer_channels().len() - 1);
+            let active_channel =
+                controller.state.active_mixer_channels()[controller.state.selected_channel];
+            controller.send_mixer_level_change(
+                MixerSurface::from_surface(controller.state.surface),
+                active_channel.channel,
+                level.min(0x5a),
+            )?;
+        }
+        ui::MouseAction::AdjustMixerPan { index, right } => {
+            controller.state.focus = FocusArea::Mixer;
+            controller.state.selected_channel =
+                index.min(controller.state.active_mixer_channels().len() - 1);
+            let active_channel =
+                controller.state.active_mixer_channels()[controller.state.selected_channel];
+            let next = if right {
+                active_channel
+                    .pan
+                    .raw()
+                    .saturating_add(1)
+                    .min(PanState::MAX)
+            } else {
+                active_channel
+                    .pan
+                    .raw()
+                    .saturating_sub(1)
+                    .max(PanState::MIN)
+            };
+            controller.send(Command::SetMixerPan {
+                mixer: MixerSurface::from_surface(controller.state.surface),
+                channel: active_channel.channel,
+                pan: PanState::from_raw(next),
+                muted: active_channel.muted.unwrap_or(false),
+                soloed: active_channel.soloed.unwrap_or(false),
+            })?;
+        }
+        ui::MouseAction::SetMixerPan { index, pan } => {
+            controller.state.focus = FocusArea::Mixer;
+            controller.state.selected_channel =
+                index.min(controller.state.active_mixer_channels().len() - 1);
+            let active_channel =
+                controller.state.active_mixer_channels()[controller.state.selected_channel];
+            controller.send(Command::SetMixerPan {
+                mixer: MixerSurface::from_surface(controller.state.surface),
+                channel: active_channel.channel,
+                pan,
+                muted: active_channel.muted.unwrap_or(false),
+                soloed: active_channel.soloed.unwrap_or(false),
+            })?;
         }
         ui::MouseAction::ToggleMixerMute(channel) => {
             controller.state.focus = FocusArea::Mixer;
@@ -867,6 +965,14 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
             controller.send(Command::SetPreampGain {
                 input,
                 raw: next_preamp_gain_raw(current, increase),
+            })?;
+        }
+        ui::MouseAction::SetPreampGain { input, raw } => {
+            controller.state.focus = FocusArea::Preamp;
+            controller.state.selected_preamp_input = input.min(1) as usize;
+            controller.send(Command::SetPreampGain {
+                input: input.min(1),
+                raw,
             })?;
         }
         ui::MouseAction::OpenPreampModeSelector(input) => {
@@ -1269,6 +1375,219 @@ mod tests {
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x48, 0x01, 0x01]);
+    }
+
+    #[test]
+    fn mouse_output_level_action_sends_exact_step() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::SetOutputLevel {
+                index: 1,
+                step: 0x12,
+            },
+        )
+        .expect("set output level");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0x47, 0x01, 0x12]);
+    }
+
+    #[test]
+    fn mouse_preamp_gain_action_sends_exact_raw_gain() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::SetPreampGain {
+                input: 1,
+                raw: 0x11,
+            },
+        )
+        .expect("set preamp gain");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0x50, 0x01, 0x11]);
+    }
+
+    #[test]
+    fn mouse_mixer_level_action_sends_exact_level() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::SetMixerLevel {
+                index: 0,
+                level: 0x15,
+            },
+        )
+        .expect("set mixer level");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x01, 0x15, 0x20]
+        );
+    }
+
+    #[test]
+    fn mouse_mixer_pan_action_sends_exact_pan() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::SetMixerPan {
+                index: 0,
+                pan: PanState::from_raw(0x12),
+            },
+        )
+        .expect("set mixer pan");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x01, 0x00, 0x12]
+        );
+    }
+
+    #[test]
+    fn mouse_adjust_mixer_level_action_sends_single_step_change() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].level = Some(0x20);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::AdjustMixerLevel {
+                index: 0,
+                increase: true,
+            },
+        )
+        .expect("adjust mixer level");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x01, 0x1f, 0x20]
+        );
+    }
+
+    #[test]
+    fn mouse_adjust_mixer_pan_action_sends_single_step_change() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+
+        apply_mouse_action(
+            &mut controller,
+            ui::MouseAction::AdjustMixerPan {
+                index: 0,
+                right: true,
+            },
+        )
+        .expect("adjust mixer pan");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x01, 0x00, 0x21]
+        );
+    }
+
+    #[test]
+    fn handle_mouse_event_scroll_up_on_output_slider_sends_adjustment() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        controller.state.outputs[0] =
+            OutputState::new(OutputTarget::Monitor, 0x30, OutputMode::Normal);
+        let area = ratatui::layout::Rect::new(0, 0, 120, 50);
+        let chunks = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(3),
+                ratatui::layout::Constraint::Min(17),
+            ])
+            .split(area);
+        let page = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Min(14),
+                ratatui::layout::Constraint::Length(8),
+            ])
+            .split(chunks[1]);
+        let inner = ratatui::layout::Rect::new(
+            page[1].x + 2,
+            page[1].y + 2,
+            page[1].width.saturating_sub(4),
+            page[1].height.saturating_sub(4),
+        );
+        let card = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Percentage(34),
+                ratatui::layout::Constraint::Percentage(33),
+                ratatui::layout::Constraint::Percentage(33),
+            ])
+            .split(ratatui::layout::Rect::new(inner.x, inner.y, inner.width, 3))[0];
+        let slider_row = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Vertical)
+            .constraints([
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(1),
+                ratatui::layout::Constraint::Length(1),
+            ])
+            .split(card)[1];
+        let slider_area = ratatui::layout::Rect::new(
+            slider_row.x,
+            slider_row.y,
+            slider_row.width.min(40),
+            slider_row.height,
+        );
+        let label_width = 12.min(slider_area.width.saturating_sub(1)).max(1);
+        let track = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints([
+                ratatui::layout::Constraint::Length(label_width),
+                ratatui::layout::Constraint::Min(1),
+            ])
+            .split(slider_area)[1];
+
+        handle_mouse_event(
+            area,
+            &mut controller,
+            AppMouseEvent {
+                kind: AppMouseEventKind::ScrollUp,
+                column: track.x,
+                row: track.y,
+                modifiers: Default::default(),
+            },
+        )
+        .expect("wheel output slider");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x13], &[0x47, 0x00, 0x2f]);
     }
 
     #[test]
