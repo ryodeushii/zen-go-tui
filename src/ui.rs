@@ -13,8 +13,8 @@ use crate::app::{
     SelectorPopupState,
 };
 use crate::protocol::{
-    meter_display_db, meter_ratio, ClockSource, MixerAssignment, MixerSurface, OutputMode,
-    OutputState, PanState, PreampInputState, PreampMode, SampleRate, Surface,
+    meter_db_ratio, meter_display_db, meter_ratio, ClockSource, MixerAssignment, MixerSurface,
+    OutputMode, OutputState, PanState, PreampInputState, PreampMode, SampleRate, Surface,
 };
 use crate::terminal;
 
@@ -2106,8 +2106,12 @@ fn mixer_level_value_label(channel: &crate::protocol::MixerChannelState) -> Stri
         .unwrap_or_else(|| "LVL ?".to_string())
 }
 
-fn strip_db_ratio(value: Option<i16>) -> Option<f64> {
+fn level_db_ratio(value: Option<i16>) -> Option<f64> {
     value.map(|db| ((db.clamp(-60, 0) + 60) as f64 / 60.0).clamp(0.0, 1.0))
+}
+
+fn meter_db_ratio_option(value: Option<i16>) -> Option<f64> {
+    value.map(meter_db_ratio)
 }
 
 fn meter_bar_color(cell_ratio: f64) -> Color {
@@ -2197,7 +2201,7 @@ fn render_vertical_combo_strip(
 
     let mut previous_y: Option<u16> = None;
     for marker in MIXER_STRIP_DB_MARKERS {
-        let mut y = vertical_ratio_row(scale, strip_db_ratio(Some(-marker)).unwrap_or(0.0));
+        let mut y = vertical_ratio_row(scale, level_db_ratio(Some(-marker)).unwrap_or(0.0));
         if let Some(prev) = previous_y {
             y = y.max(prev.saturating_add(1));
         }
@@ -2211,8 +2215,8 @@ fn render_vertical_combo_strip(
         );
     }
 
-    let meter_ratio = strip_db_ratio(meter_db);
-    let level_ratio = strip_db_ratio(level_db);
+    let meter_ratio = meter_db_ratio_option(meter_db);
+    let level_ratio = level_db_ratio(level_db);
     let level_handle_y = level_ratio.map(|ratio| vertical_ratio_row(level, ratio));
 
     for step in 0..meter.height {
@@ -3281,8 +3285,8 @@ mod tests {
         assert!(rendered.contains("LVL -48 dB"));
         assert!(rendered.contains("─"));
         assert!(rendered.contains("●"));
-        assert!(rendered.contains(" - "));
-        assert!(rendered.contains(" + "));
+        assert!(rendered.contains(ADJUST_DOWN_BUTTON_LABEL));
+        assert!(rendered.contains(ADJUST_UP_BUTTON_LABEL));
         assert!(rendered.contains(" DIM "));
         assert!(rendered.contains(" MUTE "));
         assert!(!rendered.contains("raw 30"));
@@ -3384,7 +3388,6 @@ mod tests {
         assert!(rendered.contains("Preamp 1"));
         assert!(rendered.contains("GAIN 20 dB"));
         assert!(rendered.contains("OBS -48 dB"));
-        assert!(rendered.contains("█"));
         assert!(rendered.contains("░"));
         assert!(rendered.contains("─"));
         assert!(rendered.contains("●"));
@@ -4455,8 +4458,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 1"));
-        assert!(line.contains("L ███████░ -10 dB"));
-        assert!(line.contains("R ███████░  -5 dB"));
+        assert!(line.contains("L ███░░░░░ -10 dB"));
+        assert!(line.contains("R ████░░░░  -5 dB"));
     }
 
     #[test]
@@ -4476,7 +4479,7 @@ mod tests {
 
         assert!(line.contains("MIX 2"));
         assert!(line.contains("L ████████   0 dB"));
-        assert!(line.contains("R ███████░  -6 dB"));
+        assert!(line.contains("R ████░░░░  -6 dB"));
     }
 
     #[test]
@@ -4513,8 +4516,8 @@ mod tests {
 
         let line = render_experimental_pair_state_line(&state);
 
-        assert!(line.contains("L ██████░░ -18 dB"));
-        assert!(line.contains("R █░░░░░░░ -52 dB"));
+        assert!(line.contains("L █░░░░░░░ -18 dB"));
+        assert!(line.contains("R ░░░░░░░░ -52 dB"));
     }
 
     #[test]

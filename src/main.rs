@@ -1,6 +1,6 @@
 use std::io;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use clap::Parser;
@@ -34,6 +34,19 @@ struct Cli {
 const ZEN_GO_VID: u16 = 0x23e5;
 const ZEN_GO_PID: u16 = 0xa015;
 const DEVICE_RETRY_INTERVAL: Duration = Duration::from_millis(500);
+const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(16);
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(16);
+const DIRTY_REDRAW_INTERVAL: Duration = Duration::from_millis(33);
+const IDLE_REDRAW_INTERVAL: Duration = Duration::from_millis(250);
+
+fn should_draw_frame(last_draw_at: Option<Instant>, needs_redraw: bool, now: Instant) -> bool {
+    let Some(last_draw_at) = last_draw_at else {
+        return true;
+    };
+
+    let elapsed = now.duration_since(last_draw_at);
+    (needs_redraw && elapsed >= DIRTY_REDRAW_INTERVAL) || elapsed >= IDLE_REDRAW_INTERVAL
+}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -274,19 +287,33 @@ fn app_loop(
     controller: &mut Controller,
 ) -> Result<()> {
     let mut reconnect_refresh_pending = false;
+    let mut last_draw_at = None;
+    let mut needs_redraw = true;
 
     loop {
         refresh_after_reconnect_if_needed(controller, &mut reconnect_refresh_pending)?;
 
-        if let Err(error) = controller.poll_device(Duration::from_millis(5)) {
-            if is_device_error(&error) {
-                reconnect_refresh_pending = true;
+        match controller.poll_device(DEVICE_POLL_INTERVAL) {
+            Ok(observed_frame) => {
+                needs_redraw |= observed_frame;
             }
-            handle_runtime_error(controller, error)?;
+            Err(error) => {
+                if is_device_error(&error) {
+                    reconnect_refresh_pending = true;
+                }
+                handle_runtime_error(controller, error)?;
+                needs_redraw = true;
+            }
         }
-        terminal.draw(|frame| ui::draw(frame, &controller.state))?;
 
-        if !terminal::poll_input(Duration::from_millis(10))? {
+        let now = Instant::now();
+        if should_draw_frame(last_draw_at, needs_redraw, now) {
+            terminal.draw(|frame| ui::draw(frame, &controller.state))?;
+            last_draw_at = Some(now);
+            needs_redraw = false;
+        }
+
+        if !terminal::poll_input(INPUT_POLL_INTERVAL)? {
             continue;
         }
 
@@ -309,6 +336,8 @@ fn app_loop(
                 if action == KeyAction::ReconnectPending {
                     reconnect_refresh_pending = true;
                 }
+
+                needs_redraw = true;
             }
             Some(AppInputEvent::Mouse(mouse)) => {
                 let size = terminal.size()?;
@@ -322,12 +351,13 @@ fn app_loop(
                     }
                     handle_runtime_error(controller, error)?;
                 }
+                needs_redraw = true;
             }
             Some(AppInputEvent::Resize { .. })
             | Some(AppInputEvent::FocusGained)
             | Some(AppInputEvent::FocusLost)
-            | Some(AppInputEvent::Paste(_))
-            | None => {}
+            | Some(AppInputEvent::Paste(_)) => needs_redraw = true,
+            None => {}
         }
     }
 
@@ -1160,7 +1190,7 @@ fn next_preamp_gain_raw(input: zen_go_tui::protocol::PreampInputState, up: bool)
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use zen_go_tui::app::AssignmentPickerState;
     use zen_go_tui::protocol::{
@@ -1873,5 +1903,27 @@ mod tests {
             transport.write_count(),
             control_panel_startup_queries().len()
         );
+    }
+
+    #[test]
+    fn draw_scheduler_throttles_dirty_redraws_but_refreshes_idle_ui() {
+        let now = Instant::now();
+
+        assert!(should_draw_frame(None, false, now));
+        assert!(!should_draw_frame(
+            Some(now - Duration::from_millis(10)),
+            true,
+            now,
+        ));
+        assert!(should_draw_frame(
+            Some(now - Duration::from_millis(40)),
+            true,
+            now,
+        ));
+        assert!(should_draw_frame(
+            Some(now - Duration::from_millis(300)),
+            false,
+            now,
+        ));
     }
 }

@@ -284,12 +284,15 @@ pub(crate) fn meter_display_db(raw: u8) -> Option<i16> {
     (raw <= 0x3c).then_some(-(raw as i16))
 }
 
+pub(crate) fn meter_db_ratio(db: i16) -> f64 {
+    let db = db.clamp(-60, 0) as f64;
+    let min_amplitude = 10_f64.powf(-60.0 / 20.0);
+    let amplitude = 10_f64.powf(db / 20.0);
+    ((amplitude - min_amplitude) / (1.0 - min_amplitude)).clamp(0.0, 1.0)
+}
+
 pub(crate) fn meter_ratio(raw: u8) -> f64 {
-    if raw > 0x3c {
-        0.0
-    } else {
-        (1.0 - (raw as f64 / 60.0)).clamp(0.0, 1.0)
-    }
+    meter_display_db(raw).map(meter_db_ratio).unwrap_or(0.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3007,10 +3010,16 @@ mod tests {
     }
 
     #[test]
-    fn meter_display_uses_clamped_minus_60_to_0_db_ui_scale() {
+    fn meter_display_uses_logarithmic_minus_60_to_0_db_ui_scale() {
         let mut active =
             MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
         active.meter = Some(0x00);
+        let mut moderate =
+            MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
+        moderate.meter = Some(0x14);
+        let mut quiet =
+            MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
+        quiet.meter = Some(0x1e);
         let mut floor =
             MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
         floor.meter = Some(0x3c);
@@ -3024,6 +3033,12 @@ mod tests {
         assert_eq!(floor.meter_db(), Some(-60));
         assert_eq!(hidden.meter_db(), None);
         assert_eq!(active.meter_ratio(), Some(1.0));
+        assert!(moderate
+            .meter_ratio()
+            .is_some_and(|ratio| (ratio - 0.099).abs() < 0.01));
+        assert!(quiet
+            .meter_ratio()
+            .is_some_and(|ratio| (ratio - 0.031).abs() < 0.01));
         assert_eq!(floor.meter_ratio(), Some(0.0));
         assert_eq!(hidden.meter_ratio(), Some(0.0));
         assert_eq!(preamp.observed_meter_db(), None);

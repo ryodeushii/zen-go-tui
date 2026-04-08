@@ -971,8 +971,9 @@ impl Controller {
         Ok(())
     }
 
-    pub fn poll_device(&mut self, timeout: Duration) -> Result<()> {
+    pub fn poll_device(&mut self, timeout: Duration) -> Result<bool> {
         let mut next_timeout = timeout;
+        let mut observed_frame = false;
 
         for _ in 0..MAX_FRAMES_PER_POLL {
             let Some(bytes) = self.transport.read(next_timeout)? else {
@@ -980,6 +981,7 @@ impl Controller {
             };
 
             next_timeout = Duration::ZERO;
+            observed_frame = true;
 
             if let Ok(frame) = Frame::parse(&bytes) {
                 let raw = frame.raw_bytes().to_vec();
@@ -991,7 +993,7 @@ impl Controller {
             }
         }
 
-        Ok(())
+        Ok(observed_frame)
     }
 
     pub fn confirm_pending_write(&mut self, _snapshot: Snapshot73) {
@@ -2546,13 +2548,24 @@ mod tests {
         transport.push_read(first);
         transport.push_read(second);
 
-        controller.poll_device(Duration::ZERO).expect("poll");
+        let observed_frame = controller.poll_device(Duration::ZERO).expect("poll");
 
+        assert!(observed_frame);
         assert_eq!(
             controller.state.device.sample_rate,
             Some(SampleRate::Hz48000)
         );
         assert_eq!(controller.state.device.clock_source, Some(ClockSource::Usb));
+    }
+
+    #[test]
+    fn poll_device_reports_idle_reads_without_marking_state_dirty() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+
+        let observed_frame = controller.poll_device(Duration::ZERO).expect("idle poll");
+
+        assert!(!observed_frame);
     }
 
     #[test]
