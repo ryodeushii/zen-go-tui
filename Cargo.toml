@@ -17,4 +17,7 @@ clap = { version = "4.5", features = ["derive"] }
 crossterm = "0.28"
 hidapi = { version = "2.6", default-features = false, features = ["linux-static-hidraw"] }
 ratatui = "0.29"
+termprofile = "0.2.2"
+terminput = "0.5.14"
+terminput-crossterm = { version = "0.4.10", default-features = false, features = ["crossterm_0_28"] }
 thiserror = "2.0"

@@ -4,10 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-    MouseEvent, MouseEventKind,
-};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -19,6 +16,10 @@ use zen_go_tui::app::{Controller, FocusArea, MainPage};
 use zen_go_tui::protocol::{
     ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, OutputTarget, PanState,
     PreampMode, SampleRate, Surface,
+};
+use zen_go_tui::terminal::{
+    self, AppInputEvent, AppKeyCode, AppKeyEventKind, AppMouseButton, AppMouseEvent,
+    AppMouseEventKind,
 };
 use zen_go_tui::transport::{is_device_error, HidTransport, MockTransport, Transport};
 use zen_go_tui::ui;
@@ -142,23 +143,23 @@ fn app_loop(
         }
         terminal.draw(|frame| ui::draw(frame, &controller.state))?;
 
-        if !event::poll(Duration::from_millis(10))? {
+        if !terminal::poll_input(Duration::from_millis(10))? {
             continue;
         }
 
-        match event::read()? {
-            Event::Key(key) => {
-                if key.kind != KeyEventKind::Press {
+        match terminal::read_input_event()? {
+            Some(AppInputEvent::Key(key)) => {
+                if key.kind != AppKeyEventKind::Press {
                     continue;
                 }
 
                 let result = match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('r') => {
+                    AppKeyCode::Char('q') => break,
+                    AppKeyCode::Char('r') => {
                         controller.state.toggle_raw_view();
                         Ok(())
                     }
-                    KeyCode::Char('R') => match controller.refresh_queried_state() {
+                    AppKeyCode::Char('R') => match controller.refresh_queried_state() {
                         Ok(()) => {
                             controller.state.last_message =
                                 "Sent captured 0x74 startup/state refresh sweep".to_string();
@@ -166,7 +167,7 @@ fn app_loop(
                         }
                         Err(error) => Err(error),
                     },
-                    KeyCode::Tab => {
+                    AppKeyCode::Tab => {
                         if !controller.state.raw_view_open
                             && controller.state.assignment_picker.is_none()
                         {
@@ -174,7 +175,7 @@ fn app_loop(
                         }
                         Ok(())
                     }
-                    KeyCode::BackTab => {
+                    AppKeyCode::BackTab => {
                         if !controller.state.raw_view_open
                             && controller.state.assignment_picker.is_none()
                         {
@@ -182,18 +183,18 @@ fn app_loop(
                         }
                         Ok(())
                     }
-                    KeyCode::Char('f') => {
+                    AppKeyCode::Char('f') => {
                         if controller.state.page == MainPage::Mixer {
                             controller.state.cycle_focus();
                         }
                         Ok(())
                     }
-                    KeyCode::Char('?') => {
+                    AppKeyCode::Char('?') => {
                         controller.state.last_message =
                             "Tab/Shift+Tab switch pages. f cycles mixer focus. Outputs: +/- m d. Mixer: +/- m o [ ] pan a assign l link. Preamp: ←/→ select, +/- gain, m phantom, p phase, 3 mode. Surface: 1/2. Raw: r open, ←/→ tabs, Query75 ←/→ history, b/x baseline. R sends the captured 0x74 refresh sweep.".to_string();
                         Ok(())
                     }
-                    KeyCode::Left if controller.state.raw_view_open => {
+                    AppKeyCode::Left if controller.state.raw_view_open => {
                         if controller.state.selected_raw_packet
                             == zen_go_tui::app::RawPacketTab::Query75
                         {
@@ -203,7 +204,7 @@ fn app_loop(
                         }
                         Ok(())
                     }
-                    KeyCode::Right if controller.state.raw_view_open => {
+                    AppKeyCode::Right if controller.state.raw_view_open => {
                         if controller.state.selected_raw_packet
                             == zen_go_tui::app::RawPacketTab::Query75
                         {
@@ -213,43 +214,45 @@ fn app_loop(
                         }
                         Ok(())
                     }
-                    KeyCode::Left => {
+                    AppKeyCode::Left => {
                         move_selection(controller, false);
                         Ok(())
                     }
-                    KeyCode::Right => {
+                    AppKeyCode::Right => {
                         move_selection(controller, true);
                         Ok(())
                     }
-                    KeyCode::Char('+') | KeyCode::Char('=') => adjust_focused(controller, true),
-                    KeyCode::Char('-') => adjust_focused(controller, false),
-                    KeyCode::Char('m') => toggle_mute(controller),
-                    KeyCode::Char('o') => toggle_mixer_solo(controller),
-                    KeyCode::Char('d') => toggle_dim(controller),
-                    KeyCode::Char('a') => cycle_mixer_assignment(controller),
-                    KeyCode::Char('l') => toggle_mixer_link(controller),
-                    KeyCode::Char('[') => adjust_mixer_pan(controller, false),
-                    KeyCode::Char(']') => adjust_mixer_pan(controller, true),
-                    KeyCode::Char('p') => toggle_preamp_phase(controller),
-                    KeyCode::Char('3') => cycle_preamp_mode(controller),
-                    KeyCode::Char('s') => cycle_sample_rate(controller),
-                    KeyCode::Char('c') => cycle_clock_source(controller),
-                    KeyCode::Char('1') => {
+                    AppKeyCode::Char('+') | AppKeyCode::Char('=') => {
+                        adjust_focused(controller, true)
+                    }
+                    AppKeyCode::Char('-') => adjust_focused(controller, false),
+                    AppKeyCode::Char('m') => toggle_mute(controller),
+                    AppKeyCode::Char('o') => toggle_mixer_solo(controller),
+                    AppKeyCode::Char('d') => toggle_dim(controller),
+                    AppKeyCode::Char('a') => cycle_mixer_assignment(controller),
+                    AppKeyCode::Char('l') => toggle_mixer_link(controller),
+                    AppKeyCode::Char('[') => adjust_mixer_pan(controller, false),
+                    AppKeyCode::Char(']') => adjust_mixer_pan(controller, true),
+                    AppKeyCode::Char('p') => toggle_preamp_phase(controller),
+                    AppKeyCode::Char('3') => cycle_preamp_mode(controller),
+                    AppKeyCode::Char('s') => cycle_sample_rate(controller),
+                    AppKeyCode::Char('c') => cycle_clock_source(controller),
+                    AppKeyCode::Char('1') => {
                         controller.send(Command::SelectSurface(Surface::MonitorHp1))
                     }
-                    KeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2)),
-                    KeyCode::Char('b') if controller.state.raw_view_open => {
+                    AppKeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2)),
+                    AppKeyCode::Char('b') if controller.state.raw_view_open => {
                         controller.state.capture_raw_baseline();
                         controller.state.last_message =
                             "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
                         Ok(())
                     }
-                    KeyCode::Char('x') if controller.state.raw_view_open => {
+                    AppKeyCode::Char('x') if controller.state.raw_view_open => {
                         controller.state.clear_raw_baseline();
                         controller.state.last_message = "Cleared raw baseline".to_string();
                         Ok(())
                     }
-                    KeyCode::Esc if controller.state.assignment_picker.is_some() => {
+                    AppKeyCode::Esc if controller.state.assignment_picker.is_some() => {
                         controller.state.assignment_picker = None;
                         controller.state.last_message = "Closed assignment picker".to_string();
                         Ok(())
@@ -264,7 +267,7 @@ fn app_loop(
                     handle_runtime_error(controller, error)?;
                 }
             }
-            Event::Mouse(mouse) => {
+            Some(AppInputEvent::Mouse(mouse)) => {
                 let size = terminal.size()?;
                 if let Err(error) = handle_mouse_event(
                     ratatui::layout::Rect::new(0, 0, size.width, size.height),
@@ -277,7 +280,11 @@ fn app_loop(
                     handle_runtime_error(controller, error)?;
                 }
             }
-            _ => {}
+            Some(AppInputEvent::Resize { .. })
+            | Some(AppInputEvent::FocusGained)
+            | Some(AppInputEvent::FocusLost)
+            | Some(AppInputEvent::Paste(_))
+            | None => {}
         }
     }
 
@@ -542,9 +549,9 @@ fn toggle_mixer_link(controller: &mut Controller) -> Result<()> {
 fn handle_mouse_event(
     area: ratatui::layout::Rect,
     controller: &mut Controller,
-    mouse: MouseEvent,
+    mouse: AppMouseEvent,
 ) -> Result<()> {
-    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+    if mouse.kind != AppMouseEventKind::Down(AppMouseButton::Left) {
         return Ok(());
     }
 

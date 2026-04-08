@@ -9,6 +9,7 @@ use crate::protocol::{
     meter_display_db, meter_ratio, MixerAssignment, MixerSurface, OutputMode, OutputState,
     PreampInputState, PreampMode, Surface,
 };
+use crate::terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
@@ -957,11 +958,11 @@ fn section_block(title: &str, focused: bool) -> Block<'_> {
     };
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused {
+        .border_style(terminal::adapt_style(Style::default().fg(if focused {
             Color::LightCyan
         } else {
             Color::DarkGray
-        }))
+        })))
         .title(Span::styled(title, style))
 }
 
@@ -973,7 +974,11 @@ fn panel_block<'a>(title: &'a str, accent: Color, focused: bool) -> Block<'a> {
     };
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(if focused { accent } else { Color::DarkGray }))
+        .border_style(terminal::adapt_style(Style::default().fg(if focused {
+            accent
+        } else {
+            Color::DarkGray
+        })))
         .title(Span::styled(title, title_style))
 }
 
@@ -988,7 +993,7 @@ fn chip_width(label: &str) -> u16 {
 fn chip<T: Into<String>>(label: T, fg: Color, bg: Color) -> Span<'static> {
     Span::styled(
         chip_text(&label.into()),
-        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        terminal::adapt_style(Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)),
     )
 }
 
@@ -996,22 +1001,24 @@ fn tab_chip(label: &str, active: bool, accent: Color) -> Span<'static> {
     if active {
         chip(label, Color::Black, accent)
     } else {
-        Span::styled(chip_text(label), Style::default().fg(Color::Gray))
+        Span::styled(chip_text(label), muted_style())
     }
 }
 
 fn muted_style() -> Style {
-    Style::default().fg(Color::Gray)
+    terminal::adapt_style(Style::default().fg(Color::Gray))
 }
 
 fn subdued_style() -> Style {
-    Style::default()
-        .fg(Color::DarkGray)
-        .add_modifier(Modifier::BOLD)
+    terminal::adapt_style(
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 fn strong_style(color: Color) -> Style {
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
+    terminal::adapt_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
 }
 
 fn render_level_bar(ratio: f64, width: usize) -> String {
@@ -1494,26 +1501,28 @@ fn inner_bottom_line(area: Rect) -> Option<Rect> {
 }
 
 fn style_for_preamp_mode(mode: PreampMode) -> Color {
-    match mode {
+    terminal::adapt_color(match mode {
         PreampMode::Mic => Color::Green,
         PreampMode::Line => Color::Yellow,
         PreampMode::HiZ => Color::Magenta,
         PreampMode::Unknown(_) => Color::Gray,
-    }
+    })
 }
 
 fn warning_section_block(title: &str, focused: bool) -> Block<'_> {
     let style = if focused {
-        Style::default()
-            .fg(Color::LightRed)
-            .bg(Color::Rgb(60, 20, 0))
-            .add_modifier(Modifier::BOLD)
+        terminal::adapt_style(
+            Style::default()
+                .fg(Color::LightRed)
+                .bg(Color::Rgb(60, 20, 0))
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
-        Style::default().fg(Color::LightRed)
+        terminal::adapt_style(Style::default().fg(Color::LightRed))
     };
     Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::LightRed))
+        .border_style(terminal::adapt_style(Style::default().fg(Color::LightRed)))
         .title(Span::styled(title, style))
 }
 
