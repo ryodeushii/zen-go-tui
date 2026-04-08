@@ -32,6 +32,10 @@ That installs the executable as `zen-go-tui` in Cargo's bin directory.
 
 ## Build
 
+The repository ships a local Cargo config that defaults builds and tests to the current Linux host target:
+
+- `x86_64-unknown-linux-gnu`
+
 ### Linux release binary
 
 ```bash
@@ -50,6 +54,8 @@ The documented Windows build path is the GNU target:
 rustup target add x86_64-pc-windows-gnu
 cargo build --target x86_64-pc-windows-gnu --release
 ```
+
+For performance verification and benchmark reporting, see `docs/performance.md`.
 
 Output:
 

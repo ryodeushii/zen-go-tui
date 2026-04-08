@@ -142,20 +142,20 @@ pub fn profile_editor_cursor(area: Rect, state: &AppState) -> Option<(u16, u16)>
     Some((x, row.y))
 }
 
-fn root_chunks(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn root_chunks(area: Rect) -> [Rect; 2] {
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(17)])
-        .split(area)
-        .to_vec()
+        .split(area);
+    [chunks[0], chunks[1]]
 }
 
-fn titlebar_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn titlebar_layout(area: Rect) -> [Rect; 2] {
+    let sections = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(24), Constraint::Length(21)])
-        .split(area)
-        .to_vec()
+        .split(area);
+    [sections[0], sections[1]]
 }
 
 fn device_metadata_width(state: &AppState) -> u16 {
@@ -168,14 +168,14 @@ fn device_metadata_width(state: &AppState) -> u16 {
         .saturating_add(chip_width(&format!("HW {}", metadata.hardware_version)))
 }
 
-fn device_panel_layout(area: Rect, state: &AppState) -> Vec<Rect> {
+fn device_panel_layout(area: Rect, state: &AppState) -> [Rect; 2] {
     let inner = inner_area(area);
     let metadata_width = device_metadata_width(state).min(inner.width.saturating_sub(24));
-    Layout::default()
+    let sections = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(24), Constraint::Length(metadata_width)])
-        .split(inner)
-        .to_vec()
+        .split(inner);
+    [sections[0], sections[1]]
 }
 
 fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
@@ -203,48 +203,48 @@ fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
     vec![connection_rect, sample_rect, clock_rect]
 }
 
-fn mixer_page_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn mixer_page_layout(area: Rect) -> [Rect; 2] {
+    let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(14), Constraint::Length(8)])
-        .split(area)
-        .to_vec()
+        .split(area);
+    [sections[0], sections[1]]
 }
 
-fn mixer_main_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn mixer_main_layout(area: Rect) -> [Rect; 2] {
+    let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(5), Constraint::Min(12)])
-        .split(area)
-        .to_vec()
+        .split(area);
+    [sections[0], sections[1]]
 }
 
-fn preamp_bar_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn preamp_bar_layout(area: Rect) -> [Rect; 2] {
+    let sections = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area)
-        .to_vec()
+        .split(area);
+    [sections[0], sections[1]]
 }
 
-fn mixer_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn mixer_layout(area: Rect) -> [Rect; 2] {
+    let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(9)])
-        .split(area)
-        .to_vec()
+        .split(area);
+    [sections[0], sections[1]]
 }
 
-fn mixer_strip_panel_layout(area: Rect, with_mix_meter: bool) -> Vec<Rect> {
+fn mixer_strip_panel_layout(area: Rect, with_mix_meter: bool) -> [Rect; 2] {
     let inner = inner_area(area);
     if with_mix_meter && inner.height >= 3 {
-        Layout::default()
+        let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(2)])
-            .split(inner)
-            .to_vec()
+            .split(inner);
+        [sections[0], sections[1]]
     } else {
-        vec![
+        [
             inner,
             Rect::new(inner.x, inner.y + inner.height, inner.width, 0),
         ]
@@ -317,12 +317,12 @@ fn mixer_header_chip_rects(area: Rect, source: &str) -> (Rect, Rect) {
     (channel_rect, source_rect)
 }
 
-fn preamp_card_inner_layout(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn preamp_card_inner_layout(area: Rect) -> [Rect; 2] {
+    let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Length(1)])
-        .split(inner_area(area))
-        .to_vec()
+        .split(inner_area(area));
+    [sections[0], sections[1]]
 }
 
 const ADJUST_DOWN_BUTTON_LABEL: &str = "↓";
@@ -1896,16 +1896,16 @@ fn output_card_height() -> u16 {
     3
 }
 
-fn output_card_areas(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn output_card_areas(area: Rect) -> [Rect; 3] {
+    let areas = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(34),
             Constraint::Percentage(33),
             Constraint::Percentage(33),
         ])
-        .split(Rect::new(area.x, area.y, area.width, output_card_height()))
-        .to_vec()
+        .split(Rect::new(area.x, area.y, area.width, output_card_height()));
+    [areas[0], areas[1], areas[2]]
 }
 
 fn output_hotkeys_button_rect(area: Rect) -> Rect {
@@ -2026,8 +2026,8 @@ fn preamp_gain_slider_rect(area: Rect) -> Rect {
     horizontal_labeled_slider_track(rows[1])
 }
 
-fn mixer_strip_rows(area: Rect) -> Vec<Rect> {
-    Layout::default()
+fn mixer_strip_rows(area: Rect) -> [Rect; 8] {
+    let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
@@ -2039,8 +2039,10 @@ fn mixer_strip_rows(area: Rect) -> Vec<Rect> {
             Constraint::Length(1),
             Constraint::Length(1),
         ])
-        .split(mixer_strip_inner_area(area))
-        .to_vec()
+        .split(mixer_strip_inner_area(area));
+    [
+        rows[0], rows[1], rows[2], rows[3], rows[4], rows[5], rows[6], rows[7],
+    ]
 }
 
 fn mixer_pan_slider_rect(area: Rect) -> Rect {
@@ -3517,9 +3519,11 @@ fn style_for_ascii_byte(byte: u8, changed: bool) -> Style {
 mod tests {
     use std::time::Instant;
 
+    use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
+    use ratatui::Terminal;
 
     use crate::app::{AppState, FocusArea};
     use crate::protocol::{
@@ -4843,5 +4847,45 @@ mod tests {
         input.observed_meter = Some(0x60);
 
         assert_eq!(observed_meter_label(input), "");
+    }
+
+    #[test]
+    #[ignore = "benchmark"]
+    fn perf_draw_full_frame() {
+        const FRAMES: usize = 2_000;
+
+        let backend = TestBackend::new(140, 42);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = AppState::default();
+        state.connection.connected = true;
+        state.device.metadata = Some(crate::protocol::DeviceMetadata {
+            product_name: "Zen Go Synergy Core".to_string(),
+            serial: "4502721001300".to_string(),
+            hardware_version: "6.6".to_string(),
+        });
+        state.device.sample_rate = Some(SampleRate::Hz48000);
+        state.device.clock_source = Some(ClockSource::Internal);
+        state.selected_channel = 7;
+        state.focus = FocusArea::Mixer;
+        state.mixer_channels[MixerSurface::Mix1.index()][7].level = Some(0x18);
+        state.mixer_channels[MixerSurface::Mix1.index()][7].meter = Some(0x24);
+        state.mixer_channels[MixerSurface::Mix1.index()][7].assignment =
+            Some(MixerAssignment::ComputerPlay(4));
+        state.mixer_channels[MixerSurface::Mix1.index()][7].soloed = Some(true);
+        state.mixer_channels[MixerSurface::Mix1.index()][7].linked = Some(true);
+
+        let started = Instant::now();
+        for _ in 0..FRAMES {
+            terminal
+                .draw(|frame| draw(frame, &state))
+                .expect("draw full frame");
+        }
+        let elapsed = started.elapsed();
+
+        println!(
+            "draw full frame: frames={FRAMES} elapsed_ms={} ns_per_frame={}",
+            elapsed.as_millis(),
+            elapsed.as_nanos() / FRAMES as u128
+        );
     }
 }

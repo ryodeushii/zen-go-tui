@@ -285,7 +285,7 @@ impl AppState {
         }
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: Snapshot73) {
+    pub fn apply_snapshot(&mut self, snapshot: &Snapshot73) {
         self.device.sample_rate = Some(snapshot.sample_rate);
         self.device.sample_rate_hz = Some(snapshot.sample_rate_hz);
         self.device.clock_source = Some(snapshot.clock_source);
@@ -353,9 +353,9 @@ impl AppState {
                     || self.latest_snapshot_73.as_ref() != Some(&snapshot)
                     || (self.raw_view_open && self.latest_raw_73.as_ref() != Some(&raw));
                 self.connection.last_frame_type = Some("0x73 snapshot");
-                self.latest_snapshot_73 = Some(snapshot.clone());
+                self.apply_snapshot(&snapshot);
+                self.latest_snapshot_73 = Some(snapshot);
                 self.latest_raw_73 = Some(raw);
-                self.apply_snapshot(snapshot);
                 changed
             }
             DeviceSnapshot::Auxiliary83(bytes) => {
@@ -1129,7 +1129,7 @@ impl Controller {
 
     pub fn poll_device(&mut self, timeout: Duration) -> Result<bool> {
         let mut next_timeout = timeout;
-        let mut observed_frame = false;
+        let mut state_dirty = false;
 
         for _ in 0..MAX_FRAMES_PER_POLL {
             let Some(bytes) = self.transport.read(next_timeout)? else {
@@ -1137,22 +1137,20 @@ impl Controller {
             };
 
             next_timeout = Duration::ZERO;
-            observed_frame = true;
 
-            if let Ok(frame) = Frame::parse(&bytes) {
-                let raw = frame.raw_bytes().to_vec();
-                let snapshot = DeviceSnapshot::from(frame);
+            if let Ok(frame) = Frame::parse_owned(bytes) {
+                let (snapshot, raw) = frame.into_snapshot_and_raw();
                 if let DeviceSnapshot::Snapshot(snapshot73) = &snapshot {
-                    self.confirm_pending_write(snapshot73.clone());
+                    state_dirty |= self.confirm_pending_write(snapshot73.clone());
                 }
-                observed_frame |= self.state.observe_frame(snapshot, raw);
+                state_dirty |= self.state.observe_frame(snapshot, raw);
             }
         }
 
-        Ok(observed_frame)
+        Ok(state_dirty)
     }
 
-    pub fn confirm_pending_write(&mut self, _snapshot: Snapshot73) {
+    pub fn confirm_pending_write(&mut self, _snapshot: Snapshot73) -> bool {
         match self.pending_mutation.take() {
             Some(PendingMutation::MixerLevel {
                 mixer,
@@ -1168,6 +1166,7 @@ impl Controller {
                     slot.muted = Some(muted);
                     slot.pan = pan;
                 }
+                true
             }
             Some(PendingMutation::MixerLinkedLevel {
                 mixer,
@@ -1191,6 +1190,7 @@ impl Controller {
                         slot.pan = pan;
                     }
                 }
+                true
             }
             Some(PendingMutation::MixerMute {
                 mixer,
@@ -1202,6 +1202,7 @@ impl Controller {
                 {
                     slot.muted = Some(muted);
                 }
+                true
             }
             Some(PendingMutation::MixerSolo {
                 mixer,
@@ -1213,6 +1214,7 @@ impl Controller {
                 {
                     slot.soloed = Some(soloed);
                 }
+                true
             }
             Some(PendingMutation::MixerLinkedMute {
                 mixer,
@@ -1227,6 +1229,7 @@ impl Controller {
                         slot.muted = Some(muted);
                     }
                 }
+                true
             }
             Some(PendingMutation::MixerLinkedSolo {
                 mixer,
@@ -1241,6 +1244,7 @@ impl Controller {
                         slot.soloed = Some(soloed);
                     }
                 }
+                true
             }
             Some(PendingMutation::MixerPan {
                 mixer,
@@ -1252,6 +1256,7 @@ impl Controller {
                 {
                     slot.pan = pan;
                 }
+                true
             }
             Some(PendingMutation::MixerAssignment { strip, assignment }) => {
                 let index = strip.saturating_sub(1) as usize;
@@ -1260,6 +1265,7 @@ impl Controller {
                         slot.assignment = Some(assignment);
                     }
                 }
+                true
             }
             Some(PendingMutation::MixerLink {
                 mixer,
@@ -1275,6 +1281,7 @@ impl Controller {
                         }
                     }
                 }
+                true
             }
             Some(PendingMutation::MixerLinkExplicit {
                 mixer,
@@ -1289,17 +1296,21 @@ impl Controller {
                         slot.linked = Some(enabled);
                     }
                 }
+                true
             }
             Some(PendingMutation::OutputVolume { target, step }) => {
                 self.state.outputs[target.index() as usize].volume = step;
+                true
             }
             Some(PendingMutation::OutputMode { target, mode }) => {
                 self.state.outputs[target.index() as usize].mode = mode;
+                true
             }
             Some(PendingMutation::PreampGain { input, raw }) => {
                 self.state.dsp_cluster[input.min(1) as usize] = raw;
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
+                true
             }
             Some(PendingMutation::PreampMode { input, mode }) => {
                 let offset = 2 + input.min(1) as usize;
@@ -1307,6 +1318,7 @@ impl Controller {
                 self.state.dsp_cluster[offset] = preserved_bits | mode.code();
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
+                true
             }
             Some(PendingMutation::PreampPhantom { input, enabled }) => {
                 let offset = 2 + input.min(1) as usize;
@@ -1314,6 +1326,7 @@ impl Controller {
                 self.state.dsp_cluster[offset] = low | if enabled { 0x10 } else { 0x00 };
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
+                true
             }
             Some(PendingMutation::PreampPhase { input, enabled }) => {
                 let offset = 2 + input.min(1) as usize;
@@ -1321,8 +1334,9 @@ impl Controller {
                 self.state.dsp_cluster[offset] = low | if enabled { 0x40 } else { 0x00 };
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
+                true
             }
-            None => {}
+            None => false,
         }
     }
 }
@@ -1434,15 +1448,17 @@ fn link_pair_from_selector(mixer: MixerSurface, selector: u8) -> Option<(u8, u8)
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use crate::profile::{
         DeviceProfile, MixerAssignmentEntry, MixerAssignmentProfile, MixerProfiles,
         MixerStripProfile, OutputModeProfile, OutputProfile, OutputProfiles, PreampInputProfile,
         PreampModeProfile, PreampProfiles,
     };
     use crate::protocol::{
-        ClockSource, Command, DeviceSnapshot, MixerAssignment, MixerChannelState, MixerStrip,
-        MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState,
-        SampleRate, Snapshot73, Surface,
+        ClockSource, Command, DeviceSnapshot, Frame, MixerAssignment, MixerChannelState,
+        MixerStrip, MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampMode,
+        PreampState, SampleRate, Snapshot73, Surface,
     };
     use crate::transport::MockTransport;
 
@@ -1504,12 +1520,33 @@ mod tests {
             .collect()
     }
 
+    fn snapshot_frame_bytes(meter: u8) -> Vec<u8> {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        let payload = &mut frame[0x10..];
+        payload[0x00] = 0x08;
+        payload[0x02] = 0x02;
+        payload[0x03] = 0x00;
+        payload[0x04..0x08].copy_from_slice(&48_000_u32.to_be_bytes());
+        payload[0x0c] = 0x50;
+        payload[0x0d] = 0x00;
+        payload[0x0e] = 0x40;
+        payload[0x0f] = 0x01;
+        payload[0x10] = 0x30;
+        payload[0x11] = 0x02;
+        payload[0x18..0x1c].copy_from_slice(&[0x2f, 0x34, 0x50, 0x10]);
+        payload[0x6a] = 0x0f;
+        payload[0xcf] = meter;
+        frame
+    }
+
     #[test]
     fn reducer_prefers_device_snapshot_state() {
         let mut state = AppState::default();
         state.outputs[0].volume = 0x10;
 
-        state.apply_snapshot(snapshot());
+        state.apply_snapshot(&snapshot());
 
         assert_eq!(state.device.sample_rate, Some(SampleRate::Hz48000));
         assert_eq!(state.outputs[0].volume, 0x50);
@@ -1523,7 +1560,7 @@ mod tests {
         let mut device_snapshot = snapshot();
         device_snapshot.dsp_cluster = [0x14, 0x2a, 0x11, 0x00];
 
-        state.apply_snapshot(device_snapshot);
+        state.apply_snapshot(&device_snapshot);
 
         assert_eq!(state.preamp.input1.mode, PreampMode::Line);
         assert_eq!(state.preamp.input1.gain_raw, 0x14);
@@ -1544,7 +1581,7 @@ mod tests {
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].linked = Some(true);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][1].linked = Some(true);
 
-        state.apply_snapshot(device_snapshot);
+        state.apply_snapshot(&device_snapshot);
 
         assert_eq!(state.preamp.input1.observed_meter, Some(0x28));
         assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
@@ -1587,7 +1624,7 @@ mod tests {
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].pan =
             Some(PanState::from_raw(0x1e));
 
-        state.apply_snapshot(device_snapshot);
+        state.apply_snapshot(&device_snapshot);
 
         assert_eq!(
             state.mixer_channels[MixerSurface::Mix1.index()][0].pan,
@@ -1851,7 +1888,7 @@ mod tests {
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].meter = Some(0x30);
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix2.index()][0].meter = Some(0x30);
 
-        state.apply_snapshot(device_snapshot);
+        state.apply_snapshot(&device_snapshot);
 
         assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
         assert_eq!(
@@ -2838,6 +2875,52 @@ mod tests {
             DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
             vec![0x83, 0, 0, 0],
         ));
+    }
+
+    #[test]
+    fn poll_device_does_not_mark_identical_snapshot_dirty_when_view_is_unchanged() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+        let raw = snapshot_frame_bytes(0x12);
+        let snapshot = Frame::parse(&raw)
+            .expect("snapshot frame")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone();
+        controller.state.connection.connected = true;
+        controller.state.latest_snapshot_73 = Some(snapshot.clone());
+        controller.state.latest_raw_73 = Some(raw.clone());
+        controller.state.apply_snapshot(&snapshot);
+
+        transport.push_read(raw);
+
+        assert!(!controller.poll_device(Duration::ZERO).expect("poll"));
+    }
+
+    #[test]
+    #[ignore = "benchmark"]
+    fn perf_poll_device_snapshot_backlog() {
+        const FRAMES: usize = 20_000;
+        let polls = FRAMES.div_ceil(MAX_FRAMES_PER_POLL) + 1;
+
+        let transport = MockTransport::default();
+        for meter in 0..FRAMES {
+            transport.push_read(snapshot_frame_bytes((meter % 0x3d) as u8));
+        }
+
+        let mut controller = Controller::new(Box::new(transport));
+        let started = Instant::now();
+        let mut dirty_polls = 0_usize;
+        for _ in 0..polls {
+            dirty_polls += usize::from(controller.poll_device(Duration::ZERO).expect("poll"));
+        }
+        let elapsed = started.elapsed();
+
+        println!(
+            "poll_device backlog: frames={FRAMES} polls={polls} dirty_polls={dirty_polls} elapsed_ms={} ns_per_frame={}",
+            elapsed.as_millis(),
+            elapsed.as_nanos() / FRAMES as u128
+        );
     }
 
     #[test]

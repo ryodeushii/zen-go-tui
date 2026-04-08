@@ -1203,16 +1203,20 @@ pub enum Frame {
 
 impl Frame {
     pub fn parse(bytes: &[u8]) -> Result<Self, ProtocolError> {
+        Self::parse_owned(bytes.to_vec())
+    }
+
+    pub fn parse_owned(bytes: Vec<u8>) -> Result<Self, ProtocolError> {
         if bytes.len() < 6 {
             return Err(ProtocolError::FrameTooShort(bytes.len()));
         }
 
         if bytes.len() == 6 {
             let mut raw = [0_u8; 6];
-            raw.copy_from_slice(bytes);
+            raw.copy_from_slice(&bytes);
             return Ok(Self::Notification {
                 notification: Notification81 { bytes: raw },
-                raw: bytes.to_vec(),
+                raw: bytes,
             });
         }
 
@@ -1223,8 +1227,8 @@ impl Frame {
         let frame_type = u32::from_le_bytes(bytes[0..4].try_into().expect("type header"));
         match frame_type {
             0x73 => Ok(Self::Snapshot {
-                snapshot: parse_snapshot73(bytes)?,
-                raw: bytes.to_vec(),
+                snapshot: parse_snapshot73(&bytes)?,
+                raw: bytes,
             }),
             0x75 => Ok(Self::QueryReply {
                 reply: QueryReply75 {
@@ -1232,11 +1236,11 @@ impl Frame {
                     sub_id: bytes[0x0c],
                     body: bytes[0x10..].to_vec(),
                 },
-                raw: bytes.to_vec(),
+                raw: bytes,
             }),
             0x83 => Ok(Self::Auxiliary83 {
                 bytes: bytes[0x10..].to_vec(),
-                raw: bytes.to_vec(),
+                raw: bytes,
             }),
             other => Err(ProtocolError::UnsupportedFrame(other)),
         }
@@ -1262,6 +1266,17 @@ impl Frame {
             Self::QueryReply { raw, .. } => raw,
             Self::Auxiliary83 { raw, .. } => raw,
             Self::Notification { raw, .. } => raw,
+        }
+    }
+
+    pub fn into_snapshot_and_raw(self) -> (DeviceSnapshot, Vec<u8>) {
+        match self {
+            Self::Snapshot { snapshot, raw } => (DeviceSnapshot::Snapshot(snapshot), raw),
+            Self::QueryReply { reply, raw } => (DeviceSnapshot::QueryReply(reply), raw),
+            Self::Auxiliary83 { bytes, raw } => (DeviceSnapshot::Auxiliary83(bytes), raw),
+            Self::Notification { notification, raw } => {
+                (DeviceSnapshot::Notification(notification), raw)
+            }
         }
     }
 }
@@ -2308,6 +2323,21 @@ mod tests {
         frame[0x10 + 0xde] = 0x11;
 
         let parsed = Frame::parse(&frame).expect("frame should parse");
+        assert_eq!(parsed.raw_bytes()[0x10 + 0x8e], 0x5a);
+        assert_eq!(parsed.raw_bytes()[0x10 + 0xcf], 0x4c);
+        assert_eq!(parsed.raw_bytes()[0x10 + 0xde], 0x11);
+    }
+
+    #[test]
+    fn snapshot_frame_parse_owned_preserves_raw_bytes() {
+        let mut frame = vec![0_u8; 320];
+        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+        frame[0x10 + 0x8e] = 0x5a;
+        frame[0x10 + 0xcf] = 0x4c;
+        frame[0x10 + 0xde] = 0x11;
+
+        let parsed = Frame::parse_owned(frame).expect("frame should parse");
         assert_eq!(parsed.raw_bytes()[0x10 + 0x8e], 0x5a);
         assert_eq!(parsed.raw_bytes()[0x10 + 0xcf], 0x4c);
         assert_eq!(parsed.raw_bytes()[0x10 + 0xde], 0x11);
