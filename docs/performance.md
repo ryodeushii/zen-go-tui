@@ -85,6 +85,42 @@ These checks verify:
 - full-frame draw: about `4%` lower synthetic cost in the latest validation run
 - full-frame draw best observed run during tuning: about `11%` lower than baseline
 
+## Real-device verification
+
+### Method
+
+For live-device idle checks, prefer the built release binary instead of `cargo run` so the measurement excludes Cargo wrapper noise.
+
+Build once:
+
+```bash
+cargo build --release
+```
+
+Then measure the built binary while the real device is connected:
+
+- headless mode: `target/x86_64-unknown-linux-gnu/release/zen-go-tui --headless`
+- interactive TUI mode: `target/x86_64-unknown-linux-gnu/release/zen-go-tui`
+
+The retained measurements below were taken from steady-state idle samples after startup settled.
+
+### Live-device report
+
+| Mode | Pre-adaptive live baseline | Retained state |
+| --- | ---: | ---: |
+| Headless idle CPU | about `0.56%` avg | about `0.47%` avg |
+| TUI idle CPU | about `0.81%` avg | about `0.53%` avg |
+
+### Live-device tuning notes
+
+- the retained improvement came from adaptive idle poll backoff, not from stretching the idle redraw cadence
+- a later attempt to reduce TUI idle redraw frequency did not hold up in longer real-device measurements and was reverted
+- the current retained scheduler uses:
+  - active poll timeout: `16ms`
+  - TUI idle poll timeout: `50ms`
+  - headless idle poll timeout: `250ms`
+  - idle backoff threshold: `1s`
+
 ## What changed during tuning
 
 ### Poll path

@@ -62,7 +62,10 @@ const ZEN_GO_VID: u16 = 0x23e5;
 const ZEN_GO_PID: u16 = 0xa015;
 const INITIAL_DEVICE_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 const BACKOFF_DEVICE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
-const DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(16);
+const ACTIVE_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(16);
+const IDLE_TUI_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const IDLE_HEADLESS_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const DEVICE_POLL_BACKOFF_AFTER: Duration = Duration::from_secs(1);
 const DIRTY_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
 const IDLE_REDRAW_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -88,6 +91,24 @@ fn device_retry_interval(retries: usize) -> Duration {
         INITIAL_DEVICE_RETRY_INTERVAL
     } else {
         BACKOFF_DEVICE_RETRY_INTERVAL
+    }
+}
+
+fn device_poll_interval(
+    last_activity_at: Option<Instant>,
+    interactive: bool,
+    now: Instant,
+) -> Duration {
+    let Some(last_activity_at) = last_activity_at else {
+        return ACTIVE_DEVICE_POLL_INTERVAL;
+    };
+
+    if now.duration_since(last_activity_at) < DEVICE_POLL_BACKOFF_AFTER {
+        ACTIVE_DEVICE_POLL_INTERVAL
+    } else if interactive {
+        IDLE_TUI_DEVICE_POLL_INTERVAL
+    } else {
+        IDLE_HEADLESS_DEVICE_POLL_INTERVAL
     }
 }
 
@@ -412,6 +433,7 @@ fn headless_loop(controller: &mut Controller) -> Result<()> {
     let mut reconnect_refresh_pending = false;
     let mut last_reconnect_probe_at = None;
     let mut reconnect_probe_attempts = 0;
+    let mut last_runtime_activity_at = Some(Instant::now());
 
     loop {
         let now = Instant::now();
@@ -432,8 +454,12 @@ fn headless_loop(controller: &mut Controller) -> Result<()> {
             }
         }
 
-        match controller.poll_device(DEVICE_POLL_INTERVAL) {
-            Ok(_) => {}
+        match controller.poll_device(device_poll_interval(last_runtime_activity_at, false, now)) {
+            Ok(observed_frame) => {
+                if observed_frame {
+                    last_runtime_activity_at = Some(Instant::now());
+                }
+            }
             Err(error) => {
                 if is_device_error(&error) {
                     reconnect_refresh_pending = true;
@@ -646,6 +672,7 @@ fn app_loop(
     let mut reconnect_probe_attempts = 0;
     let mut last_draw_at = None;
     let mut needs_redraw = true;
+    let mut last_runtime_activity_at = Some(Instant::now());
 
     'app: loop {
         let now = Instant::now();
@@ -661,10 +688,68 @@ fn app_loop(
             }
         }
 
+        let input_events = collect_pending_input(input_rx)?;
+        if !input_events.is_empty() {
+            last_runtime_activity_at = Some(Instant::now());
+
+            for event in input_events {
+                match event {
+                    AppInputEvent::Key(key) => {
+                        if key.kind != AppKeyEventKind::Press {
+                            continue;
+                        }
+                        let size = terminal.size()?;
+                        let action = handle_key_press(
+                            controller,
+                            key.code,
+                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                        )?;
+
+                        if action == KeyAction::Quit {
+                            break 'app;
+                        }
+
+                        if action == KeyAction::ReconnectPending {
+                            reconnect_refresh_pending = true;
+                        }
+
+                        needs_redraw = true;
+                    }
+                    AppInputEvent::Mouse(mouse) => {
+                        let size = terminal.size()?;
+                        if let Err(error) = handle_mouse_event(
+                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                            controller,
+                            mouse,
+                        ) {
+                            if is_device_error(&error) {
+                                reconnect_refresh_pending = true;
+                            }
+                            handle_runtime_error(controller, error)?;
+                        }
+                        needs_redraw = true;
+                    }
+                    AppInputEvent::Paste(text) => {
+                        if controller.state.profile_editor.is_some() {
+                            append_profile_editor_text(controller, &text);
+                        }
+                        needs_redraw = true;
+                    }
+                    AppInputEvent::Resize { .. }
+                    | AppInputEvent::FocusGained
+                    | AppInputEvent::FocusLost => needs_redraw = true,
+                }
+            }
+        }
+
         if !reconnect_refresh_pending {
-            match controller.poll_device(DEVICE_POLL_INTERVAL) {
+            match controller.poll_device(device_poll_interval(last_runtime_activity_at, true, now))
+            {
                 Ok(observed_frame) => {
                     needs_redraw |= observed_frame;
+                    if observed_frame {
+                        last_runtime_activity_at = Some(Instant::now());
+                    }
                 }
                 Err(error) => {
                     if is_device_error(&error) {
@@ -693,60 +778,6 @@ fn app_loop(
             }
             last_draw_at = Some(now);
             needs_redraw = false;
-        }
-
-        let input_events = collect_pending_input(input_rx)?;
-        if input_events.is_empty() {
-            continue;
-        }
-
-        for event in input_events {
-            match event {
-                AppInputEvent::Key(key) => {
-                    if key.kind != AppKeyEventKind::Press {
-                        continue;
-                    }
-                    let size = terminal.size()?;
-                    let action = handle_key_press(
-                        controller,
-                        key.code,
-                        ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                    )?;
-
-                    if action == KeyAction::Quit {
-                        break 'app;
-                    }
-
-                    if action == KeyAction::ReconnectPending {
-                        reconnect_refresh_pending = true;
-                    }
-
-                    needs_redraw = true;
-                }
-                AppInputEvent::Mouse(mouse) => {
-                    let size = terminal.size()?;
-                    if let Err(error) = handle_mouse_event(
-                        ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                        controller,
-                        mouse,
-                    ) {
-                        if is_device_error(&error) {
-                            reconnect_refresh_pending = true;
-                        }
-                        handle_runtime_error(controller, error)?;
-                    }
-                    needs_redraw = true;
-                }
-                AppInputEvent::Paste(text) => {
-                    if controller.state.profile_editor.is_some() {
-                        append_profile_editor_text(controller, &text);
-                    }
-                    needs_redraw = true;
-                }
-                AppInputEvent::Resize { .. }
-                | AppInputEvent::FocusGained
-                | AppInputEvent::FocusLost => needs_redraw = true,
-            }
         }
     }
 
@@ -2448,6 +2479,34 @@ mod tests {
         assert_eq!(device_retry_interval(1), Duration::from_millis(500));
         assert_eq!(device_retry_interval(2), Duration::from_secs(2));
         assert_eq!(device_retry_interval(8), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn device_poll_interval_stays_fast_after_recent_activity() {
+        let now = Instant::now();
+
+        assert_eq!(
+            device_poll_interval(Some(now - Duration::from_millis(700)), true, now),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            device_poll_interval(Some(now - Duration::from_millis(700)), false, now),
+            Duration::from_millis(16)
+        );
+    }
+
+    #[test]
+    fn device_poll_interval_backs_off_when_idle() {
+        let now = Instant::now();
+
+        assert_eq!(
+            device_poll_interval(Some(now - Duration::from_millis(1500)), true, now),
+            Duration::from_millis(50)
+        );
+        assert_eq!(
+            device_poll_interval(Some(now - Duration::from_millis(1500)), false, now),
+            Duration::from_millis(250)
+        );
     }
 
     #[test]
