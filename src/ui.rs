@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -1250,7 +1252,11 @@ fn render_device_header(state: &AppState) -> Text<'static> {
         Line::from(vec![
             Span::styled(product, strong_style(Color::LightGreen)),
             Span::raw("  "),
-            chip(connection.to_uppercase(), Color::Black, Color::LightGreen),
+            chip(
+                connection.to_uppercase(),
+                Color::Black,
+                connection_badge_color(state),
+            ),
             Span::raw(" "),
             chip(sample, Color::Black, Color::Yellow),
             Span::raw(" "),
@@ -1261,6 +1267,22 @@ fn render_device_header(state: &AppState) -> Text<'static> {
         metadata_line,
     ])
 }
+
+fn connection_badge_color(state: &AppState) -> Color {
+    if state.connection.connected {
+        Color::LightGreen
+    } else if state
+        .connection
+        .last_snapshot_at
+        .is_some_and(|instant| instant.elapsed() >= CONNECTION_STALE_AFTER)
+    {
+        Color::LightRed
+    } else {
+        Color::Rgb(255, 165, 0)
+    }
+}
+
+const CONNECTION_STALE_AFTER: Duration = Duration::from_secs(2);
 
 fn current_sample_rate_label(state: &AppState) -> String {
     if let Some(hz) = state.device.sample_rate_hz {
@@ -1818,6 +1840,8 @@ fn style_for_ascii_byte(byte: u8, changed: bool) -> Style {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use ratatui::buffer::Buffer;
     use ratatui::widgets::Widget;
 
@@ -1912,6 +1936,19 @@ mod tests {
 
         assert!(rendered.contains("44.1 kHz"));
         assert!(!rendered.contains("96000 Hz"));
+    }
+
+    #[test]
+    fn connection_badge_uses_green_orange_and_red_states() {
+        let mut state = AppState::default();
+        assert_eq!(connection_badge_color(&state), Color::Rgb(255, 165, 0));
+
+        state.connection.connected = true;
+        assert_eq!(connection_badge_color(&state), Color::LightGreen);
+
+        state.connection.connected = false;
+        state.connection.last_snapshot_at = Some(Instant::now() - Duration::from_secs(3));
+        assert_eq!(connection_badge_color(&state), Color::LightRed);
     }
 
     #[test]
