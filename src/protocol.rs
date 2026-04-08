@@ -280,11 +280,11 @@ impl PreampInputState {
     }
 }
 
-fn meter_display_db(raw: u8) -> Option<i16> {
+pub(crate) fn meter_display_db(raw: u8) -> Option<i16> {
     (raw <= 0x3c).then_some(-(raw as i16))
 }
 
-fn meter_ratio(raw: u8) -> f64 {
+pub(crate) fn meter_ratio(raw: u8) -> f64 {
     if raw > 0x3c {
         0.0
     } else {

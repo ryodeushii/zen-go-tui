@@ -8,7 +8,8 @@ use ratatui::Frame;
 
 use crate::app::{AppState, AssignmentPickerState, FocusArea, RawPacketTab};
 use crate::protocol::{
-    MixerAssignment, MixerSurface, OutputMode, PreampInputState, PreampMode, Surface,
+    meter_display_db, meter_ratio, MixerAssignment, MixerSurface, OutputMode, PreampInputState,
+    PreampMode, Surface,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -869,8 +870,8 @@ fn render_experimental_pair_state_line(state: &AppState) -> String {
             let lane_b = payload.get(0xdb).copied().unwrap_or(0);
             format!(
                 "MIX 1 L {} R {}",
-                render_mix_meter_bar(lane_a),
-                render_mix_meter_bar(lane_b),
+                render_mix_meter(lane_a),
+                render_mix_meter(lane_b),
             )
         }
         Some(0x0c) => {
@@ -878,8 +879,8 @@ fn render_experimental_pair_state_line(state: &AppState) -> String {
             let lane_b = payload.get(0xdf).copied().unwrap_or(0);
             format!(
                 "MIX 2 L {} R {}",
-                render_mix_meter_bar(lane_a),
-                render_mix_meter_bar(lane_b),
+                render_mix_meter(lane_a),
+                render_mix_meter(lane_b),
             )
         }
         Some(surface) => format!("exp pair pending: unsupported surface {:02x}", surface),
@@ -887,9 +888,12 @@ fn render_experimental_pair_state_line(state: &AppState) -> String {
     }
 }
 
-fn render_mix_meter_bar(raw: u8) -> String {
-    let ratio = 1.0 - (raw.min(0x3c) as f64 / 60.0);
-    render_thin_bar(ratio)
+fn render_mix_meter(raw: u8) -> String {
+    let bar = render_thin_bar(meter_ratio(raw));
+    match meter_display_db(raw) {
+        Some(db) => format!("{} {} dB", bar, db),
+        None => bar,
+    }
 }
 
 fn render_mixer_strip_line(
@@ -927,7 +931,7 @@ fn render_mixer_strip_line(
         channel
             .meter_db()
             .map(|value| format!("{} dB", value))
-            .or_else(|| channel.meter.map(|_| "below floor".to_string()))
+            .or_else(|| channel.meter.map(|_| String::new()))
             .unwrap_or_else(|| "undecoded".to_string()),
         channel
             .muted
@@ -1056,8 +1060,8 @@ fn observed_meter_label(input: PreampInputState) -> String {
         Some(_) => input
             .observed_meter_db()
             .map(|value| format!("obs meter {} dB", value))
-            .unwrap_or_else(|| "obs meter below floor".to_string()),
-        None => "obs meter pending".to_string(),
+            .unwrap_or_default(),
+        None => String::new(),
     }
 }
 
@@ -1492,6 +1496,18 @@ mod tests {
     }
 
     #[test]
+    fn mixer_strip_line_hides_meter_value_below_ui_floor() {
+        let mut state = AppState::default();
+        state.mixer_channels[0][0].level = Some(0x00);
+        state.mixer_channels[0][0].meter = Some(0x60);
+        state.mixer_channels[0][0].muted = Some(false);
+
+        let line = render_mixer_strip_line(&state, 0, &state.mixer_channels[0][0]);
+
+        assert!(line.contains("meter= mute=off"));
+    }
+
+    #[test]
     fn mixer_strip_line_renders_newly_grounded_pair_link() {
         let mut state = AppState::default();
         let target = MixerLinkTarget::from_channel(MixerSurface::Mix1, 7).expect("grounded pair");
@@ -1529,8 +1545,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 1"));
-        assert!(line.contains("L |||||||."));
-        assert!(line.contains("R |||||||."));
+        assert!(line.contains("L |||||||. -10 dB"));
+        assert!(line.contains("R |||||||. -5 dB"));
     }
 
     #[test]
@@ -1549,8 +1565,8 @@ mod tests {
         let line = render_experimental_pair_state_line(&state);
 
         assert!(line.contains("MIX 2"));
-        assert!(line.contains("L ||||||||"));
-        assert!(line.contains("R |||||||."));
+        assert!(line.contains("L |||||||| 0 dB"));
+        assert!(line.contains("R |||||||. -6 dB"));
     }
 
     #[test]
@@ -1587,8 +1603,8 @@ mod tests {
 
         let line = render_experimental_pair_state_line(&state);
 
-        assert!(line.contains("L ||||||.."));
-        assert!(line.contains("R |......."));
+        assert!(line.contains("L ||||||.. -18 dB"));
+        assert!(line.contains("R |....... -52 dB"));
     }
 
     #[test]
@@ -1603,7 +1619,7 @@ mod tests {
     fn observed_meter_label_mentions_pending_state() {
         assert_eq!(
             observed_meter_label(PreampInputState::from_raw(0x2a, 0x00)),
-            "obs meter pending"
+            ""
         );
     }
 
@@ -1612,6 +1628,6 @@ mod tests {
         let mut input = PreampInputState::from_raw(0x2a, 0x00);
         input.observed_meter = Some(0x60);
 
-        assert_eq!(observed_meter_label(input), "obs meter below floor");
+        assert_eq!(observed_meter_label(input), "");
     }
 }
