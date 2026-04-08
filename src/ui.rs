@@ -192,6 +192,72 @@ fn mixer_strip_panel_layout(area: Rect, with_mix_meter: bool) -> Vec<Rect> {
     }
 }
 
+const MIXER_STRIP_CARD_WIDTH: u16 = 18;
+const MIXER_STRIP_GAP: u16 = 1;
+const MIXER_STRIP_DB_MARKERS: [i16; 5] = [-60, -30, -15, -5, 0];
+
+fn mixer_strip_card_width(area: Rect) -> u16 {
+    area.width.min(MIXER_STRIP_CARD_WIDTH).max(1)
+}
+
+fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
+    if area.width == 0 {
+        return 1;
+    }
+
+    let card_width = mixer_strip_card_width(area);
+    ((area.width.saturating_add(MIXER_STRIP_GAP)) / (card_width + MIXER_STRIP_GAP)).max(1) as usize
+}
+
+fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize, usize) {
+    let visible = mixer_strip_viewport_capacity_for_inner(area);
+    let total = state.active_mixer_channels().len();
+    let start = state.mixer_strip_scroll.min(total.saturating_sub(visible));
+    let end = usize::min(start + visible, total);
+    (start, end)
+}
+
+fn mixer_strip_card_area(area: Rect, slot: usize) -> Rect {
+    let card_width = mixer_strip_card_width(area);
+    Rect::new(
+        area.x + slot as u16 * (card_width + MIXER_STRIP_GAP),
+        area.y,
+        card_width,
+        area.height,
+    )
+}
+
+fn mixer_strip_inner_area(area: Rect) -> Rect {
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
+}
+
+fn centered_inline_chip_rects(area: Rect, labels: &[&str]) -> Vec<Rect> {
+    let total_width = inline_chip_rects(0, 0, labels)
+        .last()
+        .map(|rect| rect.x + rect.width)
+        .unwrap_or(0);
+    let x = area.x + area.width.saturating_sub(total_width) / 2;
+    inline_chip_rects(x, area.y, labels)
+}
+
+fn mixer_header_chip_rects(area: Rect, source: &str) -> (Rect, Rect) {
+    let inner = mixer_strip_inner_area(area);
+    let channel_rect = Rect::new(inner.x, inner.y, chip_width("CH 16").min(inner.width), 1);
+    let source_width = chip_width(source).min(inner.width);
+    let source_rect = Rect::new(
+        inner.x + inner.width.saturating_sub(source_width),
+        inner.y,
+        source_width,
+        1,
+    );
+    (channel_rect, source_rect)
+}
+
 fn preamp_card_inner_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
@@ -473,28 +539,42 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         layout[0],
     );
 
+    let content = mixer_strip_panel_layout(layout[1], experimental_mix_meter(state).is_some());
+    let inner = content[0];
+    let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
+    let total = state.active_mixer_channels().len();
+    let title = if total == 0 {
+        "Mixer Strips".to_string()
+    } else {
+        format!(
+            "Mixer Strips {}-{} / {}",
+            visible_start + 1,
+            visible_end,
+            total
+        )
+    };
     frame.render_widget(
         panel_block(
-            "Mixer Strips",
+            &title,
             Color::Rgb(70, 100, 130),
             state.focus == FocusArea::Mixer,
         ),
         layout[1],
     );
-    let content = mixer_strip_panel_layout(layout[1], experimental_mix_meter(state).is_some());
-    let inner = content[0];
-    for (index, channel) in state.active_mixer_channels().iter().enumerate() {
-        let y = inner.y + index as u16 * mixer_strip_height();
-        if y + mixer_strip_height() > inner.y + inner.height {
+
+    for (slot, (index, channel)) in state
+        .active_mixer_channels()
+        .iter()
+        .enumerate()
+        .skip(visible_start)
+        .take(visible_end.saturating_sub(visible_start))
+        .enumerate()
+    {
+        let card = mixer_strip_card_area(inner, slot);
+        if card.x >= inner.x + inner.width {
             break;
         }
-        render_mixer_strip_widget(
-            Rect::new(inner.x, y, inner.width, mixer_strip_height()),
-            frame.buffer_mut(),
-            state,
-            index,
-            channel,
-        );
+        render_mixer_strip_widget(card, frame.buffer_mut(), state, index, channel);
     }
 
     if let Some((_, left_raw, right_raw)) = experimental_mix_meter(state) {
@@ -800,42 +880,50 @@ fn mixer_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> O
     if !contains_point(inner, point) {
         return None;
     }
-    if point.1 < inner.y {
-        return None;
-    }
-    let row = point.1.saturating_sub(inner.y) / mixer_strip_height();
-    let index = row as usize;
-    let channel = state.active_mixer_channels().get(index)?.channel;
-    let row_area = Rect {
-        x: inner.x,
-        y: inner.y + row * mixer_strip_height(),
-        width: inner.width,
-        height: mixer_strip_height(),
-    };
-    if point.1 == row_area.y {
+    let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
+    for (slot, index) in (visible_start..visible_end).enumerate() {
+        let Some(channel) = state.active_mixer_channels().get(index) else {
+            continue;
+        };
+        let card = mixer_strip_card_area(inner, slot);
+        if !contains_point(card, point) {
+            continue;
+        }
+
+        let source = channel
+            .assignment
+            .map(|value| value.short_label())
+            .unwrap_or_else(|| "?".to_string());
+        let (_, source_rect) = mixer_header_chip_rects(card, &source);
+        if contains_point(source_rect, point) {
+            return Some(MouseAction::OpenAssignmentPicker(channel.channel));
+        }
+
+        let controls = mixer_control_button_rects(card, channel.channel % 2 == 1);
+        if channel.channel % 2 == 1 && contains_point(controls[0], point) {
+            return Some(MouseAction::ToggleMixerLink(channel.channel));
+        }
+        let solo_rect = if channel.channel % 2 == 1 {
+            controls[1]
+        } else {
+            controls[0]
+        };
+        if contains_point(solo_rect, point) {
+            return Some(MouseAction::ToggleMixerSolo(channel.channel));
+        }
+        let mute_rect = if channel.channel % 2 == 1 {
+            controls[2]
+        } else {
+            controls[1]
+        };
+        if contains_point(mute_rect, point) {
+            return Some(MouseAction::ToggleMixerMute(channel.channel));
+        }
+
         return Some(MouseAction::SelectMixerChannel(index));
     }
 
-    let controls = mixer_control_button_rects(row_area, channel % 2 == 1);
-    if contains_point(controls[0], point) {
-        return Some(MouseAction::ToggleMixerSolo(channel));
-    }
-    if contains_point(controls[1], point) {
-        return Some(MouseAction::ToggleMixerMute(channel));
-    }
-    if channel % 2 == 1 && contains_point(controls[2], point) {
-        return Some(MouseAction::ToggleMixerLink(channel));
-    }
-    let src_rect = if channel % 2 == 1 {
-        controls[3]
-    } else {
-        controls[2]
-    };
-    if contains_point(src_rect, point) {
-        return Some(MouseAction::OpenAssignmentPicker(channel));
-    }
-
-    Some(MouseAction::SelectMixerChannel(index))
+    None
 }
 
 fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
@@ -927,12 +1015,31 @@ fn output_list_mouse_action(
 }
 
 fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
-    let y = area.y + 1;
+    let inner = mixer_strip_inner_area(area);
+    let y = inner.y + inner.height.saturating_sub(1);
     if has_link {
-        inline_chip_rects(area.x, y, &["S", "M", "L", "SRC"])
+        centered_inline_chip_rects(Rect::new(inner.x, y, inner.width, 1), &["L", "S", "M"])
     } else {
-        inline_chip_rects(area.x, y, &["S", "M", "SRC"])
+        centered_inline_chip_rects(Rect::new(inner.x, y, inner.width, 1), &["S", "M"])
     }
+}
+
+pub fn mixer_strip_viewport_capacity(area: Rect, state: &AppState) -> usize {
+    let chunks = root_chunks(area);
+    let page = mixer_page_layout(chunks[2]);
+    let main = mixer_main_layout(page[0]);
+    let mixer = mixer_layout(main[1]);
+    let list = mixer_strip_panel_layout(mixer[1], experimental_mix_meter(state).is_some());
+    mixer_strip_viewport_capacity_for_inner(list[0])
+}
+
+pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) -> bool {
+    let chunks = root_chunks(area);
+    let page = mixer_page_layout(chunks[2]);
+    let main = mixer_main_layout(page[0]);
+    let mixer = mixer_layout(main[1]);
+    let list = mixer_strip_panel_layout(mixer[1], experimental_mix_meter(state).is_some());
+    contains_point(list[0], (x, y))
 }
 
 fn output_card_height() -> u16 {
@@ -967,8 +1074,9 @@ fn output_hotkeys_button_rect(area: Rect) -> Rect {
     )
 }
 
+#[cfg(test)]
 fn mixer_strip_height() -> u16 {
-    3
+    16
 }
 
 fn output_control_rects(area: Rect) -> Vec<Rect> {
@@ -1200,55 +1308,143 @@ fn render_preamp_visual_widget(
     Paragraph::new(render_preamp_controls_text(input)).render(sections[1], buffer);
 }
 
-fn mixer_controls_line(channel: &crate::protocol::MixerChannelState) -> Line<'static> {
-    let solo_on = channel.soloed == Some(true);
-    let mute_on = channel.muted == Some(true);
-    let link_on = channel.linked == Some(true);
-    let mut controls = vec![
-        chip(
-            "S",
-            Color::Black,
-            if solo_on {
-                Color::LightGreen
-            } else {
-                Color::DarkGray
-            },
-        ),
-        Span::raw(" "),
-        chip(
-            "M",
-            Color::Black,
-            if mute_on {
-                Color::LightRed
-            } else {
-                Color::DarkGray
-            },
-        ),
-    ];
-    if channel.channel % 2 == 1 {
-        controls.push(Span::raw(" "));
-        controls.push(chip(
-            "L",
-            Color::Black,
-            if link_on {
-                Color::LightBlue
-            } else {
-                Color::DarkGray
-            },
-        ));
+fn mixer_pan_label(channel: &crate::protocol::MixerChannelState) -> String {
+    let pan = channel.pan.display_percent();
+    if pan < 0 {
+        format!("PAN L{}", pan.unsigned_abs())
+    } else if pan > 0 {
+        format!("PAN R{}", pan)
+    } else {
+        "PAN C".to_string()
     }
-    controls.push(Span::raw(" "));
-    controls.push(chip("SRC", Color::Black, Color::Gray));
-    Line::from(controls)
 }
 
-fn mixer_controls_width(has_link: bool) -> u16 {
-    let rects = if has_link {
-        inline_chip_rects(0, 0, &["S", "M", "L", "SRC"])
+fn mixer_level_value_label(channel: &crate::protocol::MixerChannelState) -> String {
+    channel
+        .display_db()
+        .map(|value| format!("LVL {} dB", value))
+        .unwrap_or_else(|| "LVL ?".to_string())
+}
+
+fn strip_db_ratio(value: Option<i16>) -> Option<f64> {
+    value.map(|db| ((db.clamp(-60, 0) + 60) as f64 / 60.0).clamp(0.0, 1.0))
+}
+
+fn meter_bar_color(cell_ratio: f64) -> Color {
+    if cell_ratio >= MIX_METER_RED_START_RATIO {
+        Color::LightRed
+    } else if cell_ratio >= MIX_METER_YELLOW_START_RATIO {
+        Color::Yellow
     } else {
-        inline_chip_rects(0, 0, &["S", "M", "SRC"])
-    };
-    rects.last().map(|rect| rect.x + rect.width).unwrap_or(0)
+        Color::LightGreen
+    }
+}
+
+fn vertical_ratio_row(area: Rect, ratio: f64) -> u16 {
+    let height = area.height.saturating_sub(1) as f64;
+    area.y + area.height.saturating_sub(1) - (height * ratio.clamp(0.0, 1.0)).round() as u16
+}
+
+fn render_pan_slider(area: Rect, buffer: &mut Buffer, ratio: f64) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let y = area.y + area.height / 2;
+    for offset in 0..area.width {
+        let x = area.x + offset;
+        buffer[(x, y)]
+            .set_symbol("─")
+            .set_style(terminal::adapt_style(Style::default().fg(Color::DarkGray)));
+    }
+
+    let center_x = area.x + area.width / 2;
+    buffer[(center_x, y)]
+        .set_symbol("┼")
+        .set_style(terminal::adapt_style(Style::default().fg(Color::LightBlue)));
+
+    let handle_x =
+        area.x + ((area.width.saturating_sub(1)) as f64 * ratio.clamp(0.0, 1.0)).round() as u16;
+    buffer[(handle_x, y)]
+        .set_symbol("●")
+        .set_style(terminal::adapt_style(Style::default().fg(Color::White)));
+}
+
+fn render_vertical_combo_strip(
+    area: Rect,
+    buffer: &mut Buffer,
+    meter_db: Option<i16>,
+    level_db: Option<i16>,
+) {
+    if area.width < 4 || area.height == 0 {
+        return;
+    }
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(area);
+    let scale = columns[0];
+    let meter = columns[1];
+    let level = columns[3];
+
+    for marker in MIXER_STRIP_DB_MARKERS {
+        let y = vertical_ratio_row(scale, strip_db_ratio(Some(marker)).unwrap_or(0.0));
+        buffer.set_string(
+            scale.x,
+            y,
+            format!("{:>3}", marker),
+            terminal::adapt_style(Style::default().fg(Color::DarkGray)),
+        );
+    }
+
+    let meter_ratio = strip_db_ratio(meter_db);
+    let level_ratio = strip_db_ratio(level_db);
+    let level_handle_y = level_ratio.map(|ratio| vertical_ratio_row(level, ratio));
+
+    for step in 0..meter.height {
+        let y = meter.y + meter.height.saturating_sub(1) - step;
+        let cell_ratio = (step + 1) as f64 / meter.height.max(1) as f64;
+        let meter_filled = meter_ratio
+            .map(|ratio| cell_ratio <= ratio)
+            .unwrap_or(false);
+        let level_filled = level_ratio
+            .map(|ratio| cell_ratio <= ratio)
+            .unwrap_or(false);
+
+        buffer[(meter.x, y)]
+            .set_symbol(if meter_filled { "█" } else { "░" })
+            .set_style(terminal::adapt_style(Style::default().fg(
+                if meter_filled {
+                    meter_bar_color(cell_ratio)
+                } else {
+                    Color::DarkGray
+                },
+            )));
+
+        let level_symbol = if level_handle_y == Some(y) {
+            "●"
+        } else if level_filled {
+            "█"
+        } else {
+            "┆"
+        };
+        let level_color = if level_handle_y == Some(y) {
+            Color::White
+        } else if level_filled {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        };
+        buffer[(level.x, y)]
+            .set_symbol(level_symbol)
+            .set_style(terminal::adapt_style(Style::default().fg(level_color)));
+    }
 }
 
 fn render_mixer_strip_widget(
@@ -1264,76 +1460,113 @@ fn render_mixer_strip_widget(
     let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
     let source = channel
         .assignment
-        .map(|value| value.label())
-        .unwrap_or_else(|| "assignment?".to_string());
-    let pan = channel.pan.display_percent();
-    let pan_label = if pan < 0 {
-        format!("L{}", pan.unsigned_abs())
-    } else if pan > 0 {
-        format!("R{}", pan)
-    } else {
-        "C".to_string()
-    };
-    let header = Line::from(vec![
-        chip(
-            format!("CH {:02}", channel.channel),
-            Color::Black,
-            if selected {
-                Color::LightGreen
-            } else {
-                Color::Gray
-            },
-        ),
-        Span::raw(" "),
-        Span::styled(truncate_label(&source, 18), strong_style(Color::LightCyan)),
-        Span::raw(" "),
-        chip(format!("PAN {pan_label}"), Color::Black, Color::LightBlue),
-        Span::raw(" "),
-        chip(
-            channel
-                .display_db()
-                .map(|value| format!("{} dB", value))
-                .unwrap_or_else(|| "LEVEL ?".to_string()),
-            Color::Black,
-            Color::Yellow,
-        ),
-    ]);
-    Paragraph::new(header).render(Rect::new(area.x, area.y, area.width, 1), buffer);
-
-    let content_area = Rect::new(
-        area.x,
-        area.y + 1,
-        area.width,
-        area.height.saturating_sub(1),
-    );
-    let controls_width = mixer_controls_width(channel.channel % 2 == 1).min(content_area.width);
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(controls_width), Constraint::Min(1)])
-        .split(content_area);
-    Paragraph::new(mixer_controls_line(channel)).render(columns[0], buffer);
-
-    if columns[1].width == 0 || columns[1].height < 2 {
+        .map(|value| value.short_label())
+        .unwrap_or_else(|| "?".to_string());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(terminal::adapt_style(Style::default().fg(if selected {
+            Color::LightGreen
+        } else {
+            Color::DarkGray
+        })));
+    let inner = block.inner(area);
+    block.render(area, buffer);
+    if inner.width == 0 || inner.height < 6 {
         return;
     }
-    let slider_area = Rect::new(
-        columns[1].x.saturating_add(1),
-        columns[1].y,
-        columns[1].width.saturating_sub(1),
-        columns[1].height,
-    );
-    render_stacked_signal_rows(
-        slider_area,
-        buffer,
-        &meter_slider_label("MTR", channel.meter_db()),
-        channel.meter_ratio(),
-        &signal_slider_label(
-            "LVL",
-            channel.display_db().map(|value| format!("{} dB", value)),
-        ),
-        channel.gain_ratio(),
-        Color::Yellow,
-    );
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(3),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let (channel_rect, source_rect) = mixer_header_chip_rects(area, &source);
+    Paragraph::new(Line::from(vec![chip(
+        format!("CH {:02}", channel.channel),
+        Color::Black,
+        if selected {
+            Color::LightGreen
+        } else {
+            Color::Gray
+        },
+    )]))
+    .render(channel_rect, buffer);
+    Paragraph::new(Line::from(vec![chip(
+        source.clone(),
+        Color::Black,
+        Color::LightCyan,
+    )]))
+    .alignment(Alignment::Right)
+    .render(source_rect, buffer);
+
+    Paragraph::new(Line::from(Span::styled(
+        mixer_pan_label(channel),
+        strong_style(Color::LightBlue),
+    )))
+    .alignment(Alignment::Center)
+    .render(rows[1], buffer);
+    render_pan_slider(rows[2], buffer, channel.pan.ratio());
+    Paragraph::new(Line::from(Span::styled(
+        format_meter_value_label(channel.meter_db()),
+        strong_style(Color::LightGreen),
+    )))
+    .alignment(Alignment::Center)
+    .render(rows[3], buffer);
+    render_vertical_combo_strip(rows[4], buffer, channel.meter_db(), channel.display_db());
+
+    Paragraph::new(Line::from(Span::styled(
+        mixer_level_value_label(channel),
+        strong_style(Color::Yellow),
+    )))
+    .alignment(Alignment::Center)
+    .render(rows[5], buffer);
+
+    let solo_on = channel.soloed == Some(true);
+    let mute_on = channel.muted == Some(true);
+    let link_on = channel.linked == Some(true);
+    let mut controls = Vec::new();
+    if channel.channel % 2 == 1 {
+        controls.push(chip(
+            "L",
+            Color::Black,
+            if link_on {
+                Color::LightBlue
+            } else {
+                Color::DarkGray
+            },
+        ));
+        controls.push(Span::raw(" "));
+    }
+    controls.push(chip(
+        "S",
+        Color::Black,
+        if solo_on {
+            Color::LightGreen
+        } else {
+            Color::DarkGray
+        },
+    ));
+    controls.push(Span::raw(" "));
+    controls.push(chip(
+        "M",
+        Color::Black,
+        if mute_on {
+            Color::LightRed
+        } else {
+            Color::DarkGray
+        },
+    ));
+    Paragraph::new(Line::from(controls))
+        .alignment(Alignment::Center)
+        .render(rows[6], buffer);
 }
 
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -1538,6 +1771,7 @@ fn render_level_bar(ratio: f64, width: usize) -> String {
     render_symbol_bar(ratio, width, '#', '.')
 }
 
+#[cfg(test)]
 fn truncate_label(label: &str, width: usize) -> String {
     if label.chars().count() <= width {
         return label.to_string();
@@ -2379,7 +2613,7 @@ mod tests {
     }
 
     #[test]
-    fn mixer_strip_widget_stacks_meter_and_level_in_one_signal_area() {
+    fn mixer_strip_widget_renders_compact_vertical_strip_layout() {
         let mut state = AppState::default();
         state.focus = FocusArea::Mixer;
         state.selected_channel = 10;
@@ -2394,15 +2628,22 @@ mod tests {
             linked: Some(true),
         };
 
-        let rendered = render_buffer(Rect::new(0, 0, 72, mixer_strip_height()), |area, buffer| {
+        let rendered = render_buffer(Rect::new(0, 0, 18, mixer_strip_height()), |area, buffer| {
             render_mixer_strip_widget(area, buffer, &state, 10, &state.mixer_channels[0][10]);
         });
 
-        assert!(rendered.contains("Computer Play 8"));
-        assert!(rendered.contains("MTR -48 dB"));
-        assert!(rendered.contains("LVL -16 dB"));
+        assert!(rendered.contains("CH 11"));
+        assert!(rendered.contains(" C8 "));
+        assert!(!rendered.contains("Computer Play 8"));
+        assert!(rendered.contains("PAN R30"));
+        assert!(rendered.contains("-48 dB"));
+        assert!(rendered.contains("-16 dB"));
+        assert!(rendered.contains("-60"));
+        assert!(rendered.contains("-30"));
+        assert!(rendered.contains("-15"));
+        assert!(rendered.contains(" -5"));
+        assert!(rendered.contains("  0"));
         assert!(rendered.contains("█"));
-        assert!(rendered.contains("─"));
         assert!(rendered.contains("●"));
     }
 
@@ -2438,23 +2679,27 @@ mod tests {
             render_mixer_strip_widget(area, buffer, &state, 0, &state.mixer_channels[0][0]);
         });
 
-        assert!(rendered.contains("MTR  -∞ dB"));
+        assert!(rendered.contains(" -∞ dB"));
     }
 
     #[test]
-    fn mixer_strip_widget_clamps_signal_rows_in_wide_area() {
+    fn mixer_strip_widget_keeps_db_scale_markers_in_wide_area() {
         let mut state = AppState::default();
         state.focus = FocusArea::Mixer;
         state.selected_channel = 0;
         state.mixer_channels[0][0].level = Some(0x00);
         state.mixer_channels[0][0].meter = Some(0x10);
 
-        let area = Rect::new(0, 0, 120, mixer_strip_height());
-        let mut buffer = Buffer::empty(area);
-        render_mixer_strip_widget(area, &mut buffer, &state, 0, &state.mixer_channels[0][0]);
+        let rendered = render_buffer(
+            Rect::new(0, 0, 120, mixer_strip_height()),
+            |area, buffer| {
+                render_mixer_strip_widget(area, buffer, &state, 0, &state.mixer_channels[0][0]);
+            },
+        );
 
-        assert_eq!(buffer[(110, 1)].symbol(), " ");
-        assert_eq!(buffer[(110, 2)].symbol(), " ");
+        assert!(rendered.contains("-60"));
+        assert!(rendered.contains("-30"));
+        assert!(rendered.contains("LVL 0 dB"));
     }
 
     #[test]
@@ -2921,14 +3166,9 @@ mod tests {
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
-        let row_area = Rect::new(
-            list_inner.x,
-            list_inner.y,
-            list_inner.width,
-            mixer_strip_height(),
-        );
-        let buttons = mixer_control_button_rects(row_area, true);
-        let point = (buttons[2].x + buttons[2].width / 2, buttons[2].y);
+        let card = mixer_strip_card_area(list_inner, 0);
+        let buttons = mixer_control_button_rects(card, true);
+        let point = (buttons[0].x + buttons[0].width / 2, buttons[0].y);
 
         assert_eq!(
             mouse_action(area, &AppState::default(), point.0, point.1),
@@ -2944,14 +3184,9 @@ mod tests {
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
-        let row_area = Rect::new(
-            list_inner.x,
-            list_inner.y,
-            list_inner.width,
-            mixer_strip_height(),
-        );
-        let buttons = mixer_control_button_rects(row_area, true);
-        let point = (buttons[0].x + buttons[0].width / 2, buttons[0].y);
+        let card = mixer_strip_card_area(list_inner, 0);
+        let buttons = mixer_control_button_rects(card, true);
+        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
 
         assert_eq!(
             mouse_action(area, &AppState::default(), point.0, point.1),
@@ -2967,23 +3202,13 @@ mod tests {
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
-        let row_area = Rect::new(
-            list_inner.x,
-            list_inner.y,
-            list_inner.width,
-            mixer_strip_height(),
-        );
+        let card = mixer_strip_card_area(list_inner, 0);
         let state = AppState::default();
-        let line = render_mixer_strip_item(&state, 0, &state.mixer_channels[0][0]);
-        let rendered: String = line.lines[1]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let chip_x = rendered.find(" S ").expect("solo chip") as u16;
+        let buttons = mixer_control_button_rects(card, true);
+        let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
 
         assert_eq!(
-            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 1),
+            mouse_action(area, &state, point.0, point.1),
             Some(MouseAction::ToggleMixerSolo(1))
         );
     }
@@ -2996,24 +3221,15 @@ mod tests {
         let main = mixer_main_layout(page[0]);
         let mixer = mixer_layout(main[1]);
         let list_inner = mixer_strip_panel_layout(mixer[1], false)[0];
-        let row_area = Rect::new(
-            list_inner.x,
-            list_inner.y + 3 * mixer_strip_height(),
-            list_inner.width,
-            mixer_strip_height(),
-        );
         let mut state = AppState::default();
         state.selected_channel = 3;
-        let line = render_mixer_strip_item(&state, 3, &state.mixer_channels[0][3]);
-        let rendered: String = line.lines[1]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let chip_x = rendered.find(" SRC ").expect("src chip") as u16;
+        state.mixer_channels[0][3].assignment = Some(MixerAssignment::ComputerPlay(2));
+        let card = mixer_strip_card_area(list_inner, 3);
+        let (_, source_rect) = mixer_header_chip_rects(card, "C2");
+        let point = (source_rect.x + source_rect.width / 2, source_rect.y);
 
         assert_eq!(
-            mouse_action(area, &state, row_area.x + chip_x + 1, row_area.y + 1),
+            mouse_action(area, &state, point.0, point.1),
             Some(MouseAction::OpenAssignmentPicker(4))
         );
     }

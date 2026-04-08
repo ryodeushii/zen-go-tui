@@ -713,6 +713,17 @@ impl MixerAssignment {
             Self::EmuMic(index) => format!("Emu Mic {}", index),
         }
     }
+
+    pub fn short_label(self) -> String {
+        match self {
+            Self::Preamp(index) => format!("P{}", index),
+            Self::ComputerPlay(index) => format!("C{}", index),
+            Self::SpdifIn(index) => format!("S{}", index),
+            Self::Mute => "M".to_string(),
+            Self::Oscillator(index) => format!("O{}", index),
+            Self::EmuMic(index) => format!("E{}", index),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

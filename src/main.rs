@@ -227,11 +227,21 @@ fn app_loop(
                         Ok(())
                     }
                     AppKeyCode::Left => {
-                        move_selection(controller, false);
+                        let size = terminal.size()?;
+                        move_selection(
+                            controller,
+                            false,
+                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                        );
                         Ok(())
                     }
                     AppKeyCode::Right => {
-                        move_selection(controller, true);
+                        let size = terminal.size()?;
+                        move_selection(
+                            controller,
+                            true,
+                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                        );
                         Ok(())
                     }
                     AppKeyCode::Char('+') | AppKeyCode::Char('=') => {
@@ -309,7 +319,7 @@ fn app_loop(
     Ok(())
 }
 
-fn move_selection(controller: &mut Controller, right: bool) {
+fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layout::Rect) {
     if controller.state.page != MainPage::Mixer {
         return;
     }
@@ -337,6 +347,10 @@ fn move_selection(controller: &mut Controller, right: bool) {
                     .checked_sub(1)
                     .unwrap_or(channels_len - 1)
             };
+            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
+            controller
+                .state
+                .ensure_selected_mixer_channel_visible(visible);
         }
         FocusArea::Preamp => {
             controller.state.selected_preamp_input = if right { 1 } else { 0 };
@@ -569,12 +583,31 @@ fn handle_mouse_event(
     controller: &mut Controller,
     mouse: AppMouseEvent,
 ) -> Result<()> {
-    if mouse.kind != AppMouseEventKind::Down(AppMouseButton::Left) {
-        return Ok(());
-    }
-
-    if let Some(action) = ui::mouse_action(area, &controller.state, mouse.column, mouse.row) {
-        apply_mouse_action(controller, action)?;
+    match mouse.kind {
+        AppMouseEventKind::Down(AppMouseButton::Left) => {
+            if let Some(action) = ui::mouse_action(area, &controller.state, mouse.column, mouse.row)
+            {
+                apply_mouse_action(controller, action)?;
+            }
+        }
+        AppMouseEventKind::ScrollLeft
+        | AppMouseEventKind::ScrollRight
+        | AppMouseEventKind::ScrollUp
+        | AppMouseEventKind::ScrollDown => {
+            if controller.state.page == MainPage::Mixer
+                && !controller.state.raw_view_open
+                && ui::mixer_strip_panel_contains(area, &controller.state, mouse.column, mouse.row)
+            {
+                let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
+                let delta = match mouse.kind {
+                    AppMouseEventKind::ScrollLeft | AppMouseEventKind::ScrollUp => -1,
+                    AppMouseEventKind::ScrollRight | AppMouseEventKind::ScrollDown => 1,
+                    _ => 0,
+                };
+                controller.state.scroll_mixer_strip_viewport(delta, visible);
+            }
+        }
+        _ => {}
     }
 
     Ok(())

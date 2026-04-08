@@ -102,6 +102,7 @@ pub struct AppState {
     pub focus: FocusArea,
     pub selected_output: usize,
     pub selected_channel: usize,
+    pub mixer_strip_scroll: usize,
     pub selected_preamp_input: usize,
     pub raw_view_open: bool,
     pub page: MainPage,
@@ -147,6 +148,7 @@ impl Default for AppState {
             focus: FocusArea::Outputs,
             selected_output: 0,
             selected_channel: 0,
+            mixer_strip_scroll: 0,
             selected_preamp_input: 0,
             raw_view_open: false,
             page: MainPage::Mixer,
@@ -194,6 +196,41 @@ impl AppState {
 
     pub fn active_mixer_channels(&self) -> &[MixerChannelState] {
         &self.mixer_channels[self.active_mixer_surface().index()]
+    }
+
+    pub fn clamp_mixer_strip_scroll(&mut self, visible_count: usize) {
+        let visible_count = visible_count.max(1);
+        let total = self.active_mixer_channels().len();
+        let max_scroll = total.saturating_sub(visible_count);
+        self.mixer_strip_scroll = self.mixer_strip_scroll.min(max_scroll);
+    }
+
+    pub fn ensure_selected_mixer_channel_visible(&mut self, visible_count: usize) {
+        let visible_count = visible_count.max(1);
+        self.clamp_mixer_strip_scroll(visible_count);
+
+        if self.selected_channel < self.mixer_strip_scroll {
+            self.mixer_strip_scroll = self.selected_channel;
+        } else if self.selected_channel >= self.mixer_strip_scroll + visible_count {
+            self.mixer_strip_scroll = self.selected_channel + 1 - visible_count;
+        }
+
+        self.clamp_mixer_strip_scroll(visible_count);
+    }
+
+    pub fn scroll_mixer_strip_viewport(&mut self, delta: isize, visible_count: usize) {
+        let visible_count = visible_count.max(1);
+        let total = self.active_mixer_channels().len();
+        let max_scroll = total.saturating_sub(visible_count);
+
+        self.mixer_strip_scroll = if delta >= 0 {
+            self.mixer_strip_scroll
+                .saturating_add(delta as usize)
+                .min(max_scroll)
+        } else {
+            self.mixer_strip_scroll
+                .saturating_sub(delta.saturating_abs() as usize)
+        };
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Snapshot73) {
@@ -2813,5 +2850,26 @@ mod tests {
 
         state.cycle_page(false);
         assert_eq!(state.page, MainPage::AfxDsp);
+    }
+
+    #[test]
+    fn ensure_selected_mixer_channel_visible_advances_scroll_window() {
+        let mut state = AppState::default();
+        state.selected_channel = 6;
+
+        state.ensure_selected_mixer_channel_visible(4);
+
+        assert_eq!(state.mixer_strip_scroll, 3);
+    }
+
+    #[test]
+    fn mixer_strip_viewport_scroll_clamps_to_available_channels() {
+        let mut state = AppState::default();
+
+        state.scroll_mixer_strip_viewport(99, 5);
+        assert_eq!(state.mixer_strip_scroll, 11);
+
+        state.scroll_mixer_strip_viewport(-99, 5);
+        assert_eq!(state.mixer_strip_scroll, 0);
     }
 }
