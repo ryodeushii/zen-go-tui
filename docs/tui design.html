@@ -1,0 +1,1379 @@
+<style>
+    * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+    }
+    .tui {
+        font-family: "JetBrains Mono", "Fira Code", monospace;
+        font-size: 12px;
+        line-height: 1;
+        background: #0d0d0d;
+        color: #d0d0d0;
+        border: 1px solid #333;
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    .tui-titlebar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: #1a1a1a;
+        border-bottom: 1px solid #2a2a2a;
+        padding: 5px 10px;
+        font-size: 11px;
+    }
+    .tui-title {
+        color: #7ee8a2;
+        font-weight: bold;
+        letter-spacing: 2px;
+        font-size: 12px;
+    }
+    .badge {
+        background: #222;
+        border: 1px solid #444;
+        color: #888;
+        padding: 1px 6px;
+        border-radius: 2px;
+        font-size: 10px;
+    }
+    .badge.ok {
+        border-color: #7ee8a2;
+        color: #7ee8a2;
+    }
+    .badge.warn {
+        border-color: #f0c060;
+        color: #f0c060;
+    }
+    .sp {
+        flex: 1;
+    }
+    .hint {
+        color: #555;
+        font-size: 10px;
+    }
+    .hint b {
+        color: #888;
+    }
+
+    .tui-tabs {
+        display: flex;
+        background: #111;
+        border-bottom: 1px solid #2a2a2a;
+        padding: 0 10px;
+    }
+    .tui-tab {
+        padding: 5px 14px;
+        font-size: 11px;
+        color: #555;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+    }
+    .tui-tab.active {
+        color: #7ee8a2;
+        border-bottom-color: #7ee8a2;
+    }
+    .tui-tab:hover:not(.active) {
+        color: #999;
+    }
+
+    .tui-body {
+        display: flex;
+        height: 490px;
+    }
+
+    .output-panel {
+        width: 148px;
+        min-width: 148px;
+        background: #0e0e0e;
+        border-right: 1px solid #252525;
+        display: flex;
+        flex-direction: column;
+    }
+    .op-label {
+        font-size: 9px;
+        color: #3a6a4a;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        padding: 8px 8px 5px;
+        border-bottom: 1px solid #1a1a1a;
+    }
+    .op-item {
+        padding: 9px 10px;
+        font-size: 11px;
+        color: #666;
+        cursor: pointer;
+        border-left: 2px solid transparent;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        border-bottom: 1px solid #181818;
+        transition: all 0.1s;
+    }
+    .op-item:hover {
+        color: #aaa;
+        background: #141414;
+    }
+    .op-item.active {
+        color: #7ee8a2;
+        border-left-color: #7ee8a2;
+        background: #0d1a11;
+    }
+    .op-item-sub {
+        font-size: 9px;
+        color: #444;
+    }
+    .op-item.active .op-item-sub {
+        color: #3a6a4a;
+    }
+    .op-sep {
+        height: 1px;
+        background: #1e1e1e;
+        margin: 4px 0;
+    }
+
+    .tui-main {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .preamp-bar {
+        display: flex;
+        gap: 10px;
+        background: #0f0f0f;
+        border-bottom: 1px solid #222;
+        padding: 7px 10px;
+    }
+    .pch {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: #141414;
+        border: 1px solid #222;
+        border-radius: 3px;
+        padding: 5px 9px;
+        flex: 1;
+    }
+    .pch-label {
+        font-size: 9px;
+        color: #555;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 34px;
+    }
+    .pch-sub {
+        color: #3f7b56;
+        font-size: 8px;
+    }
+    .knob {
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        background: #1c1c1c;
+        border: 1.5px solid #2e2e2e;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+        cursor: ns-resize;
+        flex-shrink: 0;
+        transition: border-color 0.15s;
+    }
+    .knob:hover {
+        border-color: #7ee8a2;
+    }
+    .knob svg {
+        position: absolute;
+        width: 42px;
+        height: 42px;
+    }
+    .knob-val {
+        font-size: 10px;
+        color: #ccc;
+        z-index: 1;
+    }
+    .knob-lbl {
+        font-size: 8px;
+        color: #555;
+    }
+    .flags {
+        display: flex;
+        gap: 3px;
+    }
+    .fbtn {
+        padding: 2px 5px;
+        font-size: 9px;
+        border: 1px solid #2a2a2a;
+        border-radius: 2px;
+        background: #181818;
+        color: #555;
+        cursor: pointer;
+        font-family: inherit;
+        transition: all 0.1s;
+    }
+    .fbtn:hover {
+        border-color: #555;
+        color: #aaa;
+    }
+    .fbtn.won {
+        background: #3a1e1e;
+        border-color: #aa4a3a;
+        color: #f08080;
+    }
+    .fbtn.gon {
+        background: #1e3a2a;
+        border-color: #3aaa6a;
+        color: #7ee8a2;
+    }
+    .mini-meter {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        justify-content: center;
+    }
+    .mm-row {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 8px;
+        color: #444;
+    }
+    .mm-track {
+        width: 60px;
+        height: 5px;
+        background: #1a1a1a;
+        border-radius: 1px;
+        overflow: hidden;
+    }
+    .mm-fill {
+        height: 100%;
+        background: linear-gradient(to right, #2a7a4a, #7ee8a2);
+        border-radius: 1px;
+        transition: width 0.08s;
+    }
+
+    .mix-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 10px;
+        background: #0f0f0f;
+        border-bottom: 1px solid #1e1e1e;
+        font-size: 10px;
+    }
+    .mix-out-pill {
+        background: #0d1a11;
+        border: 1px solid #2a4a3a;
+        border-radius: 3px;
+        color: #7ee8a2;
+        padding: 2px 9px;
+        font-size: 10px;
+        letter-spacing: 0.5px;
+    }
+    .mix-hint {
+        color: #444;
+        font-size: 9px;
+    }
+
+    .mixer-scroll {
+        display: flex;
+        flex: 1;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 8px 8px 6px;
+        gap: 3px;
+    }
+    .mixer-scroll::-webkit-scrollbar {
+        height: 3px;
+    }
+    .mixer-scroll::-webkit-scrollbar-thumb {
+        background: #2a2a2a;
+    }
+
+    .strip {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 74px;
+        min-width: 74px;
+        background: #111;
+        border: 1px solid #1e1e1e;
+        border-radius: 3px;
+        padding: 5px 3px;
+        gap: 4px;
+        cursor: pointer;
+        position: relative;
+        transition: border-color 0.1s;
+    }
+    .strip:hover {
+        border-color: #2e2e2e;
+    }
+    .strip.focused {
+        border-color: #7ee8a2;
+        background: #0c1810;
+    }
+    .strip.muted {
+        opacity: 0.38;
+    }
+    .strip-focus-bar {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: #7ee8a2;
+        border-radius: 2px 2px 0 0;
+    }
+
+    .snum {
+        font-size: 9px;
+        color: #555;
+        display: flex;
+        align-items: center;
+        gap: 3px;
+    }
+    .snum.inp {
+        color: #aaa;
+    }
+    .snum.daw {
+        color: #60a8f0;
+    }
+    .stag {
+        font-size: 7px;
+        padding: 0 2px;
+        border-radius: 1px;
+        border: 1px solid;
+    }
+    .stag.fx {
+        color: #9a6af0;
+        border-color: #4a2a80;
+        background: #1a1030;
+    }
+    .stag.bp {
+        color: #60a8f0;
+        border-color: #2a4070;
+        background: #0d1828;
+    }
+
+    .src-select {
+        width: 100%;
+        background: #161616;
+        border: 1px solid #2a2a2a;
+        color: #9fbca8;
+        font-family: inherit;
+        font-size: 8px;
+        padding: 2px 3px;
+        border-radius: 2px;
+        outline: none;
+    }
+    .src-select:focus {
+        border-color: #7ee8a2;
+        color: #d7f2e1;
+    }
+    .src-label {
+        width: 100%;
+        font-size: 7px;
+        color: #46604f;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        text-align: left;
+    }
+
+    .pan-row {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        width: 100%;
+    }
+    .pan-lbl {
+        font-size: 7px;
+        color: #3a3a3a;
+    }
+    .pan-track {
+        flex: 1;
+        height: 3px;
+        background: #1c1c1c;
+        border-radius: 1px;
+        position: relative;
+        cursor: ew-resize;
+    }
+    .pan-ctr {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        width: 1px;
+        height: 3px;
+        background: #2e2e2e;
+        transform: translateX(-50%);
+    }
+    .pan-th {
+        position: absolute;
+        top: -3px;
+        width: 3px;
+        height: 9px;
+        background: #7ee8a2;
+        border-radius: 1px;
+        transform: translateX(-50%);
+    }
+
+    .fader-section {
+        display: flex;
+        gap: 3px;
+        width: 100%;
+        height: 140px;
+    }
+    .fader-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        flex: 1;
+        height: 100%;
+    }
+    .fader-track {
+        width: 9px;
+        background: #181818;
+        border: 1px solid #222;
+        border-radius: 4px;
+        flex: 1;
+        position: relative;
+        cursor: ns-resize;
+    }
+    .fader-thumb {
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 20px;
+        height: 9px;
+        background: #7ee8a2;
+        border-radius: 2px;
+        border: 1px solid #5acc8a;
+        z-index: 1;
+    }
+    .fader-thumb.master-th {
+        background: #f0c060;
+        border-color: #d0a040;
+    }
+    .fader-meter {
+        width: 7px;
+        background: #111;
+        border: 1px solid #1c1c1c;
+        border-radius: 3px;
+        flex: 1;
+        position: relative;
+        overflow: hidden;
+    }
+    .fm-fill {
+        position: absolute;
+        bottom: 0;
+        width: 100%;
+    }
+    .fm-green {
+        background: #3aaa6a;
+    }
+    .fm-yellow {
+        background: #f0c060;
+    }
+    .fm-clip {
+        position: absolute;
+        top: 0;
+        width: 100%;
+        height: 8%;
+        background: #e05050;
+    }
+    .fader-db {
+        font-size: 7px;
+        color: #555;
+        text-align: center;
+        margin-top: 1px;
+    }
+
+    .smb-row {
+        display: flex;
+        gap: 2px;
+        width: 100%;
+    }
+    .smb {
+        flex: 1;
+        padding: 2px 0;
+        font-size: 8px;
+        text-align: center;
+        border: 1px solid #1e1e1e;
+        border-radius: 1px;
+        background: #141414;
+        color: #3a3a3a;
+        cursor: pointer;
+        font-family: inherit;
+        transition: all 0.1s;
+    }
+    .smb:hover {
+        color: #888;
+        border-color: #333;
+    }
+    .smb.son {
+        background: #152a1e;
+        border-color: #3a8a5a;
+        color: #7ee8a2;
+    }
+    .smb.mon {
+        background: #2a1515;
+        border-color: #8a3a3a;
+        color: #f08080;
+    }
+    .smb.lon {
+        background: #151e2a;
+        border-color: #3a5a8a;
+        color: #70a8f0;
+    }
+
+    .div-strip {
+        width: 1px;
+        background: #222;
+        align-self: stretch;
+        margin: 4px 1px;
+    }
+
+    .bot {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        background: #0d0d0d;
+        border-top: 1px solid #222;
+        padding: 7px 10px;
+    }
+    .out-vol {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+    }
+    .out-vol-lbl {
+        font-size: 9px;
+        color: #555;
+    }
+    .out-vol-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .big-knob {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: #1c1c1c;
+        border: 1.5px solid #333;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: ns-resize;
+        position: relative;
+        transition: border-color 0.15s;
+    }
+    .big-knob:hover {
+        border-color: #7ee8a2;
+    }
+    .big-knob svg {
+        position: absolute;
+        width: 44px;
+        height: 44px;
+    }
+    .big-knob-val {
+        font-size: 10px;
+        color: #ccc;
+        z-index: 1;
+    }
+    .ctrl-btns {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+    }
+    .cbtn {
+        padding: 2px 7px;
+        font-size: 9px;
+        border: 1px solid #2a2a2a;
+        border-radius: 2px;
+        background: #181818;
+        color: #555;
+        cursor: pointer;
+        font-family: inherit;
+        transition: all 0.1s;
+    }
+    .cbtn:hover {
+        border-color: #555;
+        color: #aaa;
+    }
+    .cbtn.dim-on {
+        background: #2a2a18;
+        border-color: #8a8a40;
+        color: #d0d060;
+    }
+    .cbtn.mut-on {
+        background: #2a1818;
+        border-color: #8a4040;
+        color: #f06060;
+    }
+
+    .vu {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        justify-content: center;
+    }
+    .vu-row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 9px;
+        color: #444;
+    }
+    .vu-track {
+        flex: 1;
+        height: 9px;
+        background: #111;
+        border: 1px solid #1c1c1c;
+        border-radius: 2px;
+        overflow: hidden;
+        position: relative;
+    }
+    .vu-fill {
+        height: 100%;
+        border-radius: 1px;
+    }
+    .vu-scale {
+        display: flex;
+        justify-content: space-between;
+        font-size: 8px;
+        color: #2e2e2e;
+        padding: 0 2px;
+    }
+
+    .kbar {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        align-items: center;
+        background: #080808;
+        border-top: 1px solid #1a1a1a;
+        padding: 4px 8px;
+    }
+    .kb {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 9px;
+        color: #3a3a3a;
+    }
+    .key {
+        background: #181818;
+        border: 1px solid #2a2a2a;
+        border-radius: 2px;
+        border-bottom-width: 2px;
+        color: #666;
+        font-size: 9px;
+        padding: 1px 4px;
+        font-family: inherit;
+    }
+    .kb-sep {
+        width: 1px;
+        height: 12px;
+        background: #1e1e1e;
+    }
+</style>
+
+<div class="tui" id="root">
+    <div class="tui-titlebar">
+        <span class="tui-title">◈ ZEN GO</span>
+        <span class="badge ok">USB</span>
+        <span class="badge warn">48kHz</span>
+        <span class="badge">LOCKED</span>
+        <span class="sp"></span>
+        <span class="hint"
+            ><b>[Tab]</b> section &nbsp; <b>[F1]</b> help &nbsp;
+            <b>[F2]</b> save &nbsp; <b>[Q]</b> quit</span
+        >
+    </div>
+
+    <div class="tui-tabs">
+        <div class="tui-tab active">Mixer</div>
+        <div class="tui-tab">Preamps</div>
+        <div class="tui-tab">DAW I/O</div>
+        <div class="tui-tab">Digital Outs</div>
+        <div class="tui-tab">AFX / DSP</div>
+    </div>
+
+    <div class="tui-body">
+        <div class="output-panel">
+            <div class="op-label">▸ Output</div>
+            <div class="op-item active" id="op0" onclick="selectOutput(0)">
+                <span>Monitor / HP1</span>
+                <span class="op-item-sub">Mix A &nbsp;·&nbsp; 0 dB</span>
+            </div>
+            <div class="op-item" id="op1" onclick="selectOutput(1)">
+                <span>Headphones 2</span>
+                <span class="op-item-sub">Mix B &nbsp;·&nbsp; -28 dB</span>
+            </div>
+            <div class="op-sep"></div>
+            <div
+                style="
+                    padding: 6px 8px;
+                    font-size: 9px;
+                    color: #3a3a3a;
+                    line-height: 1.5;
+                "
+            >
+                Each output has an<br />independent mix.<br /><br />
+                <span style="color: #2a5a3a">↑↓</span> switch output<br />
+                <span style="color: #2a5a3a">Enter</span> edit output vol
+            </div>
+        </div>
+
+        <div class="tui-main">
+            <div class="preamp-bar">
+                <div class="pch">
+                    <div class="pch-label">
+                        <span style="color: #999">CH 1</span>
+                        <span class="pch-sub">preamp</span>
+                    </div>
+                    <div
+                        style="
+                            display: flex;
+                            flex-direction: column;
+                            align-items: center;
+                            gap: 2px;
+                        "
+                    >
+                        <div
+                            class="knob"
+                            id="k1"
+                            onmousedown="startKnob(event,'k1','kv1')"
+                        >
+                            <svg viewBox="0 0 42 42">
+                                <circle
+                                    cx="21"
+                                    cy="21"
+                                    r="16"
+                                    fill="none"
+                                    stroke="#222"
+                                    stroke-width="3.5"
+                                />
+                                <line
+                                    id="k1n"
+                                    x1="21"
+                                    y1="21"
+                                    x2="21"
+                                    y2="7"
+                                    stroke="#7ee8a2"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                />
+                            </svg>
+                            <span class="knob-val" id="kv1">47</span>
+                        </div>
+                        <span class="knob-lbl">GAIN</span>
+                    </div>
+                    <div class="mini-meter">
+                        <div class="mm-row">
+                            L
+                            <div class="mm-track">
+                                <div
+                                    class="mm-fill"
+                                    id="pm1l"
+                                    style="width: 70%"
+                                ></div>
+                            </div>
+                        </div>
+                        <div class="mm-row">
+                            R
+                            <div class="mm-track">
+                                <div
+                                    class="mm-fill"
+                                    id="pm1r"
+                                    style="width: 55%"
+                                ></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flags">
+                        <button class="fbtn won" onclick="toggleFlag(this)">
+                            48V
+                        </button>
+                        <button class="fbtn" onclick="toggleFlag(this)">
+                            Ø
+                        </button>
+                        <button class="fbtn" onclick="toggleFlag(this)">
+                            PAD
+                        </button>
+                    </div>
+                </div>
+
+                <div class="pch">
+                    <div class="pch-label">
+                        <span style="color: #999">CH 2</span>
+                        <span class="pch-sub">preamp</span>
+                    </div>
+                    <div
+                        style="
+                            display: flex;
+                            flex-direction: column;
+                            align-items: center;
+                            gap: 2px;
+                        "
+                    >
+                        <div
+                            class="knob"
+                            id="k2"
+                            onmousedown="startKnob(event,'k2','kv2')"
+                        >
+                            <svg viewBox="0 0 42 42">
+                                <circle
+                                    cx="21"
+                                    cy="21"
+                                    r="16"
+                                    fill="none"
+                                    stroke="#222"
+                                    stroke-width="3.5"
+                                />
+                                <line
+                                    id="k2n"
+                                    x1="21"
+                                    y1="21"
+                                    x2="25"
+                                    y2="7"
+                                    stroke="#7ee8a2"
+                                    stroke-width="2"
+                                    stroke-linecap="round"
+                                />
+                            </svg>
+                            <span class="knob-val" id="kv2">52</span>
+                        </div>
+                        <span class="knob-lbl">GAIN</span>
+                    </div>
+                    <div class="mini-meter">
+                        <div class="mm-row">
+                            L
+                            <div class="mm-track">
+                                <div
+                                    class="mm-fill"
+                                    id="pm2l"
+                                    style="width: 42%"
+                                ></div>
+                            </div>
+                        </div>
+                        <div class="mm-row">
+                            R
+                            <div class="mm-track">
+                                <div
+                                    class="mm-fill"
+                                    id="pm2r"
+                                    style="width: 30%"
+                                ></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flags">
+                        <button class="fbtn" onclick="toggleFlag(this)">
+                            48V
+                        </button>
+                        <button class="fbtn" onclick="toggleFlag(this)">
+                            Ø
+                        </button>
+                        <button class="fbtn" onclick="toggleFlag(this)">
+                            PAD
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mix-header">
+                <span style="color: #555; font-size: 9px">MIX FOR</span>
+                <span class="mix-out-pill" id="mix-out-pill"
+                    >Monitor / HP1</span
+                >
+                <span class="sp"></span>
+                <span class="mix-hint"
+                    >←→ channel &nbsp;·&nbsp; ↑↓ fader &nbsp;·&nbsp; Enter source
+                    &nbsp;·&nbsp; P pan &nbsp;·&nbsp; S/M/L solo·mute·link</span
+                >
+            </div>
+
+            <div class="mixer-scroll" id="mixer"></div>
+
+            <div class="bot">
+                <div class="out-vol">
+                    <div class="out-vol-lbl" id="vol-lbl">MONITOR</div>
+                    <div class="out-vol-row">
+                        <div class="ctrl-btns">
+                            <button
+                                class="cbtn"
+                                onclick="toggleCbtn(this,'dim-on')"
+                            >
+                                DIM
+                            </button>
+                            <button
+                                class="cbtn"
+                                onclick="toggleCbtn(this,'mut-on')"
+                            >
+                                MUTE
+                            </button>
+                        </div>
+                        <div
+                            style="
+                                display: flex;
+                                flex-direction: column;
+                                align-items: center;
+                                gap: 2px;
+                            "
+                        >
+                            <div
+                                class="big-knob"
+                                id="bk"
+                                onmousedown="startKnob(event,'bk','bkv')"
+                            >
+                                <svg viewBox="0 0 44 44">
+                                    <circle
+                                        cx="22"
+                                        cy="22"
+                                        r="17"
+                                        fill="none"
+                                        stroke="#222"
+                                        stroke-width="3.5"
+                                    />
+                                    <line
+                                        id="bkn"
+                                        x1="22"
+                                        y1="22"
+                                        x2="22"
+                                        y2="7"
+                                        stroke="#7ee8a2"
+                                        stroke-width="2.5"
+                                        stroke-linecap="round"
+                                    />
+                                </svg>
+                                <span class="big-knob-val" id="bkv">0</span>
+                            </div>
+                            <span style="font-size: 8px; color: #444">dB</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="out-vol">
+                    <div class="out-vol-lbl" id="vol-lbl">HP1</div>
+                    <div class="out-vol-row">
+                        <div class="ctrl-btns">
+                            <button
+                                class="cbtn"
+                                onclick="toggleCbtn(this,'dim-on')"
+                            >
+                                DIM
+                            </button>
+                            <button
+                                class="cbtn"
+                                onclick="toggleCbtn(this,'mut-on')"
+                            >
+                                MUTE
+                            </button>
+                        </div>
+                        <div
+                            style="
+                                display: flex;
+                                flex-direction: column;
+                                align-items: center;
+                                gap: 2px;
+                            "
+                        >
+                            <div
+                                class="big-knob"
+                                id="bk"
+                                onmousedown="startKnob(event,'bk','bkv')"
+                            >
+                                <svg viewBox="0 0 44 44">
+                                    <circle
+                                        cx="22"
+                                        cy="22"
+                                        r="17"
+                                        fill="none"
+                                        stroke="#222"
+                                        stroke-width="3.5"
+                                    />
+                                    <line
+                                        id="bkn"
+                                        x1="22"
+                                        y1="22"
+                                        x2="22"
+                                        y2="7"
+                                        stroke="#7ee8a2"
+                                        stroke-width="2.5"
+                                        stroke-linecap="round"
+                                    />
+                                </svg>
+                                <span class="big-knob-val" id="bkv">0</span>
+                            </div>
+                            <span style="font-size: 8px; color: #444">dB</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div
+                    style="width: 1px; background: #1e1e1e; height: 40px"
+                ></div>
+
+                <div class="vu">
+                    <div class="vu-row">
+                        L
+                        <div class="vu-track">
+                            <div
+                                id="vuL"
+                                class="vu-fill"
+                                style="
+                                    background: linear-gradient(
+                                        to right,
+                                        #2a7a4a,
+                                        #7ee8a2 60%,
+                                        #f0c060 80%,
+                                        #e05050
+                                    );
+                                    width: 65%;
+                                "
+                            ></div>
+                        </div>
+                        <span
+                            style="
+                                font-size: 9px;
+                                color: #555;
+                                min-width: 30px;
+                                text-align: right;
+                            "
+                            id="vuLv"
+                            >-4.2</span
+                        >
+                    </div>
+                    <div class="vu-row">
+                        R
+                        <div class="vu-track">
+                            <div
+                                id="vuR"
+                                class="vu-fill"
+                                style="
+                                    background: linear-gradient(
+                                        to right,
+                                        #2a7a4a,
+                                        #7ee8a2 60%,
+                                        #f0c060 80%,
+                                        #e05050
+                                    );
+                                    width: 50%;
+                                "
+                            ></div>
+                        </div>
+                        <span
+                            style="
+                                font-size: 9px;
+                                color: #555;
+                                min-width: 30px;
+                                text-align: right;
+                            "
+                            id="vuRv"
+                            >-6.8</span
+                        >
+                    </div>
+                    <div class="vu-scale">
+                        <span>-60</span><span>-40</span><span>-20</span
+                        ><span>-10</span><span>-6</span><span>-3</span
+                        ><span>0</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="kbar">
+                <div class="kb">
+                    <kbd class="key">↑↓</kbd><span>output</span>
+                </div>
+                <div class="kb-sep"></div>
+                <div class="kb">
+                    <kbd class="key">←→</kbd><span>channel</span>
+                </div>
+                <div class="kb">
+                    <kbd class="key">↑↓</kbd><span>fader</span>
+                </div>
+                <div class="kb">
+                    <kbd class="key">Shift+↑↓</kbd><span>fine</span>
+                </div>
+                <div class="kb"><kbd class="key">P</kbd><span>pan</span></div>
+                <div class="kb"><kbd class="key">S</kbd><span>solo</span></div>
+                <div class="kb"><kbd class="key">M</kbd><span>mute</span></div>
+                <div class="kb"><kbd class="key">L</kbd><span>link</span></div>
+                <div class="kb"><kbd class="key">0</kbd><span>unity</span></div>
+                <div class="kb-sep"></div>
+                <div class="kb"><kbd class="key">G</kbd><span>gain</span></div>
+                <div class="kb">
+                    <kbd class="key">V</kbd><span>out vol</span>
+                </div>
+                <div class="kb">
+                    <kbd class="key">Ctrl+S</kbd><span>save</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const sourceOptions = [
+        "None",
+        "Analog In 1",
+        "Analog In 2",
+        "USB 1",
+        "USB 2",
+        "USB 3",
+        "USB 4",
+        "USB 5",
+        "USB 6",
+        "USB 7",
+        "USB 8",
+        "Loopback L",
+        "Loopback R",
+        "FX Return L",
+        "FX Return R",
+        "S/PDIF L",
+        "S/PDIF R",
+    ];
+
+    function makeStrip(label, source, opts = {}) {
+        return {
+            label,
+            source,
+            db: opts.db ?? 0,
+            panPct: opts.panPct ?? 50,
+            faderPct: opts.faderPct ?? 25,
+            meterPct: opts.meterPct ?? 0,
+            solo: opts.solo ?? false,
+            mute: opts.mute ?? false,
+            link: opts.link ?? false,
+            master: opts.master ?? false,
+        };
+    }
+
+    const mixes = [
+        {
+            name: "Monitor / HP1",
+            sub: "Mix A · 0 dB",
+            vol: 0,
+            strips: [
+                makeStrip("1", "Analog In 1", { db: 0, panPct: 42, faderPct: 25, meterPct: 72, solo: true }),
+                makeStrip("2", "Analog In 2", { db: -3, panPct: 58, faderPct: 30, meterPct: 65 }),
+                makeStrip("3", "USB 1", { db: -12, panPct: 35, faderPct: 42, meterPct: 28 }),
+                makeStrip("4", "USB 2", { db: -12, panPct: 65, faderPct: 42, meterPct: 30 }),
+                makeStrip("5", "USB 3", { db: -18, panPct: 50, faderPct: 50, meterPct: 20 }),
+                makeStrip("6", "USB 4", { db: -18, panPct: 50, faderPct: 50, meterPct: 18 }),
+                makeStrip("7", "USB 5", { db: -24, panPct: 50, faderPct: 58, meterPct: 10 }),
+                makeStrip("8", "USB 6", { db: -24, panPct: 50, faderPct: 58, meterPct: 10 }),
+                makeStrip("9", "USB 7", { db: -30, panPct: 25, faderPct: 65, meterPct: 6 }),
+                makeStrip("10", "USB 8", { db: -30, panPct: 75, faderPct: 65, meterPct: 6 }),
+                makeStrip("11", "Loopback L", { db: -16, panPct: 35, faderPct: 45, meterPct: 25 }),
+                makeStrip("12", "Loopback R", { db: -16, panPct: 65, faderPct: 45, meterPct: 25 }),
+                makeStrip("13", "FX Return L", { db: -9, panPct: 40, faderPct: 35, meterPct: 34 }),
+                makeStrip("14", "FX Return R", { db: -9, panPct: 60, faderPct: 35, meterPct: 34 }),
+                makeStrip("15", "S/PDIF L", { db: -20, panPct: 38, faderPct: 48, meterPct: 16, mute: true, link: true }),
+                makeStrip("16", "S/PDIF R", { db: -20, panPct: 62, faderPct: 48, meterPct: 16, mute: true }),
+            ],
+        },
+        {
+            name: "Headphones 2",
+            sub: "Mix B · -28 dB",
+            vol: -28,
+            strips: [
+                makeStrip("1", "Analog In 1", { db: -4, panPct: 40, faderPct: 28, meterPct: 66 }),
+                makeStrip("2", "Analog In 2", { db: -4, panPct: 60, faderPct: 28, meterPct: 60 }),
+                makeStrip("3", "USB 1", { db: 0, panPct: 42, faderPct: 25, meterPct: 36 }),
+                makeStrip("4", "USB 2", { db: 0, panPct: 58, faderPct: 25, meterPct: 36 }),
+                makeStrip("5", "USB 3", { db: -10, panPct: 50, faderPct: 38, meterPct: 18 }),
+                makeStrip("6", "USB 4", { db: -10, panPct: 50, faderPct: 38, meterPct: 18 }),
+                makeStrip("7", "USB 5", { db: -30, panPct: 50, faderPct: 65, meterPct: 4, mute: true }),
+                makeStrip("8", "USB 6", { db: -30, panPct: 50, faderPct: 65, meterPct: 4, mute: true }),
+                makeStrip("9", "USB 7", { db: -18, panPct: 30, faderPct: 44, meterPct: 14 }),
+                makeStrip("10", "USB 8", { db: -18, panPct: 70, faderPct: 44, meterPct: 14 }),
+                makeStrip("11", "Loopback L", { db: -24, panPct: 40, faderPct: 54, meterPct: 8 }),
+                makeStrip("12", "Loopback R", { db: -24, panPct: 60, faderPct: 54, meterPct: 8 }),
+                makeStrip("13", "FX Return L", { db: -8, panPct: 44, faderPct: 33, meterPct: 30 }),
+                makeStrip("14", "FX Return R", { db: -8, panPct: 56, faderPct: 33, meterPct: 30 }),
+                makeStrip("15", "S/PDIF L", { db: -12, panPct: 45, faderPct: 40, meterPct: 20, link: true }),
+                makeStrip("16", "S/PDIF R", { db: -12, panPct: 55, faderPct: 40, meterPct: 20 }),
+            ],
+        },
+    ];
+
+    let currentOutput = 0;
+    let focusedStrip = 0;
+
+    function buildMixer(outputIdx) {
+        const mix = mixes[outputIdx];
+        const container = document.getElementById("mixer");
+        container.innerHTML = "";
+
+        mix.strips.forEach((s, stripIdx) => {
+            const el = document.createElement("div");
+            el.className =
+                "strip" +
+                (s.mute ? " muted" : "") +
+                (stripIdx === focusedStrip ? " focused" : "");
+            el.id = "strip_" + stripIdx;
+            el.onclick = () => setFocus(stripIdx);
+
+            const faderTop = Math.round(s.faderPct * 1.15);
+            const thumbClass = s.master ? "fader-thumb master-th" : "fader-thumb";
+            const isOddChannel = Number(s.label) % 2 === 1;
+            const sourceSelect = `<div class="src-label">source</div>
+                   <select class="src-select" onchange="setSource(${outputIdx}, ${stripIdx}, this.value)">
+                     ${sourceOptions.map((opt) => `<option ${opt === s.source ? "selected" : ""}>${opt}</option>`).join("")}
+                   </select>`;
+
+            el.innerHTML = `
+                ${stripIdx === focusedStrip ? '<div class="strip-focus-bar"></div>' : ""}
+                <div class="snum" style="color:#ccc">CH ${s.label}</div>
+                ${sourceSelect}
+                <div class="pan-row">
+                    <span class="pan-lbl">PAN</span>
+                    <div class="pan-track">
+                        <div class="pan-ctr"></div>
+                        <div class="pan-th" style="left:${s.panPct}%"></div>
+                    </div>
+                </div>
+                <div style="font-size:8px;color:#555;text-align:center;">${s.db}</div>
+                <div class="fader-section">
+                    <div class="fader-col">
+                        <div class="fader-track" data-strip="${stripIdx}">
+                            <div class="${thumbClass}" style="top:${faderTop}px"></div>
+                        </div>
+                        <div class="fader-db">${s.db}</div>
+                    </div>
+                    <div class="fader-col">
+                        <div class="fader-meter">
+                            <div class="fm-fill fm-green" style="height:${s.meterPct}%"></div>
+                            ${s.meterPct > 85 ? '<div class="fm-clip"></div>' : ""}
+                        </div>
+                    </div>
+                </div>
+                <div class="smb-row">
+                    <button class="smb${s.solo ? " son" : ""}" onclick="toggleSmb(event,this,'son')">S</button>
+                    <button class="smb${s.mute ? " mon" : ""}" onclick="toggleSmb(event,this,'mon')">M</button>
+                    <button class="smb${s.link ? " lon" : ""}" ${isOddChannel ? `onclick="toggleSmb(event,this,'lon')"` : 'disabled style="opacity:.25;cursor:default"'}>${isOddChannel ? 'L' : '—'}</button>
+                </div>
+            `;
+            container.appendChild(el);
+        });
+
+        document.getElementById("mix-out-pill").textContent = mix.name;
+        document.querySelectorAll("#vol-lbl")[0].textContent = mix.name.toUpperCase();
+        document.getElementById("bkv").textContent = mix.vol;
+    }
+
+    function setSource(outputIdx, stripIdx, value) {
+        mixes[outputIdx].strips[stripIdx].source = value;
+    }
+
+    function selectOutput(idx) {
+        currentOutput = idx;
+        focusedStrip = 0;
+        document.querySelectorAll(".op-item").forEach((el, i) => {
+            el.classList.toggle("active", i === idx);
+        });
+        buildMixer(idx);
+    }
+
+    function setFocus(idx) {
+        focusedStrip = idx;
+        buildMixer(currentOutput);
+    }
+
+    function toggleFlag(el) {
+        if (el.classList.contains("won")) el.classList.remove("won");
+        else if (el.classList.contains("gon")) el.classList.remove("gon");
+        else {
+            el.textContent === "48V" ? el.classList.add("won") : el.classList.add("gon");
+        }
+    }
+    function toggleCbtn(el, cls) {
+        el.classList.toggle(cls);
+    }
+    function toggleSmb(e, el, cls) {
+        e.stopPropagation();
+        el.classList.toggle(cls);
+    }
+
+    let kActive = null,
+        kStartY = 0,
+        kStartVal = 0,
+        kValEl = null;
+    function startKnob(e, knobId, valId) {
+        kActive = knobId;
+        kStartY = e.clientY;
+        kValEl = document.getElementById(valId);
+        kStartVal = parseInt(kValEl.textContent) || 0;
+        e.preventDefault();
+    }
+    document.addEventListener("mousemove", (e) => {
+        if (!kActive) return;
+        const delta = Math.round((kStartY - e.clientY) / 2);
+        const v = Math.max(-60, Math.min(60, kStartVal + delta));
+        kValEl.textContent = v;
+        if (kActive === "bk") mixes[currentOutput].vol = v;
+    });
+    document.addEventListener("mouseup", () => {
+        kActive = null;
+    });
+
+    document.addEventListener("keydown", (e) => {
+        if (e.key === "ArrowUp" && e.altKey) {
+            selectOutput(Math.max(0, currentOutput - 1));
+            e.preventDefault();
+        }
+        if (e.key === "ArrowDown" && e.altKey) {
+            selectOutput(Math.min(mixes.length - 1, currentOutput + 1));
+            e.preventDefault();
+        }
+        if (e.key === "ArrowLeft") {
+            setFocus(Math.max(0, focusedStrip - 1));
+            e.preventDefault();
+        }
+        if (e.key === "ArrowRight") {
+            setFocus(Math.min(mixes[currentOutput].strips.length - 1, focusedStrip + 1));
+            e.preventDefault();
+        }
+    });
+
+    let phase = 0;
+    function animate() {
+        phase += 0.05;
+        const lv = 60 + Math.sin(phase * 1.4) * 16 + Math.sin(phase * 3.8) * 7;
+        const rv = 48 + Math.sin(phase * 1.1 + 1) * 13 + Math.sin(phase * 2.9) * 6;
+        const vuL = document.getElementById("vuL");
+        const vuR = document.getElementById("vuR");
+        if (vuL) vuL.style.width = Math.max(0, Math.min(100, lv)) + "%";
+        if (vuR) vuR.style.width = Math.max(0, Math.min(100, rv)) + "%";
+        const ldb = (-(100 - Math.max(0, Math.min(100, lv))) * 0.6).toFixed(1);
+        const rdb = (-(100 - Math.max(0, Math.min(100, rv))) * 0.6).toFixed(1);
+        const lvEl = document.getElementById("vuLv");
+        if (lvEl) lvEl.textContent = ldb;
+        const rvEl = document.getElementById("vuRv");
+        if (rvEl) rvEl.textContent = rdb;
+
+        ["pm1l", "pm1r", "pm2l", "pm2r"].forEach((id, i) => {
+            const el = document.getElementById(id);
+            if (el)
+                el.style.width = Math.max(5, Math.min(95, 45 + Math.sin(phase * (1.2 + i * 0.3) + i) * 25)) + "%";
+        });
+
+        document.querySelectorAll(".fader-meter").forEach((m, i) => {
+            const fill = m.querySelector(".fm-fill");
+            if (fill) {
+                const v = Math.max(0, Math.min(92, 30 + Math.sin(phase * (1.1 + i * 0.25) + i * 0.7) * 20));
+                fill.style.height = v + "%";
+            }
+        });
+        requestAnimationFrame(animate);
+    }
+
+    buildMixer(0);
+    animate();
+</script>
