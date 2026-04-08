@@ -332,10 +332,12 @@ fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     stdout.execute(EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
+    terminal.hide_cursor()?;
     let mut controller = Controller::new(transport);
     controller.bootstrap()?;
     let result = app_loop(&mut terminal, &mut controller);
     disable_raw_mode()?;
+    terminal.show_cursor()?;
     io::stdout().execute(DisableMouseCapture)?;
     io::stdout().execute(LeaveAlternateScreen)?;
     result
@@ -557,7 +559,17 @@ fn app_loop(
 
         let now = Instant::now();
         if should_draw_frame(last_draw_at, needs_redraw, now) {
-            terminal.draw(|frame| ui::draw(frame, &controller.state))?;
+            terminal.draw(|frame| {
+                ui::draw(frame, &controller.state);
+                if let Some((x, y)) = ui::profile_editor_cursor(frame.area(), &controller.state) {
+                    frame.set_cursor_position((x, y));
+                }
+            })?;
+            if controller.state.profile_editor.is_some() {
+                terminal.show_cursor()?;
+            } else {
+                terminal.hide_cursor()?;
+            }
             last_draw_at = Some(now);
             needs_redraw = false;
         }

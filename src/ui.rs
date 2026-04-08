@@ -116,6 +116,32 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     draw_hotkeys_popup(frame, frame.area(), state);
 }
 
+pub fn profile_editor_cursor(area: Rect, state: &AppState) -> Option<(u16, u16)> {
+    let editor = state.profile_editor.as_ref()?;
+    let editor_area = profile_editor_area(area);
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(inner_area(editor_area));
+    let row = rows[0];
+    if row.width == 0 {
+        return None;
+    }
+
+    let x = row.x.saturating_add(
+        editor
+            .value
+            .chars()
+            .count()
+            .min(row.width.saturating_sub(1) as usize) as u16,
+    );
+    Some((x, row.y))
+}
+
 fn root_chunks(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)
