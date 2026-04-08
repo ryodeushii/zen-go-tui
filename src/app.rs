@@ -628,6 +628,15 @@ impl Controller {
                 .write(&encode_link_companion(bank, enabled))?;
         }
         self.transport.write(&encode_command(command))?;
+        match command {
+            Command::SetClockSource(source) => {
+                self.state.device.clock_source = Some(source);
+            }
+            Command::SetSampleRate(rate) => {
+                self.state.device.sample_rate = Some(rate);
+            }
+            _ => {}
+        }
         if matches!(command, Command::SelectSurface(_)) {
             self.refresh_queried_state()?;
         }
@@ -1722,6 +1731,22 @@ mod tests {
     }
 
     #[test]
+    fn clock_source_command_updates_visible_state_immediately() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+        controller.state.device.clock_source = Some(ClockSource::Usb);
+
+        controller
+            .send(Command::SetClockSource(ClockSource::Internal))
+            .expect("set clock source");
+
+        assert_eq!(
+            controller.state.device.clock_source,
+            Some(ClockSource::Internal)
+        );
+    }
+
+    #[test]
     fn bootstrap_queries_include_metadata_request() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
@@ -1748,6 +1773,34 @@ mod tests {
         assert_eq!(&writes[0][0x10..0x13], &[0x49, 0x00, Surface::Hp2.code()]);
         assert_eq!(&writes[1][0x08..0x10], &[0x01, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(&writes[47][0x08..0x10], &[0x12, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn clock_source_change_does_not_force_refresh_query_readback() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        controller
+            .send(Command::SetClockSource(ClockSource::Usb))
+            .expect("set clock source");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x12], &[0x04, 0x02]);
+    }
+
+    #[test]
+    fn sample_rate_change_does_not_force_refresh_query_readback() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport.clone()));
+
+        controller
+            .send(Command::SetSampleRate(SampleRate::Hz96000))
+            .expect("set sample rate");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][0x10..0x12], &[0x03, 0x04]);
     }
 
     #[test]
