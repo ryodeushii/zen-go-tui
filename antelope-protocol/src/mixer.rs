@@ -1,0 +1,772 @@
+//! Mixer-related types: surfaces, strips, assignments, links, passive decode.
+
+use crate::types::{PanState, Surface};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerSurface {
+    Mix1,
+    Mix2,
+}
+
+impl MixerSurface {
+    pub fn index(self) -> usize {
+        match self {
+            Self::Mix1 => 0,
+            Self::Mix2 => 1,
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Mix1 => 0x00,
+            Self::Mix2 => 0x01,
+        }
+    }
+
+    pub fn from_surface(surface: Surface) -> Self {
+        match surface {
+            Surface::Hp2 => Self::Mix2,
+            Surface::MonitorHp1 | Surface::Unknown(_) => Self::Mix1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerAssignment {
+    Preamp(u8),
+    ComputerPlay(u8),
+    SpdifIn(u8),
+    Mute,
+    Oscillator(u8),
+    EmuMic(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MixerStripKind {
+    EarlyAfxAdjacent,
+    Ordinary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixerStrip {
+    pub channel: u8,
+    pub kind: MixerStripKind,
+}
+
+impl MixerStrip {
+    pub fn new(channel: u8) -> Option<Self> {
+        if !(1..=16).contains(&channel) {
+            return None;
+        }
+
+        Some(Self {
+            channel,
+            kind: if channel <= 4 {
+                MixerStripKind::EarlyAfxAdjacent
+            } else {
+                MixerStripKind::Ordinary
+            },
+        })
+    }
+
+    pub fn ordinary(channel: u8) -> Option<Self> {
+        let strip = Self::new(channel)?;
+        matches!(strip.kind, MixerStripKind::Ordinary).then_some(strip)
+    }
+
+    pub fn assignment_entry_index(self) -> usize {
+        (self.channel - 1) as usize
+    }
+
+    pub fn assignment_write_banks(self) -> &'static [u8] {
+        match self.kind {
+            MixerStripKind::EarlyAfxAdjacent => &[0x05],
+            MixerStripKind::Ordinary if self.channel <= 8 => &[0x03, 0x06, 0x07, 0x08, 0x09],
+            MixerStripKind::Ordinary => &[0x06, 0x07, 0x08, 0x09],
+        }
+    }
+
+    pub fn assignment_write_is_grounded(channel: u8) -> bool {
+        Self::new(channel).is_some()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixerLinkTarget {
+    pub mixer: MixerSurface,
+    pub left_channel: u8,
+    pub right_channel: u8,
+    pub selector: u8,
+}
+
+impl MixerLinkTarget {
+    pub fn from_selector(mixer: MixerSurface, selector: u8) -> Option<Self> {
+        match (mixer, selector) {
+            (MixerSurface::Mix1, 0x00) => Some(Self {
+                mixer,
+                left_channel: 1,
+                right_channel: 2,
+                selector,
+            }),
+            (MixerSurface::Mix1, 0x01) => Some(Self {
+                mixer,
+                left_channel: 3,
+                right_channel: 4,
+                selector,
+            }),
+            (MixerSurface::Mix1, 0x02) => Some(Self {
+                mixer,
+                left_channel: 5,
+                right_channel: 6,
+                selector,
+            }),
+            (MixerSurface::Mix1, 0x03) => Some(Self {
+                mixer,
+                left_channel: 7,
+                right_channel: 8,
+                selector,
+            }),
+            (MixerSurface::Mix1, 0x04) => Some(Self {
+                mixer,
+                left_channel: 9,
+                right_channel: 10,
+                selector,
+            }),
+            (MixerSurface::Mix1, 0x05) => Some(Self {
+                mixer,
+                left_channel: 11,
+                right_channel: 12,
+                selector,
+            }),
+            (MixerSurface::Mix1, 0x06) => Some(Self {
+                mixer,
+                left_channel: 13,
+                right_channel: 14,
+                selector,
+            }),
+            (MixerSurface::Mix1, 0x07) => Some(Self {
+                mixer,
+                left_channel: 15,
+                right_channel: 16,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x10) => Some(Self {
+                mixer,
+                left_channel: 1,
+                right_channel: 2,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x11) => Some(Self {
+                mixer,
+                left_channel: 3,
+                right_channel: 4,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x12) => Some(Self {
+                mixer,
+                left_channel: 5,
+                right_channel: 6,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x13) => Some(Self {
+                mixer,
+                left_channel: 7,
+                right_channel: 8,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x14) => Some(Self {
+                mixer,
+                left_channel: 9,
+                right_channel: 10,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x15) => Some(Self {
+                mixer,
+                left_channel: 11,
+                right_channel: 12,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x16) => Some(Self {
+                mixer,
+                left_channel: 13,
+                right_channel: 14,
+                selector,
+            }),
+            (MixerSurface::Mix2, 0x17) => Some(Self {
+                mixer,
+                left_channel: 15,
+                right_channel: 16,
+                selector,
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn from_channel(mixer: MixerSurface, channel: u8) -> Option<Self> {
+        match (mixer, channel) {
+            (MixerSurface::Mix1, 1 | 2) => Self::from_selector(mixer, 0x00),
+            (MixerSurface::Mix1, 3 | 4) => Self::from_selector(mixer, 0x01),
+            (MixerSurface::Mix1, 5 | 6) => Self::from_selector(mixer, 0x02),
+            (MixerSurface::Mix1, 7 | 8) => Self::from_selector(mixer, 0x03),
+            (MixerSurface::Mix1, 9 | 10) => Self::from_selector(mixer, 0x04),
+            (MixerSurface::Mix1, 11 | 12) => Self::from_selector(mixer, 0x05),
+            (MixerSurface::Mix1, 13 | 14) => Self::from_selector(mixer, 0x06),
+            (MixerSurface::Mix1, 15 | 16) => Self::from_selector(mixer, 0x07),
+            (MixerSurface::Mix2, 1 | 2) => Self::from_selector(mixer, 0x10),
+            (MixerSurface::Mix2, 3 | 4) => Self::from_selector(mixer, 0x11),
+            (MixerSurface::Mix2, 5 | 6) => Self::from_selector(mixer, 0x12),
+            (MixerSurface::Mix2, 7 | 8) => Self::from_selector(mixer, 0x13),
+            (MixerSurface::Mix2, 9 | 10) => Self::from_selector(mixer, 0x14),
+            (MixerSurface::Mix2, 11 | 12) => Self::from_selector(mixer, 0x15),
+            (MixerSurface::Mix2, 13 | 14) => Self::from_selector(mixer, 0x16),
+            (MixerSurface::Mix2, 15 | 16) => Self::from_selector(mixer, 0x17),
+            _ => None,
+        }
+    }
+
+    pub fn companion_bank(self) -> Option<u8> {
+        match (self.mixer, self.selector) {
+            (MixerSurface::Mix1, 0x00) => Some(0x00),
+            (MixerSurface::Mix1, 0x01) => Some(0x01),
+            (MixerSurface::Mix2, 0x10) => Some(0x00),
+            (MixerSurface::Mix2, 0x11) => Some(0x01),
+            _ => None,
+        }
+    }
+}
+
+impl MixerAssignment {
+    pub fn grounded_choices() -> &'static [MixerAssignment] {
+        const CHOICES: [MixerAssignment; 17] = [
+            MixerAssignment::Mute,
+            MixerAssignment::Preamp(1),
+            MixerAssignment::Preamp(2),
+            MixerAssignment::ComputerPlay(1),
+            MixerAssignment::ComputerPlay(2),
+            MixerAssignment::ComputerPlay(3),
+            MixerAssignment::ComputerPlay(4),
+            MixerAssignment::ComputerPlay(5),
+            MixerAssignment::ComputerPlay(6),
+            MixerAssignment::ComputerPlay(7),
+            MixerAssignment::ComputerPlay(8),
+            MixerAssignment::SpdifIn(1),
+            MixerAssignment::SpdifIn(2),
+            MixerAssignment::Oscillator(1),
+            MixerAssignment::Oscillator(2),
+            MixerAssignment::EmuMic(1),
+            MixerAssignment::EmuMic(2),
+        ];
+        &CHOICES
+    }
+
+    pub fn from_ordinary_strip_bytes(bytes: [u8; 2]) -> Option<Self> {
+        match bytes {
+            [0x00, 0x00] => Some(Self::Preamp(1)),
+            [0x00, 0x01] => Some(Self::Preamp(2)),
+            [0x01, 0x00..=0x07] => Some(Self::ComputerPlay(bytes[1] + 1)),
+            [0x02, 0x00] => Some(Self::SpdifIn(1)),
+            [0x02, 0x01] => Some(Self::SpdifIn(2)),
+            [0x08, 0x00] => Some(Self::Mute),
+            [0x09, 0x00] => Some(Self::Oscillator(1)),
+            [0x09, 0x01] => Some(Self::Oscillator(2)),
+            [0x0a, 0x00] => Some(Self::EmuMic(1)),
+            [0x0a, 0x01] => Some(Self::EmuMic(2)),
+            _ => None,
+        }
+    }
+
+    pub fn ordinary_strip_bytes(self) -> [u8; 2] {
+        match self {
+            Self::Preamp(1) => [0x00, 0x00],
+            Self::Preamp(2) => [0x00, 0x01],
+            Self::ComputerPlay(channel @ 1..=8) => [0x01, channel - 1],
+            Self::SpdifIn(1) => [0x02, 0x00],
+            Self::SpdifIn(2) => [0x02, 0x01],
+            Self::Mute => [0x08, 0x00],
+            Self::Oscillator(1) => [0x09, 0x00],
+            Self::Oscillator(2) => [0x09, 0x01],
+            Self::EmuMic(1) => [0x0a, 0x00],
+            Self::EmuMic(2) => [0x0a, 0x01],
+            _ => panic!("unsupported grounded assignment variant"),
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Preamp(index) => format!("Preamp {}", index),
+            Self::ComputerPlay(index) => format!("Computer Play {}", index),
+            Self::SpdifIn(index) => format!("SPDIF In {}", index),
+            Self::Mute => "Mute".to_string(),
+            Self::Oscillator(index) => format!("Oscillator {}", index),
+            Self::EmuMic(index) => format!("Emu Mic {}", index),
+        }
+    }
+
+    pub fn short_label(self) -> String {
+        match self {
+            Self::Preamp(index) => format!("P{}", index),
+            Self::ComputerPlay(index) => format!("C{}", index),
+            Self::SpdifIn(index) => format!("S{}", index),
+            Self::Mute => "M".to_string(),
+            Self::Oscillator(index) => format!("O{}", index),
+            Self::EmuMic(index) => format!("E{}", index),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixerChannelState {
+    pub channel: u8,
+    pub level: Option<u8>,
+    pub meter: Option<u8>,
+    pub muted: Option<bool>,
+    pub soloed: Option<bool>,
+    pub pan: PanState,
+    pub assignment: Option<MixerAssignment>,
+    pub linked: Option<bool>,
+}
+
+impl MixerChannelState {
+    pub fn unknown(channel: u8) -> Self {
+        Self {
+            channel,
+            level: None,
+            meter: None,
+            muted: None,
+            soloed: None,
+            pan: PanState::center(),
+            assignment: None,
+            linked: None,
+        }
+    }
+
+    pub fn known(
+        channel: u8,
+        level: Option<u8>,
+        muted: Option<bool>,
+        pan: PanState,
+        assignment: Option<MixerAssignment>,
+        linked: Option<bool>,
+    ) -> Self {
+        Self {
+            channel,
+            level,
+            meter: None,
+            muted,
+            soloed: None,
+            pan,
+            assignment,
+            linked,
+        }
+    }
+
+    pub fn display_db(self) -> Option<i16> {
+        self.level.map(|raw| -(raw.min(0x5a) as i16))
+    }
+
+    pub fn gain_ratio(self) -> Option<f64> {
+        self.level
+            .map(|raw| (1.0 - (raw.min(0x5a) as f64 / 90.0)).clamp(0.0, 1.0))
+    }
+
+    pub fn meter_ratio(self) -> Option<f64> {
+        self.meter.map(crate::types::meter_ratio)
+    }
+
+    pub fn meter_db(self) -> Option<i16> {
+        self.meter.and_then(crate::types::meter_display_db)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixerPassiveStripState {
+    pub meter: Option<u8>,
+    pub muted: Option<bool>,
+    pub pan: Option<PanState>,
+    pub linked: Option<bool>,
+}
+
+impl MixerPassiveStripState {
+    pub const fn unresolved() -> Self {
+        Self {
+            meter: None,
+            muted: None,
+            pan: None,
+            linked: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MixerPassiveDecode {
+    pub surfaces: [[MixerPassiveStripState; 16]; 2],
+    pub observed_preamp1_meter: Option<u8>,
+    pub observed_preamp2_meter: Option<u8>,
+}
+
+impl Default for MixerPassiveDecode {
+    fn default() -> Self {
+        Self {
+            surfaces: [[MixerPassiveStripState::unresolved(); 16]; 2],
+            observed_preamp1_meter: None,
+            observed_preamp2_meter: None,
+        }
+    }
+}
+
+impl MixerPassiveDecode {
+    pub fn strip(&self, mixer: MixerSurface, channel: u8) -> Option<MixerPassiveStripState> {
+        let index = channel.checked_sub(1)? as usize;
+        self.surfaces
+            .get(mixer.index())
+            .and_then(|surface| surface.get(index))
+            .copied()
+    }
+}
+
+fn decode_strip_meter(payload: &[u8], channel: u8) -> Option<u8> {
+    let meter_lanes = payload.get(0x8e..=0x9d)?;
+    if meter_lanes.iter().all(|lane| *lane == 0x00) {
+        return None;
+    }
+
+    meter_lanes
+        .get(channel.checked_sub(1)? as usize)
+        .copied()
+        .filter(|raw| *raw <= 0x60)
+}
+
+fn decode_preamp_meter(payload: &[u8], offset: usize) -> Option<u8> {
+    payload
+        .get(offset)
+        .copied()
+        .filter(|raw| *raw != 0x00 && *raw <= 0x49)
+}
+
+fn decode_mute_from_group(
+    payload: &[u8],
+    primary_a: usize,
+    primary_b: usize,
+    shadow_a: usize,
+    shadow_b: usize,
+    shadow_c: usize,
+    shadow_d: usize,
+) -> Option<bool> {
+    let values = [
+        payload.get(primary_a).copied()?,
+        payload.get(primary_b).copied()?,
+        payload.get(shadow_a).copied()?,
+        payload.get(shadow_b).copied()?,
+        payload.get(shadow_c).copied()?,
+        payload.get(shadow_d).copied()?,
+    ];
+
+    let all_51 = values.iter().all(|value| *value == 0x51);
+    let all_active = values
+        .iter()
+        .all(|value| matches!(*value, 0x49 | 0x4b | 0x4c | 0x4e | 0x51));
+    if all_51 {
+        Some(true)
+    } else if all_active {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn decode_pan_from_group(
+    payload: &[u8],
+    primary_a: usize,
+    primary_b: usize,
+    shadow_a: usize,
+    shadow_b: usize,
+    tail_a: usize,
+    tail_b: usize,
+) -> Option<PanState> {
+    let samples = [
+        payload.get(primary_a).copied()?,
+        payload.get(primary_b).copied()?,
+        payload.get(shadow_a).copied()?,
+        payload.get(shadow_b).copied()?,
+        payload.get(tail_a).copied()?,
+        payload.get(tail_b).copied()?,
+    ];
+    let value =
+        (samples.iter().map(|&sample| sample as u16).sum::<u16>() / samples.len() as u16) as u8;
+    let centered = match value {
+        0x49..=0x4c => 0x20,
+        0x4d..=0x4e => 0x1e,
+        _ => return None,
+    };
+    Some(PanState::from_raw(centered))
+}
+
+fn decode_link_state(payload: &[u8]) -> Option<bool> {
+    let head_a = payload.get(0x8f).copied()?;
+    let head_b = payload.get(0xcf).copied()?;
+    let tails = [
+        payload.get(0xda).copied()?,
+        payload.get(0xdb).copied()?,
+        payload.get(0xdc).copied()?,
+        payload.get(0xdd).copied()?,
+        payload.get(0xde).copied()?,
+        payload.get(0xdf).copied()?,
+    ];
+    let values = [
+        head_a, head_b, tails[0], tails[1], tails[2], tails[3], tails[4], tails[5],
+    ];
+
+    if values.iter().all(|value| *value == 0x49)
+        || (head_a == 0x51 && head_b == 0x51 && tails.iter().all(|value| *value == 0x4e))
+    {
+        Some(true)
+    } else if head_a == 0x4e
+        && head_b == 0x4e
+        && tails.iter().all(|value| matches!(*value, 0x4c | 0x4e))
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+pub fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
+    let mut decode = MixerPassiveDecode::default();
+
+    let shared_mute = decode_mute_from_group(payload, 0x8f, 0xcf, 0xda, 0xdb, 0xdc, 0xdd);
+    let shared_pan = decode_pan_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf);
+
+    let active_mixer = MixerSurface::from_surface(Surface::from_code(payload[0x6a]));
+    decode.observed_preamp1_meter = decode_preamp_meter(payload, 0xce);
+    decode.observed_preamp2_meter = decode_preamp_meter(payload, 0xcf);
+    for channel in 1..=16 {
+        let meter = decode_strip_meter(payload, channel);
+        for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
+            if let Some(slot) = decode.surfaces[mixer.index()].get_mut(channel as usize - 1) {
+                slot.meter = meter;
+            }
+        }
+    }
+    if let Some(slot) = decode.surfaces[active_mixer.index()].get_mut(0) {
+        slot.muted = shared_mute;
+        slot.pan = shared_pan;
+    }
+
+    if let Some(linked) = decode_link_state(payload) {
+        let targets: &[(MixerSurface, u8)] = match active_mixer {
+            MixerSurface::Mix1 => &[(MixerSurface::Mix1, 1), (MixerSurface::Mix1, 2)],
+            MixerSurface::Mix2 => &[(MixerSurface::Mix2, 1), (MixerSurface::Mix2, 2)],
+        };
+        for (mixer, channel) in targets {
+            if let Some(slot) = decode.surfaces[mixer.index()].get_mut(*channel as usize - 1) {
+                slot.linked = Some(linked);
+            }
+        }
+    }
+
+    decode
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::PanState;
+
+    #[test]
+    fn ordinary_strip_index_map_stays_out_of_early_afx_range() {
+        assert_eq!(MixerStrip::ordinary(4), None);
+        assert_eq!(
+            MixerStrip::ordinary(5).map(|strip| strip.assignment_entry_index()),
+            Some(4)
+        );
+        assert_eq!(
+            MixerStrip::ordinary(16).map(|strip| strip.assignment_entry_index()),
+            Some(15)
+        );
+    }
+
+    #[test]
+    fn assignment_write_is_grounded_for_all_visible_strips() {
+        for channel in 1..=16 {
+            assert!(MixerStrip::assignment_write_is_grounded(channel));
+        }
+    }
+
+    #[test]
+    fn link_target_mapping_covers_full_visible_pair_map() {
+        assert_eq!(
+            MixerLinkTarget::from_selector(MixerSurface::Mix1, 0x03),
+            Some(MixerLinkTarget {
+                mixer: MixerSurface::Mix1,
+                left_channel: 7,
+                right_channel: 8,
+                selector: 0x03,
+            })
+        );
+        assert_eq!(
+            MixerLinkTarget::from_selector(MixerSurface::Mix1, 0x01),
+            Some(MixerLinkTarget {
+                mixer: MixerSurface::Mix1,
+                left_channel: 3,
+                right_channel: 4,
+                selector: 0x01,
+            })
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 2).map(|target| target.selector),
+            Some(0x10)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 4).map(|target| target.selector),
+            Some(0x11)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix1, 12).map(|target| target.selector),
+            Some(0x05)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 7).map(|target| target.selector),
+            Some(0x13)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix1, 1)
+                .and_then(|target| target.companion_bank()),
+            Some(0x00)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix1, 7)
+                .and_then(|target| target.companion_bank()),
+            None
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 1)
+                .and_then(|target| target.companion_bank()),
+            Some(0x00)
+        );
+        assert_eq!(
+            MixerLinkTarget::from_channel(MixerSurface::Mix2, 3)
+                .and_then(|target| target.companion_bank()),
+            Some(0x01)
+        );
+    }
+
+    #[test]
+    fn passive_link_state_decode_matches_grounded_mix1_and_mix2_signatures() {
+        let mut payload = vec![0_u8; 0xe6];
+        payload[0x8f] = 0x51;
+        payload[0xcf] = 0x51;
+        payload[0xda] = 0x4e;
+        payload[0xdb] = 0x4e;
+        payload[0xdc] = 0x4e;
+        payload[0xdd] = 0x4e;
+        payload[0xde] = 0x4e;
+        payload[0xdf] = 0x4e;
+        assert_eq!(decode_link_state(&payload), Some(true));
+
+        payload[0x8f] = 0x4e;
+        payload[0xcf] = 0x4e;
+        payload[0xda] = 0x4c;
+        payload[0xdb] = 0x4c;
+        payload[0xdc] = 0x4c;
+        payload[0xdd] = 0x4c;
+        payload[0xde] = 0x4c;
+        payload[0xdf] = 0x4c;
+        assert_eq!(decode_link_state(&payload), Some(false));
+
+        payload[0x8f] = 0x49;
+        payload[0xcf] = 0x49;
+        payload[0xda] = 0x49;
+        payload[0xdb] = 0x49;
+        payload[0xdc] = 0x49;
+        payload[0xdd] = 0x49;
+        payload[0xde] = 0x49;
+        payload[0xdf] = 0x49;
+        assert_eq!(decode_link_state(&payload), Some(true));
+    }
+
+    #[test]
+    fn mixer_channel_state_tracks_assignment_pan_and_link() {
+        let state = MixerChannelState::known(
+            16,
+            Some(0x22),
+            Some(true),
+            PanState::from_raw(0x3e),
+            Some(MixerAssignment::ComputerPlay(8)),
+            Some(false),
+        );
+
+        assert_eq!(state.channel, 16);
+        assert_eq!(state.assignment, Some(MixerAssignment::ComputerPlay(8)));
+        assert_eq!(state.pan, PanState::from_raw(0x3e));
+        assert_eq!(state.linked, Some(false));
+    }
+
+    #[test]
+    fn mixer_assignment_decodes_grounded_ordinary_strip_values() {
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x00, 0x00]),
+            Some(MixerAssignment::Preamp(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x00, 0x01]),
+            Some(MixerAssignment::Preamp(2))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x01, 0x00]),
+            Some(MixerAssignment::ComputerPlay(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x01, 0x06]),
+            Some(MixerAssignment::ComputerPlay(7))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x01, 0x07]),
+            Some(MixerAssignment::ComputerPlay(8))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x02, 0x00]),
+            Some(MixerAssignment::SpdifIn(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x02, 0x01]),
+            Some(MixerAssignment::SpdifIn(2))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x08, 0x00]),
+            Some(MixerAssignment::Mute)
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x09, 0x00]),
+            Some(MixerAssignment::Oscillator(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x09, 0x01]),
+            Some(MixerAssignment::Oscillator(2))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x0a, 0x00]),
+            Some(MixerAssignment::EmuMic(1))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x0a, 0x01]),
+            Some(MixerAssignment::EmuMic(2))
+        );
+        assert_eq!(
+            MixerAssignment::from_ordinary_strip_bytes([0x03, 0x00]),
+            None
+        );
+    }
+
+    #[test]
+    fn mixer_level_display_uses_inverse_db_scale() {
+        let unity =
+            MixerChannelState::known(1, Some(0x00), Some(false), PanState::center(), None, None);
+        let silence =
+            MixerChannelState::known(1, Some(0x60), Some(false), PanState::center(), None, None);
+
+        assert_eq!(unity.display_db(), Some(0));
+        assert_eq!(silence.display_db(), Some(-90));
+        assert_eq!(unity.gain_ratio(), Some(1.0));
+        assert_eq!(silence.gain_ratio(), Some(0.0));
+    }
+}
