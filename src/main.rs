@@ -1,10 +1,12 @@
-use std::io;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::thread;
-use std::time::{Duration, Instant};
+mod cli;
+mod input;
+mod profile_ops;
+mod timing;
 
-use anyhow::{bail, Result};
-use clap::{Parser, Subcommand};
+use std::io;
+
+use anyhow::Result;
+use clap::Parser;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -18,352 +20,31 @@ use antelope_protocol::{
     SampleRate, Surface,
 };
 use zen_go_tui::app::{
-    Controller, FocusArea, MainPage, ProfileEditorMode, ProfileEditorState, SelectorPopupKind,
-    SelectorPopupState,
-};
-use zen_go_tui::profile::{
-    delete_profile, list_profile_names, profile_path, rename_profile, DeviceProfile,
+    Controller, FocusArea, MainPage, ProfileEditorMode, SelectorPopupKind, SelectorPopupState,
 };
 use zen_go_tui::terminal::{
-    self, AppInputEvent, AppKeyCode, AppKeyEventKind, AppMouseButton, AppMouseEvent,
-    AppMouseEventKind,
+    AppKeyCode, AppKeyEventKind, AppMouseButton, AppMouseEvent, AppMouseEventKind,
 };
-use zen_go_tui::transport::{is_device_error, HidTransport, MockTransport, Transport};
+use zen_go_tui::transport::{is_device_error, Transport};
 use zen_go_tui::ui;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about = "Zen Go Synergy Core terminal control panel")]
-struct Cli {
-    #[arg(long)]
-    mock: bool,
-
-    #[arg(long)]
-    headless: bool,
-
-    #[command(subcommand)]
-    command: Option<CliCommand>,
-}
-
-#[derive(Subcommand, Debug)]
-enum CliCommand {
-    Profile {
-        #[command(subcommand)]
-        command: ProfileCommand,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum ProfileCommand {
-    Save { name: String },
-    Load { name: String },
-}
-
-const ZEN_GO_VID: u16 = 0x23e5;
-const ZEN_GO_PID: u16 = 0xa015;
-const INITIAL_DEVICE_RETRY_INTERVAL: Duration = Duration::from_millis(500);
-const BACKOFF_DEVICE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
-const ACTIVE_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(16);
-const IDLE_TUI_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const IDLE_HEADLESS_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const DEVICE_POLL_BACKOFF_AFTER: Duration = Duration::from_secs(1);
-const DIRTY_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
-const IDLE_REDRAW_INTERVAL: Duration = Duration::from_secs(1);
-
-fn should_draw_frame(last_draw_at: Option<Instant>, needs_redraw: bool, now: Instant) -> bool {
-    let Some(last_draw_at) = last_draw_at else {
-        return true;
-    };
-
-    let elapsed = now.duration_since(last_draw_at);
-    (needs_redraw && elapsed >= DIRTY_REDRAW_INTERVAL) || elapsed >= IDLE_REDRAW_INTERVAL
-}
-
-fn should_probe_reconnect(last_probe_at: Option<Instant>, attempts: usize, now: Instant) -> bool {
-    let Some(last_probe_at) = last_probe_at else {
-        return true;
-    };
-
-    now.duration_since(last_probe_at) >= device_retry_interval(attempts.saturating_add(1))
-}
-
-fn device_retry_interval(retries: usize) -> Duration {
-    if retries <= 1 {
-        INITIAL_DEVICE_RETRY_INTERVAL
-    } else {
-        BACKOFF_DEVICE_RETRY_INTERVAL
-    }
-}
-
-fn device_poll_interval(
-    last_activity_at: Option<Instant>,
-    interactive: bool,
-    now: Instant,
-) -> Duration {
-    let Some(last_activity_at) = last_activity_at else {
-        return ACTIVE_DEVICE_POLL_INTERVAL;
-    };
-
-    if now.duration_since(last_activity_at) < DEVICE_POLL_BACKOFF_AFTER {
-        ACTIVE_DEVICE_POLL_INTERVAL
-    } else if interactive {
-        IDLE_TUI_DEVICE_POLL_INTERVAL
-    } else {
-        IDLE_HEADLESS_DEVICE_POLL_INTERVAL
-    }
-}
-
-#[derive(Debug)]
-enum InputThreadMessage {
-    Event(AppInputEvent),
-    Error(String),
-}
-
-fn spawn_input_reader() -> Receiver<InputThreadMessage> {
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || loop {
-        match terminal::read_input_event() {
-            Ok(Some(event)) => {
-                if sender.send(InputThreadMessage::Event(event)).is_err() {
-                    break;
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let _ = sender.send(InputThreadMessage::Error(error.to_string()));
-                break;
-            }
-        }
-    });
-    receiver
-}
-
-fn collect_pending_input(receiver: &Receiver<InputThreadMessage>) -> Result<Vec<AppInputEvent>> {
-    let mut events = Vec::new();
-    loop {
-        match receiver.try_recv() {
-            Ok(InputThreadMessage::Event(event)) => events.push(event),
-            Ok(InputThreadMessage::Error(message)) => return Err(anyhow::anyhow!(message)),
-            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return Ok(events),
-        }
-    }
-}
+use crate::cli::{Cli, CliCommand};
+use crate::input::{collect_pending_input, spawn_input_reader, InputThreadMessage};
+use crate::profile_ops::{
+    append_profile_editor_text, close_profiles_popup, commit_profile_editor,
+    delete_selected_profile, handle_profile_result, load_selected_profile, open_profiles_popup,
+    run_profile_command, start_profile_editor,
+};
+use crate::timing::{device_poll_interval, should_draw_frame, should_probe_reconnect};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let transport = open_transport(cli.mock)?;
+    let transport = cli::open_transport(cli.mock)?;
 
     match cli.command {
         Some(CliCommand::Profile { command }) => run_profile_command(transport, command),
         None if cli.headless => run_headless_app(transport),
         None => run_app(transport),
-    }
-}
-
-fn open_transport(mock: bool) -> Result<Box<dyn Transport>> {
-    let transport: Box<dyn Transport> = if mock {
-        Box::new(MockTransport::default())
-    } else {
-        wait_for_transport(
-            || Ok(Box::new(HidTransport::open(ZEN_GO_VID, ZEN_GO_PID)?) as Box<dyn Transport>),
-            |attempt, error| {
-                if attempt == 1 {
-                    eprintln!("Waiting for Zen Go device...\n{error:#}");
-                }
-                thread::sleep(device_retry_interval(attempt));
-                Ok(())
-            },
-        )?
-    };
-
-    Ok(transport)
-}
-
-fn run_profile_command(transport: Box<dyn Transport>, command: ProfileCommand) -> Result<()> {
-    match command {
-        ProfileCommand::Save { name } => {
-            let mut controller = Controller::new(transport);
-            collect_profile_state(&mut controller)?;
-            let profile = DeviceProfile::capture(&controller.state)?;
-            let path = profile.write_named(&name)?;
-            println!("Saved profile to {}", path.display());
-            Ok(())
-        }
-        ProfileCommand::Load { name } => {
-            let profile = DeviceProfile::read_named(&name)?;
-            let path = profile_path(&name)?;
-            let mut controller = Controller::new(transport);
-            controller.apply_profile(&profile)?;
-            println!("Loaded profile from {}", path.display());
-            Ok(())
-        }
-    }
-}
-
-fn collect_profile_state(controller: &mut Controller) -> Result<()> {
-    const PROFILE_CAPTURE_TIMEOUT: Duration = Duration::from_secs(2);
-    const PROFILE_CAPTURE_POLL: Duration = Duration::from_millis(50);
-    const PROFILE_CAPTURE_IDLE_POLLS: usize = 2;
-
-    controller.bootstrap()?;
-
-    let deadline = Instant::now() + PROFILE_CAPTURE_TIMEOUT;
-    let mut idle_polls = 0;
-    while Instant::now() < deadline && idle_polls < PROFILE_CAPTURE_IDLE_POLLS {
-        if controller.poll_device(PROFILE_CAPTURE_POLL)? {
-            idle_polls = 0;
-        } else {
-            idle_polls += 1;
-        }
-    }
-
-    Ok(())
-}
-
-fn refresh_profile_names(controller: &mut Controller) -> Result<()> {
-    controller.state.profile_names = list_profile_names()?;
-    controller.state.clamp_profile_selection();
-    Ok(())
-}
-
-fn open_profiles_popup(controller: &mut Controller) -> Result<()> {
-    refresh_profile_names(controller)?;
-    controller.state.assignment_picker = None;
-    controller.state.selector_popup = None;
-    controller.state.routing_popup_open = false;
-    controller.state.profile_editor = None;
-    controller.state.profiles_popup_open = true;
-    controller.state.last_message = if controller.state.profile_names.is_empty() {
-        "No saved profiles yet. Use SAVE to create one.".to_string()
-    } else {
-        "Select a profile to load, or use SAVE/RENAME/DELETE.".to_string()
-    };
-    Ok(())
-}
-
-fn close_profiles_popup(controller: &mut Controller, message: &str) {
-    controller.state.profiles_popup_open = false;
-    controller.state.profile_editor = None;
-    controller.state.last_message = message.to_string();
-}
-
-fn start_profile_editor(controller: &mut Controller, mode: ProfileEditorMode) {
-    let current_name = controller.state.selected_profile_name().map(str::to_string);
-    let value = match mode {
-        ProfileEditorMode::Save => current_name.clone().unwrap_or_default(),
-        ProfileEditorMode::Rename => current_name.clone().unwrap_or_default(),
-    };
-    controller.state.profile_editor = Some(ProfileEditorState {
-        mode,
-        original_name: current_name,
-        value,
-    });
-    controller.state.last_message = match mode {
-        ProfileEditorMode::Save => "Enter a profile name, then press Enter to save.".to_string(),
-        ProfileEditorMode::Rename => {
-            "Edit the profile name, then press Enter to rename.".to_string()
-        }
-    };
-}
-
-fn append_profile_editor_text(controller: &mut Controller, text: &str) {
-    let Some(editor) = controller.state.profile_editor.as_mut() else {
-        return;
-    };
-
-    for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            editor.value.push(ch);
-        }
-    }
-}
-
-fn commit_profile_editor(controller: &mut Controller) -> Result<()> {
-    let Some(editor) = controller.state.profile_editor.clone() else {
-        return Ok(());
-    };
-
-    match editor.mode {
-        ProfileEditorMode::Save => {
-            let profile = DeviceProfile::capture(&controller.state)?;
-            let path = profile.write_named(&editor.value)?;
-            refresh_profile_names(controller)?;
-            controller.state.popup_selected_index = controller
-                .state
-                .profile_names
-                .iter()
-                .position(|name| *name == editor.value)
-                .unwrap_or(0);
-            controller.state.profile_editor = None;
-            controller.state.last_message = format!("Saved profile to {}", path.display());
-        }
-        ProfileEditorMode::Rename => {
-            let Some(original_name) = editor.original_name.as_deref() else {
-                bail!("no profile selected to rename")
-            };
-            let path = rename_profile(original_name, &editor.value)?;
-            refresh_profile_names(controller)?;
-            controller.state.popup_selected_index = controller
-                .state
-                .profile_names
-                .iter()
-                .position(|name| *name == editor.value)
-                .unwrap_or(0);
-            controller.state.profile_editor = None;
-            controller.state.last_message = format!("Renamed profile to {}", path.display());
-        }
-    }
-
-    Ok(())
-}
-
-fn load_selected_profile(controller: &mut Controller) -> Result<()> {
-    let Some(name) = controller.state.selected_profile_name().map(str::to_string) else {
-        controller.state.last_message = "No profile selected to load.".to_string();
-        return Ok(());
-    };
-    let profile = DeviceProfile::read_named(&name)?;
-    controller.apply_profile(&profile)?;
-    close_profiles_popup(controller, &format!("Loaded profile {name}"));
-    Ok(())
-}
-
-fn delete_selected_profile(controller: &mut Controller) -> Result<()> {
-    let Some(name) = controller.state.selected_profile_name().map(str::to_string) else {
-        controller.state.last_message = "No profile selected to delete.".to_string();
-        return Ok(());
-    };
-    delete_profile(&name)?;
-    refresh_profile_names(controller)?;
-    controller.state.last_message = format!("Deleted profile {name}");
-    Ok(())
-}
-
-fn handle_profile_result(controller: &mut Controller, result: Result<()>) -> Result<()> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            controller.state.last_message = format!("Profile error: {error}");
-            Ok(())
-        }
-    }
-}
-
-fn wait_for_transport<T, F, R>(mut open: F, mut on_retry: R) -> Result<T>
-where
-    F: FnMut() -> Result<T>,
-    R: FnMut(usize, &anyhow::Error) -> Result<()>,
-{
-    let mut retries = 0;
-
-    loop {
-        match open() {
-            Ok(transport) => return Ok(transport),
-            Err(error) if is_device_error(&error) => {
-                retries += 1;
-                on_retry(retries, &error)?;
-            }
-            Err(error) => return Err(error),
-        }
     }
 }
 
@@ -433,10 +114,10 @@ fn headless_loop(controller: &mut Controller) -> Result<()> {
     let mut reconnect_refresh_pending = false;
     let mut last_reconnect_probe_at = None;
     let mut reconnect_probe_attempts = 0;
-    let mut last_runtime_activity_at = Some(Instant::now());
+    let mut last_runtime_activity_at = Some(std::time::Instant::now());
 
     loop {
-        let now = Instant::now();
+        let now = std::time::Instant::now();
         if reconnect_refresh_pending {
             if should_probe_reconnect(last_reconnect_probe_at, reconnect_probe_attempts, now) {
                 refresh_after_reconnect_if_needed(controller, &mut reconnect_refresh_pending)?;
@@ -447,9 +128,10 @@ fn headless_loop(controller: &mut Controller) -> Result<()> {
                     reconnect_probe_attempts = 0;
                 }
             } else if let Some(last_probe_at) = last_reconnect_probe_at {
-                let wait = device_retry_interval(reconnect_probe_attempts.saturating_add(1))
-                    .saturating_sub(now.duration_since(last_probe_at));
-                thread::sleep(wait);
+                let wait =
+                    timing::device_retry_interval(reconnect_probe_attempts.saturating_add(1))
+                        .saturating_sub(now.duration_since(last_probe_at));
+                std::thread::sleep(wait);
                 continue;
             }
         }
@@ -457,7 +139,7 @@ fn headless_loop(controller: &mut Controller) -> Result<()> {
         match controller.poll_device(device_poll_interval(last_runtime_activity_at, false, now)) {
             Ok(observed_frame) => {
                 if observed_frame {
-                    last_runtime_activity_at = Some(Instant::now());
+                    last_runtime_activity_at = Some(std::time::Instant::now());
                 }
             }
             Err(error) => {
@@ -665,17 +347,17 @@ fn handle_key_press(
 fn app_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controller: &mut Controller,
-    input_rx: &Receiver<InputThreadMessage>,
+    input_rx: &std::sync::mpsc::Receiver<InputThreadMessage>,
 ) -> Result<()> {
     let mut reconnect_refresh_pending = false;
     let mut last_reconnect_probe_at = None;
     let mut reconnect_probe_attempts = 0;
     let mut last_draw_at = None;
     let mut needs_redraw = true;
-    let mut last_runtime_activity_at = Some(Instant::now());
+    let mut last_runtime_activity_at = Some(std::time::Instant::now());
 
     'app: loop {
-        let now = Instant::now();
+        let now = std::time::Instant::now();
         if reconnect_refresh_pending
             && should_probe_reconnect(last_reconnect_probe_at, reconnect_probe_attempts, now)
         {
@@ -690,11 +372,11 @@ fn app_loop(
 
         let input_events = collect_pending_input(input_rx)?;
         if !input_events.is_empty() {
-            last_runtime_activity_at = Some(Instant::now());
+            last_runtime_activity_at = Some(std::time::Instant::now());
 
             for event in input_events {
                 match event {
-                    AppInputEvent::Key(key) => {
+                    zen_go_tui::terminal::AppInputEvent::Key(key) => {
                         if key.kind != AppKeyEventKind::Press {
                             continue;
                         }
@@ -715,7 +397,7 @@ fn app_loop(
 
                         needs_redraw = true;
                     }
-                    AppInputEvent::Mouse(mouse) => {
+                    zen_go_tui::terminal::AppInputEvent::Mouse(mouse) => {
                         let size = terminal.size()?;
                         if let Err(error) = handle_mouse_event(
                             ratatui::layout::Rect::new(0, 0, size.width, size.height),
@@ -729,15 +411,15 @@ fn app_loop(
                         }
                         needs_redraw = true;
                     }
-                    AppInputEvent::Paste(text) => {
+                    zen_go_tui::terminal::AppInputEvent::Paste(text) => {
                         if controller.state.profile_editor.is_some() {
                             append_profile_editor_text(controller, &text);
                         }
                         needs_redraw = true;
                     }
-                    AppInputEvent::Resize { .. }
-                    | AppInputEvent::FocusGained
-                    | AppInputEvent::FocusLost => needs_redraw = true,
+                    zen_go_tui::terminal::AppInputEvent::Resize { .. }
+                    | zen_go_tui::terminal::AppInputEvent::FocusGained
+                    | zen_go_tui::terminal::AppInputEvent::FocusLost => needs_redraw = true,
                 }
             }
         }
@@ -748,7 +430,7 @@ fn app_loop(
                 Ok(observed_frame) => {
                     needs_redraw |= observed_frame;
                     if observed_frame {
-                        last_runtime_activity_at = Some(Instant::now());
+                        last_runtime_activity_at = Some(std::time::Instant::now());
                     }
                 }
                 Err(error) => {
@@ -763,7 +445,7 @@ fn app_loop(
             }
         }
 
-        let now = Instant::now();
+        let now = std::time::Instant::now();
         if should_draw_frame(last_draw_at, needs_redraw, now) {
             terminal.draw(|frame| {
                 ui::draw(frame, &controller.state);
@@ -1651,10 +1333,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use zen_go_tui::app::{AssignmentPickerState, ProfileEditorMode, ProfileEditorState};
     use antelope_protocol::{
         control_panel_startup_queries, MixerAssignment, MixerSurface, OutputState, OutputTarget,
     };
+    use zen_go_tui::app::{AssignmentPickerState, ProfileEditorMode, ProfileEditorState};
+    use zen_go_tui::transport::MockTransport;
     use zen_go_tui::transport::TransportError;
 
     #[derive(Clone, Default)]
@@ -2353,7 +2036,7 @@ mod tests {
         let mut attempts = 0;
         let mut retries = 0;
 
-        let _transport = wait_for_transport(
+        let _transport = cli::wait_for_transport(
             || {
                 attempts += 1;
                 if attempts < 3 {
@@ -2476,9 +2159,9 @@ mod tests {
 
     #[test]
     fn device_retry_interval_backs_off_after_first_wait() {
-        assert_eq!(device_retry_interval(1), Duration::from_millis(500));
-        assert_eq!(device_retry_interval(2), Duration::from_secs(2));
-        assert_eq!(device_retry_interval(8), Duration::from_secs(2));
+        assert_eq!(timing::device_retry_interval(1), Duration::from_millis(500));
+        assert_eq!(timing::device_retry_interval(2), Duration::from_secs(2));
+        assert_eq!(timing::device_retry_interval(8), Duration::from_secs(2));
     }
 
     #[test]
@@ -2511,24 +2194,35 @@ mod tests {
 
     #[test]
     fn collect_pending_input_drains_channel_in_order() {
+        use crate::input::InputThreadMessage;
+
         let (sender, receiver) = std::sync::mpsc::channel();
         sender
-            .send(InputThreadMessage::Event(AppInputEvent::FocusGained))
+            .send(InputThreadMessage::Event(
+                zen_go_tui::terminal::AppInputEvent::FocusGained,
+            ))
             .expect("send focus gained");
         sender
-            .send(InputThreadMessage::Event(AppInputEvent::FocusLost))
+            .send(InputThreadMessage::Event(
+                zen_go_tui::terminal::AppInputEvent::FocusLost,
+            ))
             .expect("send focus lost");
 
         let events = collect_pending_input(&receiver).expect("collect input");
 
         assert_eq!(
             events,
-            vec![AppInputEvent::FocusGained, AppInputEvent::FocusLost]
+            vec![
+                zen_go_tui::terminal::AppInputEvent::FocusGained,
+                zen_go_tui::terminal::AppInputEvent::FocusLost
+            ]
         );
     }
 
     #[test]
     fn collect_pending_input_surfaces_reader_error() {
+        use crate::input::InputThreadMessage;
+
         let (sender, receiver) = std::sync::mpsc::channel();
         sender
             .send(InputThreadMessage::Error("broken input".to_string()))
