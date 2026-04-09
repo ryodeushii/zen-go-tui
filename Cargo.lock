@@ -68,6 +68,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "antelope-protocol"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1962,6 +1969,7 @@ dependencies = [
 name = "zen-go-tui"
 version = "0.1.0"
 dependencies = [
+ "antelope-protocol",
  "anyhow",
  "clap",
  "crossterm",

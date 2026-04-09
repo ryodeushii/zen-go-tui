@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::app::AppState;
-use crate::protocol::{
+use antelope_protocol::{
     MixerAssignment, MixerChannelState, MixerSurface, OutputMode, OutputState, PanState,
     PreampInputState, PreampMode,
 };
@@ -492,7 +492,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::app::AppState;
-    use crate::protocol::{MixerAssignment, MixerSurface, OutputMode, PanState, PreampMode};
+    use antelope_protocol::{MixerAssignment, MixerSurface, OutputMode, PanState, PreampMode};
 
     use super::*;
 

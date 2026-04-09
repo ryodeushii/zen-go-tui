@@ -3,14 +3,14 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 
 use crate::profile::{preamp_mode_raw, DeviceProfile};
-use crate::protocol::{
+use crate::transport::Transport;
+use antelope_protocol::{
     control_panel_startup_queries, encode_command, encode_link_companion,
     encode_mixer_assignment_frames_with_table, encode_query, ClockSource, Command, DeviceMetadata,
     DeviceSnapshot, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget,
     MixerPassiveStripState, MixerSurface, OutputMode, OutputState, OutputTarget, PanState,
-    PreampMode, PreampState, QueryReply75, SampleRate, Snapshot73, Surface,
+    PreampMode, PreampState, QueryResponse, SampleRate, DeviceStateSnapshot, Surface,
 };
-use crate::transport::Transport;
 
 #[derive(Debug, Clone)]
 pub struct DeviceStatus {
@@ -58,9 +58,9 @@ pub enum FocusArea {
 pub enum RawPacketTab {
     Query74,
     State73,
-    Auxiliary83,
+    Auxiliary,
     Query75,
-    Notification81,
+    DeviceNotification,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,7 +119,7 @@ pub(crate) struct StructuralSnapshot {
 }
 
 impl StructuralSnapshot {
-    fn from_snapshot(snapshot: &Snapshot73) -> Self {
+    fn from_snapshot(snapshot: &DeviceStateSnapshot) -> Self {
         Self {
             sample_rate: snapshot.sample_rate,
             sample_rate_hz: snapshot.sample_rate_hz,
@@ -314,7 +314,7 @@ impl AppState {
         }
     }
 
-    fn snapshot_structurally_differs(&self, snapshot: &Snapshot73) -> bool {
+    fn snapshot_structurally_differs(&self, snapshot: &DeviceStateSnapshot) -> bool {
         let Some(prev) = &self.latest_structural_snapshot else {
             return true;
         };
@@ -329,7 +329,7 @@ impl AppState {
             || prev.mixer_surfaces != snapshot.mixer_decode.surfaces
     }
 
-    fn apply_meters_only(&mut self, snapshot: &Snapshot73) {
+    fn apply_meters_only(&mut self, snapshot: &DeviceStateSnapshot) {
         let mixer = self.active_mixer_surface();
         for channel in 1..=16 {
             let Some(decoded) = snapshot.mixer_decode.strip(mixer, channel) else {
@@ -346,7 +346,7 @@ impl AppState {
         self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: &Snapshot73) {
+    pub fn apply_snapshot(&mut self, snapshot: &DeviceStateSnapshot) {
         self.device.sample_rate = Some(snapshot.sample_rate);
         self.device.sample_rate_hz = Some(snapshot.sample_rate_hz);
         self.device.clock_source = Some(snapshot.clock_source);
@@ -365,7 +365,7 @@ impl AppState {
         self.apply_passive_mixer_decode(snapshot);
     }
 
-    fn apply_passive_mixer_decode(&mut self, snapshot: &Snapshot73) {
+    fn apply_passive_mixer_decode(&mut self, snapshot: &DeviceStateSnapshot) {
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
             for channel in 1..=16 {
                 let Some(decoded) = snapshot.mixer_decode.strip(mixer, channel) else {
@@ -425,7 +425,7 @@ impl AppState {
                 self.latest_raw_73 = Some(raw);
                 changed
             }
-            DeviceSnapshot::Auxiliary83(bytes) => {
+            DeviceSnapshot::Auxiliary(bytes) => {
                 let changed = !was_connected
                     || (self.raw_view_open && self.latest_raw_83.as_ref() != Some(&raw));
                 self.connection.last_frame_type = Some("0x83 auxiliary");
@@ -457,13 +457,13 @@ impl AppState {
         }
     }
 
-    fn store_startup_query_summary(&mut self, reply: &QueryReply75) {
+    fn store_startup_query_summary(&mut self, reply: &QueryResponse) {
         if let Some(index) = startup_query_slot(reply.query_id) {
             self.device.startup_query_summaries[index] = Some(reply.summary_label());
         }
     }
 
-    fn push_query_reply_log(&mut self, reply: &QueryReply75, raw: Vec<u8>) {
+    fn push_query_reply_log(&mut self, reply: &QueryResponse, raw: Vec<u8>) {
         let detail = if reply.selector_bitmap().is_some() || reply.selector_pair_bank().is_some() {
             reply.summary_label()
         } else {
@@ -491,7 +491,7 @@ impl AppState {
         self.selected_query_reply_entry = Some(self.recent_query_reply_entries.len() - 1);
     }
 
-    fn apply_query_reply_readback(&mut self, reply: &QueryReply75) {
+    fn apply_query_reply_readback(&mut self, reply: &QueryResponse) {
         if let Some(assignments) = reply.assignment_readback() {
             for (index, assignment) in assignments.into_iter().enumerate() {
                 let Some(assignment) = assignment else {
@@ -586,9 +586,9 @@ impl AppState {
         let tabs = [
             RawPacketTab::Query74,
             RawPacketTab::State73,
-            RawPacketTab::Auxiliary83,
+            RawPacketTab::Auxiliary,
             RawPacketTab::Query75,
-            RawPacketTab::Notification81,
+            RawPacketTab::DeviceNotification,
         ];
         let index = tabs
             .iter()
@@ -1524,17 +1524,17 @@ mod tests {
         MixerStripProfile, OutputModeProfile, OutputProfile, OutputProfiles, PreampInputProfile,
         PreampModeProfile, PreampProfiles,
     };
-    use crate::protocol::{
+    use antelope_protocol::{
         ClockSource, Command, DeviceSnapshot, Frame, MixerAssignment, MixerChannelState,
         MixerStrip, MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampMode,
-        PreampState, SampleRate, Snapshot73, Surface,
+        PreampState, SampleRate, DeviceStateSnapshot, Surface,
     };
     use crate::transport::MockTransport;
 
     use super::*;
 
-    fn snapshot() -> Snapshot73 {
-        Snapshot73 {
+    fn snapshot() -> DeviceStateSnapshot {
+        DeviceStateSnapshot {
             sample_rate: SampleRate::Hz48000,
             clock_source: ClockSource::Internal,
             sample_rate_hz: 48_000,
@@ -1706,7 +1706,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x03,
                 sub_id: 0x05,
                 body: vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01, 0x01],
@@ -1714,7 +1714,7 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x03,
                 sub_id: 0x06,
                 body: vec![
@@ -1757,7 +1757,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x0b,
                 sub_id: 0x03,
                 body: vec![
@@ -1785,7 +1785,7 @@ mod tests {
         }
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x0b,
                 sub_id: 0x03,
                 body: vec![
@@ -1807,7 +1807,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x04,
                 sub_id: 0x00,
                 body: vec![
@@ -1819,7 +1819,7 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x04,
                 sub_id: 0x01,
                 body: vec![
@@ -1858,7 +1858,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x04,
                 sub_id: 0x00,
                 body: vec![
@@ -1870,7 +1870,7 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x04,
                 sub_id: 0x01,
                 body: vec![
@@ -1894,7 +1894,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x18,
                 sub_id: 0x00,
                 body: vec![
@@ -1926,7 +1926,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x18,
                 sub_id: 0x00,
                 body: vec![
@@ -2254,10 +2254,10 @@ mod tests {
 
         controller
             .send(Command::SetMixerLevel {
-                mixer: crate::protocol::MixerSurface::Mix1,
+                mixer: antelope_protocol::MixerSurface::Mix1,
                 channel: 3,
                 level: 0x2c,
-                pan_state: crate::protocol::PanState::left(),
+                pan_state: antelope_protocol::PanState::left(),
                 muted: false,
                 soloed: false,
             })
@@ -2406,7 +2406,7 @@ mod tests {
         body[33] = 0x20;
 
         controller.state.observe_frame(
-            DeviceSnapshot::QueryReply(QueryReply75 {
+            DeviceSnapshot::QueryReply(QueryResponse {
                 query_id: 0x18,
                 sub_id: 0x00,
                 body,
@@ -2774,10 +2774,10 @@ mod tests {
 
         controller
             .send(Command::SetMixerMute {
-                mixer: crate::protocol::MixerSurface::Mix1,
+                mixer: antelope_protocol::MixerSurface::Mix1,
                 channel: 7,
                 muted: true,
-                pan_state: crate::protocol::PanState::center(),
+                pan_state: antelope_protocol::PanState::center(),
                 soloed: false,
             })
             .expect("send mute");
@@ -2795,10 +2795,10 @@ mod tests {
 
         controller
             .send(Command::SetMixerMute {
-                mixer: crate::protocol::MixerSurface::Mix1,
+                mixer: antelope_protocol::MixerSurface::Mix1,
                 channel: 7,
                 muted: false,
-                pan_state: crate::protocol::PanState::center(),
+                pan_state: antelope_protocol::PanState::center(),
                 soloed: false,
             })
             .expect("send unmute");
@@ -2825,7 +2825,7 @@ mod tests {
                 mixer: MixerSurface::Mix1,
                 channel: 3,
                 level: 0x2c,
-                pan_state: crate::protocol::PanState::center(),
+                pan_state: antelope_protocol::PanState::center(),
                 muted: false,
                 soloed: false,
             })
@@ -2837,7 +2837,7 @@ mod tests {
                 mixer: MixerSurface::Mix2,
                 channel: 3,
                 level: 0x10,
-                pan_state: crate::protocol::PanState::center(),
+                pan_state: antelope_protocol::PanState::center(),
                 muted: false,
                 soloed: false,
             })
@@ -2867,7 +2867,7 @@ mod tests {
                 mixer: MixerSurface::from_surface(controller.state.surface),
                 channel,
                 level: 0x1f,
-                pan_state: crate::protocol::PanState::center(),
+                pan_state: antelope_protocol::PanState::center(),
                 muted: false,
                 soloed: false,
             })
@@ -2929,7 +2929,7 @@ mod tests {
         state.connection.connected = true;
 
         assert!(!state.observe_frame(
-            DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
+            DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
             vec![0x83, 0, 0, 0],
         ));
     }
@@ -2941,7 +2941,7 @@ mod tests {
         state.raw_view_open = true;
 
         assert!(state.observe_frame(
-            DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
+            DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
             vec![0x83, 0, 0, 0],
         ));
     }
@@ -3049,7 +3049,7 @@ mod tests {
         raw83[0..4].copy_from_slice(&0x83_u32.to_le_bytes());
         raw83[0x10..0x14].copy_from_slice(&[0x60, 0xc0, 0x60, 0x00]);
         state.observe_frame(
-            DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
+            DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
             raw83.clone(),
         );
 
@@ -3070,7 +3070,7 @@ mod tests {
         let raw74 = vec![0x74, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x11, 0, 0, 0, 0x03];
         state.observe_query_request(raw74.clone());
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x01,
                 sub_id: 0x00,
                 body: vec![b'Z'],
@@ -3080,7 +3080,7 @@ mod tests {
 
         let raw81 = vec![0x81, 0x10, 0x20, 0x30, 0x40, 0x50];
         state.observe_frame(
-            DeviceSnapshot::Notification(crate::protocol::Notification81 {
+            DeviceSnapshot::Notification(antelope_protocol::DeviceNotification {
                 bytes: [0x81, 0x10, 0x20, 0x30, 0x40, 0x50],
             }),
             raw81.clone(),
@@ -3104,12 +3104,12 @@ mod tests {
         let mut state = AppState::default();
         state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 0]);
         state.observe_frame(
-            DeviceSnapshot::Auxiliary83(vec![0x60, 0xc0, 0x60, 0x00]),
+            DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
             vec![0x83, 0, 0, 0],
         );
         state.observe_query_request(vec![0x74, 0, 0, 0]);
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x11,
                 sub_id: 0x00,
                 body: vec![0xaa, 0xbb],
@@ -3117,7 +3117,7 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
         state.observe_frame(
-            DeviceSnapshot::Notification(crate::protocol::Notification81 {
+            DeviceSnapshot::Notification(antelope_protocol::DeviceNotification {
                 bytes: [1, 2, 3, 4, 5, 6],
             }),
             vec![1, 2, 3, 4, 5, 6],
@@ -3143,7 +3143,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x00,
                 sub_id: 0x00,
                 body: vec![0xaa, 0xbb, 0xcc],
@@ -3151,7 +3151,7 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x11,
                 sub_id: 0x00,
                 body: vec![0x12],
@@ -3174,7 +3174,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x01,
                 sub_id: 0x00,
                 body: [
@@ -3206,7 +3206,7 @@ mod tests {
 
         for sub_id in 0..20_u8 {
             state.observe_frame(
-                DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                     query_id: 0x03,
                     sub_id,
                     body: vec![sub_id, 0xaa],
@@ -3234,7 +3234,7 @@ mod tests {
         let mut state = AppState::default();
 
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x0b,
                 sub_id: 0x03,
                 body: vec![
@@ -3245,7 +3245,7 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
         state.observe_frame(
-            DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+            DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x04,
                 sub_id: 0x01,
                 body: vec![
@@ -3268,7 +3268,7 @@ mod tests {
         let mut state = AppState::default();
         for sub_id in 0..3_u8 {
             state.observe_frame(
-                DeviceSnapshot::QueryReply(crate::protocol::QueryReply75 {
+                DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                     query_id: 0x03,
                     sub_id,
                     body: vec![sub_id],
@@ -3336,7 +3336,7 @@ mod tests {
         assert_eq!(state.selected_raw_packet, RawPacketTab::State73);
 
         state.cycle_raw_packet(true);
-        assert_eq!(state.selected_raw_packet, RawPacketTab::Auxiliary83);
+        assert_eq!(state.selected_raw_packet, RawPacketTab::Auxiliary);
         state.cycle_raw_packet(false);
         assert_eq!(state.selected_raw_packet, RawPacketTab::State73);
 

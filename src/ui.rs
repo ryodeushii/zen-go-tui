@@ -12,11 +12,11 @@ use crate::app::{
     AppState, AssignmentPickerState, FocusArea, MainPage, ProfileEditorMode, RawPacketTab,
     SelectorPopupKind, SelectorPopupState,
 };
-use crate::protocol::{
+use crate::terminal;
+use antelope_protocol::{
     meter_db_ratio, meter_display_db, meter_ratio, ClockSource, MixerAssignment, MixerSurface,
     OutputMode, OutputState, PanState, PreampInputState, PreampMode, SampleRate, Surface,
 };
-use crate::terminal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
@@ -1413,12 +1413,12 @@ fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<M
         } else if contains_point(tabs[1], point) {
             return Some(MouseAction::SelectRawPacketTab(RawPacketTab::State73));
         } else if contains_point(tabs[2], point) {
-            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Auxiliary83));
+            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Auxiliary));
         } else if contains_point(tabs[3], point) {
             return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75));
         } else if contains_point(tabs[4], point) {
             return Some(MouseAction::SelectRawPacketTab(
-                RawPacketTab::Notification81,
+                RawPacketTab::DeviceNotification,
             ));
         }
     }
@@ -2127,7 +2127,7 @@ fn preamp_card_slider_mouse_action(
 fn mixer_strip_slider_mouse_action(
     area: Rect,
     index: usize,
-    _channel: &crate::protocol::MixerChannelState,
+    _channel: &antelope_protocol::MixerChannelState,
     point: (u16, u16),
 ) -> Option<MouseAction> {
     let pan = mixer_pan_slider_rect(area);
@@ -2149,7 +2149,7 @@ fn mixer_strip_slider_mouse_action(
 fn mixer_strip_slider_wheel_action(
     area: Rect,
     index: usize,
-    _channel: &crate::protocol::MixerChannelState,
+    _channel: &antelope_protocol::MixerChannelState,
     point: (u16, u16),
     increase: bool,
 ) -> Option<MouseAction> {
@@ -2368,11 +2368,11 @@ fn render_preamp_visual_widget(
     Paragraph::new(render_preamp_controls_text(input)).render(sections[1], buffer);
 }
 
-fn mixer_pan_label(channel: &crate::protocol::MixerChannelState) -> String {
+fn mixer_pan_label(channel: &antelope_protocol::MixerChannelState) -> String {
     format!("PAN {}", channel.pan.display_percent())
 }
 
-fn mixer_level_value_label(channel: &crate::protocol::MixerChannelState) -> String {
+fn mixer_level_value_label(channel: &antelope_protocol::MixerChannelState) -> String {
     channel
         .display_db()
         .map(|value| format!("LVL {} dB", value))
@@ -2537,7 +2537,7 @@ fn render_mixer_strip_widget(
     buffer: &mut Buffer,
     state: &AppState,
     index: usize,
-    channel: &crate::protocol::MixerChannelState,
+    channel: &antelope_protocol::MixerChannelState,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -2688,7 +2688,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::raw(" "),
         tab_chip(
             "0x83",
-            selected == RawPacketTab::Auxiliary83,
+            selected == RawPacketTab::Auxiliary,
             Color::LightBlue,
         ),
         Span::raw(" "),
@@ -2696,7 +2696,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::raw(" "),
         tab_chip(
             "0x81",
-            selected == RawPacketTab::Notification81,
+            selected == RawPacketTab::DeviceNotification,
             Color::LightMagenta,
         ),
     ]);
@@ -2724,7 +2724,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_73.as_deref()))
                 .unwrap_or_else(|| Text::from("Waiting for first 0x73 snapshot...")),
         ),
-        RawPacketTab::Auxiliary83 => (
+        RawPacketTab::Auxiliary => (
             "0x83 State",
             state
                 .latest_raw_83
@@ -2740,7 +2740,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 .map(|bytes| render_query_reply_panel(bytes, state))
                 .unwrap_or_else(|| Text::from("Waiting for first 0x75 query reply...")),
         ),
-        RawPacketTab::Notification81 => (
+        RawPacketTab::DeviceNotification => (
             "0x81 Notification",
             state
                 .latest_raw_81
@@ -3253,7 +3253,7 @@ fn render_query_reply_history_list(state: &AppState) -> Text<'static> {
 fn render_mixer_strip_controls(
     _state: &AppState,
     _index: usize,
-    channel: &crate::protocol::MixerChannelState,
+    channel: &antelope_protocol::MixerChannelState,
 ) -> String {
     let mute = channel
         .muted
@@ -3324,7 +3324,7 @@ fn render_mix_meter(raw: u8) -> String {
 fn render_mixer_strip_line(
     state: &AppState,
     index: usize,
-    channel: &crate::protocol::MixerChannelState,
+    channel: &antelope_protocol::MixerChannelState,
 ) -> String {
     let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
     let bar = channel
@@ -3526,7 +3526,7 @@ mod tests {
     use ratatui::Terminal;
 
     use crate::app::{AppState, FocusArea};
-    use crate::protocol::{
+    use antelope_protocol::{
         ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
         OutputState, OutputTarget, PanState, PreampInputState, SampleRate, Surface,
     };
@@ -3803,7 +3803,7 @@ mod tests {
     #[test]
     fn device_header_surfaces_serial_and_hw_without_duplicate_status_line() {
         let mut state = AppState::default();
-        state.device.metadata = Some(crate::protocol::DeviceMetadata {
+        state.device.metadata = Some(antelope_protocol::DeviceMetadata {
             product_name: "Zen Go Synergy Core".to_string(),
             serial: "1234567890".to_string(),
             hardware_version: "6.6".to_string(),
@@ -3828,7 +3828,7 @@ mod tests {
     #[test]
     fn device_panel_layout_reserves_full_width_for_serial_and_hw_chips() {
         let mut state = AppState::default();
-        state.device.metadata = Some(crate::protocol::DeviceMetadata {
+        state.device.metadata = Some(antelope_protocol::DeviceMetadata {
             product_name: "Zen Go Synergy Core".to_string(),
             serial: "1234567890".to_string(),
             hardware_version: "6.6".to_string(),
@@ -4858,7 +4858,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let mut state = AppState::default();
         state.connection.connected = true;
-        state.device.metadata = Some(crate::protocol::DeviceMetadata {
+        state.device.metadata = Some(antelope_protocol::DeviceMetadata {
             product_name: "Zen Go Synergy Core".to_string(),
             serial: "4502721001300".to_string(),
             hardware_version: "6.6".to_string(),

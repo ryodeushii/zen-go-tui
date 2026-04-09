@@ -1,24 +1,63 @@
+//! Protocol definitions and encoding/decoding for Antelope Audio Zen Go Synergy Core.
+//!
+//! This crate provides types and functions for communicating with the Zen Go Synergy Core
+//! audio interface over USB HID. It covers:
+//!
+//! - **Frame parsing**: Decode incoming HID reports into typed [`Frame`] variants
+//! - **Command encoding**: Build outgoing HID frames via [`encode_command`]
+//! - **State types**: Strongly-typed representations of device state (sample rate, clock source,
+//!   preamp settings, mixer strips, etc.)
+//! - **Startup queries**: The sequence of queries sent during device initialization via
+//!   [`control_panel_startup_queries`]
+//!
+//! # Example
+//!
+//! ```no_run
+//! use antelope_protocol::{Frame, Command, encode_command, SampleRate};
+//!
+//! // Parse an incoming frame
+//! let raw = vec![0u8; 320];
+//! let frame = Frame::parse(&raw).unwrap();
+//!
+//! // Encode a command
+//! let cmd = Command::SetSampleRate(SampleRate::Hz48000);
+//! let encoded = encode_command(cmd);
+//! ```
+
 use thiserror::Error;
 
+/// Size of a HID report frame in bytes.
 pub const HID_REPORT_SIZE: usize = 320;
 
+/// Errors that can occur during protocol frame parsing.
 #[derive(Debug, Error)]
 pub enum ProtocolError {
+    /// The frame is shorter than the minimum required length.
     #[error("frame too short: {0}")]
     FrameTooShort(usize),
+    /// The frame type identifier is not recognized.
     #[error("unsupported frame type: 0x{0:02x}")]
     UnsupportedFrame(u32),
 }
 
+/// Supported sample rates for the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleRate {
+    /// 32,000 Hz
     Hz32000,
+    /// 44,100 Hz
     Hz44100,
+    /// 48,000 Hz
     Hz48000,
+    /// 88,200 Hz
     Hz88200,
+    /// 96,000 Hz
     Hz96000,
+    /// 176,400 Hz
     Hz176400,
+    /// 192,000 Hz
     Hz192000,
+    /// An unrecognized sample rate code.
     Unknown(u8),
 }
 
@@ -280,18 +319,18 @@ impl PreampInputState {
     }
 }
 
-pub(crate) fn meter_display_db(raw: u8) -> Option<i16> {
+pub fn meter_display_db(raw: u8) -> Option<i16> {
     (raw <= 0x3c).then_some(-(raw as i16))
 }
 
-pub(crate) fn meter_db_ratio(db: i16) -> f64 {
+pub fn meter_db_ratio(db: i16) -> f64 {
     let db = db.clamp(-60, 0) as f64;
     let min_amplitude = 10_f64.powf(-60.0 / 20.0);
     let amplitude = 10_f64.powf(db / 20.0);
     ((amplitude - min_amplitude) / (1.0 - min_amplitude)).clamp(0.0, 1.0)
 }
 
-pub(crate) fn meter_ratio(raw: u8) -> f64 {
+pub fn meter_ratio(raw: u8) -> f64 {
     meter_display_db(raw).map(meter_db_ratio).unwrap_or(0.0)
 }
 
@@ -760,7 +799,7 @@ impl OutputState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Snapshot73 {
+pub struct DeviceStateSnapshot {
     pub sample_rate: SampleRate,
     pub clock_source: ClockSource,
     pub sample_rate_hz: u32,
@@ -774,7 +813,7 @@ pub struct Snapshot73 {
     pub late_shadow: [u8; 12],
 }
 
-impl Snapshot73 {
+impl DeviceStateSnapshot {
     pub fn output(&self, target: OutputTarget) -> OutputState {
         self.outputs[target.index() as usize]
     }
@@ -796,12 +835,12 @@ pub enum StartupQueryKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueryRequest74 {
+pub struct QueryRequest {
     pub query_id: u8,
     pub sub_id: u8,
 }
 
-impl QueryRequest74 {
+impl QueryRequest {
     pub const fn new(query_id: u8, sub_id: u8) -> Self {
         Self { query_id, sub_id }
     }
@@ -828,7 +867,7 @@ impl StartupQueryKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryReply75 {
+pub struct QueryResponse {
     pub query_id: u8,
     pub sub_id: u8,
     pub body: Vec<u8>,
@@ -883,7 +922,7 @@ impl Default for QueriedMixerStripState {
     }
 }
 
-impl QueryReply75 {
+impl QueryResponse {
     pub fn kind(&self) -> StartupQueryKind {
         StartupQueryKind::from_query_id(self.query_id)
     }
@@ -1177,26 +1216,26 @@ impl QueryReply75 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Notification81 {
+pub struct DeviceNotification {
     pub bytes: [u8; 6],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
     Snapshot {
-        snapshot: Snapshot73,
+        snapshot: DeviceStateSnapshot,
         raw: Vec<u8>,
     },
     QueryReply {
-        reply: QueryReply75,
+        reply: QueryResponse,
         raw: Vec<u8>,
     },
-    Auxiliary83 {
+    Auxiliary {
         bytes: Vec<u8>,
         raw: Vec<u8>,
     },
     Notification {
-        notification: Notification81,
+        notification: DeviceNotification,
         raw: Vec<u8>,
     },
 }
@@ -1215,7 +1254,7 @@ impl Frame {
             let mut raw = [0_u8; 6];
             raw.copy_from_slice(&bytes);
             return Ok(Self::Notification {
-                notification: Notification81 { bytes: raw },
+                notification: DeviceNotification { bytes: raw },
                 raw: bytes,
             });
         }
@@ -1231,14 +1270,14 @@ impl Frame {
                 raw: bytes,
             }),
             0x75 => Ok(Self::QueryReply {
-                reply: QueryReply75 {
+                reply: QueryResponse {
                     query_id: bytes[0x08],
                     sub_id: bytes[0x0c],
                     body: bytes[0x10..].to_vec(),
                 },
                 raw: bytes,
             }),
-            0x83 => Ok(Self::Auxiliary83 {
+            0x83 => Ok(Self::Auxiliary {
                 bytes: bytes[0x10..].to_vec(),
                 raw: bytes,
             }),
@@ -1246,14 +1285,14 @@ impl Frame {
         }
     }
 
-    pub fn as_snapshot(&self) -> Option<&Snapshot73> {
+    pub fn as_snapshot(&self) -> Option<&DeviceStateSnapshot> {
         match self {
             Self::Snapshot { snapshot, .. } => Some(snapshot),
             _ => None,
         }
     }
 
-    pub fn as_query_reply(&self) -> Option<&QueryReply75> {
+    pub fn as_query_reply(&self) -> Option<&QueryResponse> {
         match self {
             Self::QueryReply { reply, .. } => Some(reply),
             _ => None,
@@ -1264,7 +1303,7 @@ impl Frame {
         match self {
             Self::Snapshot { raw, .. } => raw,
             Self::QueryReply { raw, .. } => raw,
-            Self::Auxiliary83 { raw, .. } => raw,
+            Self::Auxiliary { raw, .. } => raw,
             Self::Notification { raw, .. } => raw,
         }
     }
@@ -1273,7 +1312,7 @@ impl Frame {
         match self {
             Self::Snapshot { snapshot, raw } => (DeviceSnapshot::Snapshot(snapshot), raw),
             Self::QueryReply { reply, raw } => (DeviceSnapshot::QueryReply(reply), raw),
-            Self::Auxiliary83 { bytes, raw } => (DeviceSnapshot::Auxiliary83(bytes), raw),
+            Self::Auxiliary { bytes, raw } => (DeviceSnapshot::Auxiliary(bytes), raw),
             Self::Notification { notification, raw } => {
                 (DeviceSnapshot::Notification(notification), raw)
             }
@@ -1281,13 +1320,13 @@ impl Frame {
     }
 }
 
-fn parse_snapshot73(bytes: &[u8]) -> Result<Snapshot73, ProtocolError> {
+fn parse_snapshot73(bytes: &[u8]) -> Result<DeviceStateSnapshot, ProtocolError> {
     if bytes.len() < 0x10 + 0xe6 {
         return Err(ProtocolError::FrameTooShort(bytes.len()));
     }
 
     let payload = &bytes[0x10..];
-    Ok(Snapshot73 {
+    Ok(DeviceStateSnapshot {
         sample_rate: SampleRate::from_code(payload[0x02]),
         clock_source: ClockSource::from_code(payload[0x03]),
         sample_rate_hz: u32::from_be_bytes(payload[0x04..0x08].try_into().expect("sample rate")),
@@ -1481,17 +1520,17 @@ fn decode_link_state(payload: &[u8]) -> Option<bool> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceSnapshot {
-    Snapshot(Snapshot73),
-    Auxiliary83(Vec<u8>),
-    QueryReply(QueryReply75),
-    Notification(Notification81),
+    Snapshot(DeviceStateSnapshot),
+    Auxiliary(Vec<u8>),
+    QueryReply(QueryResponse),
+    Notification(DeviceNotification),
 }
 
 impl From<Frame> for DeviceSnapshot {
     fn from(frame: Frame) -> Self {
         match frame {
             Frame::Snapshot { snapshot, .. } => Self::Snapshot(snapshot),
-            Frame::Auxiliary83 { bytes, .. } => Self::Auxiliary83(bytes),
+            Frame::Auxiliary { bytes, .. } => Self::Auxiliary(bytes),
             Frame::QueryReply { reply, .. } => Self::QueryReply(reply),
             Frame::Notification { notification, .. } => Self::Notification(notification),
         }
@@ -1681,60 +1720,60 @@ impl MixerChannelState {
     }
 }
 
-pub fn control_panel_startup_queries() -> &'static [QueryRequest74] {
-    const QUERIES: [QueryRequest74; 47] = [
-        QueryRequest74::new(0x01, 0x00),
-        QueryRequest74::new(0x11, 0x00),
-        QueryRequest74::new(0x0a, 0x00),
-        QueryRequest74::new(0x17, 0x00),
-        QueryRequest74::new(0x18, 0x00),
-        QueryRequest74::new(0x11, 0x01),
-        QueryRequest74::new(0x03, 0x00),
-        QueryRequest74::new(0x03, 0x01),
-        QueryRequest74::new(0x03, 0x02),
-        QueryRequest74::new(0x03, 0x03),
-        QueryRequest74::new(0x03, 0x04),
-        QueryRequest74::new(0x03, 0x05),
-        QueryRequest74::new(0x03, 0x06),
-        QueryRequest74::new(0x03, 0x07),
-        QueryRequest74::new(0x03, 0x08),
-        QueryRequest74::new(0x03, 0x09),
-        QueryRequest74::new(0x0b, 0x00),
-        QueryRequest74::new(0x16, 0x00),
-        QueryRequest74::new(0x0a, 0x00),
-        QueryRequest74::new(0x04, 0x00),
-        QueryRequest74::new(0x0b, 0x03),
-        QueryRequest74::new(0x04, 0x01),
-        QueryRequest74::new(0x0b, 0x03),
-        QueryRequest74::new(0x04, 0x02),
-        QueryRequest74::new(0x0b, 0x03),
-        QueryRequest74::new(0x04, 0x03),
-        QueryRequest74::new(0x0b, 0x03),
-        QueryRequest74::new(0x15, 0x00),
-        QueryRequest74::new(0x19, 0x00),
-        QueryRequest74::new(0x19, 0x01),
-        QueryRequest74::new(0x07, 0x27),
-        QueryRequest74::new(0x07, 0x2c),
-        QueryRequest74::new(0x07, 0x09),
-        QueryRequest74::new(0x07, 0x14),
-        QueryRequest74::new(0x07, 0x4c),
-        QueryRequest74::new(0x19, 0x02),
-        QueryRequest74::new(0x19, 0x03),
-        QueryRequest74::new(0x19, 0x04),
-        QueryRequest74::new(0x19, 0x05),
-        QueryRequest74::new(0x19, 0x06),
-        QueryRequest74::new(0x19, 0x07),
-        QueryRequest74::new(0x19, 0x08),
-        QueryRequest74::new(0x19, 0x09),
-        QueryRequest74::new(0x19, 0x0a),
-        QueryRequest74::new(0x19, 0x0b),
-        QueryRequest74::new(0x0b, 0x04),
-        QueryRequest74::new(0x12, 0x00),
+pub fn control_panel_startup_queries() -> &'static [QueryRequest] {
+    const QUERIES: [QueryRequest; 47] = [
+        QueryRequest::new(0x01, 0x00),
+        QueryRequest::new(0x11, 0x00),
+        QueryRequest::new(0x0a, 0x00),
+        QueryRequest::new(0x17, 0x00),
+        QueryRequest::new(0x18, 0x00),
+        QueryRequest::new(0x11, 0x01),
+        QueryRequest::new(0x03, 0x00),
+        QueryRequest::new(0x03, 0x01),
+        QueryRequest::new(0x03, 0x02),
+        QueryRequest::new(0x03, 0x03),
+        QueryRequest::new(0x03, 0x04),
+        QueryRequest::new(0x03, 0x05),
+        QueryRequest::new(0x03, 0x06),
+        QueryRequest::new(0x03, 0x07),
+        QueryRequest::new(0x03, 0x08),
+        QueryRequest::new(0x03, 0x09),
+        QueryRequest::new(0x0b, 0x00),
+        QueryRequest::new(0x16, 0x00),
+        QueryRequest::new(0x0a, 0x00),
+        QueryRequest::new(0x04, 0x00),
+        QueryRequest::new(0x0b, 0x03),
+        QueryRequest::new(0x04, 0x01),
+        QueryRequest::new(0x0b, 0x03),
+        QueryRequest::new(0x04, 0x02),
+        QueryRequest::new(0x0b, 0x03),
+        QueryRequest::new(0x04, 0x03),
+        QueryRequest::new(0x0b, 0x03),
+        QueryRequest::new(0x15, 0x00),
+        QueryRequest::new(0x19, 0x00),
+        QueryRequest::new(0x19, 0x01),
+        QueryRequest::new(0x07, 0x27),
+        QueryRequest::new(0x07, 0x2c),
+        QueryRequest::new(0x07, 0x09),
+        QueryRequest::new(0x07, 0x14),
+        QueryRequest::new(0x07, 0x4c),
+        QueryRequest::new(0x19, 0x02),
+        QueryRequest::new(0x19, 0x03),
+        QueryRequest::new(0x19, 0x04),
+        QueryRequest::new(0x19, 0x05),
+        QueryRequest::new(0x19, 0x06),
+        QueryRequest::new(0x19, 0x07),
+        QueryRequest::new(0x19, 0x08),
+        QueryRequest::new(0x19, 0x09),
+        QueryRequest::new(0x19, 0x0a),
+        QueryRequest::new(0x19, 0x0b),
+        QueryRequest::new(0x0b, 0x04),
+        QueryRequest::new(0x12, 0x00),
     ];
     &QUERIES
 }
 
-pub fn encode_query(query: QueryRequest74) -> Vec<u8> {
+pub fn encode_query(query: QueryRequest) -> Vec<u8> {
     let mut frame = vec![0_u8; HID_REPORT_SIZE];
     frame[0..4].copy_from_slice(&0x74_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x10_u32.to_le_bytes());
@@ -2483,12 +2522,12 @@ mod tests {
 
     #[test]
     fn summarizes_non_metadata_query_replies_without_over_decoding() {
-        let defaults = QueryReply75 {
+        let defaults = QueryResponse {
             query_id: 0x00,
             sub_id: 0x00,
             body: vec![0xaa, 0xbb, 0xcc],
         };
-        let status = QueryReply75 {
+        let status = QueryResponse {
             query_id: 0x11,
             sub_id: 0x00,
             body: vec![0x12],
@@ -2506,7 +2545,7 @@ mod tests {
 
     #[test]
     fn decodes_selector_bitmap_from_0x75_0b_03() {
-        let reply = QueryReply75 {
+        let reply = QueryResponse {
             query_id: 0x0b,
             sub_id: 0x03,
             body: vec![
@@ -2533,7 +2572,7 @@ mod tests {
 
     #[test]
     fn decodes_startup_visible_link_pairs_from_0x75_0b_03() {
-        let mix1_linked = QueryReply75 {
+        let mix1_linked = QueryResponse {
             query_id: 0x0b,
             sub_id: 0x03,
             body: vec![
@@ -2541,7 +2580,7 @@ mod tests {
                 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
             ],
         };
-        let unlinked = QueryReply75 {
+        let unlinked = QueryResponse {
             query_id: 0x0b,
             sub_id: 0x03,
             body: vec![
@@ -2549,7 +2588,7 @@ mod tests {
                 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
             ],
         };
-        let mix2_linked = QueryReply75 {
+        let mix2_linked = QueryResponse {
             query_id: 0x0b,
             sub_id: 0x03,
             body: vec![
@@ -2557,7 +2596,7 @@ mod tests {
                 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
             ],
         };
-        let mix1_high = QueryReply75 {
+        let mix1_high = QueryResponse {
             query_id: 0x0b,
             sub_id: 0x03,
             body: vec![
@@ -2565,7 +2604,7 @@ mod tests {
                 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
             ],
         };
-        let mix2_high = QueryReply75 {
+        let mix2_high = QueryResponse {
             query_id: 0x0b,
             sub_id: 0x03,
             body: vec![
@@ -2693,7 +2732,7 @@ mod tests {
 
     #[test]
     fn summarizes_selector_pair_bank_conservatively() {
-        let reply = QueryReply75 {
+        let reply = QueryResponse {
             query_id: 0x04,
             sub_id: 0x01,
             body: vec![
@@ -2719,7 +2758,7 @@ mod tests {
 
     #[test]
     fn decodes_startup_pan_categories_from_grounded_0x75_04_mix_banks() {
-        let mix1 = QueryReply75 {
+        let mix1 = QueryResponse {
             query_id: 0x04,
             sub_id: 0x00,
             body: vec![
@@ -2730,7 +2769,7 @@ mod tests {
                 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
             ],
         };
-        let mix2 = QueryReply75 {
+        let mix2 = QueryResponse {
             query_id: 0x04,
             sub_id: 0x01,
             body: vec![
@@ -2762,7 +2801,7 @@ mod tests {
 
     #[test]
     fn decodes_startup_pan_state_from_grounded_0x75_04_mix_banks() {
-        let mix1_ch1 = QueryReply75 {
+        let mix1_ch1 = QueryResponse {
             query_id: 0x04,
             sub_id: 0x00,
             body: vec![
@@ -2771,7 +2810,7 @@ mod tests {
                 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
             ],
         };
-        let mix1_pair = QueryReply75 {
+        let mix1_pair = QueryResponse {
             query_id: 0x04,
             sub_id: 0x00,
             body: vec![
@@ -2827,7 +2866,7 @@ mod tests {
 
     #[test]
     fn startup_pan_state_readback_decodes_solo_flag() {
-        let reply = QueryReply75 {
+        let reply = QueryResponse {
             query_id: 0x04,
             sub_id: 0x00,
             body: vec![
@@ -2854,7 +2893,7 @@ mod tests {
 
     #[test]
     fn decodes_startup_level_from_grounded_0x75_04_mix_banks() {
-        let mix1_ch1 = QueryReply75 {
+        let mix1_ch1 = QueryResponse {
             query_id: 0x04,
             sub_id: 0x00,
             body: vec![
@@ -2863,7 +2902,7 @@ mod tests {
                 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
             ],
         };
-        let mix2_pair = QueryReply75 {
+        let mix2_pair = QueryResponse {
             query_id: 0x04,
             sub_id: 0x01,
             body: vec![
@@ -2886,7 +2925,7 @@ mod tests {
 
     #[test]
     fn summarizes_startup_indexed_code_table() {
-        let reply = QueryReply75 {
+        let reply = QueryResponse {
             query_id: 0x15,
             sub_id: 0x00,
             body: vec![
@@ -2913,7 +2952,7 @@ mod tests {
 
     #[test]
     fn summarizes_startup_quad_state() {
-        let reply = QueryReply75 {
+        let reply = QueryResponse {
             query_id: 0x17,
             sub_id: 0x00,
             body: vec![0x5a, 0x00, 0x60, 0x60],
@@ -2925,12 +2964,12 @@ mod tests {
 
     #[test]
     fn decodes_assignment_readback_from_grounded_0x75_banks() {
-        let early_bank = QueryReply75 {
+        let early_bank = QueryResponse {
             query_id: 0x03,
             sub_id: 0x05,
             body: vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01, 0x01],
         };
-        let ordinary_bank = QueryReply75 {
+        let ordinary_bank = QueryResponse {
             query_id: 0x03,
             sub_id: 0x06,
             body: vec![
@@ -2966,7 +3005,7 @@ mod tests {
 
     #[test]
     fn decodes_mixer_strip_readback_from_0x75_18_00() {
-        let reply = QueryReply75 {
+        let reply = QueryResponse {
             query_id: 0x18,
             sub_id: 0x00,
             body: vec![
@@ -3002,7 +3041,7 @@ mod tests {
 
     #[test]
     fn mixer_strip_readback_requires_full_dual_surface_payload() {
-        let reply = QueryReply75 {
+        let reply = QueryResponse {
             query_id: 0x18,
             sub_id: 0x00,
             body: vec![

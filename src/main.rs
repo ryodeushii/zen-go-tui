@@ -13,16 +13,16 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use antelope_protocol::{
+    ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, PanState, PreampMode,
+    SampleRate, Surface,
+};
 use zen_go_tui::app::{
     Controller, FocusArea, MainPage, ProfileEditorMode, ProfileEditorState, SelectorPopupKind,
     SelectorPopupState,
 };
 use zen_go_tui::profile::{
     delete_profile, list_profile_names, profile_path, rename_profile, DeviceProfile,
-};
-use zen_go_tui::protocol::{
-    ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, PanState, PreampMode,
-    SampleRate, Surface,
 };
 use zen_go_tui::terminal::{
     self, AppInputEvent, AppKeyCode, AppKeyEventKind, AppMouseButton, AppMouseEvent,
@@ -1079,7 +1079,7 @@ fn open_mixer_assignment_picker(controller: &mut Controller) -> Result<()> {
 
     let active_channel =
         controller.state.active_mixer_channels()[controller.state.selected_channel];
-    if !zen_go_tui::protocol::MixerStrip::assignment_write_is_grounded(active_channel.channel) {
+    if !antelope_protocol::MixerStrip::assignment_write_is_grounded(active_channel.channel) {
         controller.state.last_message =
             "Assignment picking is not grounded for the selected strip.".to_string();
         return Ok(());
@@ -1409,7 +1409,7 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         ui::MouseAction::OpenAssignmentPicker(strip) => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = strip.saturating_sub(1) as usize;
-            if !zen_go_tui::protocol::MixerStrip::assignment_write_is_grounded(strip) {
+            if !antelope_protocol::MixerStrip::assignment_write_is_grounded(strip) {
                 controller.state.last_message =
                     "Assignment picking is not grounded for the selected strip.".to_string();
             } else {
@@ -1616,7 +1616,7 @@ fn toggle_preamp_phase(controller: &mut Controller) -> Result<()> {
     Ok(())
 }
 
-fn next_preamp_gain_raw(input: zen_go_tui::protocol::PreampInputState, up: bool) -> u8 {
+fn next_preamp_gain_raw(input: antelope_protocol::PreampInputState, up: bool) -> u8 {
     match input.mode {
         PreampMode::Mic => {
             if up {
@@ -1652,7 +1652,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use zen_go_tui::app::{AssignmentPickerState, ProfileEditorMode, ProfileEditorState};
-    use zen_go_tui::protocol::{
+    use antelope_protocol::{
         control_panel_startup_queries, MixerAssignment, MixerSurface, OutputState, OutputTarget,
     };
     use zen_go_tui::transport::TransportError;
