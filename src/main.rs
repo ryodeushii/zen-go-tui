@@ -152,6 +152,8 @@ fn headless_loop(controller: &mut Controller) -> Result<()> {
                 handle_runtime_error(controller, error)?;
             }
         }
+
+        std::thread::sleep(timing::MIN_LOOP_SLEEP);
     }
 }
 
@@ -489,6 +491,9 @@ fn app_loop(
             last_draw_at = Some(now);
             needs_redraw = false;
         }
+
+        // Prevent tight looping when device streams data continuously
+        std::thread::sleep(timing::MIN_LOOP_SLEEP);
     }
 
     Ok(())
@@ -2141,12 +2146,12 @@ mod tests {
             now,
         ));
         assert!(!should_draw_frame(
-            Some(now - Duration::from_millis(40)),
+            Some(now - Duration::from_millis(30)),
             true,
             now,
         ));
         assert!(should_draw_frame(
-            Some(now - Duration::from_millis(60)),
+            Some(now - Duration::from_millis(35)),
             true,
             now,
         ));
@@ -2197,11 +2202,11 @@ mod tests {
 
         assert_eq!(
             device_poll_interval(Some(now - Duration::from_millis(700)), true, now),
-            Duration::from_millis(16)
+            Duration::from_millis(50)
         );
         assert_eq!(
             device_poll_interval(Some(now - Duration::from_millis(700)), false, now),
-            Duration::from_millis(16)
+            Duration::from_millis(50)
         );
     }
 
@@ -2211,7 +2216,7 @@ mod tests {
 
         assert_eq!(
             device_poll_interval(Some(now - Duration::from_millis(1500)), true, now),
-            Duration::from_millis(50)
+            Duration::from_millis(100)
         );
         assert_eq!(
             device_poll_interval(Some(now - Duration::from_millis(1500)), false, now),

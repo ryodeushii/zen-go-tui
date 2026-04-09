@@ -9,10 +9,10 @@ pub(crate) const INITIAL_DEVICE_RETRY_INTERVAL: Duration = Duration::from_millis
 pub(crate) const BACKOFF_DEVICE_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Poll interval when the device is actively responding.
-pub(crate) const ACTIVE_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(16);
+pub(crate) const ACTIVE_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Poll interval for the TUI when the device has been idle.
-pub(crate) const IDLE_TUI_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(crate) const IDLE_TUI_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Poll interval for headless mode when the device has been idle.
 pub(crate) const IDLE_HEADLESS_DEVICE_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -20,13 +20,19 @@ pub(crate) const IDLE_HEADLESS_DEVICE_POLL_INTERVAL: Duration = Duration::from_m
 /// How long after the last activity before switching to idle polling.
 pub(crate) const DEVICE_POLL_BACKOFF_AFTER: Duration = Duration::from_secs(1);
 
-/// Redraw interval when the UI is dirty.
-pub(crate) const DIRTY_REDRAW_INTERVAL: Duration = Duration::from_millis(50);
+/// Minimum frame interval targeting ~30fps.
+/// Meters update at audio rate but human eye perceives smooth animation at 30fps.
+pub(crate) const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Redraw interval when the UI is idle.
 pub(crate) const IDLE_REDRAW_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Minimum sleep between loop iterations to prevent tight spinning
+/// when device streams data continuously.
+pub(crate) const MIN_LOOP_SLEEP: Duration = Duration::from_millis(16);
+
 /// Decide whether to draw a new frame based on elapsed time and dirty state.
+/// Targets ~30fps for dirty redraws.
 pub(crate) fn should_draw_frame(
     last_draw_at: Option<Instant>,
     needs_redraw: bool,
@@ -37,7 +43,10 @@ pub(crate) fn should_draw_frame(
     };
 
     let elapsed = now.duration_since(last_draw_at);
-    (needs_redraw && elapsed >= DIRTY_REDRAW_INTERVAL) || elapsed >= IDLE_REDRAW_INTERVAL
+    if !needs_redraw {
+        return elapsed >= IDLE_REDRAW_INTERVAL;
+    }
+    elapsed >= MIN_FRAME_INTERVAL
 }
 
 /// Decide whether to probe for reconnection based on backoff timing.

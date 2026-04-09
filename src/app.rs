@@ -772,7 +772,7 @@ pub struct Controller {
     pending_mutation: Option<PendingMutation>,
 }
 
-const MAX_FRAMES_PER_POLL: usize = 128;
+const MAX_FRAMES_PER_POLL: usize = 32;
 
 impl Controller {
     pub fn new(transport: Box<dyn Transport>) -> Self {

@@ -1601,11 +1601,7 @@ pub(crate) fn render_device_metadata(state: &AppState) -> Line<'static> {
 }
 
 pub(crate) fn render_inspector_summary() -> Line<'static> {
-    Line::from(vec![
-        chip("RAW", Color::Black, Color::LightRed),
-        Span::raw(" "),
-        Span::styled("[r] inspector", muted_style()),
-    ])
+    Line::from(vec![chip("RAW", Color::Black, Color::LightRed)])
 }
 
 pub(crate) fn connection_badge_color(state: &AppState) -> Color {

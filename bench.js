@@ -165,28 +165,70 @@ async function measure(label, command, args) {
   const args = process.argv.slice(2);
   const modeFlag = args.find(a => a.startsWith('--mode='));
   const mode = modeFlag ? modeFlag.split('=')[1] : 'schedstat';
+  const headedOnly = args.includes('--headed-only');
+  const headlessOnly = args.includes('--headless-only');
+  const durationFlag = args.find(a => a.startsWith('--duration='));
+  const durationSec = durationFlag ? Number(durationFlag.split('=')[1]) : undefined;
   if (!['ps', 'schedstat'].includes(mode)) {
-    console.error(`Usage: node bench.js [--mode=ps|schedstat] (default: schedstat)`);
+    console.error(`Usage: node bench.js [--mode=ps|schedstat] [--headed-only] [--headless-only] [--duration=SECS] (default: schedstat, both modes, 12s)`);
     process.exit(1);
   }
 
   try {
     if (!fs.existsSync(bin)) throw new Error(`Missing binary: ${bin}`);
 
-    if (mode === 'ps') {
+    const runPs = async () => {
+      if (headedOnly && headlessOnly) {
+        const headless = await measure('headless', bin, ['--headless']);
+        const headed = await measure('headed', 'script', ['-q', '-c', bin, '/dev/null']);
+        return { headless, headed };
+      }
+      if (headedOnly) {
+        const headed = await measure('headed', 'script', ['-q', '-c', bin, '/dev/null']);
+        return { headed };
+      }
+      if (headlessOnly) {
+        const headless = await measure('headless', bin, ['--headless']);
+        return { headless };
+      }
       const headless = await measure('headless', bin, ['--headless']);
       const headed = await measure('headed', 'script', ['-q', '-c', bin, '/dev/null']);
+      return { headless, headed };
+    };
+
+    const runSchedstat = async () => {
+      const opts = {};
+      if (durationSec) opts.durationSec = durationSec;
+      if (headedOnly && headlessOnly) {
+        const headless = await measureHighPrec('headless', bin, ['--headless'], opts);
+        const headed = await measureHighPrec('headed', 'script', ['-q', '-c', bin, '/dev/null'], opts);
+        return { headless, headed };
+      }
+      if (headedOnly) {
+        const headed = await measureHighPrec('headed', 'script', ['-q', '-c', bin, '/dev/null'], opts);
+        return { headed };
+      }
+      if (headlessOnly) {
+        const headless = await measureHighPrec('headless', bin, ['--headless'], opts);
+        return { headless };
+      }
+      const headless = await measureHighPrec('headless', bin, ['--headless'], opts);
+      const headed = await measureHighPrec('headed', 'script', ['-q', '-c', bin, '/dev/null'], opts);
+      return { headless, headed };
+    };
+
+    if (mode === 'ps') {
+      const result = await runPs();
       console.log(JSON.stringify({
         method: 'ps %CPU, 7s settle, 12 x 1s tree samples averaged',
-        headless, headed,
+        ...result,
       }, null, 2));
     } else {
-      const headless = await measureHighPrec('headless', bin, ['--headless']);
-      const headed = await measureHighPrec('headed', 'script', ['-q', '-c', bin, '/dev/null']);
+      const result = await runSchedstat();
       console.log(JSON.stringify({
-        method: `/proc/<pid>/schedstat ns precision, 100ms intervals, 12s window`,
+        method: `/proc/<pid>/schedstat ns precision, 100ms intervals, ${durationSec ?? 12}s window`,
         clkTck: CLK_TCK,
-        headless, headed,
+        ...result,
       }, null, 2));
     }
   } catch (error) {

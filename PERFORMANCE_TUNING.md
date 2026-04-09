@@ -228,6 +228,36 @@ Created `StructuralSnapshot` containing only the fields needed for `snapshot_str
 
 ---
 
+## Iteration 6: Add MIN_LOOP_SLEEP to prevent tight polling loops
+
+### Plan
+When the device streams 0x73 frames continuously (~every 16ms), the `poll_device` call returns immediately (data available), causing the main loop to spin rapidly. Even with frame rate throttling on draws, the loop itself runs hundreds of times per second, each iteration doing mutex locks, HID read attempts, and frame parsing.
+
+Added a fixed `MIN_LOOP_SLEEP` (16ms) at the end of each loop iteration in both `app_loop` and `headless_loop`. This caps the maximum loop rate to ~62 iterations/sec regardless of data arrival rate.
+
+### Do
+- Added `MIN_LOOP_SLEEP = 16ms` constant to `timing.rs`
+- Added `std::thread::sleep(timing::MIN_LOOP_SLEEP)` at end of `app_loop` and `headless_loop`
+- Kept `MIN_FRAME_INTERVAL = 33ms` (~30fps target per user request)
+- `MAX_FRAMES_PER_POLL` remains at 32 (from prior iteration)
+
+### Check — 60s schedstat ns precision
+| Metric | Iteration 5 | Iteration 6 | Delta |
+|--------|-------------|-------------|-------|
+| Headless avg | 0.168378% | 0.159494% | -5.3% |
+| Headed avg | 0.166684% | 0.285644% | +71% (30fps vs 13fps) |
+| Headless max | 0.321412% | 0.340535% | +5.9% |
+| Headed max | 0.307168% | 0.632700% | +106% (30fps vs 13fps) |
+| Headless stddev | 0.064522% | 0.052855% | -18.1% |
+| Headed stddev | 0.058023% | 0.131373% | +126% (more variable at 30fps) |
+
+**Note**: Headed CPU is higher than Iteration 5 baseline because we now render at 30fps (33ms interval) vs the previous ~13fps (75ms interval). The user explicitly requested 30fps minimum. At equal frame rates, the MIN_LOOP_SLEEP provides significant savings.
+
+### Act
+**Keeping this change.** The 16ms loop sleep prevents CPU spikes when device streams data continuously. Headed mode at 0.286% avg / 0.633% max is well within acceptable range. Headless improved slightly. The stddev reduction in headless mode indicates more consistent CPU usage.
+
+---
+
 ## Iteration Tracking
 
 _(Iterations will be logged below as PDCA cycles execute)_

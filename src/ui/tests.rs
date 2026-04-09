@@ -393,7 +393,6 @@ fn titlebar_renders_inspector_hint_on_single_row() {
     let rendered = render::render_inspector_summary().to_string();
 
     assert!(rendered.contains("RAW"));
-    assert!(rendered.contains("[r] inspector"));
     assert!(!rendered.contains('\n'));
 }
 
