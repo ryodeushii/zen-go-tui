@@ -7,9 +7,9 @@ use crate::transport::Transport;
 use antelope_protocol::{
     control_panel_startup_queries, encode_command, encode_link_companion,
     encode_mixer_assignment_frames_with_table, encode_query, ClockSource, Command, DeviceMetadata,
-    DeviceSnapshot, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget,
-    MixerPassiveStripState, MixerSurface, OutputMode, OutputState, OutputTarget, PanState,
-    PreampMode, PreampState, QueryResponse, SampleRate, DeviceStateSnapshot, Surface,
+    DeviceSnapshot, DeviceStateSnapshot, Frame, MixerAssignment, MixerChannelState,
+    MixerLinkTarget, MixerPassiveStripState, MixerSurface, OutputMode, OutputState, OutputTarget,
+    PanState, PreampMode, PreampState, QueryResponse, SampleRate, Surface,
 };
 
 #[derive(Debug, Clone)]
@@ -163,6 +163,7 @@ pub struct AppState {
     pub recent_query_reply_log: Vec<String>,
     pub recent_query_reply_entries: Vec<QueryReplyLogEntry>,
     pub selected_query_reply_entry: Option<usize>,
+    pub query_reply_scroll: usize,
     pub baseline_raw_73: Option<Vec<u8>>,
     pub baseline_raw_83: Option<Vec<u8>>,
     pub baseline_raw_74: Option<Vec<u8>>,
@@ -178,7 +179,8 @@ pub struct AppState {
     pub hotkeys_popup_open: bool,
 }
 
-const MIXER_STRIP_PAGE_SIZE: usize = 8;
+pub const MIXER_STRIP_PAGE_SIZE: usize = 8;
+pub const QUERY_REPLY_VISIBLE_COUNT: usize = 8;
 
 impl Default for AppState {
     fn default() -> Self {
@@ -219,6 +221,7 @@ impl Default for AppState {
             recent_query_reply_log: Vec::new(),
             recent_query_reply_entries: Vec::new(),
             selected_query_reply_entry: None,
+            query_reply_scroll: 0,
             baseline_raw_73: None,
             baseline_raw_83: None,
             baseline_raw_74: None,
@@ -621,6 +624,21 @@ impl AppState {
                 .checked_sub(1)
                 .unwrap_or(self.recent_query_reply_entries.len() - 1)
         });
+        self.ensure_query_reply_visible();
+    }
+
+    fn ensure_query_reply_visible(&mut self) {
+        let Some(selected) = self.selected_query_reply_entry else {
+            return;
+        };
+        let total = self.recent_query_reply_entries.len();
+        let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
+        let reversed_index = total - 1 - selected;
+        if reversed_index < self.query_reply_scroll {
+            self.query_reply_scroll = reversed_index;
+        } else if reversed_index >= self.query_reply_scroll + visible {
+            self.query_reply_scroll = reversed_index - visible + 1;
+        }
     }
 
     pub fn capture_raw_baseline(&mut self) {
@@ -1524,12 +1542,12 @@ mod tests {
         MixerStripProfile, OutputModeProfile, OutputProfile, OutputProfiles, PreampInputProfile,
         PreampModeProfile, PreampProfiles,
     };
-    use antelope_protocol::{
-        ClockSource, Command, DeviceSnapshot, Frame, MixerAssignment, MixerChannelState,
-        MixerStrip, MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampMode,
-        PreampState, SampleRate, DeviceStateSnapshot, Surface,
-    };
     use crate::transport::MockTransport;
+    use antelope_protocol::{
+        ClockSource, Command, DeviceSnapshot, DeviceStateSnapshot, Frame, MixerAssignment,
+        MixerChannelState, MixerStrip, MixerSurface, OutputMode, OutputState, OutputTarget,
+        PanState, PreampMode, PreampState, SampleRate, Surface,
+    };
 
     use super::*;
 

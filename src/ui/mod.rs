@@ -37,6 +37,9 @@ pub enum MouseAction {
     ToggleOutputMute(usize),
     SelectRawPacketTab(crate::app::RawPacketTab),
     SelectQueryReplyEntry(usize),
+    ScrollQueryReplyList {
+        increase: bool,
+    },
     SelectSurface(antelope_protocol::Surface),
     SelectMixerChannel(usize),
     AdjustMixerLevel {

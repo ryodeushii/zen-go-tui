@@ -6,7 +6,10 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 use tui_slider::{Slider, SliderOrientation};
 
-use crate::app::{AppState, FocusArea, ProfileEditorMode, RawPacketTab, SelectorPopupKind};
+use crate::app::{
+    AppState, FocusArea, ProfileEditorMode, RawPacketTab, SelectorPopupKind,
+    QUERY_REPLY_VISIBLE_COUNT,
+};
 use crate::terminal;
 use antelope_protocol::{
     meter_display_db, meter_ratio, ClockSource, MixerAssignment, MixerSurface, OutputMode,
@@ -645,10 +648,11 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     };
     if state.selected_raw_packet == RawPacketTab::Query75 {
         let sections = query_reply_history_layout(layout[2]);
+        let list_items = build_query_reply_list_items(state);
         frame.render_widget(
-            Paragraph::new(render_query_reply_history_list(state))
+            List::new(list_items)
                 .block(section_block("Recent 0x75 Replies", true))
-                .wrap(Wrap { trim: false }),
+                .highlight_style(strong_style(Color::LightCyan)),
             sections[0],
         );
         frame.render_widget(
@@ -1362,27 +1366,33 @@ pub(crate) fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -
     Text::from(lines)
 }
 
-pub(crate) fn render_query_reply_history_list(state: &AppState) -> Text<'static> {
-    let mut lines = vec![Line::from("Select one reply to inspect its raw bytes:")];
+pub(crate) fn build_query_reply_list_items(state: &AppState) -> Vec<ListItem<'static>> {
+    let mut items = Vec::new();
     if state.recent_query_reply_entries.is_empty() {
-        lines.push(Line::from("Waiting for first 0x75 query reply..."));
-        return Text::from(lines);
+        items.push(ListItem::new(Line::from(Span::styled(
+            "Waiting for first 0x75 query reply...",
+            muted_style(),
+        ))));
+        return items;
     }
-    for (index, entry) in state
-        .recent_query_reply_entries
-        .iter()
-        .enumerate()
-        .rev()
-        .take(8)
-    {
+    let total = state.recent_query_reply_entries.len();
+    let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
+    let start = state.query_reply_scroll.min(total.saturating_sub(visible));
+    let end = (start + visible).min(total);
+    for rev_index in start..end {
+        let index = total - 1 - rev_index;
+        let entry = &state.recent_query_reply_entries[index];
         let marker = if state.selected_query_reply_entry == Some(index) {
             ">"
         } else {
             " "
         };
-        lines.push(Line::from(format!("{} {}", marker, entry.summary)));
+        items.push(ListItem::new(Line::from(format!(
+            "{} {}",
+            marker, entry.summary
+        ))));
     }
-    Text::from(lines)
+    items
 }
 
 #[cfg(test)]
@@ -1625,22 +1635,34 @@ pub(crate) fn render_hotkeys_popup_text() -> Text<'static> {
     Text::from(vec![
         Line::from("Global"),
         Line::from("  q quit   ? hotkeys   Esc close popup"),
+        Line::from("  Ctrl+c quit   Ctrl+d raw inspector"),
+        Line::from(""),
+        Line::from("Navigation"),
+        Line::from("  Tab cycle focus   Left/Right move selection"),
+        Line::from("  Up/Down adjust focused control or popup selection"),
+        Line::from("  Enter confirm popup selection"),
         Line::from(""),
         Line::from("Mixer Page"),
-        Line::from(
-            "  Tab focus cycle   Left/Right move selection   Up/Down adjust focused control",
-        ),
-        Line::from("  Outputs: m mute   d dim"),
-        Line::from("  Mixer: o solo   a assignment   l link   [ ] pan   1/2 surface"),
-        Line::from("  Routing/Profiles: click ROUTING or PROFILES in Mixer Surface header"),
-        Line::from("  Preamp: m phantom   p phase   3 mode"),
+        Line::from("  Outputs: m mute   d dim   Up/Down volume"),
+        Line::from("  Mixer strips: o solo   a assignment   l link"),
+        Line::from("  [ ] pan   1/2 surface"),
+        Line::from("  Preamp: m phantom   3 mode   Up/Down gain"),
         Line::from(""),
-        Line::from("Device / Inspector"),
-        Line::from("  s sample rate   c clock source   r raw inspector   R refresh queries"),
-        Line::from("  Raw view: Left/Right tabs or Query75 history   b capture baseline   x clear"),
+        Line::from("Popups"),
+        Line::from("  r routing (USB recording assignments)"),
+        Line::from("  p profiles (save/load/rename/delete)"),
+        Line::from("  Profiles: s save   r rename   d delete"),
+        Line::from(""),
+        Line::from("Raw Inspector (Ctrl+d)"),
+        Line::from("  Left/Right cycle tabs or Query75 history"),
+        Line::from("  b capture baseline   x clear baseline"),
+        Line::from("  R refresh queries"),
+        Line::from(""),
+        Line::from("Device"),
+        Line::from("  s cycle sample rate   c cycle clock source"),
         Line::from(""),
         Line::from(Span::styled(
-            "Click ? HOTKEYS or press ? again to close.",
+            "Mouse: click controls, scroll sliders, wheel raw list",
             muted_style(),
         )),
     ])

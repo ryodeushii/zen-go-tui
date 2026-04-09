@@ -2,6 +2,7 @@ use ratatui::layout::Rect;
 
 use crate::app::{
     AppState, AssignmentPickerState, RawPacketTab, SelectorPopupKind, SelectorPopupState,
+    QUERY_REPLY_VISIBLE_COUNT,
 };
 use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, SampleRate};
 
@@ -109,7 +110,6 @@ pub fn slider_wheel_action(
     increase: bool,
 ) -> Option<MouseAction> {
     if state.hotkeys_popup_open
-        || state.raw_view_open
         || state.profiles_popup_open
         || state.selector_popup.is_some()
         || state.assignment_picker.is_some()
@@ -119,6 +119,18 @@ pub fn slider_wheel_action(
     }
 
     let point = (x, y);
+
+    if state.raw_view_open && state.selected_raw_packet == RawPacketTab::Query75 {
+        if let Some(action) = query_reply_wheel_action(area, state, point, increase) {
+            return Some(action);
+        }
+        return None;
+    }
+
+    if state.raw_view_open {
+        return None;
+    }
+
     let chunks = root_chunks(area);
     let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout(page[0]);
@@ -218,20 +230,40 @@ fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<M
         if point.1 < inner.y + 1 {
             return None;
         }
-        let visible = state
-            .recent_query_reply_entries
-            .iter()
-            .enumerate()
-            .rev()
-            .take(8)
-            .collect::<Vec<_>>();
+        let total = state.recent_query_reply_entries.len();
+        let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
+        let start = state.query_reply_scroll.min(total.saturating_sub(visible));
         let row = point.1.saturating_sub(inner.y + 1) as usize;
-        visible
-            .get(row)
-            .map(|(index, _)| MouseAction::SelectQueryReplyEntry(*index))
+        if row >= visible {
+            return None;
+        }
+        let rev_index = start + row;
+        let index = total - 1 - rev_index;
+        Some(MouseAction::SelectQueryReplyEntry(index))
     } else {
         None
     }
+}
+
+fn query_reply_wheel_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+    increase: bool,
+) -> Option<MouseAction> {
+    let layout = raw_page_layout(area);
+    if state.selected_raw_packet != RawPacketTab::Query75 {
+        return None;
+    }
+    let sections = query_reply_history_layout(layout[2]);
+    if !contains_point(sections[0], point) {
+        return None;
+    }
+    let total = state.recent_query_reply_entries.len();
+    if total <= QUERY_REPLY_VISIBLE_COUNT {
+        return None;
+    }
+    Some(MouseAction::ScrollQueryReplyList { increase })
 }
 
 fn assignment_picker_mouse_action(

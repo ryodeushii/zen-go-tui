@@ -73,9 +73,9 @@ fn hotkeys_popup_text_lists_core_shortcuts() {
 
     assert!(rendered.contains("Global"));
     assert!(rendered.contains("? hotkeys"));
-    assert!(rendered.contains("Up/Down adjust focused control"));
-    assert!(rendered.contains("Outputs: m mute   d dim"));
-    assert!(rendered.contains("r raw inspector"));
+    assert!(rendered.contains("Ctrl+d raw inspector"));
+    assert!(rendered.contains("r routing"));
+    assert!(rendered.contains("p profiles"));
 }
 
 #[test]

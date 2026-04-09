@@ -23,10 +23,11 @@ use zen_go_tui::app::{
     Controller, FocusArea, MainPage, ProfileEditorMode, SelectorPopupKind, SelectorPopupState,
 };
 use zen_go_tui::terminal::{
-    AppKeyCode, AppKeyEventKind, AppMouseButton, AppMouseEvent, AppMouseEventKind,
+    AppKeyCode, AppKeyEvent, AppKeyEventKind, AppMouseButton, AppMouseEvent, AppMouseEventKind,
 };
 use zen_go_tui::transport::{is_device_error, Transport};
 use zen_go_tui::ui;
+use zen_go_tui::QUERY_REPLY_VISIBLE_COUNT;
 
 use crate::cli::{Cli, CliCommand};
 use crate::input::{collect_pending_input, spawn_input_reader, InputThreadMessage};
@@ -163,9 +164,23 @@ enum KeyAction {
 
 fn handle_key_press(
     controller: &mut Controller,
-    key_code: AppKeyCode,
+    key: AppKeyEvent,
     area: ratatui::layout::Rect,
 ) -> Result<KeyAction> {
+    let key_code = key.code;
+    let ctrl = key.modifiers.ctrl;
+
+    if ctrl {
+        match key_code {
+            AppKeyCode::Char('c') => return Ok(KeyAction::Quit),
+            AppKeyCode::Char('d') => {
+                controller.state.toggle_raw_view();
+                return Ok(KeyAction::Continue);
+            }
+            _ => {}
+        }
+    }
+
     if controller.state.hotkeys_popup_open {
         match key_code {
             AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
@@ -225,7 +240,21 @@ fn handle_key_press(
     let result = match key_code {
         AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
         AppKeyCode::Char('r') => {
-            controller.state.toggle_raw_view();
+            controller.state.routing_popup_open = !controller.state.routing_popup_open;
+            controller.state.last_message = if controller.state.routing_popup_open {
+                "Routing popup mirrors mixer assignments for USB recording channels 1-8".to_string()
+            } else {
+                "Closed routing popup".to_string()
+            };
+            Ok(())
+        }
+        AppKeyCode::Char('p') => {
+            if controller.state.profiles_popup_open {
+                close_profiles_popup(controller, "Closed profiles popup");
+            } else {
+                let result = open_profiles_popup(controller);
+                handle_profile_result(controller, result)?
+            }
             Ok(())
         }
         AppKeyCode::Char('R') => match controller.refresh_queried_state() {
@@ -300,7 +329,6 @@ fn handle_key_press(
         AppKeyCode::Char('l') => toggle_mixer_link(controller),
         AppKeyCode::Char('[') => adjust_mixer_pan(controller, false),
         AppKeyCode::Char(']') => adjust_mixer_pan(controller, true),
-        AppKeyCode::Char('p') => toggle_preamp_phase(controller),
         AppKeyCode::Char('3') => open_preamp_mode_selector(controller),
         AppKeyCode::Char('s') => cycle_sample_rate(controller),
         AppKeyCode::Char('c') => cycle_clock_source(controller),
@@ -383,7 +411,7 @@ fn app_loop(
                         let size = terminal.size()?;
                         let action = handle_key_press(
                             controller,
-                            key.code,
+                            key,
                             ratatui::layout::Rect::new(0, 0, size.width, size.height),
                         )?;
 
@@ -973,6 +1001,18 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         ui::MouseAction::SelectQueryReplyEntry(index) => {
             controller.state.selected_query_reply_entry = Some(index)
         }
+        ui::MouseAction::ScrollQueryReplyList { increase } => {
+            let total = controller.state.recent_query_reply_entries.len();
+            let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
+            let max_scroll = total.saturating_sub(visible);
+            if increase {
+                controller.state.query_reply_scroll =
+                    (controller.state.query_reply_scroll + 1).min(max_scroll);
+            } else {
+                controller.state.query_reply_scroll =
+                    controller.state.query_reply_scroll.saturating_sub(1);
+            }
+        }
         ui::MouseAction::SelectSurface(surface) => {
             controller.state.focus = FocusArea::Mixer;
             controller.send(Command::SelectSurface(surface))?;
@@ -1276,28 +1316,6 @@ fn open_preamp_mode_selector(controller: &mut Controller) -> Result<()> {
     apply_mouse_action(controller, ui::MouseAction::OpenPreampModeSelector(input))
 }
 
-fn toggle_preamp_phase(controller: &mut Controller) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    if controller.state.focus != FocusArea::Preamp {
-        return Ok(());
-    }
-
-    let input = controller.state.selected_preamp_input as u8;
-    let mode_raw = if input == 0 {
-        controller.state.preamp.input1.mode_raw
-    } else {
-        controller.state.preamp.input2.mode_raw
-    };
-    controller.send(Command::SetPreampPhase {
-        input,
-        enabled: mode_raw & 0x40 == 0,
-    })?;
-    Ok(())
-}
-
 fn next_preamp_gain_raw(input: antelope_protocol::PreampInputState, up: bool) -> u8 {
     match input.mode {
         PreampMode::Mic => {
@@ -1337,8 +1355,17 @@ mod tests {
         control_panel_startup_queries, MixerAssignment, MixerSurface, OutputState, OutputTarget,
     };
     use zen_go_tui::app::{AssignmentPickerState, ProfileEditorMode, ProfileEditorState};
+    use zen_go_tui::terminal::AppModifiers;
     use zen_go_tui::transport::MockTransport;
     use zen_go_tui::transport::TransportError;
+
+    fn test_key(code: AppKeyCode) -> AppKeyEvent {
+        AppKeyEvent {
+            code,
+            modifiers: AppModifiers::default(),
+            kind: AppKeyEventKind::Press,
+        }
+    }
 
     #[derive(Clone, Default)]
     struct AvailabilityTransport {
@@ -1487,7 +1514,7 @@ mod tests {
 
         let action = handle_key_press(
             &mut controller,
-            AppKeyCode::Up,
+            test_key(AppKeyCode::Up),
             ratatui::layout::Rect::new(0, 0, 120, 50),
         )
         .expect("up key");
@@ -1509,7 +1536,7 @@ mod tests {
 
         let action = handle_key_press(
             &mut controller,
-            AppKeyCode::Down,
+            test_key(AppKeyCode::Down),
             ratatui::layout::Rect::new(0, 0, 120, 50),
         )
         .expect("down key");
@@ -1534,7 +1561,7 @@ mod tests {
 
         let action = handle_key_press(
             &mut controller,
-            AppKeyCode::Up,
+            test_key(AppKeyCode::Up),
             ratatui::layout::Rect::new(0, 0, 120, 50),
         )
         .expect("popup up key");
@@ -1993,13 +2020,13 @@ mod tests {
 
         handle_key_press(
             &mut controller,
-            AppKeyCode::Char('1'),
+            test_key(AppKeyCode::Char('1')),
             ratatui::layout::Rect::new(0, 0, 120, 50),
         )
         .expect("append profile name char");
         handle_key_press(
             &mut controller,
-            AppKeyCode::Backspace,
+            test_key(AppKeyCode::Backspace),
             ratatui::layout::Rect::new(0, 0, 120, 50),
         )
         .expect("backspace profile name char");
