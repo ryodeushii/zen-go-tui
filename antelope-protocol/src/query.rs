@@ -3,15 +3,21 @@
 use crate::mixer::{MixerAssignment, MixerSurface};
 use crate::types::PanState;
 
+/// Categories of query replies observed during device startup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupQueryKind {
+    /// Device metadata (product name, serial, hardware version).
     Metadata,
+    /// Capability and default configuration block.
     CapabilityDefaults,
+    /// Status or capability value.
     StatusValue,
+    /// An unrecognized query reply ID.
     Unknown(u8),
 }
 
 impl StartupQueryKind {
+    /// Classifies a query reply by its `query_id` byte.
     pub fn from_query_id(query_id: u8) -> Self {
         match query_id {
             0x01 => Self::Metadata,
@@ -21,6 +27,7 @@ impl StartupQueryKind {
         }
     }
 
+    /// Returns a human-readable label for this query kind.
     pub fn label(self) -> &'static str {
         match self {
             Self::Metadata => "Metadata",
@@ -31,53 +38,81 @@ impl StartupQueryKind {
     }
 }
 
+/// A query request sent to the device to retrieve state or capability information.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryRequest {
+    /// Primary query identifier.
     pub query_id: u8,
+    /// Sub-query identifier for parameterized queries.
     pub sub_id: u8,
 }
 
 impl QueryRequest {
+    /// Creates a new `QueryRequest`.
     pub const fn new(query_id: u8, sub_id: u8) -> Self {
         Self { query_id, sub_id }
     }
 }
 
+/// Device identity information extracted from a metadata query reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceMetadata {
+    /// Product name (e.g. `"Zen Go Synergy Core"`).
     pub product_name: String,
+    /// Device serial number.
     pub serial: String,
+    /// Hardware/firmware version (e.g. `"6.6"`).
     pub hardware_version: String,
 }
 
+/// Raw response body from a device query.
+///
+/// Use the decoding methods on this type (e.g. [`metadata`](Self::metadata),
+/// [`assignment_readback`](Self::assignment_readback)) to interpret the body
+/// for specific query types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryResponse {
+    /// Primary query identifier matching the request.
     pub query_id: u8,
+    /// Sub-query identifier matching the request.
     pub sub_id: u8,
+    /// Raw response payload bytes.
     pub body: Vec<u8>,
 }
 
+/// Complete state of a mixer strip as returned by a query (0x18) readback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct QueriedMixerStripState {
+    /// Raw level byte (0x00 = unity, higher = more attenuation).
     pub level: u8,
+    /// Current pan position.
     pub pan: PanState,
+    /// Whether the strip is muted.
     pub muted: bool,
+    /// Whether the strip is soloed.
     pub soloed: bool,
 }
 
+/// Full readback of both mixer surfaces from a query response.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueriedMixerSurfaceReadback {
+    /// Strip states indexed as `surfaces[mixer_index][channel_index]`.
     pub surfaces: [[QueriedMixerStripState; 16]; 2],
 }
 
+/// Pan position category for startup state readbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartupPanCategory {
+    /// Pan is centered (raw value 0x20).
     Center,
+    /// Pan is left of center (raw value < 0x20).
     Left,
+    /// Pan is right of center (raw value > 0x20).
     Right,
 }
 
 impl StartupPanCategory {
+    /// Returns a single-character label (`"C"`, `"L"`, or `"R"`).
     pub fn short_label(self) -> &'static str {
         match self {
             Self::Center => "C",
@@ -87,19 +122,28 @@ impl StartupPanCategory {
     }
 }
 
+/// Mixer strip state as returned by startup pan readbacks (query 0x04).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StartupMixerStripState {
+    /// Raw level byte.
     pub level: u8,
+    /// Current pan position.
     pub pan: PanState,
+    /// Whether the strip is muted.
     pub muted: bool,
+    /// Whether the strip is soloed.
     pub soloed: bool,
 }
 
 impl QueryResponse {
+    /// Returns the classified kind of this query response.
     pub fn kind(&self) -> StartupQueryKind {
         StartupQueryKind::from_query_id(self.query_id)
     }
 
+    /// Decodes device metadata from a metadata query reply (`query_id` 0x01).
+    ///
+    /// Returns `None` if this is not a metadata reply or the body cannot be parsed.
     pub fn metadata(&self) -> Option<DeviceMetadata> {
         if self.query_id != 0x01 {
             return None;
@@ -124,6 +168,11 @@ impl QueryResponse {
         })
     }
 
+    /// Returns a human-readable summary of this query response.
+    ///
+    /// Attempts to decode the body into a structured representation
+    /// (startup tables, pan categories, selector bitmaps, etc.) and
+    /// falls back to a hex dump for unrecognized formats.
     pub fn summary_label(&self) -> String {
         if let Some(entries) = self.startup_indexed_code_table() {
             let preview = entries
@@ -212,6 +261,9 @@ impl QueryResponse {
         }
     }
 
+    /// Decodes mixer strip assignments from a query reply (`query_id` 0x03).
+    ///
+    /// Bank 0x05 covers strips 1–4 (early AFX), banks 0x06–0x09 cover strips 5–16.
     pub fn assignment_readback(&self) -> Option<[Option<MixerAssignment>; 16]> {
         if self.query_id != 0x03 || self.body.is_empty() || self.body[0] != self.sub_id {
             return None;
@@ -237,6 +289,9 @@ impl QueryResponse {
         }
     }
 
+    /// Decodes a selector bitmap from query 0x0b/0x03.
+    ///
+    /// Returns 24 boolean flags indicating which stereo link selectors are asserted.
     pub fn selector_bitmap(&self) -> Option<[bool; 24]> {
         if self.query_id != 0x0b || self.sub_id != 0x03 || self.body.len() < 24 {
             return None;
@@ -249,6 +304,10 @@ impl QueryResponse {
         Some(selectors)
     }
 
+    /// Converts a selector bitmap into per-channel link state for both mixer surfaces.
+    ///
+    /// Each entry in the returned arrays indicates whether that channel is linked
+    /// to its stereo pair.
     pub fn startup_link_readback_from_bitmap(
         &self,
     ) -> Option<[(MixerSurface, [Option<bool>; 16]); 2]> {
@@ -286,6 +345,9 @@ impl QueryResponse {
         Some([(MixerSurface::Mix1, mix1), (MixerSurface::Mix2, mix2)])
     }
 
+    /// Decodes a selector pair bank from query 0x04.
+    ///
+    /// Returns 32 pairs of (left, right) pan codes.
     pub fn selector_pair_bank(&self) -> Option<Vec<(u8, u8)>> {
         if self.query_id != 0x04 || self.body.len() < 64 {
             return None;
@@ -299,6 +361,9 @@ impl QueryResponse {
         )
     }
 
+    /// Decodes full mixer strip state (level, pan, mute, solo) from a startup pan query (0x04).
+    ///
+    /// The `sub_id` determines which surface: 0x00 for Mix1, 0x01 for Mix2.
     pub fn startup_pan_state_readback(
         &self,
     ) -> Option<(MixerSurface, [Option<StartupMixerStripState>; 16])> {
@@ -325,6 +390,7 @@ impl QueryResponse {
         Some((surface, states))
     }
 
+    /// Converts startup pan state readback into simplified pan categories (Left/Center/Right).
     pub fn startup_pan_category_readback(
         &self,
     ) -> Option<(MixerSurface, [Option<StartupPanCategory>; 16])> {
@@ -346,6 +412,9 @@ impl QueryResponse {
         Some((surface, categories))
     }
 
+    /// Decodes an indexed code table from query 0x15/0x00.
+    ///
+    /// Returns 32 pairs of (index, code) bytes.
     pub fn startup_indexed_code_table(&self) -> Option<Vec<(u8, u8)>> {
         if self.query_id != 0x15 || self.sub_id != 0x00 || self.body.len() < 64 {
             return None;
@@ -359,6 +428,7 @@ impl QueryResponse {
         )
     }
 
+    /// Decodes a 4-byte state block from query 0x17/0x00.
     pub fn startup_quad_state(&self) -> Option<[u8; 4]> {
         if self.query_id != 0x17 || self.sub_id != 0x00 || self.body.len() < 4 {
             return None;
@@ -367,6 +437,9 @@ impl QueryResponse {
         self.body[..4].try_into().ok()
     }
 
+    /// Decodes full dual-surface mixer strip state from query 0x18/0x00.
+    ///
+    /// Returns level, pan, mute, and solo for all 32 strips (16 per surface).
     pub fn mixer_strip_readback(&self) -> Option<QueriedMixerSurfaceReadback> {
         if self.query_id != 0x18 || self.sub_id != 0x00 || self.body.len() < 64 {
             return None;
@@ -388,6 +461,10 @@ impl QueryResponse {
     }
 }
 
+/// Returns the sequence of query requests sent during control panel startup.
+///
+/// The device responds to each query with a [`QueryResponse`] that can be
+/// decoded using the methods on that type.
 pub fn control_panel_startup_queries() -> &'static [QueryRequest] {
     const QUERIES: [QueryRequest; 47] = [
         QueryRequest::new(0x01, 0x00),

@@ -7,37 +7,54 @@ use crate::types::{
     ProtocolError, SampleRate, Surface,
 };
 
+/// A short-form device notification (6-byte frame).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceNotification {
+    /// Raw notification bytes.
     pub bytes: [u8; 6],
 }
 
+/// A parsed HID report frame, classified by its type identifier.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
+    /// Full device state snapshot (frame type 0x73).
     Snapshot {
+        /// Decoded snapshot data.
         snapshot: DeviceStateSnapshot,
+        /// Raw frame bytes.
         raw: Vec<u8>,
     },
+    /// Response to a query request (frame type 0x75).
     QueryReply {
+        /// Decoded query response.
         reply: QueryResponse,
+        /// Raw frame bytes.
         raw: Vec<u8>,
     },
+    /// Auxiliary data frame (type 0x83), purpose not fully decoded.
     Auxiliary {
+        /// Payload bytes after the header.
         bytes: Vec<u8>,
+        /// Raw frame bytes.
         raw: Vec<u8>,
     },
+    /// Short-form device notification (6-byte frame).
     Notification {
+        /// Decoded notification data.
         notification: DeviceNotification,
+        /// Raw frame bytes.
         raw: Vec<u8>,
     },
 }
 
 impl Frame {
+    /// Parses a frame from a byte slice, copying the data.
     pub fn parse(bytes: &[u8]) -> Result<Self, ProtocolError> {
         Self::parse_owned(bytes.to_vec())
     }
 
+    /// Parses a frame from an owned byte vector, preserving the original bytes as `raw`.
     pub fn parse_owned(bytes: Vec<u8>) -> Result<Self, ProtocolError> {
         if bytes.len() < 6 {
             return Err(ProtocolError::FrameTooShort(bytes.len()));
@@ -78,6 +95,7 @@ impl Frame {
         }
     }
 
+    /// Returns a reference to the inner snapshot if this frame is a snapshot variant.
     pub fn as_snapshot(&self) -> Option<&DeviceStateSnapshot> {
         match self {
             Self::Snapshot { snapshot, .. } => Some(snapshot),
@@ -85,6 +103,7 @@ impl Frame {
         }
     }
 
+    /// Returns a reference to the inner query reply if this frame is a query reply variant.
     pub fn as_query_reply(&self) -> Option<&QueryResponse> {
         match self {
             Self::QueryReply { reply, .. } => Some(reply),
@@ -92,6 +111,7 @@ impl Frame {
         }
     }
 
+    /// Returns the raw bytes of the original HID report frame.
     pub fn raw_bytes(&self) -> &[u8] {
         match self {
             Self::Snapshot { raw, .. } => raw,
@@ -101,6 +121,7 @@ impl Frame {
         }
     }
 
+    /// Consumes the frame and returns a [`DeviceSnapshot`] alongside the raw bytes.
     pub fn into_snapshot_and_raw(self) -> (DeviceSnapshot, Vec<u8>) {
         match self {
             Self::Snapshot { snapshot, raw } => (DeviceSnapshot::Snapshot(snapshot), raw),
@@ -113,12 +134,20 @@ impl Frame {
     }
 }
 
+/// Unified representation of any decoded device response.
+///
+/// This is the owned, non-raw counterpart of [`Frame`], suitable for
+/// storage and further processing.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceSnapshot {
+    /// Full device state snapshot.
     Snapshot(DeviceStateSnapshot),
+    /// Auxiliary data payload.
     Auxiliary(Vec<u8>),
+    /// Response to a query request.
     QueryReply(QueryResponse),
+    /// Short-form device notification.
     Notification(DeviceNotification),
 }
 

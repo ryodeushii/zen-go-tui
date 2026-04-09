@@ -2,13 +2,17 @@
 
 use crate::types::{PanState, Surface};
 
+/// Which mixer surface (mix bus) a strip belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MixerSurface {
+    /// Mix 1 — associated with Monitor/HP1 surface.
     Mix1,
+    /// Mix 2 — associated with HP2 surface.
     Mix2,
 }
 
 impl MixerSurface {
+    /// Returns the zero-based surface index (0 for Mix1, 1 for Mix2).
     pub fn index(self) -> usize {
         match self {
             Self::Mix1 => 0,
@@ -16,6 +20,7 @@ impl MixerSurface {
         }
     }
 
+    /// Returns the raw protocol code for this mixer surface.
     pub fn code(self) -> u8 {
         match self {
             Self::Mix1 => 0x00,
@@ -23,6 +28,7 @@ impl MixerSurface {
         }
     }
 
+    /// Maps a front-panel [`Surface`] to the corresponding mixer surface.
     pub fn from_surface(surface: Surface) -> Self {
         match surface {
             Surface::Hp2 => Self::Mix2,
@@ -31,29 +37,46 @@ impl MixerSurface {
     }
 }
 
+/// Source signal assigned to a mixer strip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MixerAssignment {
+    /// Preamp input channel (1 or 2).
     Preamp(u8),
+    /// Computer playback channel (1–8).
     ComputerPlay(u8),
+    /// S/PDIF digital input channel (1 or 2).
     SpdifIn(u8),
+    /// No signal — strip is muted.
     Mute,
+    /// Internal oscillator channel (1 or 2).
     Oscillator(u8),
+    /// Emulated microphone input (1 or 2).
     EmuMic(u8),
 }
 
+/// Categorizes how a mixer strip interacts with the AFX (effects) pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MixerStripKind {
+    /// Strips 1–4: adjacent to early AFX stages, use a single assignment bank.
     EarlyAfxAdjacent,
+    /// Strips 5–16: standard behavior, use multiple assignment banks.
     Ordinary,
 }
 
+/// A single mixer strip (channel) on the device.
+///
+/// Channels 1–4 are [`EarlyAfxAdjacent`](MixerStripKind::EarlyAfxAdjacent);
+/// channels 5–16 are [`Ordinary`](MixerStripKind::Ordinary).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MixerStrip {
+    /// 1-based channel number.
     pub channel: u8,
+    /// Whether this strip is early-AFX-adjacent or ordinary.
     pub kind: MixerStripKind,
 }
 
 impl MixerStrip {
+    /// Creates a `MixerStrip` for the given channel (1–16), or `None` if out of range.
     pub fn new(channel: u8) -> Option<Self> {
         if !(1..=16).contains(&channel) {
             return None;
@@ -69,15 +92,18 @@ impl MixerStrip {
         })
     }
 
+    /// Creates a `MixerStrip` only if the channel is an ordinary strip (5–16).
     pub fn ordinary(channel: u8) -> Option<Self> {
         let strip = Self::new(channel)?;
         matches!(strip.kind, MixerStripKind::Ordinary).then_some(strip)
     }
 
+    /// Returns the zero-based index into the assignment bank for this strip.
     pub fn assignment_entry_index(self) -> usize {
         (self.channel - 1) as usize
     }
 
+    /// Returns the assignment bank IDs that must be written to configure this strip.
     pub fn assignment_write_banks(self) -> &'static [u8] {
         match self.kind {
             MixerStripKind::EarlyAfxAdjacent => &[0x05],
@@ -86,20 +112,31 @@ impl MixerStrip {
         }
     }
 
+    /// Returns whether the given channel has a grounded (valid) assignment mapping.
     pub fn assignment_write_is_grounded(channel: u8) -> bool {
         Self::new(channel).is_some()
     }
 }
 
+/// A stereo link pair on a specific mixer surface.
+///
+/// Each pair covers two consecutive channels (e.g. 1/2, 3/4, …, 15/16).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MixerLinkTarget {
+    /// Which mixer surface this link belongs to.
     pub mixer: MixerSurface,
+    /// Left channel number (1-based).
     pub left_channel: u8,
+    /// Right channel number (1-based).
     pub right_channel: u8,
+    /// Raw selector byte used in the protocol.
     pub selector: u8,
 }
 
 impl MixerLinkTarget {
+    /// Looks up a link pair by its selector code on the given mixer surface.
+    ///
+    /// Mix1 uses selectors 0x00–0x07, Mix2 uses 0x10–0x17.
     pub fn from_selector(mixer: MixerSurface, selector: u8) -> Option<Self> {
         match (mixer, selector) {
             (MixerSurface::Mix1, 0x00) => Some(Self {
@@ -202,6 +239,9 @@ impl MixerLinkTarget {
         }
     }
 
+    /// Looks up a link pair by channel number on the given mixer surface.
+    ///
+    /// Returns the pair that contains the given channel (as left or right).
     pub fn from_channel(mixer: MixerSurface, channel: u8) -> Option<Self> {
         match (mixer, channel) {
             (MixerSurface::Mix1, 1 | 2) => Self::from_selector(mixer, 0x00),
@@ -224,6 +264,9 @@ impl MixerLinkTarget {
         }
     }
 
+    /// Returns the companion bank ID for link pairs that require a secondary write.
+    ///
+    /// Only the first two pairs (channels 1/2 and 3/4) on each surface have a companion bank.
     pub fn companion_bank(self) -> Option<u8> {
         match (self.mixer, self.selector) {
             (MixerSurface::Mix1, 0x00) => Some(0x00),
@@ -236,6 +279,7 @@ impl MixerLinkTarget {
 }
 
 impl MixerAssignment {
+    /// Returns the complete list of assignable source choices available in the UI.
     pub fn grounded_choices() -> &'static [MixerAssignment] {
         const CHOICES: [MixerAssignment; 17] = [
             MixerAssignment::Mute,
@@ -259,6 +303,7 @@ impl MixerAssignment {
         &CHOICES
     }
 
+    /// Decodes a `MixerAssignment` from the two-byte encoding used in ordinary strip readbacks.
     pub fn from_ordinary_strip_bytes(bytes: [u8; 2]) -> Option<Self> {
         match bytes {
             [0x00, 0x00] => Some(Self::Preamp(1)),
@@ -275,6 +320,11 @@ impl MixerAssignment {
         }
     }
 
+    /// Encodes this assignment into the two-byte format used for ordinary strips.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assignment is not a grounded (encodable) variant.
     pub fn ordinary_strip_bytes(self) -> [u8; 2] {
         match self {
             Self::Preamp(1) => [0x00, 0x00],
@@ -291,6 +341,7 @@ impl MixerAssignment {
         }
     }
 
+    /// Returns a human-readable label (e.g. `"Preamp 1"`, `"Computer Play 3"`).
     pub fn label(self) -> String {
         match self {
             Self::Preamp(index) => format!("Preamp {}", index),
@@ -302,6 +353,7 @@ impl MixerAssignment {
         }
     }
 
+    /// Returns a compact label for UI display (e.g. `"P1"`, `"C3"`, `"M"`).
     pub fn short_label(self) -> String {
         match self {
             Self::Preamp(index) => format!("P{}", index),
@@ -314,19 +366,29 @@ impl MixerAssignment {
     }
 }
 
+/// Complete state of a single mixer channel, as decoded from query responses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MixerChannelState {
+    /// 1-based channel number.
     pub channel: u8,
+    /// Raw level byte, if known.
     pub level: Option<u8>,
+    /// Raw meter reading byte, if observed.
     pub meter: Option<u8>,
+    /// Whether the channel is muted, if known.
     pub muted: Option<bool>,
+    /// Whether the channel is soloed, if known.
     pub soloed: Option<bool>,
+    /// Current pan position.
     pub pan: PanState,
+    /// Source signal assigned to this strip, if known.
     pub assignment: Option<MixerAssignment>,
+    /// Whether this channel is linked to its stereo pair, if known.
     pub linked: Option<bool>,
 }
 
 impl MixerChannelState {
+    /// Creates a `MixerChannelState` with all fields unknown except channel number and center pan.
     pub fn unknown(channel: u8) -> Self {
         Self {
             channel,
@@ -340,6 +402,7 @@ impl MixerChannelState {
         }
     }
 
+    /// Creates a `MixerChannelState` with known values.
     pub fn known(
         channel: u8,
         level: Option<u8>,
@@ -360,33 +423,46 @@ impl MixerChannelState {
         }
     }
 
+    /// Returns the display-friendly dB value (0 to -90 dB), or `None` if level is unknown.
     pub fn display_db(self) -> Option<i16> {
         self.level.map(|raw| -(raw.min(0x5a) as i16))
     }
 
+    /// Returns the gain as a normalized 0.0–1.0 ratio, or `None` if level is unknown.
     pub fn gain_ratio(self) -> Option<f64> {
         self.level
             .map(|raw| (1.0 - (raw.min(0x5a) as f64 / 90.0)).clamp(0.0, 1.0))
     }
 
+    /// Returns the meter reading as a normalized 0.0–1.0 ratio, or `None` if no meter is set.
     pub fn meter_ratio(self) -> Option<f64> {
         self.meter.map(crate::types::meter_ratio)
     }
 
+    /// Returns the meter reading as a display-friendly dB value, or `None` if no meter is set.
     pub fn meter_db(self) -> Option<i16> {
         self.meter.and_then(crate::types::meter_display_db)
     }
 }
 
+/// Partially resolved state for a mixer strip, decoded passively from snapshot frames.
+///
+/// Unlike [`MixerChannelState`], this is derived from observing snapshot payloads
+/// rather than explicit query responses, so fields may be unresolved (`None`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MixerPassiveStripState {
+    /// Raw meter reading byte, if observed.
     pub meter: Option<u8>,
+    /// Whether the strip is muted, if determinable from the snapshot.
     pub muted: Option<bool>,
+    /// Pan position, if determinable from the snapshot.
     pub pan: Option<PanState>,
+    /// Whether the strip is linked to its stereo pair, if determinable.
     pub linked: Option<bool>,
 }
 
 impl MixerPassiveStripState {
+    /// Creates a `MixerPassiveStripState` with all fields unresolved.
     pub const fn unresolved() -> Self {
         Self {
             meter: None,
@@ -397,10 +473,17 @@ impl MixerPassiveStripState {
     }
 }
 
+/// Passive mixer state decoded from a snapshot frame payload.
+///
+/// Contains partially resolved strip states for both mixer surfaces,
+/// plus any observed preamp meter readings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MixerPassiveDecode {
+    /// Strip states indexed as `surfaces[mixer_index][channel_index]`.
     pub surfaces: [[MixerPassiveStripState; 16]; 2],
+    /// Preamp 1 meter reading observed from the snapshot, if any.
     pub observed_preamp1_meter: Option<u8>,
+    /// Preamp 2 meter reading observed from the snapshot, if any.
     pub observed_preamp2_meter: Option<u8>,
 }
 
@@ -415,6 +498,7 @@ impl Default for MixerPassiveDecode {
 }
 
 impl MixerPassiveDecode {
+    /// Returns the passive strip state for the given mixer surface and channel (1–16).
     pub fn strip(&self, mixer: MixerSurface, channel: u8) -> Option<MixerPassiveStripState> {
         let index = channel.checked_sub(1)? as usize;
         self.surfaces
@@ -530,6 +614,10 @@ fn decode_link_state(payload: &[u8]) -> Option<bool> {
     }
 }
 
+/// Decodes passive mixer state from a snapshot frame payload.
+///
+/// Extracts meter readings, mute flags, pan positions, and link states
+/// by correlating bytes across multiple regions of the payload.
 pub fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
     let mut decode = MixerPassiveDecode::default();
 

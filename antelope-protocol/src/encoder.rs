@@ -6,79 +6,139 @@ use crate::types::{
     ClockSource, OutputTarget, PanState, PreampMode, SampleRate, Surface, HID_REPORT_SIZE,
 };
 
+/// Outgoing commands that can be sent to the device.
+///
+/// Use [`encode_command`] to serialize a command into a 320-byte HID report frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
+    /// Sets the device sample rate.
     SetSampleRate(SampleRate),
+    /// Sets the clock synchronization source.
     SetClockSource(ClockSource),
+    /// Selects which front-panel surface is active.
     SelectSurface(Surface),
+    /// Sets the preamp input mode (Mic, Line, Hi-Z).
     SetPreampMode {
+        /// Input number (0 or 1).
         input: u8,
+        /// Target mode.
         mode: PreampMode,
     },
+    /// Sets the preamp gain value.
     SetPreampGain {
+        /// Input number (0 or 1).
         input: u8,
+        /// Raw gain byte.
         raw: u8,
     },
+    /// Enables or disables +48V phantom power.
     SetPreampPhantom {
+        /// Input number (0 or 1).
         input: u8,
+        /// Whether phantom power should be enabled.
         enabled: bool,
     },
+    /// Enables or disables phase inversion.
     SetPreampPhase {
+        /// Input number (0 or 1).
         input: u8,
+        /// Whether phase should be inverted.
         enabled: bool,
     },
+    /// Sets the output volume in attenuation steps.
     SetOutputVolume {
+        /// Target output (Monitor, HP1, HP2).
         target: OutputTarget,
+        /// Attenuation step (0x00 = unity, higher = quieter).
         step: u8,
     },
+    /// Mutes or unmutes an output.
     SetOutputMute {
+        /// Target output (Monitor, HP1, HP2).
         target: OutputTarget,
+        /// Whether the output should be muted.
         enabled: bool,
     },
+    /// Enables or disables dim mode on an output.
     SetOutputDim {
+        /// Target output (Monitor, HP1, HP2).
         target: OutputTarget,
+        /// Whether dim should be enabled.
         enabled: bool,
     },
+    /// Sets the level, pan, mute, and solo state of a mixer strip.
     SetMixerLevel {
+        /// Target mixer surface.
         mixer: crate::mixer::MixerSurface,
+        /// Channel number (1–16).
         channel: u8,
+        /// Raw level byte.
         level: u8,
+        /// Pan position.
         pan_state: PanState,
+        /// Whether the strip should be muted.
         muted: bool,
+        /// Whether the strip should be soloed.
         soloed: bool,
     },
+    /// Sets the mute state of a mixer strip.
     SetMixerMute {
+        /// Target mixer surface.
         mixer: crate::mixer::MixerSurface,
+        /// Channel number (1–16).
         channel: u8,
+        /// Whether the strip should be muted.
         muted: bool,
+        /// Current pan position (preserved in the write).
         pan_state: PanState,
+        /// Current solo state (preserved in the write).
         soloed: bool,
     },
+    /// Sets the solo state of a mixer strip.
     SetMixerSolo {
+        /// Target mixer surface.
         mixer: crate::mixer::MixerSurface,
+        /// Channel number (1–16).
         channel: u8,
+        /// Whether the strip should be soloed.
         soloed: bool,
+        /// Current mute state (preserved in the write).
         muted: bool,
+        /// Current pan position (preserved in the write).
         pan_state: PanState,
     },
+    /// Sets the pan position of a mixer strip.
     SetMixerPan {
+        /// Target mixer surface.
         mixer: crate::mixer::MixerSurface,
+        /// Channel number (1–16).
         channel: u8,
+        /// New pan position.
         pan: PanState,
+        /// Current mute state (preserved in the write).
         muted: bool,
+        /// Current solo state (preserved in the write).
         soloed: bool,
     },
+    /// Changes the source signal assigned to a mixer strip.
     SetMixerAssignment {
+        /// Strip channel number (1–16).
         strip: u8,
+        /// Source signal to assign.
         assignment: MixerAssignment,
     },
+    /// Enables or disables a stereo link pair.
     SetLinkState {
+        /// Link selector code.
         selector: u8,
+        /// Whether the link should be enabled.
         enabled: bool,
+        /// Companion bank for pairs that require a secondary write.
         companion_bank: Option<u8>,
     },
 }
 
+/// Encodes a [`QueryRequest`] into a 320-byte HID report frame (type 0x74).
 pub fn encode_query(query: QueryRequest) -> Vec<u8> {
     let mut frame = vec![0_u8; HID_REPORT_SIZE];
     frame[0..4].copy_from_slice(&0x74_u32.to_le_bytes());
@@ -88,6 +148,7 @@ pub fn encode_query(query: QueryRequest) -> Vec<u8> {
     frame
 }
 
+/// Encodes a [`Command`] into a 320-byte HID report frame ready for transmission.
 pub fn encode_command(command: Command) -> Vec<u8> {
     match command {
         Command::SetSampleRate(rate) => host_frame(0x12, &[0x03, rate.code()]),
@@ -192,6 +253,10 @@ pub fn encode_command(command: Command) -> Vec<u8> {
     }
 }
 
+/// Encodes a companion link bank write.
+///
+/// Used alongside [`Command::SetLinkState`] for stereo pairs that require
+/// a secondary bank update.
 pub fn encode_link_companion(bank: u8, enabled: bool) -> Vec<u8> {
     host_frame(0x14, &[0xa2, 0x04, bank, u8::from(enabled)])
 }
@@ -203,6 +268,9 @@ fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
         .expect("assignment write must emit at least one frame")
 }
 
+/// Encodes a mixer strip assignment into one or more HID frames.
+///
+/// Different strips require writes to different banks (see [`MixerStrip::assignment_write_banks`]).
 pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) -> Vec<Vec<u8>> {
     let strip = MixerStrip::new(strip).expect("assignment write requires grounded strip mapping");
     let entry_index = strip.assignment_entry_index();
@@ -220,6 +288,10 @@ pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) ->
         .collect()
 }
 
+/// Encodes a mixer strip assignment along with a full assignment table.
+///
+/// Unlike [`encode_mixer_assignment_frames`], this writes the complete assignment
+/// state for all strips in each bank, not just the changed strip.
 pub fn encode_mixer_assignment_frames_with_table(
     strip: u8,
     assignment: MixerAssignment,

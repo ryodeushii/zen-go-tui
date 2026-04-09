@@ -19,17 +19,26 @@ pub enum ProtocolError {
 /// Supported sample rates for the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SampleRate {
+    /// 32 kHz.
     Hz32000,
+    /// 44.1 kHz.
     Hz44100,
+    /// 48 kHz.
     Hz48000,
+    /// 88.2 kHz.
     Hz88200,
+    /// 96 kHz.
     Hz96000,
+    /// 176.4 kHz.
     Hz176400,
+    /// 192 kHz.
     Hz192000,
+    /// An unrecognized sample rate code.
     Unknown(u8),
 }
 
 impl SampleRate {
+    /// Creates a `SampleRate` from the device's raw code byte.
     pub fn from_code(code: u8) -> Self {
         match code {
             0x00 => Self::Hz32000,
@@ -43,6 +52,7 @@ impl SampleRate {
         }
     }
 
+    /// Returns the raw protocol code for this sample rate.
     pub fn code(self) -> u8 {
         match self {
             Self::Hz32000 => 0x00,
@@ -56,6 +66,7 @@ impl SampleRate {
         }
     }
 
+    /// Returns the sample rate in hertz, or `None` for unknown codes.
     pub fn hz(self) -> Option<u32> {
         match self {
             Self::Hz32000 => Some(32_000),
@@ -69,12 +80,14 @@ impl SampleRate {
         }
     }
 
+    /// Returns a human-readable label (e.g. `"48000 Hz"` or `"Unknown (0x07)"`).
     pub fn label(self) -> String {
         self.hz()
             .map(|hz| format!("{} Hz", hz))
             .unwrap_or_else(|| format!("Unknown (0x{:02x})", self.code()))
     }
 
+    /// Returns the complete list of confirmed sample rate variants.
     pub fn all_confirmed() -> &'static [SampleRate] {
         const ALL: [SampleRate; 7] = [
             SampleRate::Hz32000,
@@ -89,15 +102,21 @@ impl SampleRate {
     }
 }
 
+/// Clock synchronization source for the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockSource {
+    /// Internal oscillator.
     Internal,
+    /// S/PDIF digital input.
     Spdif,
+    /// USB host clock.
     Usb,
+    /// An unrecognized clock source code.
     Unknown(u8),
 }
 
 impl ClockSource {
+    /// Creates a `ClockSource` from the device's raw code byte.
     pub fn from_code(code: u8) -> Self {
         match code {
             0x00 => Self::Internal,
@@ -107,6 +126,7 @@ impl ClockSource {
         }
     }
 
+    /// Returns the raw protocol code for this clock source.
     pub fn code(self) -> u8 {
         match self {
             Self::Internal => 0x00,
@@ -116,6 +136,7 @@ impl ClockSource {
         }
     }
 
+    /// Returns a human-readable label (e.g. `"Internal"`, `"S/PDIF"`, `"USB"`).
     pub fn label(self) -> &'static str {
         match self {
             Self::Internal => "Internal",
@@ -125,21 +146,28 @@ impl ClockSource {
         }
     }
 
+    /// Returns the complete list of confirmed clock source variants.
     pub fn all_confirmed() -> &'static [ClockSource] {
         const ALL: [ClockSource; 3] = [ClockSource::Internal, ClockSource::Spdif, ClockSource::Usb];
         &ALL
     }
 }
 
+/// Output signal mode (normal, muted, or dimmed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
+    /// Signal passes through at the configured volume.
     Normal,
+    /// Signal is silenced.
     Mute,
+    /// Signal is attenuated by a fixed dim amount.
     Dim,
+    /// An unrecognized output mode code.
     Unknown(u8),
 }
 
 impl OutputMode {
+    /// Creates an `OutputMode` from the device's raw code byte.
     pub fn from_code(code: u8) -> Self {
         match code {
             0x00 => Self::Normal,
@@ -149,6 +177,7 @@ impl OutputMode {
         }
     }
 
+    /// Returns a human-readable label (e.g. `"Normal"`, `"Mute"`, `"Dim"`).
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
@@ -159,14 +188,19 @@ impl OutputMode {
     }
 }
 
+/// Physical output destination on the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputTarget {
+    /// Main monitor outputs.
     Monitor,
+    /// Headphone output 1.
     Hp1,
+    /// Headphone output 2.
     Hp2,
 }
 
 impl OutputTarget {
+    /// Returns the zero-based index used in protocol frames.
     pub fn index(self) -> u8 {
         match self {
             Self::Monitor => 0x00,
@@ -175,6 +209,7 @@ impl OutputTarget {
         }
     }
 
+    /// Creates an `OutputTarget` from a zero-based index.
     pub fn from_index(index: usize) -> Self {
         match index {
             0 => Self::Monitor,
@@ -183,6 +218,7 @@ impl OutputTarget {
         }
     }
 
+    /// Returns a human-readable label (e.g. `"Monitor"`, `"HP1"`, `"HP2"`).
     pub fn label(self) -> &'static str {
         match self {
             Self::Monitor => "Monitor",
@@ -192,14 +228,19 @@ impl OutputTarget {
     }
 }
 
+/// Front-panel surface selection, determining which outputs are controlled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
+    /// Monitor and HP1 share the same surface controls.
     MonitorHp1,
+    /// HP2 has its own surface controls.
     Hp2,
+    /// An unrecognized surface code.
     Unknown(u8),
 }
 
 impl Surface {
+    /// Creates a `Surface` from the device's raw code byte.
     pub fn from_code(code: u8) -> Self {
         match code {
             0x0f => Self::MonitorHp1,
@@ -208,6 +249,7 @@ impl Surface {
         }
     }
 
+    /// Returns the raw protocol code for this surface.
     pub fn code(self) -> u8 {
         match self {
             Self::MonitorHp1 => 0x0f,
@@ -216,6 +258,7 @@ impl Surface {
         }
     }
 
+    /// Returns a human-readable label (e.g. `"Monitor / HP1"`, `"HP2"`).
     pub fn label(self) -> &'static str {
         match self {
             Self::MonitorHp1 => "Monitor / HP1",
@@ -225,15 +268,21 @@ impl Surface {
     }
 }
 
+/// Preamp input signal type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreampMode {
+    /// Microphone-level input.
     Mic,
+    /// Line-level input.
     Line,
+    /// High-impedance instrument input.
     HiZ,
+    /// An unrecognized preamp mode code.
     Unknown(u8),
 }
 
 impl PreampMode {
+    /// Creates a `PreampMode` from the raw mode byte (masked to lower nibble).
     pub fn from_raw(mode: u8) -> Self {
         match mode & 0x0f {
             0x00 => Self::Mic,
@@ -243,6 +292,7 @@ impl PreampMode {
         }
     }
 
+    /// Returns a human-readable label (e.g. `"Mic"`, `"Line"`, `"Hi-Z"`).
     pub fn label(self) -> &'static str {
         match self {
             Self::Mic => "Mic",
@@ -252,6 +302,7 @@ impl PreampMode {
         }
     }
 
+    /// Returns the raw protocol code for this preamp mode.
     pub fn code(self) -> u8 {
         match self {
             Self::Mic => 0x00,
@@ -262,16 +313,23 @@ impl PreampMode {
     }
 }
 
+/// Complete state of a single preamp input channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreampInputState {
+    /// Raw gain value from the protocol frame.
     pub gain_raw: u8,
+    /// Input signal type (Mic, Line, Hi-Z).
     pub mode: PreampMode,
+    /// Whether +48V phantom power is enabled (only meaningful in Mic mode).
     pub phantom_on: bool,
+    /// Unprocessed mode byte, preserving the phantom power flag bit.
     pub mode_raw: u8,
+    /// Meter reading observed passively from snapshot frames, if any.
     pub observed_meter: Option<u8>,
 }
 
 impl PreampInputState {
+    /// Decodes a preamp input from raw gain and mode bytes.
     pub fn from_raw(gain_raw: u8, mode_raw: u8) -> Self {
         let mode = PreampMode::from_raw(mode_raw);
         Self {
@@ -283,6 +341,7 @@ impl PreampInputState {
         }
     }
 
+    /// Returns a human-readable gain label in dB, formatted per mode.
     pub fn gain_db_label(self) -> String {
         match self.mode {
             PreampMode::Mic => format!("{} dB", self.gain_raw.min(0x41)),
@@ -292,6 +351,7 @@ impl PreampInputState {
         }
     }
 
+    /// Returns the gain as a normalized 0.0–1.0 ratio for UI display.
     pub fn gain_ratio(self) -> f64 {
         match self.mode {
             PreampMode::Mic => (self.gain_raw.min(0x41) as f64 / 65.0).clamp(0.0, 1.0),
@@ -304,19 +364,25 @@ impl PreampInputState {
         }
     }
 
+    /// Converts the observed meter reading to a display-friendly dB value.
     pub fn observed_meter_db(self) -> Option<i16> {
         self.observed_meter.and_then(meter_display_db)
     }
 
+    /// Converts the observed meter reading to a normalized 0.0–1.0 ratio.
     pub fn observed_meter_ratio(self) -> Option<f64> {
         self.observed_meter.map(meter_ratio)
     }
 }
 
+/// Combined state of both preamp inputs, decoded from a 4-byte DSP cluster.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreampState {
+    /// State of preamp input 1.
     pub input1: PreampInputState,
+    /// State of preamp input 2.
     pub input2: PreampInputState,
+    /// Raw 4-byte cluster from the protocol frame.
     pub cluster: [u8; 4],
 }
 
@@ -327,6 +393,7 @@ impl Default for PreampState {
 }
 
 impl PreampState {
+    /// Decodes both preamp inputs from a 4-byte DSP cluster.
     pub fn from_cluster(cluster: [u8; 4]) -> Self {
         Self {
             input1: PreampInputState::from_raw(cluster[0], cluster[2]),
@@ -336,68 +403,89 @@ impl PreampState {
     }
 }
 
+/// Stereo pan position with mute and solo flags.
+///
+/// The raw value ranges from [`MIN`](Self::MIN) (fully left) to [`MAX`](Self::MAX) (fully right),
+/// with [`CENTER`](Self::CENTER) at the midpoint. The upper two bits encode mute (0x40)
+/// and solo (0x80) flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanState(u8);
 
 impl PanState {
+    /// Minimum pan value (fully left).
     pub const MIN: u8 = 0x02;
+    /// Center pan position.
     pub const CENTER: u8 = 0x20;
+    /// Maximum pan value (fully right).
     pub const MAX: u8 = 0x3e;
     const PAN_MASK: u8 = 0x3f;
     const MUTE_FLAG: u8 = 0x40;
     const SOLO_FLAG: u8 = 0x80;
 
+    /// Creates a `PanState` from a raw pan value, clamped to [`MIN`](Self::MIN)–[`MAX`](Self::MAX).
     pub fn from_raw(raw: u8) -> Self {
         Self(raw.clamp(Self::MIN, Self::MAX))
     }
 
+    /// Extracts the pan position from a state code that may include mute/solo flags.
     pub fn from_state_code(code: u8) -> Self {
         Self::from_raw(code & Self::PAN_MASK)
     }
 
+    /// Returns a pan state positioned fully left.
     pub fn left() -> Self {
         Self(Self::MIN)
     }
 
+    /// Returns a pan state positioned at center.
     pub fn center() -> Self {
         Self(Self::CENTER)
     }
 
+    /// Returns a pan state positioned fully right.
     pub fn right() -> Self {
         Self(Self::MAX)
     }
 
+    /// Returns the masked pan code without mute/solo flags.
     pub fn code(self) -> u8 {
         self.0
     }
 
+    /// Returns the raw internal pan value.
     pub fn raw(self) -> u8 {
         self.0
     }
 
+    /// Encodes the pan position with mute and solo flags into a state code.
     pub fn state_code(self, muted: bool, soloed: bool) -> u8 {
         self.code()
             | if muted { Self::MUTE_FLAG } else { 0x00 }
             | if soloed { Self::SOLO_FLAG } else { 0x00 }
     }
 
+    /// Encodes the pan position with only the mute flag.
     pub fn muted_code(self, muted: bool) -> u8 {
         self.state_code(muted, false)
     }
 
+    /// Checks whether the mute flag is set in a state code.
     pub fn state_code_is_muted(code: u8) -> bool {
         code & Self::MUTE_FLAG != 0
     }
 
+    /// Checks whether the solo flag is set in a state code.
     pub fn state_code_is_soloed(code: u8) -> bool {
         code & Self::SOLO_FLAG != 0
     }
 
+    /// Returns the pan as a normalized 0.0 (left) to 1.0 (right) ratio.
     pub fn ratio(self) -> f64 {
         (self.raw().saturating_sub(Self::MIN) as f64 / (Self::MAX - Self::MIN) as f64)
             .clamp(0.0, 1.0)
     }
 
+    /// Returns a signed display offset from center in device steps (-30 to +30).
     pub fn display_percent(self) -> i16 {
         self.raw() as i16 - Self::CENTER as i16
     }
@@ -409,14 +497,19 @@ impl Default for PanState {
     }
 }
 
+/// Volume and mode state for a single physical output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputState {
+    /// Which physical output this state belongs to.
     pub target: OutputTarget,
+    /// Raw volume byte (0x00 = unity, higher = more attenuation).
     pub volume: u8,
+    /// Current output mode (Normal, Mute, Dim).
     pub mode: OutputMode,
 }
 
 impl OutputState {
+    /// Creates a new `OutputState`.
     pub fn new(target: OutputTarget, volume: u8, mode: OutputMode) -> Self {
         Self {
             target,
@@ -425,24 +518,33 @@ impl OutputState {
         }
     }
 
+    /// Returns the attenuation in device steps, capped at the maximum (0x60).
     pub fn attenuation_steps(self) -> u8 {
         self.volume.min(0x60)
     }
 
+    /// Returns the display-friendly dB value (0 to -96 dB).
     pub fn display_db(self) -> i16 {
         -(self.attenuation_steps() as i16)
     }
 
+    /// Returns the gain as a normalized 0.0 (silent) to 1.0 (unity) ratio.
     pub fn gain_ratio(self) -> f64 {
         let attenuation = self.attenuation_steps() as f64;
         (1.0 - attenuation / 96.0).clamp(0.0, 1.0)
     }
 }
 
+/// Converts a raw meter byte to a display-friendly dB value.
+///
+/// Returns `Some(-dB)` for values ≤ 0x3c (0 to -60 dB), `None` otherwise.
 pub fn meter_display_db(raw: u8) -> Option<i16> {
     (raw <= 0x3c).then_some(-(raw as i16))
 }
 
+/// Converts a display dB value to a normalized 0.0–1.0 amplitude ratio.
+///
+/// Uses a logarithmic scale based on -60 dB as the noise floor.
 pub fn meter_db_ratio(db: i16) -> f64 {
     let db = db.clamp(-60, 0) as f64;
     let min_amplitude = 10_f64.powf(-60.0 / 20.0);
@@ -450,26 +552,40 @@ pub fn meter_db_ratio(db: i16) -> f64 {
     ((amplitude - min_amplitude) / (1.0 - min_amplitude)).clamp(0.0, 1.0)
 }
 
+/// Converts a raw meter byte directly to a normalized 0.0–1.0 ratio.
 pub fn meter_ratio(raw: u8) -> f64 {
     meter_display_db(raw).map(meter_db_ratio).unwrap_or(0.0)
 }
 
+/// Immutable snapshot of the entire device state, decoded from a snapshot frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceStateSnapshot {
+    /// Current sample rate setting.
     pub sample_rate: SampleRate,
+    /// Current clock source setting.
     pub clock_source: ClockSource,
+    /// Sample rate in hertz (redundant with `sample_rate`, provided directly from frame).
     pub sample_rate_hz: u32,
+    /// Raw status flag bytes from the frame.
     pub status_flags: [u8; 2],
+    /// Raw front-panel LED/button bytes from the frame.
     pub front_panel_bytes: [u8; 3],
+    /// State of all three physical outputs (Monitor, HP1, HP2).
     pub outputs: [OutputState; 3],
+    /// Raw 4-byte DSP cluster (shared with preamp decoding).
     pub dsp_cluster: [u8; 4],
+    /// Decoded preamp state for both inputs.
     pub preamp: PreampState,
+    /// Which surface is currently selected on the front panel.
     pub surface: Surface,
+    /// Passive mixer state decoded from the snapshot payload.
     pub mixer_decode: crate::mixer::MixerPassiveDecode,
+    /// Late-row shadow bytes from the frame payload (offsets 0xda–0xe5).
     pub late_shadow: [u8; 12],
 }
 
 impl DeviceStateSnapshot {
+    /// Returns the output state for the given target.
     pub fn output(&self, target: OutputTarget) -> OutputState {
         self.outputs[target.index() as usize]
     }
