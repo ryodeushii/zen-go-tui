@@ -45,6 +45,7 @@ const HID_RECONNECT_INTERVAL: Duration = Duration::from_millis(500);
 struct HidTransportState {
     device: Option<HidDevice>,
     last_open_attempt: Option<Instant>,
+    read_buffer: Vec<u8>,
 }
 
 pub struct HidTransport {
@@ -62,6 +63,7 @@ impl HidTransport {
             state: Arc::new(Mutex::new(HidTransportState {
                 device: Some(device),
                 last_open_attempt: None,
+                read_buffer: vec![0_u8; 320],
             })),
         })
     }
@@ -125,11 +127,12 @@ impl Transport for HidTransport {
             return Ok(None);
         }
 
+        let mut buffer = std::mem::take(&mut state.read_buffer);
         let Some(device) = state.device.as_ref() else {
+            state.read_buffer = buffer;
             return Ok(None);
         };
 
-        let mut buffer = vec![0_u8; 320];
         let bytes = match device.read_timeout(
             &mut buffer,
             timeout.as_millis().clamp(0, i32::MAX as u128) as i32,
@@ -138,14 +141,17 @@ impl Transport for HidTransport {
             Err(_) => {
                 state.device = None;
                 state.last_open_attempt = Some(Instant::now());
+                state.read_buffer = buffer;
                 return Err(TransportError::DeviceDisconnected.into());
             }
         };
         if bytes == 0 {
+            state.read_buffer = buffer;
             return Ok(None);
         }
-        buffer.truncate(bytes);
-        Ok(Some(buffer))
+        let result = buffer[..bytes].to_vec();
+        state.read_buffer = buffer;
+        Ok(Some(result))
     }
 
     fn is_available(&self) -> Result<bool> {

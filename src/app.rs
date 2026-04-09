@@ -6,9 +6,9 @@ use crate::profile::{preamp_mode_raw, DeviceProfile};
 use crate::protocol::{
     control_panel_startup_queries, encode_command, encode_link_companion,
     encode_mixer_assignment_frames_with_table, encode_query, ClockSource, Command, DeviceMetadata,
-    DeviceSnapshot, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface,
-    OutputMode, OutputState, OutputTarget, PanState, PreampMode, PreampState, QueryReply75,
-    SampleRate, Snapshot73, Surface,
+    DeviceSnapshot, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget,
+    MixerPassiveStripState, MixerSurface, OutputMode, OutputState, OutputTarget, PanState,
+    PreampMode, PreampState, QueryReply75, SampleRate, Snapshot73, Surface,
 };
 use crate::transport::Transport;
 
@@ -105,6 +105,35 @@ pub struct ProfileEditorState {
     pub value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructuralSnapshot {
+    sample_rate: SampleRate,
+    sample_rate_hz: u32,
+    clock_source: ClockSource,
+    status_flags: [u8; 2],
+    front_panel_bytes: [u8; 3],
+    outputs: [OutputState; 3],
+    dsp_cluster: [u8; 4],
+    surface: Surface,
+    mixer_surfaces: [[MixerPassiveStripState; 16]; 2],
+}
+
+impl StructuralSnapshot {
+    fn from_snapshot(snapshot: &Snapshot73) -> Self {
+        Self {
+            sample_rate: snapshot.sample_rate,
+            sample_rate_hz: snapshot.sample_rate_hz,
+            clock_source: snapshot.clock_source,
+            status_flags: snapshot.status_flags,
+            front_panel_bytes: snapshot.front_panel_bytes,
+            outputs: snapshot.outputs,
+            dsp_cluster: snapshot.dsp_cluster,
+            surface: snapshot.surface,
+            mixer_surfaces: snapshot.mixer_decode.surfaces,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub device: DeviceStatus,
@@ -124,7 +153,7 @@ pub struct AppState {
     pub last_message: String,
     pub last_auxiliary_len: Option<usize>,
     pub dsp_cluster: [u8; 4],
-    pub latest_snapshot_73: Option<Snapshot73>,
+    latest_structural_snapshot: Option<StructuralSnapshot>,
     pub latest_raw_73: Option<Vec<u8>>,
     pub latest_raw_83: Option<Vec<u8>>,
     pub latest_raw_74: Option<Vec<u8>>,
@@ -180,7 +209,7 @@ impl Default for AppState {
                     .to_string(),
             last_auxiliary_len: None,
             dsp_cluster: [0; 4],
-            latest_snapshot_73: None,
+            latest_structural_snapshot: None,
             latest_raw_73: None,
             latest_raw_83: None,
             latest_raw_74: None,
@@ -285,6 +314,38 @@ impl AppState {
         }
     }
 
+    fn snapshot_structurally_differs(&self, snapshot: &Snapshot73) -> bool {
+        let Some(prev) = &self.latest_structural_snapshot else {
+            return true;
+        };
+        prev.sample_rate != snapshot.sample_rate
+            || prev.sample_rate_hz != snapshot.sample_rate_hz
+            || prev.clock_source != snapshot.clock_source
+            || prev.status_flags != snapshot.status_flags
+            || prev.front_panel_bytes != snapshot.front_panel_bytes
+            || prev.outputs != snapshot.outputs
+            || prev.dsp_cluster != snapshot.dsp_cluster
+            || prev.surface != snapshot.surface
+            || prev.mixer_surfaces != snapshot.mixer_decode.surfaces
+    }
+
+    fn apply_meters_only(&mut self, snapshot: &Snapshot73) {
+        let mixer = self.active_mixer_surface();
+        for channel in 1..=16 {
+            let Some(decoded) = snapshot.mixer_decode.strip(mixer, channel) else {
+                continue;
+            };
+            let Some(slot) = self.state_slot_mut(mixer, channel) else {
+                continue;
+            };
+            if let Some(meter) = decoded.meter {
+                slot.meter = Some(meter);
+            }
+        }
+        self.preamp.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
+        self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
+    }
+
     pub fn apply_snapshot(&mut self, snapshot: &Snapshot73) {
         self.device.sample_rate = Some(snapshot.sample_rate);
         self.device.sample_rate_hz = Some(snapshot.sample_rate_hz);
@@ -301,7 +362,7 @@ impl AppState {
         self.preamp.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
         self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
         self.surface = snapshot.surface;
-        self.apply_passive_mixer_decode(&snapshot);
+        self.apply_passive_mixer_decode(snapshot);
     }
 
     fn apply_passive_mixer_decode(&mut self, snapshot: &Snapshot73) {
@@ -349,12 +410,18 @@ impl AppState {
         self.connection.last_snapshot_at = Some(Instant::now());
         match frame {
             DeviceSnapshot::Snapshot(snapshot) => {
-                let changed = !was_connected
-                    || self.latest_snapshot_73.as_ref() != Some(&snapshot)
-                    || (self.raw_view_open && self.latest_raw_73.as_ref() != Some(&raw));
+                let structural_changed =
+                    !was_connected || self.snapshot_structurally_differs(&snapshot);
+                let raw_changed = self.raw_view_open && self.latest_raw_73.as_ref() != Some(&raw);
+                let changed = structural_changed || raw_changed;
                 self.connection.last_frame_type = Some("0x73 snapshot");
-                self.apply_snapshot(&snapshot);
-                self.latest_snapshot_73 = Some(snapshot);
+                if structural_changed {
+                    self.apply_snapshot(&snapshot);
+                } else {
+                    self.apply_meters_only(&snapshot);
+                }
+                self.latest_structural_snapshot =
+                    Some(StructuralSnapshot::from_snapshot(&snapshot));
                 self.latest_raw_73 = Some(raw);
                 changed
             }
@@ -1140,8 +1207,8 @@ impl Controller {
 
             if let Ok(frame) = Frame::parse_owned(bytes) {
                 let (snapshot, raw) = frame.into_snapshot_and_raw();
-                if let DeviceSnapshot::Snapshot(snapshot73) = &snapshot {
-                    state_dirty |= self.confirm_pending_write(snapshot73.clone());
+                if matches!(&snapshot, DeviceSnapshot::Snapshot(_)) {
+                    state_dirty |= self.confirm_pending_write();
                 }
                 state_dirty |= self.state.observe_frame(snapshot, raw);
             }
@@ -1150,15 +1217,18 @@ impl Controller {
         Ok(state_dirty)
     }
 
-    pub fn confirm_pending_write(&mut self, _snapshot: Snapshot73) -> bool {
-        match self.pending_mutation.take() {
-            Some(PendingMutation::MixerLevel {
+    pub fn confirm_pending_write(&mut self) -> bool {
+        let Some(pending) = self.pending_mutation.take() else {
+            return false;
+        };
+        match pending {
+            PendingMutation::MixerLevel {
                 mixer,
                 channel,
                 level,
                 pan,
                 muted,
-            }) => {
+            } => {
                 if let Some(slot) = self.state.mixer_channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
@@ -1168,7 +1238,7 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerLinkedLevel {
+            PendingMutation::MixerLinkedLevel {
                 mixer,
                 left_channel,
                 right_channel,
@@ -1177,7 +1247,7 @@ impl Controller {
                 right_pan,
                 left_muted,
                 right_muted,
-            }) => {
+            } => {
                 for (channel, pan, muted) in [
                     (left_channel, left_pan, left_muted),
                     (right_channel, right_pan, right_muted),
@@ -1192,11 +1262,11 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerMute {
+            PendingMutation::MixerMute {
                 mixer,
                 channel,
                 muted,
-            }) => {
+            } => {
                 if let Some(slot) = self.state.mixer_channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
@@ -1204,11 +1274,11 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerSolo {
+            PendingMutation::MixerSolo {
                 mixer,
                 channel,
                 soloed,
-            }) => {
+            } => {
                 if let Some(slot) = self.state.mixer_channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
@@ -1216,12 +1286,12 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerLinkedMute {
+            PendingMutation::MixerLinkedMute {
                 mixer,
                 left_channel,
                 right_channel,
                 muted,
-            }) => {
+            } => {
                 for channel in [left_channel, right_channel] {
                     if let Some(slot) = self.state.mixer_channels[mixer.index()]
                         .get_mut(channel.saturating_sub(1) as usize)
@@ -1231,12 +1301,12 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerLinkedSolo {
+            PendingMutation::MixerLinkedSolo {
                 mixer,
                 left_channel,
                 right_channel,
                 soloed,
-            }) => {
+            } => {
                 for channel in [left_channel, right_channel] {
                     if let Some(slot) = self.state.mixer_channels[mixer.index()]
                         .get_mut(channel.saturating_sub(1) as usize)
@@ -1246,11 +1316,11 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerPan {
+            PendingMutation::MixerPan {
                 mixer,
                 channel,
                 pan,
-            }) => {
+            } => {
                 if let Some(slot) = self.state.mixer_channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
@@ -1258,7 +1328,7 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerAssignment { strip, assignment }) => {
+            PendingMutation::MixerAssignment { strip, assignment } => {
                 let index = strip.saturating_sub(1) as usize;
                 for channels in &mut self.state.mixer_channels {
                     if let Some(slot) = channels.get_mut(index) {
@@ -1267,11 +1337,11 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerLink {
+            PendingMutation::MixerLink {
                 mixer,
                 selector,
                 enabled,
-            }) => {
+            } => {
                 if let Some((left, right)) = link_pair_from_selector(mixer, selector) {
                     for channel in [left, right] {
                         if let Some(slot) = self.state.mixer_channels[mixer.index()]
@@ -1283,12 +1353,12 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::MixerLinkExplicit {
+            PendingMutation::MixerLinkExplicit {
                 mixer,
                 left_channel,
                 right_channel,
                 enabled,
-            }) => {
+            } => {
                 for channel in [left_channel, right_channel] {
                     if let Some(slot) = self.state.mixer_channels[mixer.index()]
                         .get_mut(channel.saturating_sub(1) as usize)
@@ -1298,21 +1368,21 @@ impl Controller {
                 }
                 true
             }
-            Some(PendingMutation::OutputVolume { target, step }) => {
+            PendingMutation::OutputVolume { target, step } => {
                 self.state.outputs[target.index() as usize].volume = step;
                 true
             }
-            Some(PendingMutation::OutputMode { target, mode }) => {
+            PendingMutation::OutputMode { target, mode } => {
                 self.state.outputs[target.index() as usize].mode = mode;
                 true
             }
-            Some(PendingMutation::PreampGain { input, raw }) => {
+            PendingMutation::PreampGain { input, raw } => {
                 self.state.dsp_cluster[input.min(1) as usize] = raw;
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
                 true
             }
-            Some(PendingMutation::PreampMode { input, mode }) => {
+            PendingMutation::PreampMode { input, mode } => {
                 let offset = 2 + input.min(1) as usize;
                 let preserved_bits = self.state.dsp_cluster[offset] & 0xf0;
                 self.state.dsp_cluster[offset] = preserved_bits | mode.code();
@@ -1320,7 +1390,7 @@ impl Controller {
                     .refresh_preamp_from_cluster_preserving_observed_meter();
                 true
             }
-            Some(PendingMutation::PreampPhantom { input, enabled }) => {
+            PendingMutation::PreampPhantom { input, enabled } => {
                 let offset = 2 + input.min(1) as usize;
                 let low = self.state.dsp_cluster[offset] & 0x0f;
                 self.state.dsp_cluster[offset] = low | if enabled { 0x10 } else { 0x00 };
@@ -1328,7 +1398,7 @@ impl Controller {
                     .refresh_preamp_from_cluster_preserving_observed_meter();
                 true
             }
-            Some(PendingMutation::PreampPhase { input, enabled }) => {
+            PendingMutation::PreampPhase { input, enabled } => {
                 let offset = 2 + input.min(1) as usize;
                 let low = self.state.dsp_cluster[offset] & 0x1f;
                 self.state.dsp_cluster[offset] = low | if enabled { 0x40 } else { 0x00 };
@@ -1336,7 +1406,6 @@ impl Controller {
                     .refresh_preamp_from_cluster_preserving_observed_meter();
                 true
             }
-            None => false,
         }
     }
 }
@@ -1918,7 +1987,7 @@ mod tests {
                 raw: 0x2d,
             })
             .expect("send preamp gain");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(controller.state.preamp.input2.gain_raw, 0x2d);
         assert_eq!(controller.state.dsp_cluster[1], 0x2d);
@@ -1938,7 +2007,7 @@ mod tests {
                 raw: 0x2d,
             })
             .expect("send preamp gain");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(controller.state.preamp.input2.gain_raw, 0x2d);
         assert_eq!(controller.state.preamp.input1.observed_meter, None);
@@ -1958,7 +2027,7 @@ mod tests {
                 mode: PreampMode::Line,
             })
             .expect("send preamp mode");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
         assert_eq!(controller.state.preamp.input1.mode, PreampMode::Line);
 
         controller.state.dsp_cluster[3] = 0x00;
@@ -1969,7 +2038,7 @@ mod tests {
                 enabled: true,
             })
             .expect("send preamp phantom");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
         assert!(controller.state.preamp.input2.phantom_on);
 
         controller.state.dsp_cluster[3] = 0x00;
@@ -1980,7 +2049,7 @@ mod tests {
                 enabled: true,
             })
             .expect("send preamp phase");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
         assert_eq!(controller.state.dsp_cluster[3], 0x40);
     }
 
@@ -2200,7 +2269,7 @@ mod tests {
                 .is_none()
         );
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][2],
@@ -2232,7 +2301,7 @@ mod tests {
             &[0xd4, 0x04, 0x00, 0x04, 0x2c, 0x3e]
         );
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][2].level,
@@ -2276,7 +2345,7 @@ mod tests {
             &[0xd4, 0x04, 0x00, 0x04, 0x00, 0x7e]
         );
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][2].muted,
@@ -2314,7 +2383,7 @@ mod tests {
             &[0xd4, 0x04, 0x00, 0x04, 0x00, 0xbe]
         );
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][2].soloed,
@@ -2383,7 +2452,7 @@ mod tests {
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x03, 0x05, 0x01]);
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][10].linked,
             Some(true)
@@ -2399,7 +2468,7 @@ mod tests {
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x03, 0x17, 0x01]);
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix2.index()][14].linked,
             Some(true)
@@ -2431,7 +2500,7 @@ mod tests {
             strip: 11,
             assignment: MixerAssignment::Oscillator(2),
         });
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         let target = MixerLinkTarget::from_channel(MixerSurface::Mix2, 1).expect("mix2 1-2");
         controller
@@ -2441,7 +2510,7 @@ mod tests {
                 companion_bank: target.companion_bank(),
             })
             .expect("send link");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][10].assignment,
@@ -2478,7 +2547,7 @@ mod tests {
             strip: 11,
             assignment: MixerAssignment::Mute,
         });
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][10].assignment,
@@ -2508,7 +2577,7 @@ mod tests {
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
         assert_eq!(&writes[0][0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][4].assignment,
             Some(MixerAssignment::Oscillator(1))
@@ -2537,7 +2606,7 @@ mod tests {
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x05]);
         assert_eq!(&writes[0][0x10 + 0x03..0x10 + 0x05], &[0x09, 0x00]);
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment,
             Some(MixerAssignment::Oscillator(1))
@@ -2609,7 +2678,7 @@ mod tests {
                     companion_bank: target.companion_bank(),
                 })
                 .expect("send grounded link");
-            controller.confirm_pending_write(snapshot());
+            controller.confirm_pending_write();
 
             assert_eq!(
                 controller.state.mixer_channels[target.mixer.index()]
@@ -2646,7 +2715,7 @@ mod tests {
         assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x04, 0x00, 0x01]);
         assert_eq!(&writes[1][0x10..0x14], &[0xa2, 0x03, 0x00, 0x01]);
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
             Some(true)
@@ -2671,7 +2740,7 @@ mod tests {
                 soloed: false,
             })
             .expect("mix1 pan");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         controller
             .send(Command::SetMixerPan {
@@ -2682,7 +2751,7 @@ mod tests {
                 soloed: false,
             })
             .expect("mix2 pan");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][3]
@@ -2713,7 +2782,7 @@ mod tests {
             })
             .expect("send mute");
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][6].level,
@@ -2734,7 +2803,7 @@ mod tests {
             })
             .expect("send unmute");
 
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][6].level,
@@ -2761,7 +2830,7 @@ mod tests {
                 soloed: false,
             })
             .expect("mix1 send");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         controller
             .send(Command::SetMixerLevel {
@@ -2773,7 +2842,7 @@ mod tests {
                 soloed: false,
             })
             .expect("mix2 send");
-        controller.confirm_pending_write(snapshot());
+        controller.confirm_pending_write();
 
         assert_eq!(
             controller.state.mixer_channels[MixerSurface::Mix1.index()][2].level,
@@ -2837,7 +2906,7 @@ mod tests {
     fn raw_only_snapshot_difference_is_not_visible_when_raw_view_is_closed() {
         let mut state = AppState::default();
         state.connection.connected = true;
-        state.latest_snapshot_73 = Some(snapshot());
+        state.latest_structural_snapshot = Some(StructuralSnapshot::from_snapshot(&snapshot()));
         state.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
 
         assert!(!state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 1],));
@@ -2848,7 +2917,7 @@ mod tests {
         let mut state = AppState::default();
         state.connection.connected = true;
         state.raw_view_open = true;
-        state.latest_snapshot_73 = Some(snapshot());
+        state.latest_structural_snapshot = Some(StructuralSnapshot::from_snapshot(&snapshot()));
         state.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
 
         assert!(state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 1],));
@@ -2888,7 +2957,8 @@ mod tests {
             .expect("snapshot")
             .clone();
         controller.state.connection.connected = true;
-        controller.state.latest_snapshot_73 = Some(snapshot.clone());
+        controller.state.latest_structural_snapshot =
+            Some(StructuralSnapshot::from_snapshot(&snapshot));
         controller.state.latest_raw_73 = Some(raw.clone());
         controller.state.apply_snapshot(&snapshot);
 
