@@ -33,7 +33,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     }
 
     if contains_point(titlebar_layout(chunks[0])[1], point) {
-        return Some(MouseAction::ToggleRawView);
+        return system_panel_mouse_action(titlebar_layout(chunks[0])[1], state, point);
     }
 
     if state.raw_view_open {
@@ -58,6 +58,10 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
 
     if state.routing_popup_open {
         return routing_popup_mouse_action(area, state, point);
+    }
+
+    if state.options_popup_open {
+        return options_popup_mouse_action(area, state, point);
     }
 
     let page = mixer_page_layout(chunks[1]);
@@ -91,6 +95,7 @@ pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Opti
         || state.selector_popup.is_some()
         || state.assignment_picker.is_some()
         || state.routing_popup_open
+        || state.options_popup_open
     {
         return None;
     }
@@ -118,6 +123,7 @@ pub fn slider_wheel_action(
         || state.selector_popup.is_some()
         || state.assignment_picker.is_some()
         || state.routing_popup_open
+        || state.options_popup_open
     {
         return None;
     }
@@ -155,6 +161,87 @@ fn routing_popup_mouse_action(
         return Some(MouseAction::CloseRoutingPopup);
     }
     afx_routing_mouse_action(popup, state, point)
+}
+
+fn options_popup_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    let popup = options_popup_area(area);
+    if !contains_point(popup, point) {
+        return Some(MouseAction::CloseOptionsPopup);
+    }
+
+    let rows = options_popup_layout(popup);
+    let refresh_row = rows[1];
+    let peak_threshold_row = rows[2];
+    let peak_toggle_row = rows[3];
+    let button_rects = options_popup_button_rects(popup);
+
+    if contains_point(button_rects[0], point) {
+        return Some(MouseAction::CloseOptionsPopup);
+    }
+
+    if contains_point(refresh_row, point) {
+        let refresh_rates = crate::app::RefreshRate::all();
+        let prefix = "Refresh: ";
+        let mut x = refresh_row.x + prefix.chars().count() as u16;
+        for r in refresh_rates {
+            let label = if *r == state.settings.refresh_rate {
+                format!("* {}", r.label())
+            } else {
+                r.label().to_string()
+            };
+            let w = crate::ui::styles::chip_width(&label);
+            let rect = Rect::new(x, refresh_row.y, w, 1);
+            if contains_point(rect, point) {
+                return Some(MouseAction::SetRefreshRate(*r));
+            }
+            x += w + 1;
+        }
+    }
+
+    if contains_point(peak_threshold_row, point) {
+        let prefix = "Peaks:  ";
+        let status_text = if state.settings.peak_enabled {
+            format!("ON ({} dB)", state.settings.peak_threshold_db())
+        } else {
+            "OFF".to_string()
+        };
+        let mut x = peak_threshold_row.x + prefix.chars().count() as u16;
+        let status_w = crate::ui::styles::chip_width(&status_text);
+        x += status_w + 1;
+        x += 2;
+        let down_w = crate::ui::styles::chip_width("↓");
+        let down_rect = Rect::new(x, peak_threshold_row.y, down_w, 1);
+        if contains_point(down_rect, point) {
+            return Some(MouseAction::CyclePeakThreshold(false));
+        }
+        x += down_w + 1;
+        let up_w = crate::ui::styles::chip_width("↑");
+        let up_rect = Rect::new(x, peak_threshold_row.y, up_w, 1);
+        if contains_point(up_rect, point) {
+            return Some(MouseAction::CyclePeakThreshold(true));
+        }
+    }
+
+    if contains_point(peak_toggle_row, point) {
+        let prefix = "Toggle: ";
+        let label = if state.settings.peak_enabled {
+            "Disable"
+        } else {
+            "Enable"
+        };
+        let x = peak_toggle_row.x + prefix.chars().count() as u16;
+        let w = crate::ui::styles::chip_width(label);
+        let rect = Rect::new(x, peak_toggle_row.y, w, 1);
+        if contains_point(rect, point) {
+            return Some(MouseAction::TogglePeakEnabled);
+        }
+    }
+
+    None
 }
 
 fn profiles_popup_mouse_action(
@@ -328,6 +415,30 @@ fn selector_popup_mouse_action(
                 .map(|mode| MouseAction::PickPreampMode { input, mode })
         }
     }
+}
+
+fn system_panel_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<MouseAction> {
+    if !contains_point(area, point) {
+        return None;
+    }
+    let inner = crate::ui::layouts::inner_area(area);
+    let labels = ["RAW", "OPTNS"];
+    let rects = inline_chip_rects(inner.x, inner.y, &labels);
+    if contains_point(rects[0], point) {
+        return Some(MouseAction::ToggleRawView);
+    }
+    if contains_point(rects[1], point) {
+        if state.options_popup_open {
+            return Some(MouseAction::CloseOptionsPopup);
+        } else {
+            return Some(MouseAction::OpenOptionsPopup);
+        }
+    }
+    None
 }
 
 fn device_header_mouse_action(

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod profile;
+pub mod settings;
 pub mod terminal;
 pub mod transport;
 pub mod ui;

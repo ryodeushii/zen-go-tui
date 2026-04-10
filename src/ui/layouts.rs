@@ -368,6 +368,37 @@ pub(crate) fn profiles_popup_area(area: Rect) -> Rect {
     }
 }
 
+pub(crate) fn options_popup_area(area: Rect) -> Rect {
+    let width = area.width.min(52).max(38);
+    let height = area.height.min(14).max(10);
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+pub(crate) fn options_popup_layout(area: Rect) -> Vec<Rect> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .split(inner_area(area))
+        .to_vec()
+}
+
+pub(crate) fn options_popup_button_rects(area: Rect) -> Vec<Rect> {
+    let row = options_popup_layout(area)[4];
+    inline_chip_rects(row.x, row.y, &["CLOSE"])
+}
+
 pub(crate) fn profiles_popup_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)

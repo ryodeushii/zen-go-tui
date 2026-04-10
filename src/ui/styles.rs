@@ -1,10 +1,16 @@
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders};
 
 use crate::terminal;
+use antelope_protocol::{PreampInputState, PreampMode};
+
+#[cfg(test)]
 use crate::ui::layouts::{ADJUST_DOWN_BUTTON_LABEL, ADJUST_UP_BUTTON_LABEL};
-use antelope_protocol::{OutputMode, OutputState, PreampInputState, PreampMode};
+#[cfg(test)]
+use antelope_protocol::{OutputMode, OutputState};
+#[cfg(test)]
+use ratatui::text::{Line, Text};
 
 pub(crate) fn section_block(title: &str, focused: bool) -> Block<'_> {
     let style = if focused {

@@ -7,7 +7,7 @@ use ratatui::Frame;
 use tui_slider::{Slider, SliderOrientation};
 
 use crate::app::{
-    AppState, FocusArea, ProfileEditorMode, RawPacketTab, SelectorPopupKind,
+    AppState, FocusArea, ProfileEditorMode, RawPacketTab, RefreshRate, SelectorPopupKind,
     QUERY_REPLY_VISIBLE_COUNT,
 };
 use crate::terminal;
@@ -37,6 +37,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     draw_assignment_picker(frame, frame.area(), state);
     draw_selector_popup(frame, frame.area(), state);
     draw_hotkeys_popup(frame, frame.area(), state);
+    draw_options_popup(frame, frame.area(), state);
 }
 
 pub fn profile_editor_cursor(area: Rect, state: &AppState) -> Option<(u16, u16)> {
@@ -80,8 +81,8 @@ fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         device_sections[1],
     );
     frame.render_widget(
-        Paragraph::new(render_inspector_summary())
-            .block(panel_block("Inspector", Color::LightRed, false))
+        Paragraph::new(render_system_summary(state))
+            .block(panel_block("System", Color::LightRed, false))
             .wrap(Wrap { trim: false }),
         sections[1],
     );
@@ -557,6 +558,95 @@ fn draw_hotkeys_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     );
 }
 
+fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if !state.options_popup_open {
+        return;
+    }
+
+    let popup = options_popup_area(area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(panel_block("Options", Color::Cyan, true), popup);
+
+    let rows = options_popup_layout(popup);
+    Paragraph::new(Line::from(vec![chip("OPTIONS", Color::Black, Color::Cyan)]))
+        .render(rows[0], frame.buffer_mut());
+
+    let refresh_rates = RefreshRate::all();
+    let current_refresh = state.settings.refresh_rate;
+    let mut refresh_spans = vec![Span::styled("Refresh: ", subdued_style())];
+    for r in refresh_rates {
+        if *r == current_refresh {
+            refresh_spans.push(chip(
+                &format!("* {}", r.label()),
+                Color::Black,
+                Color::LightCyan,
+            ));
+        } else {
+            refresh_spans.push(chip(r.label(), Color::Black, Color::Gray));
+        }
+        refresh_spans.push(Span::raw(" "));
+    }
+    Paragraph::new(Line::from(refresh_spans)).render(rows[1], frame.buffer_mut());
+
+    let peak_db = state.settings.peak_threshold_db();
+    let peak_status = if state.settings.peak_enabled {
+        format!("ON ({} dB)", peak_db)
+    } else {
+        "OFF".to_string()
+    };
+    let peak_color = if state.settings.peak_enabled {
+        Color::LightGreen
+    } else {
+        Color::DarkGray
+    };
+    Paragraph::new(Line::from(vec![
+        Span::styled("Peaks:  ", subdued_style()),
+        chip(&peak_status, Color::Black, peak_color),
+        Span::raw("  "),
+        chip("↓", Color::Black, Color::Gray),
+        Span::raw(" "),
+        chip("↑", Color::Black, Color::Gray),
+    ]))
+    .render(rows[2], frame.buffer_mut());
+
+    Paragraph::new(Line::from(vec![
+        Span::styled("Toggle: ", subdued_style()),
+        chip(
+            if state.settings.peak_enabled {
+                "Disable"
+            } else {
+                "Enable"
+            },
+            Color::Black,
+            Color::Yellow,
+        ),
+        Span::raw("  "),
+        Span::styled("p ", subdued_style()),
+        Span::styled("toggle", muted_style()),
+    ]))
+    .render(rows[3], frame.buffer_mut());
+
+    let button_rects = options_popup_button_rects(popup);
+    Paragraph::new(Line::from(vec![chip("CLOSE", Color::Black, Color::Gray)]))
+        .render(button_rects[0], frame.buffer_mut());
+
+    Paragraph::new(Line::from(vec![
+        Span::styled("ESC ", subdued_style()),
+        Span::styled("close", muted_style()),
+        Span::raw("   "),
+        Span::styled("1/2/3 ", subdued_style()),
+        Span::styled("refresh rate", muted_style()),
+        Span::raw("   "),
+        Span::styled("↑/↓ ", subdued_style()),
+        Span::styled("threshold", muted_style()),
+        Span::raw("   "),
+        Span::styled("p ", subdued_style()),
+        Span::styled("toggle peaks", muted_style()),
+    ]))
+    .wrap(Wrap { trim: false })
+    .render(rows[5], frame.buffer_mut());
+}
+
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let layout = raw_page_layout(area);
 
@@ -961,9 +1051,9 @@ pub(crate) fn render_vertical_combo_strip(
 
     let meter_ratio = meter_db_ratio_option(meter_db);
     let level_ratio = level_db_ratio(level_db);
-    let peak_ratio = peak_raw.map(antelope_protocol::meter_ratio);
+    let peak_active = peak_raw.is_some();
+    let peak_y = if peak_active { Some(meter.y) } else { None };
     let level_handle_y = level_ratio.map(|ratio| vertical_ratio_row(level, ratio));
-    let peak_y = peak_ratio.map(|ratio| vertical_ratio_row(meter, ratio));
 
     for step in 0..meter.height {
         let y = meter.y + meter.height.saturating_sub(1) - step;
@@ -1631,8 +1721,22 @@ pub(crate) fn render_device_metadata(state: &AppState) -> Line<'static> {
     }
 }
 
-pub(crate) fn render_inspector_summary() -> Line<'static> {
-    Line::from(vec![chip("RAW", Color::Black, Color::LightRed)])
+pub(crate) fn render_system_summary(state: &AppState) -> Line<'static> {
+    let raw_color = if state.raw_view_open {
+        Color::Yellow
+    } else {
+        Color::LightRed
+    };
+    let options_color = if state.options_popup_open {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    };
+    Line::from(vec![
+        chip("RAW", Color::Black, raw_color),
+        Span::raw(" "),
+        chip("OPTNS", Color::Black, options_color),
+    ])
 }
 
 pub(crate) fn connection_badge_color(state: &AppState) -> Color {

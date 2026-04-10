@@ -388,10 +388,12 @@ fn afx_page_renders_usb_recording_pairs_from_mixer_assignments() {
 }
 
 #[test]
-fn titlebar_renders_inspector_hint_on_single_row() {
-    let rendered = render::render_inspector_summary().to_string();
+fn titlebar_renders_system_panel_with_raw_and_options() {
+    let state = AppState::default();
+    let rendered = render::render_system_summary(&state).to_string();
 
     assert!(rendered.contains("RAW"));
+    assert!(rendered.contains("OPTNS"));
     assert!(!rendered.contains('\n'));
 }
 
@@ -490,8 +492,9 @@ fn query_request_panel_includes_recent_request_log() {
 #[test]
 fn mouse_action_hits_status_raw_view_toggle() {
     let area = Rect::new(0, 0, 120, 50);
-    let button = layouts::titlebar_layout(layouts::root_chunks(area)[0])[1];
-    let point = (button.x + button.width / 2, button.y + 1);
+    let system_panel = layouts::titlebar_layout(layouts::root_chunks(area)[0])[1];
+    let inner = layouts::inner_area(system_panel);
+    let point = (inner.x, inner.y);
 
     assert_eq!(
         mouse_action(area, &AppState::default(), point.0, point.1),

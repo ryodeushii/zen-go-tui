@@ -20,8 +20,10 @@ use antelope_protocol::{
     SampleRate, Surface,
 };
 use zen_go_tui::app::{
-    Controller, FocusArea, MainPage, ProfileEditorMode, SelectorPopupKind, SelectorPopupState,
+    Controller, FocusArea, MainPage, ProfileEditorMode, RefreshRate, SelectorPopupKind,
+    SelectorPopupState,
 };
+use zen_go_tui::settings;
 use zen_go_tui::terminal::{
     AppKeyCode, AppKeyEvent, AppKeyEventKind, AppMouseButton, AppMouseEvent, AppMouseEventKind,
 };
@@ -95,8 +97,12 @@ fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     terminal.hide_cursor()?;
     let input_rx = spawn_input_reader();
     let mut controller = Controller::new(transport);
+    if let Ok(saved) = settings::load_settings() {
+        controller.state.settings = saved;
+    }
     controller.bootstrap()?;
     let result = app_loop(&mut terminal, &mut controller, &input_rx);
+    let _ = settings::save_settings(&controller.state.settings);
     disable_raw_mode()?;
     terminal.show_cursor()?;
     io::stdout().execute(DisableMouseCapture)?;
@@ -179,6 +185,15 @@ fn handle_key_press(
                 controller.state.toggle_raw_view();
                 return Ok(KeyAction::Continue);
             }
+            AppKeyCode::Char('o') => {
+                controller.state.toggle_options_popup();
+                controller.state.last_message = if controller.state.options_popup_open {
+                    "Options popup opened".to_string()
+                } else {
+                    "Closed options popup".to_string()
+                };
+                return Ok(KeyAction::Continue);
+            }
             _ => {}
         }
     }
@@ -187,6 +202,43 @@ fn handle_key_press(
         match key_code {
             AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
             AppKeyCode::Char('?') | AppKeyCode::Esc => controller.state.toggle_hotkeys_popup(),
+            _ => {}
+        }
+        return Ok(KeyAction::Continue);
+    }
+
+    if controller.state.options_popup_open {
+        match key_code {
+            AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+            AppKeyCode::Esc => controller.state.toggle_options_popup(),
+            AppKeyCode::Char('1') => {
+                controller.state.settings.refresh_rate = RefreshRate::Fps15;
+                controller.state.last_message = "Refresh rate set to 15 FPS".to_string();
+            }
+            AppKeyCode::Char('2') => {
+                controller.state.settings.refresh_rate = RefreshRate::Fps30;
+                controller.state.last_message = "Refresh rate set to 30 FPS".to_string();
+            }
+            AppKeyCode::Char('3') => {
+                controller.state.settings.refresh_rate = RefreshRate::Fps60;
+                controller.state.last_message = "Refresh rate set to 60 FPS".to_string();
+            }
+            AppKeyCode::Up => {
+                cycle_peak_threshold(controller, true);
+            }
+            AppKeyCode::Down => {
+                cycle_peak_threshold(controller, false);
+            }
+            AppKeyCode::Char('p') => {
+                controller.state.settings.peak_enabled = !controller.state.settings.peak_enabled;
+                if controller.state.settings.peak_enabled {
+                    controller.state.last_message = "Peak detection enabled".to_string();
+                } else {
+                    controller.state.preamp_peaks = [None, None];
+                    controller.state.mixer_peaks = [[None; 16]; 2];
+                    controller.state.last_message = "Peak detection disabled".to_string();
+                }
+            }
             _ => {}
         }
         return Ok(KeyAction::Continue);
@@ -257,6 +309,15 @@ fn handle_key_press(
                 let result = open_profiles_popup(controller);
                 handle_profile_result(controller, result)?
             }
+            Ok(())
+        }
+        AppKeyCode::Char('O') => {
+            controller.state.toggle_options_popup();
+            controller.state.last_message = if controller.state.options_popup_open {
+                "Options popup opened".to_string()
+            } else {
+                "Closed options popup".to_string()
+            };
             Ok(())
         }
         AppKeyCode::Char('R') => match controller.refresh_queried_state() {
@@ -361,13 +422,15 @@ fn handle_key_press(
             if controller.state.assignment_picker.is_some()
                 || controller.state.selector_popup.is_some()
                 || controller.state.routing_popup_open
-                || controller.state.hotkeys_popup_open =>
+                || controller.state.hotkeys_popup_open
+                || controller.state.options_popup_open =>
         {
             controller.state.assignment_picker = None;
             controller.state.selector_popup = None;
             controller.state.routing_popup_open = false;
             controller.state.popup_selected_index = 0;
             controller.state.hotkeys_popup_open = false;
+            controller.state.options_popup_open = false;
             controller.state.last_message = "Closed popup".to_string();
             Ok(())
         }
@@ -915,6 +978,34 @@ fn apply_mouse_action_with_area(
             controller.state.routing_popup_open = false;
             controller.state.last_message = "Closed routing popup".to_string();
         }
+        ui::MouseAction::OpenOptionsPopup => {
+            controller.state.profiles_popup_open = false;
+            controller.state.profile_editor = None;
+            controller.state.routing_popup_open = false;
+            controller.state.options_popup_open = true;
+            controller.state.last_message = "Options popup opened".to_string();
+        }
+        ui::MouseAction::CloseOptionsPopup => {
+            controller.state.options_popup_open = false;
+            controller.state.last_message = "Closed options popup".to_string();
+        }
+        ui::MouseAction::SetRefreshRate(rate) => {
+            controller.state.settings.refresh_rate = rate;
+            controller.state.last_message = format!("Refresh rate set to {}", rate.label());
+        }
+        ui::MouseAction::CyclePeakThreshold(increase) => {
+            cycle_peak_threshold(controller, increase);
+        }
+        ui::MouseAction::TogglePeakEnabled => {
+            controller.state.settings.peak_enabled = !controller.state.settings.peak_enabled;
+            if controller.state.settings.peak_enabled {
+                controller.state.last_message = "Peak detection enabled".to_string();
+            } else {
+                controller.state.preamp_peaks = [None, None];
+                controller.state.mixer_peaks = [[None; 16]; 2];
+                controller.state.last_message = "Peak detection disabled".to_string();
+            }
+        }
         ui::MouseAction::SelectProfile(index) => {
             controller.state.popup_selected_index =
                 index.min(controller.state.profile_names.len().saturating_sub(1));
@@ -1298,6 +1389,25 @@ fn apply_mouse_action_with_area(
     }
 
     Ok(())
+}
+
+const PEAK_THRESHOLD_CHOICES: [u8; 10] =
+    [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0a, 0x0f, 0x14];
+
+fn cycle_peak_threshold(controller: &mut Controller, increase: bool) {
+    let current = controller.state.settings.peak_threshold_raw;
+    let pos = PEAK_THRESHOLD_CHOICES
+        .iter()
+        .position(|&v| v == current)
+        .unwrap_or(3);
+    let next_pos = if increase {
+        (pos + 1).min(PEAK_THRESHOLD_CHOICES.len() - 1)
+    } else {
+        pos.saturating_sub(1)
+    };
+    controller.state.settings.peak_threshold_raw = PEAK_THRESHOLD_CHOICES[next_pos];
+    let db = controller.state.settings.peak_threshold_db();
+    controller.state.last_message = format!("Peak threshold set to {} dB", db);
 }
 
 fn cycle_sample_rate(controller: &mut Controller) -> Result<()> {

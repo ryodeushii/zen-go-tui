@@ -33,7 +33,9 @@ pub const OFFSET_HP2_VOLUME: usize = 0x10;
 pub const OFFSET_HP2_MODE: usize = 0x11;
 
 /// Snapshot payload offsets — DSP/preamp cluster (bytes 0x18–0x1b).
+#[allow(dead_code)]
 pub const OFFSET_DSP_CLUSTER_START: usize = 0x18;
+#[allow(dead_code)]
 pub const OFFSET_DSP_CLUSTER_END: usize = 0x1c;
 pub const OFFSET_PREAMP1_GAIN: usize = 0x18;
 pub const OFFSET_PREAMP2_GAIN: usize = 0x19;

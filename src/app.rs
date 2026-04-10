@@ -134,6 +134,76 @@ impl StructuralSnapshot {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshRate {
+    Fps15,
+    Fps30,
+    Fps60,
+}
+
+impl RefreshRate {
+    pub fn all() -> &'static [RefreshRate] {
+        &[RefreshRate::Fps15, RefreshRate::Fps30, RefreshRate::Fps60]
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            RefreshRate::Fps15 => "15 FPS",
+            RefreshRate::Fps30 => "30 FPS",
+            RefreshRate::Fps60 => "60 FPS",
+        }
+    }
+
+    pub fn loop_sleep_ms(&self) -> u64 {
+        match self {
+            RefreshRate::Fps15 => 30,
+            RefreshRate::Fps30 => 16,
+            RefreshRate::Fps60 => 8,
+        }
+    }
+}
+
+impl Default for RefreshRate {
+    fn default() -> Self {
+        RefreshRate::Fps30
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AppSettings {
+    pub refresh_rate: RefreshRate,
+    pub peak_threshold_raw: u8,
+    pub peak_enabled: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            refresh_rate: RefreshRate::default(),
+            peak_threshold_raw: PEAK_THRESHOLD_RAW,
+            peak_enabled: true,
+        }
+    }
+}
+
+impl AppSettings {
+    pub fn peak_threshold_db(&self) -> i16 {
+        match self.peak_threshold_raw {
+            0x00 => 0,
+            0x01 => -1,
+            0x02 => -2,
+            0x03 => -3,
+            0x04 => -4,
+            0x05 => -5,
+            0x06 => -6,
+            0x0a => -10,
+            0x0f => -15,
+            0x14 => -20,
+            _ => -3,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AppState {
     pub device: DeviceStatus,
@@ -179,6 +249,8 @@ pub struct AppState {
     pub hotkeys_popup_open: bool,
     pub preamp_peaks: [Option<MeterPeak>; 2],
     pub mixer_peaks: [[Option<MeterPeak>; 16]; 2],
+    pub settings: AppSettings,
+    pub options_popup_open: bool,
 }
 
 pub const MIXER_STRIP_PAGE_SIZE: usize = 8;
@@ -256,6 +328,8 @@ impl Default for AppState {
             hotkeys_popup_open: false,
             preamp_peaks: [None, None],
             mixer_peaks: [[None; 16]; 2],
+            settings: AppSettings::default(),
+            options_popup_open: false,
         }
     }
 }
@@ -398,7 +472,7 @@ impl AppState {
     }
 
     fn track_mixer_peak(&mut self, mix_idx: usize, channel_idx: usize, meter: u8) {
-        if meter > PEAK_THRESHOLD_RAW {
+        if !self.settings.peak_enabled || meter > self.settings.peak_threshold_raw {
             return;
         }
         let existing = self.mixer_peaks[mix_idx][channel_idx];
@@ -420,7 +494,7 @@ impl AppState {
     }
 
     fn track_preamp_peak(&mut self, input_idx: usize, meter: u8) {
-        if meter > PEAK_THRESHOLD_RAW {
+        if !self.settings.peak_enabled || meter > self.settings.peak_threshold_raw {
             return;
         }
         let existing = self.preamp_peaks[input_idx];
@@ -670,6 +744,10 @@ impl AppState {
 
     pub fn toggle_hotkeys_popup(&mut self) {
         self.hotkeys_popup_open = !self.hotkeys_popup_open;
+    }
+
+    pub fn toggle_options_popup(&mut self) {
+        self.options_popup_open = !self.options_popup_open;
     }
 
     pub fn selected_profile_name(&self) -> Option<&str> {
