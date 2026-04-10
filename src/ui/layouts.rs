@@ -2,7 +2,6 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::app::AppState;
 
-use super::mouse::contains_point;
 use super::styles::chip_width;
 
 // Constants
@@ -627,32 +626,6 @@ pub(crate) fn wheel_hitbox(area: Rect) -> Rect {
         area.y,
         area.width.saturating_add(left).saturating_add(right),
         area.height,
-    )
-}
-
-fn slider_ratio_for_horizontal_point(area: Rect, point: (u16, u16)) -> Option<f64> {
-    if !contains_point(area, point) || area.width == 0 {
-        return None;
-    }
-    if area.width <= 1 {
-        return Some(1.0);
-    }
-    Some(
-        ((point.0.saturating_sub(area.x)) as f64 / area.width.saturating_sub(1) as f64)
-            .clamp(0.0, 1.0),
-    )
-}
-
-fn slider_ratio_for_vertical_point(area: Rect, point: (u16, u16)) -> Option<f64> {
-    if !contains_point(area, point) || area.height == 0 {
-        return None;
-    }
-    if area.height <= 1 {
-        return Some(1.0);
-    }
-    Some(
-        (1.0 - (point.1.saturating_sub(area.y)) as f64 / area.height.saturating_sub(1) as f64)
-            .clamp(0.0, 1.0),
     )
 }
 

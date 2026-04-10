@@ -1,6 +1,6 @@
 //! Timing and scheduling helpers for the device polling loop.
 
-use std::time::{Duration, Instant};
+use std::{time::{Duration, Instant}};
 
 /// Interval for the initial device connection retry.
 pub(crate) const INITIAL_DEVICE_RETRY_INTERVAL: Duration = Duration::from_millis(500);

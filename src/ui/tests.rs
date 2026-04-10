@@ -3,14 +3,13 @@ use std::time::Instant;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Modifier};
 use ratatui::text::Line;
 use ratatui::widgets::Widget;
 use ratatui::Terminal;
 
 use crate::app::{
-    AppState, AssignmentPickerState, FocusArea, QueryReplyLogEntry, RawPacketTab,
-    SelectorPopupKind, SelectorPopupState,
+    AppState, AssignmentPickerState, FocusArea, RawPacketTab, SelectorPopupKind, SelectorPopupState,
 };
 use antelope_protocol::{
     ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,

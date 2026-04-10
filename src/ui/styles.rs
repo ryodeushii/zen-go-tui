@@ -1,11 +1,9 @@
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders};
 
 use crate::terminal;
-use antelope_protocol::{OutputMode, OutputState, PreampInputState, PreampMode};
-
-use super::layouts::{ADJUST_DOWN_BUTTON_LABEL, ADJUST_UP_BUTTON_LABEL};
+use antelope_protocol::{PreampInputState, PreampMode};
 
 pub(crate) fn section_block(title: &str, focused: bool) -> Block<'_> {
     let style = if focused {

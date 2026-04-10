@@ -1,7 +1,7 @@
 {
   "metadata": {
     "version": "1.0.0",
-    "last_run": "2026-04-08T01:14:18.236837Z",
+    "last_run": "2026-04-10T13:47:26.176008Z",
     "root": "/home/ryodeushii/repos/antelope-analysis-gpt54",
     "include_patterns": [
       "src/**/*.rs",
@@ -19,16 +19,36 @@
     "exceptions": []
   },
   "file_hashes": {
-    "Cargo.toml": "a16174eb831ef015abf426d2a57de94b",
-    "src/app.rs": "f82f84d2beecaa84fb19678eaee68b49",
-    "src/lib.rs": "5584af593cfac59a532c0ebaf944dc04",
-    "src/main.rs": "de1f9959e43a48153184bc2ec3f8ec78",
-    "src/protocol.rs": "2a00a3e70cbdb60c2b288ddcbbae8461",
-    "src/transport.rs": "f771d95fe6b9a70396e52db31f0de076",
-    "src/ui.rs": "c229cf4c4572bcb7c2673c5360464442"
+    "Cargo.toml": "ae7e986a48192ecf9844ca037a8e5355",
+    "antelope-protocol/Cargo.toml": "a431daa9362c71ce5e093743ebec02d3",
+    "antelope-protocol/src/encoder.rs": "0bd492009a41e91071166d92e3b492fb",
+    "antelope-protocol/src/frame.rs": "b0d5d1b1f7be8a7747286dffa930b775",
+    "antelope-protocol/src/lib.rs": "314073899effb3e5f9ac888f18931fcb",
+    "antelope-protocol/src/mixer.rs": "3a56d4cd2bd7e5c2be199d600c66e952",
+    "antelope-protocol/src/query.rs": "77d3d0c0a0526855d2c0ddfadac252ee",
+    "antelope-protocol/src/types.rs": "62894b6f85e9e8bfef977b7cbf23dcbd",
+    "src/app.rs": "806360e9e3308d2216c6b6a27c897acf",
+    "src/cli.rs": "d4fecd10b76b578a95e41c98de418255",
+    "src/input.rs": "ece4645a81f369c63255a31b2a44eb89",
+    "src/lib.rs": "ecb902990e2cf8dc4d207aa7028430c7",
+    "src/main.rs": "ac5f05e32a15f33b9ad2100885c29126",
+    "src/profile.rs": "1bac06a282b42b2071026822033aca51",
+    "src/profile_ops.rs": "618f5a2100d8d33acd2fb808b3858b8a",
+    "src/terminal.rs": "8c79e89ebd8be7d3d66b5ceda11c538d",
+    "src/timing.rs": "fe6599b1bd6b1a19312a6d0ba0066f42",
+    "src/transport.rs": "96c9380af176937145fbf6c123cc96c3",
+    "src/ui/layouts.rs": "1494becfd5b4d69029f9a82179d31df3",
+    "src/ui/mod.rs": "aada44b66488dcd06e7ce470559c0c6d",
+    "src/ui/mouse.rs": "6dc3913190cbde23bee8cedbda97d310",
+    "src/ui/render.rs": "635bc59f361fdb27e90373aef647a8aa",
+    "src/ui/styles.rs": "908904aa6a55c5c1f68543567dab9e5f",
+    "src/ui/tests.rs": "11cda8fd53b55a6a321731cdf07593a3"
   },
   "folder_hashes": {
-    ".": "da2d5809e5d875518f898748e8b00963",
-    "src": "fde57283909520a0bc7fa9a860b9b838"
+    "src/ui": "31b0853a9c614b21f4274b725837eb8d",
+    "src": "ff1f0a19369fc6414d9c5c2a5f9773b9",
+    "antelope-protocol": "6e6fd1083a9f5e693c09249d533eef61",
+    ".": "18e6a6b6d30ba5628d31a735daea7371",
+    "antelope-protocol/src": "ca7c6f959a6c7df0ed4239c3ad7d41ad"
   }
 }
