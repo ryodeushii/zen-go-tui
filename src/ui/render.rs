@@ -327,6 +327,7 @@ fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             title,
             input,
             state.focus == FocusArea::Preamp && state.selected_preamp_input == index,
+            state.preamp_peaks[index].as_ref().map(|p| p.raw),
         );
     }
 }
@@ -835,6 +836,7 @@ pub(crate) fn render_preamp_visual_widget(
     title: &str,
     input: PreampInputState,
     focused: bool,
+    peak_raw: Option<u8>,
 ) {
     let block = if input.phantom_on {
         warning_section_block(title, focused)
@@ -858,6 +860,15 @@ pub(crate) fn render_preamp_visual_widget(
         Some(input.gain_ratio()),
         style_for_preamp_mode(input.mode),
     );
+    if let Some(peak_raw) = peak_raw {
+        if let Some(peak_db) = meter_display_db(peak_raw) {
+            let peak_text = format!("PEAK {} dB", peak_db);
+            let peak_style = terminal::adapt_style(Style::default().fg(Color::Red));
+            if sections[0].y + 2 < area.y + area.height.saturating_sub(1) {
+                buffer.set_string(sections[0].x, sections[0].y + 2, &peak_text, peak_style);
+            }
+        }
+    }
     Paragraph::new(render_preamp_controls_text(input)).render(sections[1], buffer);
 }
 
@@ -904,6 +915,7 @@ pub(crate) fn render_vertical_combo_strip(
     buffer: &mut Buffer,
     meter_db: Option<i16>,
     level_db: Option<i16>,
+    peak_raw: Option<u8>,
 ) {
     if area.width < 4 || area.height == 0 {
         return;
@@ -949,7 +961,9 @@ pub(crate) fn render_vertical_combo_strip(
 
     let meter_ratio = meter_db_ratio_option(meter_db);
     let level_ratio = level_db_ratio(level_db);
+    let peak_ratio = peak_raw.map(antelope_protocol::meter_ratio);
     let level_handle_y = level_ratio.map(|ratio| vertical_ratio_row(level, ratio));
+    let peak_y = peak_ratio.map(|ratio| vertical_ratio_row(meter, ratio));
 
     for step in 0..meter.height {
         let y = meter.y + meter.height.saturating_sub(1) - step;
@@ -960,16 +974,18 @@ pub(crate) fn render_vertical_combo_strip(
         let level_filled = level_ratio
             .map(|ratio| cell_ratio <= ratio)
             .unwrap_or(false);
+        let is_peak = peak_y == Some(y);
 
+        let (meter_symbol, meter_color) = if is_peak {
+            ("▇", Color::Red)
+        } else if meter_filled {
+            ("█", meter_bar_color(cell_ratio))
+        } else {
+            ("░", Color::DarkGray)
+        };
         buffer[(meter.x, y)]
-            .set_symbol(if meter_filled { "█" } else { "░" })
-            .set_style(terminal::adapt_style(Style::default().fg(
-                if meter_filled {
-                    meter_bar_color(cell_ratio)
-                } else {
-                    Color::DarkGray
-                },
-            )));
+            .set_symbol(meter_symbol)
+            .set_style(terminal::adapt_style(Style::default().fg(meter_color)));
 
         let level_symbol = if level_handle_y == Some(y) {
             "●"
@@ -1066,7 +1082,19 @@ pub(crate) fn render_mixer_strip_widget(
     )))
     .alignment(Alignment::Center)
     .render(rows[4], buffer);
-    render_vertical_combo_strip(rows[5], buffer, channel.meter_db(), channel.display_db());
+    let peak_raw = state
+        .mixer_peaks
+        .get(state.active_mixer_surface().index())
+        .and_then(|mix| mix.get(index))
+        .and_then(|peak| peak.as_ref())
+        .map(|p| p.raw);
+    render_vertical_combo_strip(
+        rows[5],
+        buffer,
+        channel.meter_db(),
+        channel.display_db(),
+        peak_raw,
+    );
 
     Paragraph::new(Line::from(Span::styled(
         mixer_level_value_label(channel),

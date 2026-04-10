@@ -160,7 +160,7 @@ fn preamp_visual_stacks_observed_meter_and_gain_sliders() {
     input.observed_meter = Some(0x30);
 
     let rendered = render_buffer(Rect::new(0, 0, 44, 5), |area, buffer| {
-        render::render_preamp_visual_widget(area, buffer, "Preamp 1", input, true);
+        render::render_preamp_visual_widget(area, buffer, "Preamp 1", input, true, None);
     });
 
     assert!(rendered.contains("Preamp 1"));

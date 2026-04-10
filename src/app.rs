@@ -177,10 +177,29 @@ pub struct AppState {
     pub profile_editor: Option<ProfileEditorState>,
     pub popup_selected_index: usize,
     pub hotkeys_popup_open: bool,
+    pub preamp_peaks: [Option<MeterPeak>; 2],
+    pub mixer_peaks: [[Option<MeterPeak>; 16]; 2],
 }
 
 pub const MIXER_STRIP_PAGE_SIZE: usize = 8;
 pub const QUERY_REPLY_VISIBLE_COUNT: usize = 8;
+pub const PEAK_HOLD_DURATION: Duration = Duration::from_secs(3);
+pub const PEAK_THRESHOLD_RAW: u8 = 0x03;
+
+/// Tracks a detected peak level for meter displays.
+#[derive(Debug, Clone, Copy)]
+pub struct MeterPeak {
+    /// Raw meter byte value at peak (0x00–0x60).
+    pub raw: u8,
+    /// When the peak was detected.
+    pub detected_at: Instant,
+}
+
+impl MeterPeak {
+    pub fn is_active(&self) -> bool {
+        self.detected_at.elapsed() < PEAK_HOLD_DURATION
+    }
+}
 
 impl Default for AppState {
     fn default() -> Self {
@@ -235,11 +254,32 @@ impl Default for AppState {
             profile_editor: None,
             popup_selected_index: 0,
             hotkeys_popup_open: false,
+            preamp_peaks: [None, None],
+            mixer_peaks: [[None; 16]; 2],
         }
     }
 }
 
 impl AppState {
+    pub fn prune_expired_peaks(&mut self) {
+        for mix_idx in 0..2 {
+            for ch_idx in 0..16 {
+                if let Some(peak) = self.mixer_peaks[mix_idx][ch_idx] {
+                    if !peak.is_active() {
+                        self.mixer_peaks[mix_idx][ch_idx] = None;
+                    }
+                }
+            }
+        }
+        for input_idx in 0..2 {
+            if let Some(peak) = self.preamp_peaks[input_idx] {
+                if !peak.is_active() {
+                    self.preamp_peaks[input_idx] = None;
+                }
+            }
+        }
+    }
+
     pub fn startup_query_summary(&self, query_id: u8) -> Option<&str> {
         startup_query_slot(query_id)
             .and_then(|index| self.device.startup_query_summaries[index].as_deref())
@@ -331,6 +371,7 @@ impl AppState {
 
     fn apply_meters_only(&mut self, snapshot: &DeviceStateSnapshot) {
         let mixer = self.active_mixer_surface();
+        let mut meter_updates: Vec<(usize, usize, u8)> = Vec::new();
         for channel in 1..=16 {
             let Some(decoded) = snapshot.mixer_decode.strip(mixer, channel) else {
                 continue;
@@ -340,10 +381,64 @@ impl AppState {
             };
             if let Some(meter) = decoded.meter {
                 slot.meter = Some(meter);
+                meter_updates.push((mixer.index(), channel as usize - 1, meter));
             }
         }
+        for (mix_idx, ch_idx, meter) in meter_updates {
+            self.track_mixer_peak(mix_idx, ch_idx, meter);
+        }
+        if let Some(meter) = snapshot.mixer_decode.observed_preamp1_meter {
+            self.track_preamp_peak(0, meter);
+        }
         self.preamp.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
+        if let Some(meter) = snapshot.mixer_decode.observed_preamp2_meter {
+            self.track_preamp_peak(1, meter);
+        }
         self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
+    }
+
+    fn track_mixer_peak(&mut self, mix_idx: usize, channel_idx: usize, meter: u8) {
+        if meter > PEAK_THRESHOLD_RAW {
+            return;
+        }
+        let existing = self.mixer_peaks[mix_idx][channel_idx];
+        match existing {
+            Some(peak) if meter < peak.raw => {
+                self.mixer_peaks[mix_idx][channel_idx] = Some(MeterPeak {
+                    raw: meter,
+                    detected_at: Instant::now(),
+                });
+            }
+            None => {
+                self.mixer_peaks[mix_idx][channel_idx] = Some(MeterPeak {
+                    raw: meter,
+                    detected_at: Instant::now(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn track_preamp_peak(&mut self, input_idx: usize, meter: u8) {
+        if meter > PEAK_THRESHOLD_RAW {
+            return;
+        }
+        let existing = self.preamp_peaks[input_idx];
+        match existing {
+            Some(peak) if meter < peak.raw => {
+                self.preamp_peaks[input_idx] = Some(MeterPeak {
+                    raw: meter,
+                    detected_at: Instant::now(),
+                });
+            }
+            None => {
+                self.preamp_peaks[input_idx] = Some(MeterPeak {
+                    raw: meter,
+                    detected_at: Instant::now(),
+                });
+            }
+            _ => {}
+        }
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &DeviceStateSnapshot) {
@@ -359,13 +454,20 @@ impl AppState {
         self.outputs = snapshot.outputs;
         self.dsp_cluster = snapshot.dsp_cluster;
         self.preamp = PreampState::from_cluster(snapshot.dsp_cluster);
+        if let Some(meter) = snapshot.mixer_decode.observed_preamp1_meter {
+            self.track_preamp_peak(0, meter);
+        }
         self.preamp.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
+        if let Some(meter) = snapshot.mixer_decode.observed_preamp2_meter {
+            self.track_preamp_peak(1, meter);
+        }
         self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
         self.surface = snapshot.surface;
         self.apply_passive_mixer_decode(snapshot);
     }
 
     fn apply_passive_mixer_decode(&mut self, snapshot: &DeviceStateSnapshot) {
+        let mut meter_updates: Vec<(usize, usize, u8)> = Vec::new();
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
             for channel in 1..=16 {
                 let Some(decoded) = snapshot.mixer_decode.strip(mixer, channel) else {
@@ -377,6 +479,7 @@ impl AppState {
 
                 if let Some(meter) = decoded.meter {
                     slot.meter = Some(meter);
+                    meter_updates.push((mixer.index(), channel as usize - 1, meter));
                 }
                 if let Some(muted) = decoded.muted {
                     slot.muted = Some(muted);
@@ -385,6 +488,9 @@ impl AppState {
                     slot.linked = Some(linked);
                 }
             }
+        }
+        for (mix_idx, ch_idx, meter) in meter_updates {
+            self.track_mixer_peak(mix_idx, ch_idx, meter);
         }
     }
 

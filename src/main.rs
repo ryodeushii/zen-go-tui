@@ -486,6 +486,7 @@ fn app_loop(
         }
 
         let now = std::time::Instant::now();
+        controller.state.prune_expired_peaks();
         if should_draw_frame(last_draw_at, needs_redraw, now) {
             terminal.draw(|frame| {
                 ui::draw(frame, &controller.state);
