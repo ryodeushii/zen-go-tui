@@ -13,7 +13,9 @@ use crate::app::{
 use crate::terminal;
 use antelope_protocol::{
     meter_display_db, meter_ratio, ClockSource, MixerAssignment, MixerSurface, OutputMode,
-    OutputState, PreampInputState, PreampMode, SampleRate,
+    OutputState, PreampInputState, PreampMode, SampleRate, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
+    OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET,
+    SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
 };
 
 use super::layouts::*;
@@ -1298,18 +1300,18 @@ pub(crate) fn render_colored_meter_bar(area: Rect, buffer: &mut Buffer, ratio: f
 
 pub(crate) fn experimental_mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
     let bytes = state.latest_raw_73.as_deref()?;
-    let payload = bytes.get(0x10..)?;
+    let payload = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..)?;
 
-    match payload.get(0x6a).copied() {
-        Some(0x0f) => Some((
+    match payload.get(OFFSET_SURFACE_SELECTOR).copied() {
+        Some(SURFACE_CODE_MONITOR_HP1) => Some((
             "MIX 1",
-            payload.get(0xda).copied().unwrap_or(0),
-            payload.get(0xdb).copied().unwrap_or(0),
+            payload.get(OFFSET_MIX1_LANE_A).copied().unwrap_or(0),
+            payload.get(OFFSET_MIX1_LANE_B).copied().unwrap_or(0),
         )),
-        Some(0x0c) => Some((
+        Some(SURFACE_CODE_HP2) => Some((
             "MIX 2",
-            payload.get(0xde).copied().unwrap_or(0),
-            payload.get(0xdf).copied().unwrap_or(0),
+            payload.get(OFFSET_MIX2_LANE_A).copied().unwrap_or(0),
+            payload.get(OFFSET_MIX2_LANE_B).copied().unwrap_or(0),
         )),
         _ => None,
     }
@@ -1429,23 +1431,23 @@ pub(crate) fn render_experimental_pair_state_line(state: &AppState) -> String {
     let Some(bytes) = state.latest_raw_73.as_deref() else {
         return "exp pair pending: waiting for 0x73 snapshot".to_string();
     };
-    let Some(payload) = bytes.get(0x10..) else {
+    let Some(payload) = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..) else {
         return "exp pair pending: short 0x73 snapshot".to_string();
     };
 
-    match payload.get(0x6a).copied() {
-        Some(0x0f) => {
-            let lane_a = payload.get(0xda).copied().unwrap_or(0);
-            let lane_b = payload.get(0xdb).copied().unwrap_or(0);
+    match payload.get(OFFSET_SURFACE_SELECTOR).copied() {
+        Some(SURFACE_CODE_MONITOR_HP1) => {
+            let lane_a = payload.get(OFFSET_MIX1_LANE_A).copied().unwrap_or(0);
+            let lane_b = payload.get(OFFSET_MIX1_LANE_B).copied().unwrap_or(0);
             format!(
                 "MIX 1 L {} R {}",
                 render_mix_meter(lane_a),
                 render_mix_meter(lane_b),
             )
         }
-        Some(0x0c) => {
-            let lane_a = payload.get(0xde).copied().unwrap_or(0);
-            let lane_b = payload.get(0xdf).copied().unwrap_or(0);
+        Some(SURFACE_CODE_HP2) => {
+            let lane_a = payload.get(OFFSET_MIX2_LANE_A).copied().unwrap_or(0);
+            let lane_b = payload.get(OFFSET_MIX2_LANE_B).copied().unwrap_or(0);
             format!(
                 "MIX 2 L {} R {}",
                 render_mix_meter(lane_a),

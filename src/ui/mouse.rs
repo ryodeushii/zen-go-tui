@@ -5,6 +5,10 @@ use crate::app::{
     QUERY_REPLY_VISIBLE_COUNT,
 };
 use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, SampleRate};
+use antelope_protocol::{
+    OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
+    OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
+};
 
 use super::layouts::*;
 use super::MouseAction;
@@ -847,18 +851,18 @@ fn slider_ratio_for_vertical_point(area: Rect, point: (u16, u16)) -> Option<f64>
 
 pub(crate) fn experimental_mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
     let bytes = state.latest_raw_73.as_deref()?;
-    let payload = bytes.get(0x10..)?;
+    let payload = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..)?;
 
-    match payload.get(0x6a).copied() {
-        Some(0x0f) => Some((
+    match payload.get(OFFSET_SURFACE_SELECTOR).copied() {
+        Some(SURFACE_CODE_MONITOR_HP1) => Some((
             "MIX 1",
-            payload.get(0xda).copied().unwrap_or(0),
-            payload.get(0xdb).copied().unwrap_or(0),
+            payload.get(OFFSET_MIX1_LANE_A).copied().unwrap_or(0),
+            payload.get(OFFSET_MIX1_LANE_B).copied().unwrap_or(0),
         )),
-        Some(0x0c) => Some((
+        Some(SURFACE_CODE_HP2) => Some((
             "MIX 2",
-            payload.get(0xde).copied().unwrap_or(0),
-            payload.get(0xdf).copied().unwrap_or(0),
+            payload.get(OFFSET_MIX2_LANE_A).copied().unwrap_or(0),
+            payload.get(OFFSET_MIX2_LANE_B).copied().unwrap_or(0),
         )),
         _ => None,
     }

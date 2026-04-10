@@ -5,6 +5,87 @@ use thiserror::Error;
 /// Size of a HID report frame in bytes.
 pub const HID_REPORT_SIZE: usize = 320;
 
+/// Offset from frame start to the beginning of the 0x73 snapshot payload.
+pub const SNAPSHOT_PAYLOAD_OFFSET: usize = 0x10;
+
+/// Minimum length of a 0x73 snapshot frame (payload offset + payload size).
+pub const MIN_SNAPSHOT_FRAME_LEN: usize = SNAPSHOT_PAYLOAD_OFFSET + SNAPSHOT_PAYLOAD_SIZE;
+
+/// Size of the 0x73 snapshot payload in bytes.
+pub const SNAPSHOT_PAYLOAD_SIZE: usize = 0xe6;
+
+/// Snapshot payload offsets — header region (bytes 0x00–0x0b).
+pub const OFFSET_STATUS_FLAGS_0: usize = 0x00;
+pub const OFFSET_STATUS_FLAGS_1: usize = 0x01;
+pub const OFFSET_SAMPLE_RATE_CODE: usize = 0x02;
+pub const OFFSET_CLOCK_SOURCE: usize = 0x03;
+pub const OFFSET_SAMPLE_RATE_HZ_START: usize = 0x04;
+pub const OFFSET_SAMPLE_RATE_HZ_END: usize = 0x08;
+pub const OFFSET_FRONT_PANEL_BYTES_START: usize = 0x08;
+pub const OFFSET_FRONT_PANEL_BYTES_END: usize = 0x0b;
+
+/// Snapshot payload offsets — output state region (bytes 0x0c–0x11).
+pub const OFFSET_MONITOR_VOLUME: usize = 0x0c;
+pub const OFFSET_MONITOR_MODE: usize = 0x0d;
+pub const OFFSET_HP1_VOLUME: usize = 0x0e;
+pub const OFFSET_HP1_MODE: usize = 0x0f;
+pub const OFFSET_HP2_VOLUME: usize = 0x10;
+pub const OFFSET_HP2_MODE: usize = 0x11;
+
+/// Snapshot payload offsets — DSP/preamp cluster (bytes 0x18–0x1b).
+pub const OFFSET_DSP_CLUSTER_START: usize = 0x18;
+pub const OFFSET_DSP_CLUSTER_END: usize = 0x1c;
+pub const OFFSET_PREAMP1_GAIN: usize = 0x18;
+pub const OFFSET_PREAMP2_GAIN: usize = 0x19;
+pub const OFFSET_PREAMP1_MODE: usize = 0x1a;
+pub const OFFSET_PREAMP2_MODE: usize = 0x1b;
+
+/// Snapshot payload offset — surface selector byte.
+pub const OFFSET_SURFACE_SELECTOR: usize = 0x6a;
+
+/// Snapshot payload offsets — meter lane region (bytes 0x8e–0x9d).
+pub const OFFSET_METER_LANES_START: usize = 0x8e;
+pub const OFFSET_METER_LANES_END: usize = 0x9d;
+
+/// Snapshot payload offsets — preamp meter lanes.
+pub const OFFSET_PREAMP1_METER: usize = 0xce;
+pub const OFFSET_PREAMP2_METER: usize = 0xcf;
+
+/// Snapshot payload offsets — mute/pan primary bytes.
+pub const OFFSET_MIX1_PRIMARY: usize = 0x8f;
+pub const OFFSET_MIX2_PRIMARY: usize = 0xcf;
+
+/// Snapshot payload offsets — late shadow region (bytes 0xda–0xe5).
+pub const OFFSET_LATE_SHADOW_START: usize = 0xda;
+pub const OFFSET_LATE_SHADOW_END: usize = 0xe5;
+
+/// Mix1 late shadow lane offsets.
+pub const OFFSET_MIX1_LANE_A: usize = 0xda;
+pub const OFFSET_MIX1_LANE_B: usize = 0xdb;
+pub const OFFSET_MIX1_MIRROR_A: usize = 0xdc;
+pub const OFFSET_MIX1_MIRROR_B: usize = 0xdd;
+
+/// Mix2 late shadow lane offsets.
+pub const OFFSET_MIX2_LANE_A: usize = 0xde;
+pub const OFFSET_MIX2_LANE_B: usize = 0xdf;
+
+/// Shared late shadow offsets used by both mixes.
+pub const OFFSET_SHARED_SHADOW_0: usize = 0xe0;
+pub const OFFSET_SHARED_SHADOW_1: usize = 0xe1;
+pub const OFFSET_SHARED_SHADOW_2: usize = 0xe2;
+pub const OFFSET_SHARED_SHADOW_3: usize = 0xe3;
+pub const OFFSET_SHARED_SHADOW_4: usize = 0xe4;
+pub const OFFSET_SHARED_SHADOW_5: usize = 0xe5;
+
+/// Frame type identifiers.
+pub const FRAME_TYPE_SNAPSHOT: u32 = 0x73;
+pub const FRAME_TYPE_QUERY_REPLY: u32 = 0x75;
+pub const FRAME_TYPE_AUXILIARY: u32 = 0x83;
+
+/// Surface selector codes.
+pub const SURFACE_CODE_MONITOR_HP1: u8 = 0x0f;
+pub const SURFACE_CODE_HP2: u8 = 0x0c;
+
 /// Errors that can occur during protocol frame parsing.
 #[derive(Debug, Error)]
 pub enum ProtocolError {

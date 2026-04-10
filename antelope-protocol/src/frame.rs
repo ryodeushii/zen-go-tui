@@ -4,7 +4,14 @@ use crate::mixer::decode_passive_mixer_state;
 use crate::query::QueryResponse;
 use crate::types::{
     ClockSource, DeviceStateSnapshot, OutputMode, OutputState, OutputTarget, PreampState,
-    ProtocolError, SampleRate, Surface,
+    ProtocolError, SampleRate, Surface, FRAME_TYPE_AUXILIARY, FRAME_TYPE_QUERY_REPLY,
+    FRAME_TYPE_SNAPSHOT, MIN_SNAPSHOT_FRAME_LEN, OFFSET_CLOCK_SOURCE,
+    OFFSET_FRONT_PANEL_BYTES_START, OFFSET_HP1_MODE, OFFSET_HP1_VOLUME, OFFSET_HP2_MODE,
+    OFFSET_HP2_VOLUME, OFFSET_LATE_SHADOW_END, OFFSET_LATE_SHADOW_START, OFFSET_MONITOR_MODE,
+    OFFSET_MONITOR_VOLUME, OFFSET_PREAMP1_GAIN, OFFSET_PREAMP1_MODE, OFFSET_PREAMP2_GAIN,
+    OFFSET_PREAMP2_MODE, OFFSET_SAMPLE_RATE_CODE, OFFSET_SAMPLE_RATE_HZ_END,
+    OFFSET_SAMPLE_RATE_HZ_START, OFFSET_STATUS_FLAGS_0, OFFSET_STATUS_FLAGS_1,
+    OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET,
 };
 
 /// A short-form device notification (6-byte frame).
@@ -75,20 +82,20 @@ impl Frame {
 
         let frame_type = u32::from_le_bytes(bytes[0..4].try_into().expect("type header"));
         match frame_type {
-            0x73 => Ok(Self::Snapshot {
+            FRAME_TYPE_SNAPSHOT => Ok(Self::Snapshot {
                 snapshot: parse_snapshot73(&bytes)?,
                 raw: bytes,
             }),
-            0x75 => Ok(Self::QueryReply {
+            FRAME_TYPE_QUERY_REPLY => Ok(Self::QueryReply {
                 reply: QueryResponse {
                     query_id: bytes[0x08],
                     sub_id: bytes[0x0c],
-                    body: bytes[0x10..].to_vec(),
+                    body: bytes[SNAPSHOT_PAYLOAD_OFFSET..].to_vec(),
                 },
                 raw: bytes,
             }),
-            0x83 => Ok(Self::Auxiliary {
-                bytes: bytes[0x10..].to_vec(),
+            FRAME_TYPE_AUXILIARY => Ok(Self::Auxiliary {
+                bytes: bytes[SNAPSHOT_PAYLOAD_OFFSET..].to_vec(),
                 raw: bytes,
             }),
             other => Err(ProtocolError::UnsupportedFrame(other)),
@@ -163,57 +170,64 @@ impl From<Frame> for DeviceSnapshot {
 }
 
 fn parse_snapshot73(bytes: &[u8]) -> Result<DeviceStateSnapshot, ProtocolError> {
-    if bytes.len() < 0x10 + 0xe6 {
+    if bytes.len() < MIN_SNAPSHOT_FRAME_LEN {
         return Err(ProtocolError::FrameTooShort(bytes.len()));
     }
 
-    let payload = &bytes[0x10..];
+    let payload = &bytes[SNAPSHOT_PAYLOAD_OFFSET..];
     Ok(DeviceStateSnapshot {
-        sample_rate: SampleRate::from_code(payload[0x02]),
-        clock_source: ClockSource::from_code(payload[0x03]),
-        sample_rate_hz: u32::from_be_bytes(payload[0x04..0x08].try_into().expect("sample rate")),
-        status_flags: [payload[0x00], payload[0x01]],
-        front_panel_bytes: [payload[0x08], payload[0x09], payload[0x0a]],
+        sample_rate: SampleRate::from_code(payload[OFFSET_SAMPLE_RATE_CODE]),
+        clock_source: ClockSource::from_code(payload[OFFSET_CLOCK_SOURCE]),
+        sample_rate_hz: u32::from_be_bytes(
+            payload[OFFSET_SAMPLE_RATE_HZ_START..OFFSET_SAMPLE_RATE_HZ_END]
+                .try_into()
+                .expect("sample rate"),
+        ),
+        status_flags: [
+            payload[OFFSET_STATUS_FLAGS_0],
+            payload[OFFSET_STATUS_FLAGS_1],
+        ],
+        front_panel_bytes: [
+            payload[OFFSET_FRONT_PANEL_BYTES_START],
+            payload[OFFSET_FRONT_PANEL_BYTES_START + 1],
+            payload[OFFSET_FRONT_PANEL_BYTES_START + 2],
+        ],
         outputs: [
             OutputState::new(
                 OutputTarget::Monitor,
-                payload[0x0c],
-                OutputMode::from_code(payload[0x0d]),
+                payload[OFFSET_MONITOR_VOLUME],
+                OutputMode::from_code(payload[OFFSET_MONITOR_MODE]),
             ),
             OutputState::new(
                 OutputTarget::Hp1,
-                payload[0x0e],
-                OutputMode::from_code(payload[0x0f]),
+                payload[OFFSET_HP1_VOLUME],
+                OutputMode::from_code(payload[OFFSET_HP1_MODE]),
             ),
             OutputState::new(
                 OutputTarget::Hp2,
-                payload[0x10],
-                OutputMode::from_code(payload[0x11]),
+                payload[OFFSET_HP2_VOLUME],
+                OutputMode::from_code(payload[OFFSET_HP2_MODE]),
             ),
         ],
-        dsp_cluster: [payload[0x18], payload[0x19], payload[0x1a], payload[0x1b]],
-        preamp: PreampState::from_cluster([
-            payload[0x18],
-            payload[0x19],
-            payload[0x1a],
-            payload[0x1b],
-        ]),
-        surface: Surface::from_code(payload[0x6a]),
-        mixer_decode: decode_passive_mixer_state(payload),
-        late_shadow: [
-            payload[0xda],
-            payload[0xdb],
-            payload[0xdc],
-            payload[0xdd],
-            payload[0xde],
-            payload[0xdf],
-            payload[0xe0],
-            payload[0xe1],
-            payload[0xe2],
-            payload[0xe3],
-            payload[0xe4],
-            payload[0xe5],
+        dsp_cluster: [
+            payload[OFFSET_PREAMP1_GAIN],
+            payload[OFFSET_PREAMP2_GAIN],
+            payload[OFFSET_PREAMP1_MODE],
+            payload[OFFSET_PREAMP2_MODE],
         ],
+        preamp: PreampState::from_cluster([
+            payload[OFFSET_PREAMP1_GAIN],
+            payload[OFFSET_PREAMP2_GAIN],
+            payload[OFFSET_PREAMP1_MODE],
+            payload[OFFSET_PREAMP2_MODE],
+        ]),
+        surface: Surface::from_code(payload[OFFSET_SURFACE_SELECTOR]),
+        mixer_decode: decode_passive_mixer_state(payload),
+        late_shadow: {
+            let mut shadow = [0u8; 12];
+            shadow.copy_from_slice(&payload[OFFSET_LATE_SHADOW_START..=OFFSET_LATE_SHADOW_END]);
+            shadow
+        },
     })
 }
 
@@ -221,11 +235,17 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<DeviceStateSnapshot, ProtocolError> 
 mod tests {
     use super::*;
     use crate::mixer::MixerSurface;
-    use crate::types::{PanState, PreampInputState, PreampMode, PreampState};
+    use crate::types::{
+        PanState, PreampInputState, PreampMode, PreampState, OFFSET_DSP_CLUSTER_END,
+        OFFSET_DSP_CLUSTER_START, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
+        OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX1_PRIMARY, OFFSET_MIX2_LANE_A,
+        OFFSET_MIX2_LANE_B, OFFSET_MIX2_PRIMARY, OFFSET_PREAMP1_METER, OFFSET_PREAMP2_METER,
+        OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SURFACE_SELECTOR,
+    };
 
     fn empty_snapshot_frame() -> Vec<u8> {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
         frame
     }
@@ -233,21 +253,23 @@ mod tests {
     #[test]
     fn decodes_snapshot_global_fields_and_outputs() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x20_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x00] = 0x08;
-        payload[0x02] = 0x02;
-        payload[0x03] = 0x01;
-        payload[0x04..0x08].copy_from_slice(&48_000_u32.to_be_bytes());
-        payload[0x0c] = 0x40;
-        payload[0x0d] = 0x02;
-        payload[0x0e] = 0x30;
-        payload[0x0f] = 0x01;
-        payload[0x10] = 0x20;
-        payload[0x11] = 0x00;
-        payload[0x6a] = 0x0c;
-        payload[0x18..0x1c].copy_from_slice(&[0x2f, 0x34, 0x50, 0x10]);
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_STATUS_FLAGS_0] = 0x08;
+        payload[OFFSET_SAMPLE_RATE_CODE] = 0x02;
+        payload[OFFSET_CLOCK_SOURCE] = 0x01;
+        payload[OFFSET_SAMPLE_RATE_HZ_START..OFFSET_SAMPLE_RATE_HZ_END]
+            .copy_from_slice(&48_000_u32.to_be_bytes());
+        payload[OFFSET_MONITOR_VOLUME] = 0x40;
+        payload[OFFSET_MONITOR_MODE] = 0x02;
+        payload[OFFSET_HP1_VOLUME] = 0x30;
+        payload[OFFSET_HP1_MODE] = 0x01;
+        payload[OFFSET_HP2_VOLUME] = 0x20;
+        payload[OFFSET_HP2_MODE] = 0x00;
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0c;
+        payload[OFFSET_DSP_CLUSTER_START..OFFSET_DSP_CLUSTER_END]
+            .copy_from_slice(&[0x2f, 0x34, 0x50, 0x10]);
 
         let parsed = Frame::parse(&frame).expect("frame should parse");
         let snapshot = parsed.as_snapshot().expect("snapshot");
@@ -274,40 +296,58 @@ mod tests {
     #[test]
     fn snapshot_frame_preserves_raw_bytes() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        frame[0x10 + 0x8e] = 0x5a;
-        frame[0x10 + 0xcf] = 0x4c;
-        frame[0x10 + 0xde] = 0x11;
+        frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_PRIMARY] = 0x5a;
+        frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_PRIMARY] = 0x4c;
+        frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x11;
 
         let parsed = Frame::parse(&frame).expect("frame should parse");
-        assert_eq!(parsed.raw_bytes()[0x10 + 0x8e], 0x5a);
-        assert_eq!(parsed.raw_bytes()[0x10 + 0xcf], 0x4c);
-        assert_eq!(parsed.raw_bytes()[0x10 + 0xde], 0x11);
+        assert_eq!(
+            parsed.raw_bytes()[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_PRIMARY],
+            0x5a
+        );
+        assert_eq!(
+            parsed.raw_bytes()[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_PRIMARY],
+            0x4c
+        );
+        assert_eq!(
+            parsed.raw_bytes()[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A],
+            0x11
+        );
     }
 
     #[test]
     fn snapshot_frame_parse_owned_preserves_raw_bytes() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        frame[0x10 + 0x8e] = 0x5a;
-        frame[0x10 + 0xcf] = 0x4c;
-        frame[0x10 + 0xde] = 0x11;
+        frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_PRIMARY] = 0x5a;
+        frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_PRIMARY] = 0x4c;
+        frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x11;
 
         let parsed = Frame::parse_owned(frame).expect("frame should parse");
-        assert_eq!(parsed.raw_bytes()[0x10 + 0x8e], 0x5a);
-        assert_eq!(parsed.raw_bytes()[0x10 + 0xcf], 0x4c);
-        assert_eq!(parsed.raw_bytes()[0x10 + 0xde], 0x11);
+        assert_eq!(
+            parsed.raw_bytes()[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_PRIMARY],
+            0x5a
+        );
+        assert_eq!(
+            parsed.raw_bytes()[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_PRIMARY],
+            0x4c
+        );
+        assert_eq!(
+            parsed.raw_bytes()[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A],
+            0x11
+        );
     }
 
     #[test]
     fn does_not_decode_observed_preamp1_meter_from_untrusted_lane() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
         payload[0x7e] = 0x18;
 
         let snapshot = Frame::parse(&frame)
@@ -323,12 +363,12 @@ mod tests {
     #[test]
     fn does_not_decode_observed_preamp_meters_from_row_status_values() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0xce] = 0x54;
-        payload[0xcf] = 0x4e;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_PREAMP1_METER] = 0x54;
+        payload[OFFSET_PREAMP2_METER] = 0x4e;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -343,11 +383,11 @@ mod tests {
     #[test]
     fn decodes_observed_preamp1_meter_from_direct_lane() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0xce] = 0x38;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_PREAMP1_METER] = 0x38;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -362,11 +402,11 @@ mod tests {
     #[test]
     fn decodes_observed_preamp2_meter_from_direct_lane() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0xcf] = 0x49;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_PREAMP2_METER] = 0x49;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -381,12 +421,12 @@ mod tests {
     #[test]
     fn observed_preamp1_meter_can_coexist_with_strip1_meter() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0xce] = 0x2a;
-        payload[0x8e] = 0x12;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_PREAMP1_METER] = 0x2a;
+        payload[OFFSET_METER_LANES_START] = 0x12;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -409,12 +449,12 @@ mod tests {
     #[test]
     fn observed_preamp2_meter_can_coexist_with_strip_meter() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0xcf] = 0x22;
-        payload[0x8e] = 0x12;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_PREAMP2_METER] = 0x22;
+        payload[OFFSET_METER_LANES_START] = 0x12;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -437,11 +477,11 @@ mod tests {
     #[test]
     fn decodes_passive_shared_strip1_meter_from_slot_byte() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0x8e] = 0x12;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_METER_LANES_START] = 0x12;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -472,10 +512,10 @@ mod tests {
     #[test]
     fn decodes_passive_shared_strip11_meter_from_slot_byte() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
         payload[0x98] = 0x05;
 
         let snapshot = Frame::parse(&frame)
@@ -505,18 +545,18 @@ mod tests {
     #[test]
     fn decodes_passive_mix1_strip1_mute_from_late_row_cluster() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0x8f] = 0x51;
-        payload[0xcf] = 0x51;
-        payload[0xda] = 0x51;
-        payload[0xdb] = 0x51;
-        payload[0xdc] = 0x51;
-        payload[0xdd] = 0x51;
-        payload[0xde] = 0x4e;
-        payload[0xdf] = 0x4e;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_MIX1_PRIMARY] = 0x51;
+        payload[OFFSET_MIX2_PRIMARY] = 0x51;
+        payload[OFFSET_MIX1_LANE_A] = 0x51;
+        payload[OFFSET_MIX1_LANE_B] = 0x51;
+        payload[OFFSET_MIX1_MIRROR_A] = 0x51;
+        payload[OFFSET_MIX1_MIRROR_B] = 0x51;
+        payload[OFFSET_MIX2_LANE_A] = 0x4e;
+        payload[OFFSET_MIX2_LANE_B] = 0x4e;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -534,18 +574,18 @@ mod tests {
     #[test]
     fn decodes_passive_mix1_link_pair_from_late_row_cluster() {
         let mut frame = vec![0_u8; 320];
-        frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0x8f] = 0x51;
-        payload[0xcf] = 0x51;
-        payload[0xda] = 0x4e;
-        payload[0xdb] = 0x4e;
-        payload[0xdc] = 0x4e;
-        payload[0xdd] = 0x4e;
-        payload[0xde] = 0x4e;
-        payload[0xdf] = 0x4e;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_MIX1_PRIMARY] = 0x51;
+        payload[OFFSET_MIX2_PRIMARY] = 0x51;
+        payload[OFFSET_MIX1_LANE_A] = 0x4e;
+        payload[OFFSET_MIX1_LANE_B] = 0x4e;
+        payload[OFFSET_MIX1_MIRROR_A] = 0x4e;
+        payload[OFFSET_MIX1_MIRROR_B] = 0x4e;
+        payload[OFFSET_MIX2_LANE_A] = 0x4e;
+        payload[OFFSET_MIX2_LANE_B] = 0x4e;
 
         let snapshot = Frame::parse(&frame)
             .expect("frame should parse")
@@ -574,17 +614,17 @@ mod tests {
     #[test]
     fn experimental_pair_state_lanes_extract_mix1_mirrored_codebook() {
         let mut frame = empty_snapshot_frame();
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0f;
-        payload[0xda] = 0x0a;
-        payload[0xdb] = 0x05;
-        payload[0xdc] = 0x0a;
-        payload[0xdd] = 0x05;
-        payload[0xe0] = 0x60;
-        payload[0xe1] = 0x60;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_MIX1_LANE_A] = 0x0a;
+        payload[OFFSET_MIX1_LANE_B] = 0x05;
+        payload[OFFSET_MIX1_MIRROR_A] = 0x0a;
+        payload[OFFSET_MIX1_MIRROR_B] = 0x05;
+        payload[OFFSET_SHARED_SHADOW_0] = 0x60;
+        payload[OFFSET_SHARED_SHADOW_1] = 0x60;
 
         assert_eq!(
-            experimental_surface_pair_lanes(&frame[0x10..]),
+            experimental_surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
             Some(ExperimentalSurfacePairLanes {
                 mixer: MixerSurface::Mix1,
                 lane_a: 0x0a,
@@ -597,15 +637,15 @@ mod tests {
     #[test]
     fn experimental_pair_state_lanes_extract_mix2_compact_codebook() {
         let mut frame = empty_snapshot_frame();
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0c;
-        payload[0xde] = 0x00;
-        payload[0xdf] = 0x06;
-        payload[0xe0] = 0x60;
-        payload[0xe1] = 0x60;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0c;
+        payload[OFFSET_MIX2_LANE_A] = 0x00;
+        payload[OFFSET_MIX2_LANE_B] = 0x06;
+        payload[OFFSET_SHARED_SHADOW_0] = 0x60;
+        payload[OFFSET_SHARED_SHADOW_1] = 0x60;
 
         assert_eq!(
-            experimental_surface_pair_lanes(&frame[0x10..]),
+            experimental_surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
             Some(ExperimentalSurfacePairLanes {
                 mixer: MixerSurface::Mix2,
                 lane_a: 0x00,
@@ -618,13 +658,13 @@ mod tests {
     #[test]
     fn experimental_pair_state_lanes_preserve_both_mute_idle_form() {
         let mut frame = empty_snapshot_frame();
-        let payload = &mut frame[0x10..];
-        payload[0x6a] = 0x0c;
-        payload[0xde] = 0x60;
-        payload[0xdf] = 0x60;
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0c;
+        payload[OFFSET_MIX2_LANE_A] = 0x60;
+        payload[OFFSET_MIX2_LANE_B] = 0x60;
 
         assert_eq!(
-            experimental_surface_pair_lanes(&frame[0x10..]),
+            experimental_surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
             Some(ExperimentalSurfacePairLanes {
                 mixer: MixerSurface::Mix2,
                 lane_a: 0x60,
@@ -643,23 +683,24 @@ mod tests {
     }
 
     fn experimental_surface_pair_lanes(payload: &[u8]) -> Option<ExperimentalSurfacePairLanes> {
-        let mixer = MixerSurface::from_surface(Surface::from_code(*payload.get(0x6a)?));
+        let mixer =
+            MixerSurface::from_surface(Surface::from_code(*payload.get(OFFSET_SURFACE_SELECTOR)?));
         match mixer {
             MixerSurface::Mix1 => {
-                let lane_a = *payload.get(0xda)?;
-                let lane_b = *payload.get(0xdb)?;
+                let lane_a = *payload.get(OFFSET_MIX1_LANE_A)?;
+                let lane_b = *payload.get(OFFSET_MIX1_LANE_B)?;
                 Some(ExperimentalSurfacePairLanes {
                     mixer,
                     lane_a,
                     lane_b,
-                    mirrored: payload.get(0xdc) == Some(&lane_a)
-                        && payload.get(0xdd) == Some(&lane_b),
+                    mirrored: payload.get(OFFSET_MIX1_MIRROR_A) == Some(&lane_a)
+                        && payload.get(OFFSET_MIX1_MIRROR_B) == Some(&lane_b),
                 })
             }
             MixerSurface::Mix2 => Some(ExperimentalSurfacePairLanes {
                 mixer,
-                lane_a: *payload.get(0xde)?,
-                lane_b: *payload.get(0xdf)?,
+                lane_a: *payload.get(OFFSET_MIX2_LANE_A)?,
+                lane_b: *payload.get(OFFSET_MIX2_LANE_B)?,
                 mirrored: false,
             }),
         }

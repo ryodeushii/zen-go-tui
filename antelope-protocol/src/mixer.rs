@@ -1,6 +1,12 @@
 //! Mixer-related types: surfaces, strips, assignments, links, passive decode.
 
 use crate::types::{PanState, Surface};
+use crate::types::{
+    OFFSET_METER_LANES_END, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
+    OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX1_PRIMARY, OFFSET_MIX2_LANE_A,
+    OFFSET_MIX2_LANE_B, OFFSET_MIX2_PRIMARY, OFFSET_PREAMP1_METER, OFFSET_PREAMP2_METER,
+    OFFSET_SURFACE_SELECTOR,
+};
 
 /// Which mixer surface (mix bus) a strip belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -509,7 +515,7 @@ impl MixerPassiveDecode {
 }
 
 fn decode_strip_meter(payload: &[u8], channel: u8) -> Option<u8> {
-    let meter_lanes = payload.get(0x8e..=0x9d)?;
+    let meter_lanes = payload.get(OFFSET_METER_LANES_START..=OFFSET_METER_LANES_END)?;
     if meter_lanes.iter().all(|lane| *lane == 0x00) {
         return None;
     }
@@ -586,15 +592,15 @@ fn decode_pan_from_group(
 }
 
 fn decode_link_state(payload: &[u8]) -> Option<bool> {
-    let head_a = payload.get(0x8f).copied()?;
-    let head_b = payload.get(0xcf).copied()?;
+    let head_a = payload.get(OFFSET_MIX1_PRIMARY).copied()?;
+    let head_b = payload.get(OFFSET_MIX2_PRIMARY).copied()?;
     let tails = [
-        payload.get(0xda).copied()?,
-        payload.get(0xdb).copied()?,
-        payload.get(0xdc).copied()?,
-        payload.get(0xdd).copied()?,
-        payload.get(0xde).copied()?,
-        payload.get(0xdf).copied()?,
+        payload.get(OFFSET_MIX1_LANE_A).copied()?,
+        payload.get(OFFSET_MIX1_LANE_B).copied()?,
+        payload.get(OFFSET_MIX1_MIRROR_A).copied()?,
+        payload.get(OFFSET_MIX1_MIRROR_B).copied()?,
+        payload.get(OFFSET_MIX2_LANE_A).copied()?,
+        payload.get(OFFSET_MIX2_LANE_B).copied()?,
     ];
     let values = [
         head_a, head_b, tails[0], tails[1], tails[2], tails[3], tails[4], tails[5],
@@ -621,12 +627,29 @@ fn decode_link_state(payload: &[u8]) -> Option<bool> {
 pub fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
     let mut decode = MixerPassiveDecode::default();
 
-    let shared_mute = decode_mute_from_group(payload, 0x8f, 0xcf, 0xda, 0xdb, 0xdc, 0xdd);
-    let shared_pan = decode_pan_from_group(payload, 0x8f, 0xcf, 0xda, 0xdd, 0xde, 0xdf);
+    let shared_mute = decode_mute_from_group(
+        payload,
+        OFFSET_MIX1_PRIMARY,
+        OFFSET_MIX2_PRIMARY,
+        OFFSET_MIX1_LANE_A,
+        OFFSET_MIX1_LANE_B,
+        OFFSET_MIX1_MIRROR_A,
+        OFFSET_MIX1_MIRROR_B,
+    );
+    let shared_pan = decode_pan_from_group(
+        payload,
+        OFFSET_MIX1_PRIMARY,
+        OFFSET_MIX2_PRIMARY,
+        OFFSET_MIX1_LANE_A,
+        OFFSET_MIX1_MIRROR_B,
+        OFFSET_MIX2_LANE_A,
+        OFFSET_MIX2_LANE_B,
+    );
 
-    let active_mixer = MixerSurface::from_surface(Surface::from_code(payload[0x6a]));
-    decode.observed_preamp1_meter = decode_preamp_meter(payload, 0xce);
-    decode.observed_preamp2_meter = decode_preamp_meter(payload, 0xcf);
+    let active_mixer =
+        MixerSurface::from_surface(Surface::from_code(payload[OFFSET_SURFACE_SELECTOR]));
+    decode.observed_preamp1_meter = decode_preamp_meter(payload, OFFSET_PREAMP1_METER);
+    decode.observed_preamp2_meter = decode_preamp_meter(payload, OFFSET_PREAMP2_METER);
     for channel in 1..=16 {
         let meter = decode_strip_meter(payload, channel);
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
