@@ -703,13 +703,15 @@ pub(crate) fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect
     }
 }
 
-pub fn mixer_strip_viewport_capacity(area: Rect, state: &AppState) -> usize {
+pub fn mixer_strip_viewport_capacity(area: Rect, _state: &AppState) -> usize {
+    // Replicate the layout chain to get the actual inner width of the mixer strip panel.
+    // root_chunks -> mixer_page_layout -> mixer_main_layout -> mixer_layout -> mixer_strip_panel_layout
     let chunks = root_chunks(area);
     let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout(page[0]);
     let mixer = mixer_layout(main[1]);
-    let list = mixer_strip_panel_layout(mixer[1], experimental_mix_meter(state).is_some());
-    mixer_strip_viewport_capacity_for_inner(list[0])
+    let inner = mixer_strip_inner_area(mixer[1]);
+    mixer_strip_viewport_capacity_for_inner(inner)
 }
 
 pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) -> bool {

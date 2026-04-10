@@ -329,6 +329,16 @@ fn handle_key_press(
         AppKeyCode::Char('d') => toggle_dim(controller),
         AppKeyCode::Char('a') => open_mixer_assignment_picker(controller),
         AppKeyCode::Char('l') => toggle_mixer_link(controller),
+        AppKeyCode::Char('<') => {
+            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
+            controller.state.page_mixer_strip_viewport(false, visible);
+            Ok(())
+        }
+        AppKeyCode::Char('>') => {
+            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
+            controller.state.page_mixer_strip_viewport(true, visible);
+            Ok(())
+        }
         AppKeyCode::Char('[') => adjust_mixer_pan(controller, false),
         AppKeyCode::Char(']') => adjust_mixer_pan(controller, true),
         AppKeyCode::Char('3') => open_preamp_mode_selector(controller),
@@ -868,6 +878,18 @@ fn handle_mouse_event(
 }
 
 fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> Result<()> {
+    apply_mouse_action_with_area(
+        controller,
+        action,
+        ratatui::layout::Rect::new(0, 0, 160, 50),
+    )
+}
+
+fn apply_mouse_action_with_area(
+    controller: &mut Controller,
+    action: ui::MouseAction,
+    area: ratatui::layout::Rect,
+) -> Result<()> {
     match action {
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
         ui::MouseAction::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
@@ -918,11 +940,13 @@ fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> R
         }
         ui::MouseAction::PageMixerStripsLeft => {
             controller.state.focus = FocusArea::Mixer;
-            controller.state.page_mixer_strip_viewport(false);
+            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
+            controller.state.page_mixer_strip_viewport(false, visible);
         }
         ui::MouseAction::PageMixerStripsRight => {
             controller.state.focus = FocusArea::Mixer;
-            controller.state.page_mixer_strip_viewport(true);
+            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
+            controller.state.page_mixer_strip_viewport(true, visible);
         }
         ui::MouseAction::OpenSampleRateSelector => {
             if controller.state.device.clock_source == Some(ClockSource::Internal) {
@@ -1869,8 +1893,10 @@ mod tests {
     fn page_mixer_strips_right_moves_to_second_bank() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
+        // Area width 155 gives inner_width=151, card_width=18, stride=19, capacity=8
+        let area = ratatui::layout::Rect::new(0, 0, 155, 50);
 
-        apply_mouse_action(&mut controller, ui::MouseAction::PageMixerStripsRight)
+        apply_mouse_action_with_area(&mut controller, ui::MouseAction::PageMixerStripsRight, area)
             .expect("page strips right");
 
         assert_eq!(controller.state.mixer_strip_scroll, 8);

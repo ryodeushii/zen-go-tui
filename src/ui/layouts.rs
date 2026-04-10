@@ -153,7 +153,10 @@ pub(crate) fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
     }
 
     let card_width = mixer_strip_card_width(area);
-    ((area.width.saturating_add(MIXER_STRIP_GAP)) / (card_width + MIXER_STRIP_GAP)).max(1) as usize
+    let stride = card_width + MIXER_STRIP_GAP;
+    // How many full strips fit: each strip needs `stride` width except the last which needs `card_width`.
+    // Formula: (area.width + GAP) / stride, clamped to at least 1.
+    ((area.width.saturating_add(MIXER_STRIP_GAP)) / stride).max(1) as usize
 }
 
 pub(crate) fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize, usize) {
@@ -166,12 +169,10 @@ pub(crate) fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize
 
 pub(crate) fn mixer_strip_card_area(area: Rect, slot: usize) -> Rect {
     let card_width = mixer_strip_card_width(area);
-    Rect::new(
-        area.x + slot as u16 * (card_width + MIXER_STRIP_GAP),
-        area.y,
-        card_width,
-        area.height,
-    )
+    let stride = card_width + MIXER_STRIP_GAP;
+    let x = area.x + slot as u16 * stride;
+    let width = card_width.min(area.width.saturating_sub(slot as u16 * stride));
+    Rect::new(x, area.y, width, area.height)
 }
 
 pub(crate) fn mixer_strip_inner_area(area: Rect) -> Rect {

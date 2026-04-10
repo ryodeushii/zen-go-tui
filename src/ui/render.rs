@@ -403,8 +403,9 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         layout[1],
     );
     let page_buttons = mixer_strip_page_button_rects(layout[1]);
-    let can_page_left = state.mixer_strip_scroll >= 8;
-    let can_page_right = state.mixer_strip_scroll + 8 < total;
+    let visible = visible_end.saturating_sub(visible_start);
+    let can_page_left = state.mixer_strip_scroll > 0;
+    let can_page_right = state.mixer_strip_scroll + visible < total;
     Paragraph::new(Line::from(vec![chip(
         "←",
         Color::Black,
@@ -435,7 +436,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .enumerate()
     {
         let card = mixer_strip_card_area(inner, slot);
-        if card.x >= inner.x + inner.width {
+        if card.x >= inner.x + inner.width || card.x + card.width > inner.x + inner.width {
             break;
         }
         render_mixer_strip_widget(card, frame.buffer_mut(), state, index, channel);

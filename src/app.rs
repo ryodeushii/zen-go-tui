@@ -293,25 +293,22 @@ impl AppState {
         };
     }
 
-    pub fn page_mixer_strip_viewport(&mut self, right: bool) {
+    pub fn page_mixer_strip_viewport(&mut self, right: bool, page_size: usize) {
         let total = self.active_mixer_channels().len();
-        let max_page_start = total
-            .saturating_sub(1)
-            .checked_div(MIXER_STRIP_PAGE_SIZE)
-            .unwrap_or(0)
-            * MIXER_STRIP_PAGE_SIZE;
+        let page_size = page_size.max(1);
+        let max_page_start =
+            total.saturating_sub(1).checked_div(page_size).unwrap_or(0) * page_size;
 
         self.mixer_strip_scroll = if right {
             self.mixer_strip_scroll
-                .saturating_add(MIXER_STRIP_PAGE_SIZE)
+                .saturating_add(page_size)
                 .min(max_page_start)
         } else {
-            self.mixer_strip_scroll
-                .saturating_sub(MIXER_STRIP_PAGE_SIZE)
+            self.mixer_strip_scroll.saturating_sub(page_size)
         };
 
         if self.selected_channel < self.mixer_strip_scroll
-            || self.selected_channel >= self.mixer_strip_scroll + MIXER_STRIP_PAGE_SIZE
+            || self.selected_channel >= self.mixer_strip_scroll + page_size
         {
             self.selected_channel = self.mixer_strip_scroll.min(total.saturating_sub(1));
         }
@@ -3400,16 +3397,17 @@ mod tests {
     }
 
     #[test]
-    fn mixer_strip_viewport_paging_moves_between_eight_strip_banks() {
+    fn mixer_strip_viewport_paging_moves_between_banks() {
         let mut state = AppState::default();
+        let page = 8;
 
-        state.page_mixer_strip_viewport(true);
+        state.page_mixer_strip_viewport(true, page);
         assert_eq!(state.mixer_strip_scroll, 8);
 
-        state.page_mixer_strip_viewport(true);
+        state.page_mixer_strip_viewport(true, page);
         assert_eq!(state.mixer_strip_scroll, 8);
 
-        state.page_mixer_strip_viewport(false);
+        state.page_mixer_strip_viewport(false, page);
         assert_eq!(state.mixer_strip_scroll, 0);
     }
 }
