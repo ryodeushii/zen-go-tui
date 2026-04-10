@@ -625,14 +625,13 @@ pub fn meter_display_db(raw: u8) -> Option<i16> {
     (raw <= 0x3c).then_some(-(raw as i16))
 }
 
-/// Converts a display dB value to a normalized 0.0–1.0 amplitude ratio.
+/// Converts a display dB value to a normalized 0.0–1.0 ratio.
 ///
-/// Uses a logarithmic scale based on -60 dB as the noise floor.
+/// The raw meter byte is already a logarithmic dB value (0 = 0 dB, 0x3c = -60 dB).
+/// Maps -60..0 dB linearly to 0.0..1.0.
 pub fn meter_db_ratio(db: i16) -> f64 {
     let db = db.clamp(-60, 0) as f64;
-    let min_amplitude = 10_f64.powf(-60.0 / 20.0);
-    let amplitude = 10_f64.powf(db / 20.0);
-    ((amplitude - min_amplitude) / (1.0 - min_amplitude)).clamp(0.0, 1.0)
+    ((db + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
 /// Converts a raw meter byte directly to a normalized 0.0–1.0 ratio.
@@ -738,9 +737,8 @@ mod tests {
         assert_eq!(meter_display_db(0x3c), Some(-60));
         assert_eq!(meter_display_db(0x60), None);
         assert!((meter_ratio(0x00) - 1.0).abs() < 1e-9);
-        assert!((meter_ratio(0x14) - 0.099).abs() < 0.01);
-        assert!((meter_ratio(0x1e) - 0.031).abs() < 0.01);
-        assert_eq!(meter_ratio(0x3c), 0.0);
+        assert!((meter_ratio(0x1e) - 0.5).abs() < 0.01);
+        assert!((meter_ratio(0x3c) - 0.0).abs() < 1e-9);
         assert_eq!(meter_ratio(0x60), 0.0);
     }
 

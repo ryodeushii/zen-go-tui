@@ -1290,8 +1290,8 @@ fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
     let line = render::render_experimental_pair_state_line(&state);
 
     assert!(line.contains("MIX 1"));
-    assert!(line.contains("L ███░░░░░ -10 dB"));
-    assert!(line.contains("R ████░░░░  -5 dB"));
+    assert!(line.contains("L ███████░ -10 dB"));
+    assert!(line.contains("R ███████░  -5 dB"));
 }
 
 #[test]
@@ -1311,7 +1311,7 @@ fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
 
     assert!(line.contains("MIX 2"));
     assert!(line.contains("L ████████   0 dB"));
-    assert!(line.contains("R ████░░░░  -6 dB"));
+    assert!(line.contains("R ███████░  -6 dB"));
 }
 
 #[test]
@@ -1348,8 +1348,8 @@ fn experimental_pair_state_line_keeps_unknown_meter_bytes_visible() {
 
     let line = render::render_experimental_pair_state_line(&state);
 
-    assert!(line.contains("L █░░░░░░░ -18 dB"));
-    assert!(line.contains("R ░░░░░░░░ -52 dB"));
+    assert!(line.contains("L ██████░░ -18 dB"));
+    assert!(line.contains("R █░░░░░░░ -52 dB"));
 }
 
 #[test]
