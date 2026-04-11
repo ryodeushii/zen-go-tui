@@ -946,14 +946,14 @@ fn handle_mouse_event(
         AppMouseEventKind::Down(AppMouseButton::Left) => {
             if let Some(action) = ui::mouse_action(area, &controller.state, mouse.column, mouse.row)
             {
-                apply_mouse_action(controller, action)?;
+                apply_mouse_action_with_area(controller, action, area)?;
             }
         }
         AppMouseEventKind::Drag(AppMouseButton::Left) => {
             if let Some(action) =
                 ui::slider_mouse_action(area, &controller.state, mouse.column, mouse.row)
             {
-                apply_mouse_action(controller, action)?;
+                apply_mouse_action_with_area(controller, action, area)?;
             }
         }
         AppMouseEventKind::ScrollLeft
@@ -967,7 +967,7 @@ fn handle_mouse_event(
             if let Some(action) =
                 ui::slider_wheel_action(area, &controller.state, mouse.column, mouse.row, increase)
             {
-                apply_mouse_action(controller, action)?;
+                apply_mouse_action_with_area(controller, action, area)?;
                 return Ok(());
             }
         }

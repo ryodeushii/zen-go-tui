@@ -716,10 +716,6 @@ pub(crate) fn slider_state(ratio: Option<f64>) -> tui_slider::SliderState {
     tui_slider::SliderState::new(ratio.unwrap_or(0.0).clamp(0.0, 1.0) * 100.0, 0.0, 100.0)
 }
 
-pub(crate) fn level_db_ratio(value: Option<i16>) -> Option<f64> {
-    value.map(|db| ((db.clamp(-60, 0) + 60) as f64 / 60.0).clamp(0.0, 1.0))
-}
-
 pub(crate) fn meter_db_ratio_option(value: Option<i16>) -> Option<f64> {
     value.map(antelope_protocol::meter_db_ratio)
 }

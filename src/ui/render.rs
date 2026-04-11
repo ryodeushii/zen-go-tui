@@ -1047,7 +1047,7 @@ pub(crate) fn render_vertical_combo_strip(
     area: Rect,
     buffer: &mut Buffer,
     meter_db: Option<i16>,
-    level_db: Option<i16>,
+    level_ratio: Option<f64>,
     peak_raw: Option<u8>,
 ) {
     if area.width < 4 || area.height == 0 {
@@ -1078,7 +1078,8 @@ pub(crate) fn render_vertical_combo_strip(
 
     let mut previous_y: Option<u16> = None;
     for marker in MIXER_STRIP_DB_MARKERS {
-        let mut y = vertical_ratio_row(scale, level_db_ratio(Some(-marker)).unwrap_or(0.0));
+        let ratio = 1.0 - (marker as f64 / 90.0);
+        let mut y = vertical_ratio_row(scale, ratio);
         if let Some(prev) = previous_y {
             y = y.max(prev.saturating_add(1));
         }
@@ -1093,7 +1094,6 @@ pub(crate) fn render_vertical_combo_strip(
     }
 
     let meter_ratio = meter_db_ratio_option(meter_db);
-    let level_ratio = level_db_ratio(level_db);
     let peak_active = peak_raw.is_some();
     let peak_y = if peak_active { Some(meter.y) } else { None };
     let level_handle_y = level_ratio.map(|ratio| vertical_ratio_row(level, ratio));
@@ -1225,7 +1225,7 @@ pub(crate) fn render_mixer_strip_widget(
         rows[5],
         buffer,
         channel.meter_db(),
-        channel.display_db(),
+        channel.gain_ratio(),
         peak_raw,
     );
 
