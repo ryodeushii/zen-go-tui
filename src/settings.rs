@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::app::{AppSettings, RefreshRate};
+use crate::app::{AppSettings, PeakHoldDuration, RefreshRate};
 
 const APP_CONFIG_DIR: &str = "zen-go-tui";
 const SETTINGS_FILE_NAME: &str = "settings.toml";
@@ -15,19 +15,20 @@ struct SerializableSettings {
     refresh_rate_fps: u8,
     peak_threshold_raw: u8,
     peak_enabled: bool,
+    peak_hold_duration_secs: u64,
+    auto_save: bool,
 }
 
 impl From<AppSettings> for SerializableSettings {
     fn from(s: AppSettings) -> Self {
-        let refresh_rate_fps = match s.refresh_rate {
-            RefreshRate::Fps15 => 15,
-            RefreshRate::Fps30 => 30,
-            RefreshRate::Fps60 => 60,
-        };
+        let refresh_rate_fps = s.refresh_rate.fps();
+        let peak_hold_duration_secs = s.peak_hold_duration.duration().as_secs();
         Self {
             refresh_rate_fps,
             peak_threshold_raw: s.peak_threshold_raw,
             peak_enabled: s.peak_enabled,
+            peak_hold_duration_secs,
+            auto_save: s.auto_save,
         }
     }
 }
@@ -39,10 +40,18 @@ impl From<SerializableSettings> for AppSettings {
             60 => RefreshRate::Fps60,
             _ => RefreshRate::Fps30,
         };
+        let peak_hold_duration = match s.peak_hold_duration_secs {
+            1 => PeakHoldDuration::Sec1,
+            5 => PeakHoldDuration::Sec5,
+            10 => PeakHoldDuration::Sec10,
+            _ => PeakHoldDuration::Sec3,
+        };
         Self {
             refresh_rate,
             peak_threshold_raw: s.peak_threshold_raw,
             peak_enabled: s.peak_enabled,
+            peak_hold_duration,
+            auto_save: s.auto_save,
         }
     }
 }

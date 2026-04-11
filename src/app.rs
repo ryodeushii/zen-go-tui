@@ -154,6 +154,14 @@ impl RefreshRate {
         }
     }
 
+    pub fn fps(&self) -> u8 {
+        match self {
+            RefreshRate::Fps15 => 15,
+            RefreshRate::Fps30 => 30,
+            RefreshRate::Fps60 => 60,
+        }
+    }
+
     pub fn loop_sleep_ms(&self) -> u64 {
         match self {
             RefreshRate::Fps15 => 30,
@@ -169,11 +177,56 @@ impl Default for RefreshRate {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeakHoldDuration {
+    Sec1,
+    Sec3,
+    Sec5,
+    Sec10,
+}
+
+impl PeakHoldDuration {
+    pub fn all() -> &'static [PeakHoldDuration] {
+        &[
+            PeakHoldDuration::Sec1,
+            PeakHoldDuration::Sec3,
+            PeakHoldDuration::Sec5,
+            PeakHoldDuration::Sec10,
+        ]
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            PeakHoldDuration::Sec1 => "1s",
+            PeakHoldDuration::Sec3 => "3s",
+            PeakHoldDuration::Sec5 => "5s",
+            PeakHoldDuration::Sec10 => "10s",
+        }
+    }
+
+    pub fn duration(&self) -> Duration {
+        match self {
+            PeakHoldDuration::Sec1 => Duration::from_secs(1),
+            PeakHoldDuration::Sec3 => Duration::from_secs(3),
+            PeakHoldDuration::Sec5 => Duration::from_secs(5),
+            PeakHoldDuration::Sec10 => Duration::from_secs(10),
+        }
+    }
+}
+
+impl Default for PeakHoldDuration {
+    fn default() -> Self {
+        PeakHoldDuration::Sec3
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct AppSettings {
     pub refresh_rate: RefreshRate,
     pub peak_threshold_raw: u8,
     pub peak_enabled: bool,
+    pub peak_hold_duration: PeakHoldDuration,
+    pub auto_save: bool,
 }
 
 impl Default for AppSettings {
@@ -182,6 +235,8 @@ impl Default for AppSettings {
             refresh_rate: RefreshRate::default(),
             peak_threshold_raw: PEAK_THRESHOLD_RAW,
             peak_enabled: true,
+            peak_hold_duration: PeakHoldDuration::default(),
+            auto_save: false,
         }
     }
 }
@@ -251,6 +306,7 @@ pub struct AppState {
     pub mixer_peaks: [[Option<MeterPeak>; 16]; 2],
     pub settings: AppSettings,
     pub options_popup_open: bool,
+    pub quit_requested: bool,
 }
 
 pub const MIXER_STRIP_PAGE_SIZE: usize = 8;
@@ -330,16 +386,18 @@ impl Default for AppState {
             mixer_peaks: [[None; 16]; 2],
             settings: AppSettings::default(),
             options_popup_open: false,
+            quit_requested: false,
         }
     }
 }
 
 impl AppState {
     pub fn prune_expired_peaks(&mut self) {
+        let hold = self.settings.peak_hold_duration.duration();
         for mix_idx in 0..2 {
             for ch_idx in 0..16 {
                 if let Some(peak) = self.mixer_peaks[mix_idx][ch_idx] {
-                    if !peak.is_active() {
+                    if peak.detected_at.elapsed() >= hold {
                         self.mixer_peaks[mix_idx][ch_idx] = None;
                     }
                 }
@@ -347,7 +405,7 @@ impl AppState {
         }
         for input_idx in 0..2 {
             if let Some(peak) = self.preamp_peaks[input_idx] {
-                if !peak.is_active() {
+                if peak.detected_at.elapsed() >= hold {
                     self.preamp_peaks[input_idx] = None;
                 }
             }

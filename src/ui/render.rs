@@ -626,6 +626,42 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     ]))
     .render(rows[3], frame.buffer_mut());
 
+    let hold_durations = crate::app::PeakHoldDuration::all();
+    let current_hold = state.settings.peak_hold_duration;
+    let mut hold_spans = vec![Span::styled("Hold:   ", subdued_style())];
+    for h in hold_durations {
+        if *h == current_hold {
+            hold_spans.push(chip(
+                &format!("* {}", h.label()),
+                Color::Black,
+                Color::LightCyan,
+            ));
+        } else {
+            hold_spans.push(chip(h.label(), Color::Black, Color::Gray));
+        }
+        hold_spans.push(Span::raw(" "));
+    }
+    Paragraph::new(Line::from(hold_spans)).render(rows[4], frame.buffer_mut());
+
+    let auto_save_status = if state.settings.auto_save {
+        "ON"
+    } else {
+        "OFF"
+    };
+    let auto_save_color = if state.settings.auto_save {
+        Color::LightGreen
+    } else {
+        Color::DarkGray
+    };
+    Paragraph::new(Line::from(vec![
+        Span::styled("Auto-save: ", subdued_style()),
+        chip(auto_save_status, Color::Black, auto_save_color),
+        Span::raw("  "),
+        Span::styled("a ", subdued_style()),
+        Span::styled("toggle", muted_style()),
+    ]))
+    .render(rows[5], frame.buffer_mut());
+
     let button_rects = options_popup_button_rects(popup);
     Paragraph::new(Line::from(vec![chip("CLOSE", Color::Black, Color::Gray)]))
         .render(button_rects[0], frame.buffer_mut());
@@ -635,16 +671,22 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Span::styled("close", muted_style()),
         Span::raw("   "),
         Span::styled("1/2/3 ", subdued_style()),
-        Span::styled("refresh rate", muted_style()),
+        Span::styled("refresh", muted_style()),
         Span::raw("   "),
         Span::styled("↑/↓ ", subdued_style()),
         Span::styled("threshold", muted_style()),
         Span::raw("   "),
         Span::styled("p ", subdued_style()),
-        Span::styled("toggle peaks", muted_style()),
+        Span::styled("peaks", muted_style()),
+        Span::raw("   "),
+        Span::styled("h/l ", subdued_style()),
+        Span::styled("hold", muted_style()),
+        Span::raw("   "),
+        Span::styled("a ", subdued_style()),
+        Span::styled("auto-save", muted_style()),
     ]))
     .wrap(Wrap { trim: false })
-    .render(rows[5], frame.buffer_mut());
+    .render(rows[7], frame.buffer_mut());
 }
 
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -1736,6 +1778,8 @@ pub(crate) fn render_system_summary(state: &AppState) -> Line<'static> {
         chip("RAW", Color::Black, raw_color),
         Span::raw(" "),
         chip("OPTNS", Color::Black, options_color),
+        Span::raw(" "),
+        chip("X", Color::Black, Color::DarkGray),
     ])
 }
 

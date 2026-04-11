@@ -20,10 +20,6 @@ pub(crate) const IDLE_HEADLESS_DEVICE_POLL_INTERVAL: Duration = Duration::from_m
 /// How long after the last activity before switching to idle polling.
 pub(crate) const DEVICE_POLL_BACKOFF_AFTER: Duration = Duration::from_secs(1);
 
-/// Minimum frame interval targeting ~30fps.
-/// Meters update at audio rate but human eye perceives smooth animation at 30fps.
-pub(crate) const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(33);
-
 /// Redraw interval when the UI is idle.
 pub(crate) const IDLE_REDRAW_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -31,12 +27,31 @@ pub(crate) const IDLE_REDRAW_INTERVAL: Duration = Duration::from_secs(1);
 /// when device streams data continuously.
 pub(crate) const MIN_LOOP_SLEEP: Duration = Duration::from_millis(16);
 
+/// Compute the minimum frame interval for a given FPS target.
+pub(crate) fn frame_interval_for_fps(fps: u8) -> Duration {
+    let ms = 1000u64 / fps as u64;
+    Duration::from_millis(ms)
+}
+
+/// Compute the minimum loop sleep for a given FPS target.
+pub(crate) fn loop_sleep_for_fps(fps: u8) -> Duration {
+    Duration::from_millis(fps_to_loop_sleep_ms(fps))
+}
+
+fn fps_to_loop_sleep_ms(fps: u8) -> u64 {
+    match fps {
+        15 => 30,
+        60 => 8,
+        _ => 16,
+    }
+}
+
 /// Decide whether to draw a new frame based on elapsed time and dirty state.
-/// Targets ~30fps for dirty redraws.
 pub(crate) fn should_draw_frame(
     last_draw_at: Option<Instant>,
     needs_redraw: bool,
     now: Instant,
+    fps: u8,
 ) -> bool {
     let Some(last_draw_at) = last_draw_at else {
         return true;
@@ -46,7 +61,7 @@ pub(crate) fn should_draw_frame(
     if !needs_redraw {
         return elapsed >= IDLE_REDRAW_INTERVAL;
     }
-    elapsed >= MIN_FRAME_INTERVAL
+    elapsed >= frame_interval_for_fps(fps)
 }
 
 /// Decide whether to probe for reconnection based on backoff timing.

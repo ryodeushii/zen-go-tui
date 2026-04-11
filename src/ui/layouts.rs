@@ -370,7 +370,7 @@ pub(crate) fn profiles_popup_area(area: Rect) -> Rect {
 
 pub(crate) fn options_popup_area(area: Rect) -> Rect {
     let width = area.width.min(52).max(38);
-    let height = area.height.min(14).max(10);
+    let height = area.height.min(18).max(14);
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -384,6 +384,8 @@ pub(crate) fn options_popup_layout(area: Rect) -> Vec<Rect> {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),

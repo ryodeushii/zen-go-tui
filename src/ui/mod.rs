@@ -8,6 +8,7 @@ mod tests;
 // Re-export MouseAction enum
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
+    Quit,
     ToggleRawView,
     ToggleHotkeysPopup,
     OpenProfilesPopup,
@@ -19,6 +20,8 @@ pub enum MouseAction {
     SetRefreshRate(crate::app::RefreshRate),
     CyclePeakThreshold(bool),
     TogglePeakEnabled,
+    CyclePeakHoldDuration(crate::app::PeakHoldDuration),
+    ToggleAutoSave,
     SelectProfile(usize),
     LoadSelectedProfile,
     StartSaveProfile,

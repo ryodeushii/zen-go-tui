@@ -20,8 +20,8 @@ use antelope_protocol::{
     SampleRate, Surface,
 };
 use zen_go_tui::app::{
-    Controller, FocusArea, MainPage, ProfileEditorMode, RefreshRate, SelectorPopupKind,
-    SelectorPopupState,
+    Controller, FocusArea, MainPage, PeakHoldDuration, ProfileEditorMode, RefreshRate,
+    SelectorPopupKind, SelectorPopupState,
 };
 use zen_go_tui::settings;
 use zen_go_tui::terminal::{
@@ -214,14 +214,23 @@ fn handle_key_press(
             AppKeyCode::Char('1') => {
                 controller.state.settings.refresh_rate = RefreshRate::Fps15;
                 controller.state.last_message = "Refresh rate set to 15 FPS".to_string();
+                if controller.state.settings.auto_save {
+                    let _ = settings::save_settings(&controller.state.settings);
+                }
             }
             AppKeyCode::Char('2') => {
                 controller.state.settings.refresh_rate = RefreshRate::Fps30;
                 controller.state.last_message = "Refresh rate set to 30 FPS".to_string();
+                if controller.state.settings.auto_save {
+                    let _ = settings::save_settings(&controller.state.settings);
+                }
             }
             AppKeyCode::Char('3') => {
                 controller.state.settings.refresh_rate = RefreshRate::Fps60;
                 controller.state.last_message = "Refresh rate set to 60 FPS".to_string();
+                if controller.state.settings.auto_save {
+                    let _ = settings::save_settings(&controller.state.settings);
+                }
             }
             AppKeyCode::Up => {
                 cycle_peak_threshold(controller, true);
@@ -237,6 +246,30 @@ fn handle_key_press(
                     controller.state.preamp_peaks = [None, None];
                     controller.state.mixer_peaks = [[None; 16]; 2];
                     controller.state.last_message = "Peak detection disabled".to_string();
+                }
+                if controller.state.settings.auto_save {
+                    let _ = settings::save_settings(&controller.state.settings);
+                }
+            }
+            AppKeyCode::Char('h') | AppKeyCode::Char('H') => {
+                cycle_peak_hold_duration(controller, true);
+                if controller.state.settings.auto_save {
+                    let _ = settings::save_settings(&controller.state.settings);
+                }
+            }
+            AppKeyCode::Char('l') | AppKeyCode::Char('L') => {
+                cycle_peak_hold_duration(controller, false);
+                if controller.state.settings.auto_save {
+                    let _ = settings::save_settings(&controller.state.settings);
+                }
+            }
+            AppKeyCode::Char('a') => {
+                controller.state.settings.auto_save = !controller.state.settings.auto_save;
+                if controller.state.settings.auto_save {
+                    controller.state.last_message = "Auto-save enabled".to_string();
+                    let _ = settings::save_settings(&controller.state.settings);
+                } else {
+                    controller.state.last_message = "Auto-save disabled".to_string();
                 }
             }
             _ => {}
@@ -512,6 +545,9 @@ fn app_loop(
                             }
                             handle_runtime_error(controller, error)?;
                         }
+                        if controller.state.quit_requested {
+                            break 'app;
+                        }
                         needs_redraw = true;
                     }
                     zen_go_tui::terminal::AppInputEvent::Paste(text) => {
@@ -550,7 +586,8 @@ fn app_loop(
 
         let now = std::time::Instant::now();
         controller.state.prune_expired_peaks();
-        if should_draw_frame(last_draw_at, needs_redraw, now) {
+        let fps = controller.state.settings.refresh_rate.fps();
+        if should_draw_frame(last_draw_at, needs_redraw, now, fps) {
             terminal.draw(|frame| {
                 ui::draw(frame, &controller.state);
                 if let Some((x, y)) = ui::profile_editor_cursor(frame.area(), &controller.state) {
@@ -566,8 +603,7 @@ fn app_loop(
             needs_redraw = false;
         }
 
-        // Prevent tight looping when device streams data continuously
-        std::thread::sleep(timing::MIN_LOOP_SLEEP);
+        std::thread::sleep(timing::loop_sleep_for_fps(fps));
     }
 
     Ok(())
@@ -955,6 +991,9 @@ fn apply_mouse_action_with_area(
     area: ratatui::layout::Rect,
 ) -> Result<()> {
     match action {
+        ui::MouseAction::Quit => {
+            controller.state.quit_requested = true;
+        }
         ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
         ui::MouseAction::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
         ui::MouseAction::OpenProfilesPopup => {
@@ -992,9 +1031,15 @@ fn apply_mouse_action_with_area(
         ui::MouseAction::SetRefreshRate(rate) => {
             controller.state.settings.refresh_rate = rate;
             controller.state.last_message = format!("Refresh rate set to {}", rate.label());
+            if controller.state.settings.auto_save {
+                let _ = settings::save_settings(&controller.state.settings);
+            }
         }
         ui::MouseAction::CyclePeakThreshold(increase) => {
             cycle_peak_threshold(controller, increase);
+            if controller.state.settings.auto_save {
+                let _ = settings::save_settings(&controller.state.settings);
+            }
         }
         ui::MouseAction::TogglePeakEnabled => {
             controller.state.settings.peak_enabled = !controller.state.settings.peak_enabled;
@@ -1004,6 +1049,26 @@ fn apply_mouse_action_with_area(
                 controller.state.preamp_peaks = [None, None];
                 controller.state.mixer_peaks = [[None; 16]; 2];
                 controller.state.last_message = "Peak detection disabled".to_string();
+            }
+            if controller.state.settings.auto_save {
+                let _ = settings::save_settings(&controller.state.settings);
+            }
+        }
+        ui::MouseAction::CyclePeakHoldDuration(duration) => {
+            controller.state.settings.peak_hold_duration = duration;
+            controller.state.last_message =
+                format!("Peak hold duration set to {}", duration.label());
+            if controller.state.settings.auto_save {
+                let _ = settings::save_settings(&controller.state.settings);
+            }
+        }
+        ui::MouseAction::ToggleAutoSave => {
+            controller.state.settings.auto_save = !controller.state.settings.auto_save;
+            if controller.state.settings.auto_save {
+                controller.state.last_message = "Auto-save enabled".to_string();
+                let _ = settings::save_settings(&controller.state.settings);
+            } else {
+                controller.state.last_message = "Auto-save disabled".to_string();
             }
         }
         ui::MouseAction::SelectProfile(index) => {
@@ -1408,6 +1473,19 @@ fn cycle_peak_threshold(controller: &mut Controller, increase: bool) {
     controller.state.settings.peak_threshold_raw = PEAK_THRESHOLD_CHOICES[next_pos];
     let db = controller.state.settings.peak_threshold_db();
     controller.state.last_message = format!("Peak threshold set to {} dB", db);
+}
+
+fn cycle_peak_hold_duration(controller: &mut Controller, forward: bool) {
+    let all = PeakHoldDuration::all();
+    let current = controller.state.settings.peak_hold_duration;
+    let pos = all.iter().position(|&v| v == current).unwrap_or(1);
+    let next = if forward {
+        all[(pos + 1) % all.len()]
+    } else {
+        all[pos.checked_sub(1).unwrap_or(all.len() - 1)]
+    };
+    controller.state.settings.peak_hold_duration = next;
+    controller.state.last_message = format!("Peak hold duration set to {}", next.label());
 }
 
 fn cycle_sample_rate(controller: &mut Controller) -> Result<()> {
@@ -2275,27 +2353,32 @@ mod tests {
     #[test]
     fn draw_scheduler_throttles_dirty_redraws_but_refreshes_idle_ui() {
         let now = Instant::now();
+        let fps = 30u8;
 
-        assert!(should_draw_frame(None, false, now));
+        assert!(should_draw_frame(None, false, now, fps));
         assert!(!should_draw_frame(
             Some(now - Duration::from_millis(10)),
             true,
             now,
+            fps,
         ));
         assert!(!should_draw_frame(
             Some(now - Duration::from_millis(30)),
             true,
             now,
+            fps,
         ));
         assert!(should_draw_frame(
             Some(now - Duration::from_millis(35)),
             true,
             now,
+            fps,
         ));
         assert!(should_draw_frame(
             Some(now - Duration::from_millis(1200)),
             false,
             now,
+            fps,
         ));
     }
 

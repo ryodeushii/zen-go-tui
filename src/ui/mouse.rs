@@ -177,6 +177,8 @@ fn options_popup_mouse_action(
     let refresh_row = rows[1];
     let peak_threshold_row = rows[2];
     let peak_toggle_row = rows[3];
+    let peak_hold_row = rows[4];
+    let auto_save_row = rows[5];
     let button_rects = options_popup_button_rects(popup);
 
     if contains_point(button_rects[0], point) {
@@ -239,6 +241,29 @@ fn options_popup_mouse_action(
         if contains_point(rect, point) {
             return Some(MouseAction::TogglePeakEnabled);
         }
+    }
+
+    if contains_point(peak_hold_row, point) {
+        let hold_durations = crate::app::PeakHoldDuration::all();
+        let prefix = "Hold:   ";
+        let mut x = peak_hold_row.x + prefix.chars().count() as u16;
+        for h in hold_durations {
+            let label = if *h == state.settings.peak_hold_duration {
+                format!("* {}", h.label())
+            } else {
+                h.label().to_string()
+            };
+            let w = crate::ui::styles::chip_width(&label);
+            let rect = Rect::new(x, peak_hold_row.y, w, 1);
+            if contains_point(rect, point) {
+                return Some(MouseAction::CyclePeakHoldDuration(*h));
+            }
+            x += w + 1;
+        }
+    }
+
+    if contains_point(auto_save_row, point) {
+        return Some(MouseAction::ToggleAutoSave);
     }
 
     None
@@ -426,7 +451,7 @@ fn system_panel_mouse_action(
         return None;
     }
     let inner = crate::ui::layouts::inner_area(area);
-    let labels = ["RAW", "OPTNS"];
+    let labels = ["RAW", "OPTNS", "X"];
     let rects = inline_chip_rects(inner.x, inner.y, &labels);
     if contains_point(rects[0], point) {
         return Some(MouseAction::ToggleRawView);
@@ -437,6 +462,9 @@ fn system_panel_mouse_action(
         } else {
             return Some(MouseAction::OpenOptionsPopup);
         }
+    }
+    if contains_point(rects[2], point) {
+        return Some(MouseAction::Quit);
     }
     None
 }
