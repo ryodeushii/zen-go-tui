@@ -536,7 +536,7 @@ pub(crate) fn mixer_list_mouse_action(
     if !contains_point(area, point) {
         return None;
     }
-    let inner = mixer_strip_panel_layout(area, experimental_mix_meter(state).is_some())[0];
+    let inner = mixer_strip_panel_layout(area, mix_meter(state).is_some())[0];
     if !contains_point(inner, point) {
         return None;
     }
@@ -597,7 +597,7 @@ pub(crate) fn mixer_list_slider_mouse_action(
     if !contains_point(area, point) {
         return None;
     }
-    let inner = mixer_strip_panel_layout(area, experimental_mix_meter(state).is_some())[0];
+    let inner = mixer_strip_panel_layout(area, mix_meter(state).is_some())[0];
     if !contains_point(inner, point) {
         return None;
     }
@@ -624,7 +624,7 @@ pub(crate) fn mixer_list_slider_wheel_action(
     if !contains_point(area, point) {
         return None;
     }
-    let inner = mixer_strip_panel_layout(area, experimental_mix_meter(state).is_some())[0];
+    let inner = mixer_strip_panel_layout(area, mix_meter(state).is_some())[0];
     if !contains_point(inner, point) {
         return None;
     }
@@ -858,7 +858,7 @@ pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) 
     let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout(page[0]);
     let mixer = mixer_layout(main[1]);
-    let list = mixer_strip_panel_layout(mixer[1], experimental_mix_meter(state).is_some());
+    let list = mixer_strip_panel_layout(mixer[1], mix_meter(state).is_some());
     contains_point(list[0], (x, y))
 }
 
@@ -990,7 +990,7 @@ fn slider_ratio_for_vertical_point(area: Rect, point: (u16, u16)) -> Option<f64>
     )
 }
 
-pub(crate) fn experimental_mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
+pub(crate) fn mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
     let bytes = state.latest_raw_73.as_deref()?;
     let payload = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..)?;
 

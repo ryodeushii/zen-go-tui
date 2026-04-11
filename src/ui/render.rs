@@ -19,7 +19,7 @@ use antelope_protocol::{
 };
 
 use super::layouts::*;
-use super::mouse::experimental_mix_meter;
+use super::mouse::mix_meter;
 use super::styles::*;
 
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
@@ -383,7 +383,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     )]))
     .render(header_buttons[1], frame.buffer_mut());
 
-    let content = mixer_strip_panel_layout(layout[1], experimental_mix_meter(state).is_some());
+    let content = mixer_strip_panel_layout(layout[1], mix_meter(state).is_some());
     let inner = content[0];
     let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
     let total = state.active_mixer_channels().len();
@@ -445,7 +445,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         render_mixer_strip_widget(card, frame.buffer_mut(), state, index, channel);
     }
 
-    if let Some((_, left_raw, right_raw)) = experimental_mix_meter(state) {
+    if let Some((_, left_raw, right_raw)) = mix_meter(state) {
         render_mix_meter_widget(content[1], frame.buffer_mut(), left_raw, right_raw);
     } else if content[1].height > 0 {
         frame.render_widget(

@@ -247,7 +247,7 @@ fn status_strip_surfaces_message_surface_and_output() {
 }
 
 #[test]
-fn experimental_mix_meter_extracts_mix1_lane_pair() {
+fn mix_meter_extracts_mix1_lane_pair() {
     let mut state = AppState::default();
     let mut frame = vec![0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
@@ -257,10 +257,7 @@ fn experimental_mix_meter_extracts_mix1_lane_pair() {
     frame[0x10 + 0xdb] = 0x05;
     state.latest_raw_73 = Some(frame);
 
-    assert_eq!(
-        mouse::experimental_mix_meter(&state),
-        Some(("MIX 1", 0x0a, 0x05))
-    );
+    assert_eq!(mouse::mix_meter(&state), Some(("MIX 1", 0x0a, 0x05)));
 }
 
 #[test]
