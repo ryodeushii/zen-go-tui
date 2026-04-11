@@ -258,7 +258,7 @@ fn experimental_mix_meter_extracts_mix1_lane_pair() {
     state.latest_raw_73 = Some(frame);
 
     assert_eq!(
-        render::experimental_mix_meter(&state),
+        mouse::experimental_mix_meter(&state),
         Some(("MIX 1", 0x0a, 0x05))
     );
 }

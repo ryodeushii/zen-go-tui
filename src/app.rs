@@ -66,7 +66,6 @@ pub enum RawPacketTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainPage {
     Mixer,
-    AfxDsp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,9 +133,10 @@ impl StructuralSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RefreshRate {
     Fps15,
+    #[default]
     Fps30,
     Fps60,
 }
@@ -171,15 +171,10 @@ impl RefreshRate {
     }
 }
 
-impl Default for RefreshRate {
-    fn default() -> Self {
-        RefreshRate::Fps30
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PeakHoldDuration {
     Sec1,
+    #[default]
     Sec3,
     Sec5,
     Sec10,
@@ -211,12 +206,6 @@ impl PeakHoldDuration {
             PeakHoldDuration::Sec5 => Duration::from_secs(5),
             PeakHoldDuration::Sec10 => Duration::from_secs(10),
         }
-    }
-}
-
-impl Default for PeakHoldDuration {
-    fn default() -> Self {
-        PeakHoldDuration::Sec3
     }
 }
 
@@ -841,11 +830,6 @@ impl AppState {
         } else {
             tabs[index.checked_sub(1).unwrap_or(tabs.len() - 1)]
         };
-    }
-
-    pub fn cycle_page(&mut self, forward: bool) {
-        let _ = forward;
-        self.page = MainPage::Mixer;
     }
 
     pub fn cycle_query_reply_entry(&mut self, forward: bool) {
@@ -3599,22 +3583,6 @@ mod tests {
 
         state.toggle_raw_view();
         assert!(!state.raw_view_open);
-    }
-
-    #[test]
-    fn page_cycle_stays_on_mixer() {
-        let mut state = AppState::default();
-
-        assert_eq!(state.page, MainPage::Mixer);
-
-        state.cycle_page(true);
-        assert_eq!(state.page, MainPage::Mixer);
-
-        state.cycle_page(true);
-        assert_eq!(state.page, MainPage::Mixer);
-
-        state.cycle_page(false);
-        assert_eq!(state.page, MainPage::Mixer);
     }
 
     #[test]

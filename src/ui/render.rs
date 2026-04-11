@@ -19,6 +19,7 @@ use antelope_protocol::{
 };
 
 use super::layouts::*;
+use super::mouse::experimental_mix_meter;
 use super::styles::*;
 
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
@@ -577,7 +578,7 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     for r in refresh_rates {
         if *r == current_refresh {
             refresh_spans.push(chip(
-                &format!("* {}", r.label()),
+                format!("* {}", r.label()),
                 Color::Black,
                 Color::LightCyan,
             ));
@@ -632,7 +633,7 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     for h in hold_durations {
         if *h == current_hold {
             hold_spans.push(chip(
-                &format!("* {}", h.label()),
+                format!("* {}", h.label()),
                 Color::Black,
                 Color::LightCyan,
             ));
@@ -813,7 +814,7 @@ fn render_afx_routing_row(area: Rect, buffer: &mut Buffer, state: &AppState, pai
     let selected_left = state.focus == FocusArea::Mixer && state.selected_channel == left_index;
     let selected_right = state.focus == FocusArea::Mixer && state.selected_channel == right_index;
     let columns = afx_routing_row_columns(area);
-    let row_style = terminal::adapt_style(Style::default().fg(if pair % 2 == 0 {
+    let row_style = terminal::adapt_style(Style::default().fg(if pair.is_multiple_of(2) {
         Color::DarkGray
     } else {
         Color::Gray
@@ -1456,25 +1457,6 @@ pub(crate) fn render_colored_meter_bar(area: Rect, buffer: &mut Buffer, ratio: f
         buffer[(x, area.y)]
             .set_symbol(if filled { "█" } else { "░" })
             .set_style(terminal::adapt_style(Style::default().fg(color)));
-    }
-}
-
-pub(crate) fn experimental_mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
-    let bytes = state.latest_raw_73.as_deref()?;
-    let payload = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..)?;
-
-    match payload.get(OFFSET_SURFACE_SELECTOR).copied() {
-        Some(SURFACE_CODE_MONITOR_HP1) => Some((
-            "MIX 1",
-            payload.get(OFFSET_MIX1_LANE_A).copied().unwrap_or(0),
-            payload.get(OFFSET_MIX1_LANE_B).copied().unwrap_or(0),
-        )),
-        Some(SURFACE_CODE_HP2) => Some((
-            "MIX 2",
-            payload.get(OFFSET_MIX2_LANE_A).copied().unwrap_or(0),
-            payload.get(OFFSET_MIX2_LANE_B).copied().unwrap_or(0),
-        )),
-        _ => None,
     }
 }
 
