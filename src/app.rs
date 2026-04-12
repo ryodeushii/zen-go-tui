@@ -1437,9 +1437,9 @@ pub enum PendingMutation {
 /// Computes the next preamp gain raw value for increment/decrement.
 fn next_preamp_gain_raw(current: u8, up: bool) -> u8 {
     if up {
-        current.saturating_sub(1)
+        current.saturating_add(1).min(0x41)
     } else {
-        current.saturating_add(1).min(0x3c)
+        current.saturating_sub(1)
     }
 }
 
