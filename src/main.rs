@@ -16,12 +16,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use antelope_protocol::{
-    ClockSource, Command, MixerAssignment, MixerSurface, OutputMode, PanState, PreampMode,
-    SampleRate, Surface,
+    ClockSource, Command, MixerAssignment, MixerSurface, PanState, PreampMode, SampleRate, Surface,
 };
 use zen_go_tui::app::{
-    Controller, FocusArea, MainPage, PeakHoldDuration, ProfileEditorMode, RefreshRate,
-    SelectorPopupKind, SelectorPopupState,
+    Controller, FocusArea, Intent, MainPage, PeakHoldDuration, RefreshRate, SelectorPopupKind,
+    SelectorPopupState,
 };
 use zen_go_tui::settings;
 use zen_go_tui::terminal::{
@@ -29,15 +28,10 @@ use zen_go_tui::terminal::{
 };
 use zen_go_tui::transport::{is_device_error, Transport};
 use zen_go_tui::ui;
-use zen_go_tui::QUERY_REPLY_VISIBLE_COUNT;
 
 use crate::cli::{Cli, CliCommand};
 use crate::input::{collect_pending_input, spawn_input_reader, InputThreadMessage};
-use crate::profile_ops::{
-    append_profile_editor_text, close_profiles_popup, commit_profile_editor,
-    delete_selected_profile, handle_profile_result, load_selected_profile, open_profiles_popup,
-    run_profile_command, start_profile_editor,
-};
+use crate::profile_ops::{append_profile_editor_text, load_selected_profile, run_profile_command};
 use crate::timing::{device_poll_interval, should_draw_frame, should_probe_reconnect};
 
 fn main() -> Result<()> {
@@ -182,16 +176,11 @@ fn handle_key_press(
         match key_code {
             AppKeyCode::Char('c') => return Ok(KeyAction::Quit),
             AppKeyCode::Char('d') => {
-                controller.state.toggle_raw_view();
+                controller.apply_intent(Intent::ToggleRawView, area)?;
                 return Ok(KeyAction::Continue);
             }
             AppKeyCode::Char('o') => {
-                controller.state.toggle_options_popup();
-                controller.state.last_message = if controller.state.options_popup_open {
-                    "Options popup opened".to_string()
-                } else {
-                    "Closed options popup".to_string()
-                };
+                controller.apply_intent(Intent::ToggleOptionsPopup, area)?;
                 return Ok(KeyAction::Continue);
             }
             _ => {}
@@ -201,7 +190,9 @@ fn handle_key_press(
     if controller.state.hotkeys_popup_open {
         match key_code {
             AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
-            AppKeyCode::Char('?') | AppKeyCode::Esc => controller.state.toggle_hotkeys_popup(),
+            AppKeyCode::Char('?') | AppKeyCode::Esc => {
+                controller.apply_intent(Intent::ToggleHotkeysPopup, area)?;
+            }
             _ => {}
         }
         return Ok(KeyAction::Continue);
@@ -210,67 +201,49 @@ fn handle_key_press(
     if controller.state.options_popup_open {
         match key_code {
             AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
-            AppKeyCode::Esc => controller.state.toggle_options_popup(),
+            AppKeyCode::Esc => {
+                controller.apply_intent(Intent::CloseOptionsPopup, area)?;
+            }
             AppKeyCode::Char('1') => {
-                controller.state.settings.refresh_rate = RefreshRate::Fps15;
-                controller.state.last_message = "Refresh rate set to 15 FPS".to_string();
-                if controller.state.settings.auto_save {
-                    let _ = settings::save_settings(&controller.state.settings);
-                }
+                controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps15), area)?;
             }
             AppKeyCode::Char('2') => {
-                controller.state.settings.refresh_rate = RefreshRate::Fps30;
-                controller.state.last_message = "Refresh rate set to 30 FPS".to_string();
-                if controller.state.settings.auto_save {
-                    let _ = settings::save_settings(&controller.state.settings);
-                }
+                controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps30), area)?;
             }
             AppKeyCode::Char('3') => {
-                controller.state.settings.refresh_rate = RefreshRate::Fps60;
-                controller.state.last_message = "Refresh rate set to 60 FPS".to_string();
-                if controller.state.settings.auto_save {
-                    let _ = settings::save_settings(&controller.state.settings);
-                }
+                controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps60), area)?;
             }
             AppKeyCode::Up => {
-                cycle_peak_threshold(controller, true);
+                controller.apply_intent(Intent::CyclePeakThreshold(true), area)?;
             }
             AppKeyCode::Down => {
-                cycle_peak_threshold(controller, false);
+                controller.apply_intent(Intent::CyclePeakThreshold(false), area)?;
             }
             AppKeyCode::Char('p') => {
-                controller.state.settings.peak_enabled = !controller.state.settings.peak_enabled;
-                if controller.state.settings.peak_enabled {
-                    controller.state.last_message = "Peak detection enabled".to_string();
-                } else {
-                    controller.state.preamp_peaks = [None, None];
-                    controller.state.mixer_peaks = [[None; 16]; 2];
-                    controller.state.last_message = "Peak detection disabled".to_string();
-                }
-                if controller.state.settings.auto_save {
-                    let _ = settings::save_settings(&controller.state.settings);
-                }
+                controller.apply_intent(Intent::TogglePeakEnabled, area)?;
             }
             AppKeyCode::Char('h') | AppKeyCode::Char('H') => {
-                cycle_peak_hold_duration(controller, true);
+                let all = PeakHoldDuration::all();
+                let current = controller.state.settings.peak_hold_duration;
+                let pos = all.iter().position(|&v| v == current).unwrap_or(1);
+                let next = all[(pos + 1) % all.len()];
+                controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
                 if controller.state.settings.auto_save {
                     let _ = settings::save_settings(&controller.state.settings);
                 }
             }
             AppKeyCode::Char('l') | AppKeyCode::Char('L') => {
-                cycle_peak_hold_duration(controller, false);
+                let all = PeakHoldDuration::all();
+                let current = controller.state.settings.peak_hold_duration;
+                let pos = all.iter().position(|&v| v == current).unwrap_or(1);
+                let next = all[pos.checked_sub(1).unwrap_or(all.len() - 1)];
+                controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
                 if controller.state.settings.auto_save {
                     let _ = settings::save_settings(&controller.state.settings);
                 }
             }
             AppKeyCode::Char('a') => {
-                controller.state.settings.auto_save = !controller.state.settings.auto_save;
-                if controller.state.settings.auto_save {
-                    controller.state.last_message = "Auto-save enabled".to_string();
-                    let _ = settings::save_settings(&controller.state.settings);
-                } else {
-                    controller.state.last_message = "Auto-save disabled".to_string();
-                }
+                controller.apply_intent(Intent::ToggleAutoSave, area)?;
             }
             _ => {}
         }
@@ -279,19 +252,24 @@ fn handle_key_press(
 
     if controller.state.profile_editor.is_some() {
         match key_code {
-            AppKeyCode::Char(ch) => append_profile_editor_text(controller, &ch.to_string()),
-            AppKeyCode::Backspace => {
-                if let Some(editor) = controller.state.profile_editor.as_mut() {
-                    editor.value.pop();
+            AppKeyCode::Char(ch) => {
+                let valid: String = ch
+                    .to_string()
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                if !valid.is_empty() {
+                    controller.apply_intent(Intent::ProfileEditorChar(valid), area)?;
                 }
             }
+            AppKeyCode::Backspace => {
+                controller.apply_intent(Intent::ProfileEditorBackspace, area)?;
+            }
             AppKeyCode::Enter => {
-                let result = commit_profile_editor(controller);
-                handle_profile_result(controller, result)?
+                controller.apply_intent(Intent::ProfileEditorCommit, area)?;
             }
             AppKeyCode::Esc => {
-                controller.state.profile_editor = None;
-                controller.state.last_message = "Cancelled profile edit".to_string();
+                controller.apply_intent(Intent::ProfileEditorCancel, area)?;
             }
             _ => {}
         }
@@ -300,25 +278,31 @@ fn handle_key_press(
 
     if controller.state.profiles_popup_open {
         match key_code {
-            AppKeyCode::Up => move_popup_selection(controller, false),
-            AppKeyCode::Down => move_popup_selection(controller, true),
-            AppKeyCode::Enter => {
-                let result = load_selected_profile(controller);
-                handle_profile_result(controller, result)?
+            AppKeyCode::Up => {
+                controller.apply_intent(Intent::MovePopupSelection(false), area)?;
             }
-            AppKeyCode::Char('s') => start_profile_editor(controller, ProfileEditorMode::Save),
+            AppKeyCode::Down => {
+                controller.apply_intent(Intent::MovePopupSelection(true), area)?;
+            }
+            AppKeyCode::Enter => {
+                controller.apply_intent(Intent::LoadSelectedProfile, area)?;
+            }
+            AppKeyCode::Char('s') => {
+                controller.apply_intent(Intent::StartSaveProfile, area)?;
+            }
             AppKeyCode::Char('r') => {
                 if controller.state.selected_profile_name().is_some() {
-                    start_profile_editor(controller, ProfileEditorMode::Rename);
+                    controller.apply_intent(Intent::StartRenameProfile, area)?;
                 } else {
                     controller.state.last_message = "No profile selected to rename.".to_string();
                 }
             }
             AppKeyCode::Char('d') => {
-                let result = delete_selected_profile(controller);
-                handle_profile_result(controller, result)?
+                controller.apply_intent(Intent::DeleteSelectedProfile, area)?;
             }
-            AppKeyCode::Esc => close_profiles_popup(controller, "Closed profiles popup"),
+            AppKeyCode::Esc => {
+                controller.apply_intent(Intent::CloseProfilesPopup, area)?;
+            }
             _ => {}
         }
         return Ok(KeyAction::Continue);
@@ -327,44 +311,27 @@ fn handle_key_press(
     let result = match key_code {
         AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
         AppKeyCode::Char('r') => {
-            controller.state.routing_popup_open = !controller.state.routing_popup_open;
-            controller.state.last_message = if controller.state.routing_popup_open {
-                "Routing popup mirrors mixer assignments for USB recording channels 1-8".to_string()
-            } else {
-                "Closed routing popup".to_string()
-            };
+            controller.apply_intent(Intent::ToggleRoutingPopup, area)?;
             Ok(())
         }
         AppKeyCode::Char('p') => {
             if controller.state.profiles_popup_open {
-                close_profiles_popup(controller, "Closed profiles popup");
+                controller.apply_intent(Intent::CloseProfilesPopup, area)?;
             } else {
-                let result = open_profiles_popup(controller);
-                handle_profile_result(controller, result)?
+                controller.apply_intent(Intent::OpenProfilesPopup, area)?;
             }
             Ok(())
         }
         AppKeyCode::Char('O') => {
-            controller.state.toggle_options_popup();
-            controller.state.last_message = if controller.state.options_popup_open {
-                "Options popup opened".to_string()
-            } else {
-                "Closed options popup".to_string()
-            };
+            controller.apply_intent(Intent::ToggleOptionsPopup, area)?;
             Ok(())
         }
-        AppKeyCode::Char('R') => match controller.refresh_queried_state() {
-            Ok(()) => {
-                controller.state.last_message =
-                    "Sent captured 0x74 startup/state refresh sweep".to_string();
-                Ok(())
-            }
-            Err(error) => Err(error),
-        },
+        AppKeyCode::Char('R') => {
+            controller.apply_intent(Intent::RefreshQueriedState, area)?;
+            Ok(())
+        }
         AppKeyCode::Tab => {
-            if controller.state.page == MainPage::Mixer {
-                controller.state.cycle_focus();
-            }
+            controller.apply_intent(Intent::CycleFocus, area)?;
             Ok(())
         }
         AppKeyCode::BackTab => Ok(()),
@@ -376,14 +343,14 @@ fn handle_key_press(
             if controller.state.assignment_picker.is_some()
                 || controller.state.selector_popup.is_some() =>
         {
-            move_popup_selection(controller, false);
+            controller.apply_intent(Intent::MovePopupSelection(false), area)?;
             Ok(())
         }
         AppKeyCode::Down
             if controller.state.assignment_picker.is_some()
                 || controller.state.selector_popup.is_some() =>
         {
-            move_popup_selection(controller, true);
+            controller.apply_intent(Intent::MovePopupSelection(true), area)?;
             Ok(())
         }
         AppKeyCode::Enter
@@ -394,17 +361,17 @@ fn handle_key_press(
         }
         AppKeyCode::Left if controller.state.raw_view_open => {
             if controller.state.selected_raw_packet == zen_go_tui::app::RawPacketTab::Query75 {
-                controller.state.cycle_query_reply_entry(false)
+                controller.apply_intent(Intent::ScrollQueryReplyList { increase: false }, area)?;
             } else {
-                controller.state.cycle_raw_packet(false)
+                controller.state.cycle_raw_packet(false);
             }
             Ok(())
         }
         AppKeyCode::Right if controller.state.raw_view_open => {
             if controller.state.selected_raw_packet == zen_go_tui::app::RawPacketTab::Query75 {
-                controller.state.cycle_query_reply_entry(true)
+                controller.apply_intent(Intent::ScrollQueryReplyList { increase: true }, area)?;
             } else {
-                controller.state.cycle_raw_packet(true)
+                controller.state.cycle_raw_packet(true);
             }
             Ok(())
         }
@@ -416,39 +383,172 @@ fn handle_key_press(
             move_selection(controller, true, area);
             Ok(())
         }
-        AppKeyCode::Up => adjust_focused(controller, true),
-        AppKeyCode::Down => adjust_focused(controller, false),
-        AppKeyCode::Char('m') => toggle_mute(controller),
-        AppKeyCode::Char('o') => toggle_mixer_solo(controller),
-        AppKeyCode::Char('d') => toggle_dim(controller),
-        AppKeyCode::Char('a') => open_mixer_assignment_picker(controller),
-        AppKeyCode::Char('l') => toggle_mixer_link(controller),
-        AppKeyCode::Char('<') => {
-            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
-            controller.state.page_mixer_strip_viewport(false, visible);
+        AppKeyCode::Up => {
+            controller.apply_intent(Intent::AdjustFocused(true), area)?;
             Ok(())
         }
-        AppKeyCode::Char('>') => {
-            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
-            controller.state.page_mixer_strip_viewport(true, visible);
+        AppKeyCode::Down => {
+            controller.apply_intent(Intent::AdjustFocused(false), area)?;
             Ok(())
         }
-        AppKeyCode::Char('[') => adjust_mixer_pan(controller, false),
-        AppKeyCode::Char(']') => adjust_mixer_pan(controller, true),
-        AppKeyCode::Char('3') => open_preamp_mode_selector(controller),
-        AppKeyCode::Char('s') => cycle_sample_rate(controller),
-        AppKeyCode::Char('c') => cycle_clock_source(controller),
+        AppKeyCode::Char('m') => {
+            controller.apply_intent(Intent::ToggleFocusedMute, area)?;
+            Ok(())
+        }
+        AppKeyCode::Char('d') => {
+            controller.apply_intent(Intent::ToggleFocusedDim, area)?;
+            Ok(())
+        }
+        AppKeyCode::Char('o') => {
+            if controller.state.page == MainPage::Mixer
+                && controller.state.focus == FocusArea::Mixer
+            {
+                let active_channel =
+                    controller.state.active_mixer_channels()[controller.state.selected_channel];
+                let mixer = MixerSurface::from_surface(controller.state.surface);
+                controller.send_mixer_solo_change(
+                    mixer,
+                    active_channel.channel,
+                    !active_channel.soloed.unwrap_or(false),
+                )?;
+            }
+            Ok(())
+        }
+        AppKeyCode::Char('a') => {
+            if controller.state.page == MainPage::Mixer
+                && controller.state.focus == FocusArea::Mixer
+            {
+                let active_channel =
+                    controller.state.active_mixer_channels()[controller.state.selected_channel];
+                if !antelope_protocol::MixerStrip::assignment_write_is_grounded(
+                    active_channel.channel,
+                ) {
+                    controller.state.last_message =
+                        "Assignment picking is not grounded for the selected strip.".to_string();
+                } else {
+                    controller
+                        .apply_intent(Intent::OpenAssignmentPicker(active_channel.channel), area)?;
+                }
+            }
+            Ok(())
+        }
+        AppKeyCode::Char('l') => {
+            if controller.state.page == MainPage::Mixer
+                && controller.state.focus == FocusArea::Mixer
+            {
+                let active_channel =
+                    controller.state.active_mixer_channels()[controller.state.selected_channel];
+                let mixer = MixerSurface::from_surface(controller.state.surface);
+                controller.send_mixer_link_change(
+                    mixer,
+                    active_channel.channel,
+                    !active_channel.linked.unwrap_or(false),
+                )?;
+            }
+            Ok(())
+        }
+        AppKeyCode::Char('[') => {
+            if controller.state.page == MainPage::Mixer
+                && controller.state.focus == FocusArea::Mixer
+            {
+                let active_channel =
+                    controller.state.active_mixer_channels()[controller.state.selected_channel];
+                let next = active_channel
+                    .pan
+                    .raw()
+                    .saturating_sub(1)
+                    .max(PanState::MIN);
+                controller.send(Command::SetMixerPan {
+                    mixer: MixerSurface::from_surface(controller.state.surface),
+                    channel: active_channel.channel,
+                    pan: PanState::from_raw(next),
+                    muted: active_channel.muted.unwrap_or(false),
+                    soloed: active_channel.soloed.unwrap_or(false),
+                })?;
+            }
+            Ok(())
+        }
+        AppKeyCode::Char(']') => {
+            if controller.state.page == MainPage::Mixer
+                && controller.state.focus == FocusArea::Mixer
+            {
+                let active_channel =
+                    controller.state.active_mixer_channels()[controller.state.selected_channel];
+                let next = active_channel
+                    .pan
+                    .raw()
+                    .saturating_add(1)
+                    .min(PanState::MAX);
+                controller.send(Command::SetMixerPan {
+                    mixer: MixerSurface::from_surface(controller.state.surface),
+                    channel: active_channel.channel,
+                    pan: PanState::from_raw(next),
+                    muted: active_channel.muted.unwrap_or(false),
+                    soloed: active_channel.soloed.unwrap_or(false),
+                })?;
+            }
+            Ok(())
+        }
+        AppKeyCode::Char('3') => {
+            if controller.state.page == MainPage::Mixer
+                && controller.state.focus == FocusArea::Preamp
+            {
+                let input = controller.state.selected_preamp_input as u8;
+                let current = if input == 0 {
+                    controller.state.preamp.input1.mode
+                } else {
+                    controller.state.preamp.input2.mode
+                };
+                controller.state.popup_selected_index =
+                    [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
+                        .iter()
+                        .position(|mode| *mode == current)
+                        .unwrap_or(0);
+                controller.state.selector_popup = Some(SelectorPopupState {
+                    kind: SelectorPopupKind::PreampMode { input },
+                });
+                controller.state.focus = FocusArea::Preamp;
+                controller.state.selected_preamp_input = input.min(1) as usize;
+            }
+            Ok(())
+        }
+        AppKeyCode::Char('s') => {
+            if controller.state.device.clock_source == Some(ClockSource::Internal) {
+                let current = controller
+                    .state
+                    .device
+                    .sample_rate
+                    .unwrap_or(SampleRate::Hz48000);
+                let all = SampleRate::all_confirmed();
+                let position = all.iter().position(|rate| *rate == current).unwrap_or(2);
+                let next = all[(position + 1) % all.len()];
+                controller.send(Command::SetSampleRate(next))?;
+            }
+            Ok(())
+        }
+        AppKeyCode::Char('c') => {
+            let current = controller
+                .state
+                .device
+                .clock_source
+                .unwrap_or(ClockSource::Internal);
+            let all = ClockSource::all_confirmed();
+            let position = all
+                .iter()
+                .position(|source| *source == current)
+                .unwrap_or(0);
+            let next = all[(position + 1) % all.len()];
+            controller.send(Command::SetClockSource(next))?;
+            Ok(())
+        }
         AppKeyCode::Char('1') => controller.send(Command::SelectSurface(Surface::MonitorHp1)),
         AppKeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2)),
         AppKeyCode::Char('b') if controller.state.raw_view_open => {
-            controller.state.capture_raw_baseline();
-            controller.state.last_message =
-                "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
+            controller.apply_intent(Intent::CaptureRawBaseline, area)?;
             Ok(())
         }
         AppKeyCode::Char('x') if controller.state.raw_view_open => {
-            controller.state.clear_raw_baseline();
-            controller.state.last_message = "Cleared raw baseline".to_string();
+            controller.apply_intent(Intent::ClearRawBaseline, area)?;
             Ok(())
         }
         AppKeyCode::Esc
@@ -649,51 +749,18 @@ fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layou
     }
 }
 
-fn popup_item_count(controller: &Controller) -> usize {
-    if controller.state.assignment_picker.is_some() {
-        MixerAssignment::grounded_choices().len()
-    } else if controller.state.profiles_popup_open {
-        controller.state.profile_names.len()
-    } else if let Some(popup) = controller.state.selector_popup {
-        match popup.kind {
-            SelectorPopupKind::SampleRate => SampleRate::all_confirmed().len(),
-            SelectorPopupKind::ClockSource => ClockSource::all_confirmed().len(),
-            SelectorPopupKind::PreampMode { .. } => 3,
-        }
-    } else {
-        0
-    }
-}
-
-fn move_popup_selection(controller: &mut Controller, down: bool) {
-    let item_count = popup_item_count(controller);
-    if item_count == 0 {
-        return;
-    }
-
-    controller.state.popup_selected_index = if down {
-        (controller.state.popup_selected_index + 1) % item_count
-    } else {
-        controller
-            .state
-            .popup_selected_index
-            .checked_sub(1)
-            .unwrap_or(item_count - 1)
-    };
-}
-
 fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
     if let Some(picker) = controller.state.assignment_picker {
         if let Some(assignment) = MixerAssignment::grounded_choices()
             .get(controller.state.popup_selected_index)
             .copied()
         {
-            return apply_intent(
-                controller,
+            return controller.apply_intent(
                 ui::Intent::PickAssignment {
                     strip: picker.strip,
                     assignment,
                 },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
             );
         }
     }
@@ -721,218 +788,9 @@ fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
         };
 
         if let Some(action) = action {
-            return apply_intent(controller, action);
+            return controller.apply_intent(action, ratatui::layout::Rect::new(0, 0, 160, 50));
         }
     }
-
-    Ok(())
-}
-
-fn adjust_focused(controller: &mut Controller, up: bool) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    match controller.state.focus {
-        FocusArea::Outputs => {
-            let index = controller.state.selected_output;
-            let output = controller.state.outputs[index];
-            let next = if up {
-                output.volume.saturating_sub(1)
-            } else {
-                output.volume.saturating_add(1).min(0x60)
-            };
-            controller.send(Command::SetOutputVolume {
-                target: output.target,
-                step: next,
-            })?;
-        }
-        FocusArea::Mixer => {
-            let active_channel =
-                controller.state.active_mixer_channels()[controller.state.selected_channel];
-            let channel = active_channel.channel;
-            let current = active_channel.level.unwrap_or(0x20);
-            let next = if up {
-                current.saturating_sub(1)
-            } else {
-                current.saturating_add(1).min(0x60)
-            };
-            controller.send_mixer_level_change(
-                MixerSurface::from_surface(controller.state.surface),
-                channel,
-                next,
-            )?;
-        }
-        FocusArea::Preamp => {
-            let input = controller.state.selected_preamp_input as u8;
-            let current = if input == 0 {
-                controller.state.preamp.input1
-            } else {
-                controller.state.preamp.input2
-            };
-            let next = next_preamp_gain_raw(current, up);
-            controller.send(Command::SetPreampGain { input, raw: next })?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn toggle_mute(controller: &mut Controller) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    match controller.state.focus {
-        FocusArea::Outputs => {
-            let index = controller.state.selected_output;
-            let output = controller.state.outputs[index];
-            controller.send(Command::SetOutputMute {
-                target: output.target,
-                enabled: output.mode != OutputMode::Mute,
-            })?;
-        }
-        FocusArea::Mixer => {
-            let active_channel =
-                controller.state.active_mixer_channels()[controller.state.selected_channel];
-            let channel = active_channel.channel;
-            let muted = !active_channel.muted.unwrap_or(false);
-            controller.send_mixer_mute_change(
-                MixerSurface::from_surface(controller.state.surface),
-                channel,
-                muted,
-            )?;
-        }
-        FocusArea::Preamp => {
-            let input = controller.state.selected_preamp_input as u8;
-            let current = if input == 0 {
-                controller.state.preamp.input1
-            } else {
-                controller.state.preamp.input2
-            };
-            controller.send(Command::SetPreampPhantom {
-                input,
-                enabled: !current.phantom_on,
-            })?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-fn toggle_dim(controller: &mut Controller) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    if controller.state.focus != FocusArea::Outputs {
-        return Ok(());
-    }
-    let index = controller.state.selected_output;
-    let output = controller.state.outputs[index];
-    controller.send(Command::SetOutputDim {
-        target: output.target,
-        enabled: output.mode != OutputMode::Dim,
-    })?;
-    Ok(())
-}
-
-fn adjust_mixer_pan(controller: &mut Controller, right: bool) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    if controller.state.focus != FocusArea::Mixer {
-        return Ok(());
-    }
-
-    let active_channel =
-        controller.state.active_mixer_channels()[controller.state.selected_channel];
-    let next = if right {
-        active_channel
-            .pan
-            .raw()
-            .saturating_add(1)
-            .min(PanState::MAX)
-    } else {
-        active_channel
-            .pan
-            .raw()
-            .saturating_sub(1)
-            .max(PanState::MIN)
-    };
-
-    controller.send(Command::SetMixerPan {
-        mixer: MixerSurface::from_surface(controller.state.surface),
-        channel: active_channel.channel,
-        pan: PanState::from_raw(next),
-        muted: active_channel.muted.unwrap_or(false),
-        soloed: active_channel.soloed.unwrap_or(false),
-    })?;
-    Ok(())
-}
-
-fn toggle_mixer_solo(controller: &mut Controller) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    if controller.state.focus != FocusArea::Mixer {
-        return Ok(());
-    }
-
-    let active_channel =
-        controller.state.active_mixer_channels()[controller.state.selected_channel];
-    let mixer = MixerSurface::from_surface(controller.state.surface);
-    controller.send_mixer_solo_change(
-        mixer,
-        active_channel.channel,
-        !active_channel.soloed.unwrap_or(false),
-    )?;
-
-    Ok(())
-}
-
-fn open_mixer_assignment_picker(controller: &mut Controller) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    if controller.state.focus != FocusArea::Mixer {
-        return Ok(());
-    }
-
-    let active_channel =
-        controller.state.active_mixer_channels()[controller.state.selected_channel];
-    if !antelope_protocol::MixerStrip::assignment_write_is_grounded(active_channel.channel) {
-        controller.state.last_message =
-            "Assignment picking is not grounded for the selected strip.".to_string();
-        return Ok(());
-    }
-
-    apply_intent(
-        controller,
-        ui::Intent::OpenAssignmentPicker(active_channel.channel),
-    )
-}
-
-fn toggle_mixer_link(controller: &mut Controller) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    if controller.state.focus != FocusArea::Mixer {
-        return Ok(());
-    }
-
-    let active_channel =
-        controller.state.active_mixer_channels()[controller.state.selected_channel];
-    let mixer = MixerSurface::from_surface(controller.state.surface);
-    controller.send_mixer_link_change(
-        mixer,
-        active_channel.channel,
-        !active_channel.linked.unwrap_or(false),
-    )?;
 
     Ok(())
 }
@@ -946,14 +804,14 @@ fn handle_mouse_event(
         AppMouseEventKind::Down(AppMouseButton::Left) => {
             if let Some(action) = ui::mouse_action(area, &controller.state, mouse.column, mouse.row)
             {
-                apply_intent_with_area(controller, action, area)?;
+                controller.apply_intent(action, area)?;
             }
         }
         AppMouseEventKind::Drag(AppMouseButton::Left) => {
             if let Some(action) =
                 ui::slider_mouse_action(area, &controller.state, mouse.column, mouse.row)
             {
-                apply_intent_with_area(controller, action, area)?;
+                controller.apply_intent(action, area)?;
             }
         }
         AppMouseEventKind::ScrollLeft
@@ -967,7 +825,7 @@ fn handle_mouse_event(
             if let Some(action) =
                 ui::slider_wheel_action(area, &controller.state, mouse.column, mouse.row, increase)
             {
-                apply_intent_with_area(controller, action, area)?;
+                controller.apply_intent(action, area)?;
                 return Ok(());
             }
         }
@@ -977,592 +835,6 @@ fn handle_mouse_event(
     Ok(())
 }
 
-fn apply_intent(controller: &mut Controller, intent: ui::Intent) -> Result<()> {
-    apply_intent_with_area(
-        controller,
-        intent,
-        ratatui::layout::Rect::new(0, 0, 160, 50),
-    )
-}
-
-fn apply_intent_with_area(
-    controller: &mut Controller,
-    action: ui::Intent,
-    area: ratatui::layout::Rect,
-) -> Result<()> {
-    match action {
-        ui::Intent::Quit => {
-            controller.state.quit_requested = true;
-        }
-        ui::Intent::ToggleRawView => controller.state.toggle_raw_view(),
-        ui::Intent::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
-        ui::Intent::OpenProfilesPopup => {
-            let result = open_profiles_popup(controller);
-            handle_profile_result(controller, result)?
-        }
-        ui::Intent::CloseProfilesPopup => {
-            close_profiles_popup(controller, "Closed profiles popup");
-        }
-        ui::Intent::OpenRoutingPopup => {
-            controller.state.profiles_popup_open = false;
-            controller.state.profile_editor = None;
-            controller.state.routing_popup_open = true;
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel = controller.state.selected_channel.min(7);
-            controller.state.last_message =
-                "Routing popup mirrors mixer assignments for USB recording channels 1-8"
-                    .to_string();
-        }
-        ui::Intent::CloseRoutingPopup => {
-            controller.state.routing_popup_open = false;
-            controller.state.last_message = "Closed routing popup".to_string();
-        }
-        ui::Intent::OpenOptionsPopup => {
-            controller.state.profiles_popup_open = false;
-            controller.state.profile_editor = None;
-            controller.state.routing_popup_open = false;
-            controller.state.options_popup_open = true;
-            controller.state.last_message = "Options popup opened".to_string();
-        }
-        ui::Intent::CloseOptionsPopup => {
-            controller.state.options_popup_open = false;
-            controller.state.last_message = "Closed options popup".to_string();
-        }
-        ui::Intent::SetRefreshRate(rate) => {
-            controller.state.settings.refresh_rate = rate;
-            controller.state.last_message = format!("Refresh rate set to {}", rate.label());
-            if controller.state.settings.auto_save {
-                let _ = settings::save_settings(&controller.state.settings);
-            }
-        }
-        ui::Intent::CyclePeakThreshold(increase) => {
-            cycle_peak_threshold(controller, increase);
-            if controller.state.settings.auto_save {
-                let _ = settings::save_settings(&controller.state.settings);
-            }
-        }
-        ui::Intent::TogglePeakEnabled => {
-            controller.state.settings.peak_enabled = !controller.state.settings.peak_enabled;
-            if controller.state.settings.peak_enabled {
-                controller.state.last_message = "Peak detection enabled".to_string();
-            } else {
-                controller.state.preamp_peaks = [None, None];
-                controller.state.mixer_peaks = [[None; 16]; 2];
-                controller.state.last_message = "Peak detection disabled".to_string();
-            }
-            if controller.state.settings.auto_save {
-                let _ = settings::save_settings(&controller.state.settings);
-            }
-        }
-        ui::Intent::CyclePeakHoldDuration(duration) => {
-            controller.state.settings.peak_hold_duration = duration;
-            controller.state.last_message =
-                format!("Peak hold duration set to {}", duration.label());
-            if controller.state.settings.auto_save {
-                let _ = settings::save_settings(&controller.state.settings);
-            }
-        }
-        ui::Intent::ToggleAutoSave => {
-            controller.state.settings.auto_save = !controller.state.settings.auto_save;
-            if controller.state.settings.auto_save {
-                controller.state.last_message = "Auto-save enabled".to_string();
-                let _ = settings::save_settings(&controller.state.settings);
-            } else {
-                controller.state.last_message = "Auto-save disabled".to_string();
-            }
-        }
-        ui::Intent::SelectProfile(index) => {
-            controller.state.popup_selected_index =
-                index.min(controller.state.profile_names.len().saturating_sub(1));
-        }
-        ui::Intent::LoadSelectedProfile => {
-            let result = load_selected_profile(controller);
-            handle_profile_result(controller, result)?
-        }
-        ui::Intent::StartSaveProfile => {
-            if controller.state.profiles_popup_open {
-                start_profile_editor(controller, ProfileEditorMode::Save);
-            }
-        }
-        ui::Intent::StartRenameProfile => {
-            if controller.state.selected_profile_name().is_some() {
-                start_profile_editor(controller, ProfileEditorMode::Rename);
-            } else {
-                controller.state.last_message = "No profile selected to rename.".to_string();
-            }
-        }
-        ui::Intent::DeleteSelectedProfile => {
-            let result = delete_selected_profile(controller);
-            handle_profile_result(controller, result)?
-        }
-        ui::Intent::PageMixerStripsLeft => {
-            controller.state.focus = FocusArea::Mixer;
-            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
-            controller.state.page_mixer_strip_viewport(false, visible);
-        }
-        ui::Intent::PageMixerStripsRight => {
-            controller.state.focus = FocusArea::Mixer;
-            let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
-            controller.state.page_mixer_strip_viewport(true, visible);
-        }
-        ui::Intent::OpenSampleRateSelector => {
-            if controller.state.device.clock_source == Some(ClockSource::Internal) {
-                controller.state.popup_selected_index = controller
-                    .state
-                    .device
-                    .sample_rate
-                    .and_then(|current| {
-                        SampleRate::all_confirmed()
-                            .iter()
-                            .position(|rate| *rate == current)
-                    })
-                    .unwrap_or(0);
-                controller.state.selector_popup = Some(SelectorPopupState {
-                    kind: SelectorPopupKind::SampleRate,
-                });
-            }
-        }
-        ui::Intent::OpenClockSourceSelector => {
-            controller.state.popup_selected_index = controller
-                .state
-                .device
-                .clock_source
-                .and_then(|current| {
-                    ClockSource::all_confirmed()
-                        .iter()
-                        .position(|source| *source == current)
-                })
-                .unwrap_or(0);
-            controller.state.selector_popup = Some(SelectorPopupState {
-                kind: SelectorPopupKind::ClockSource,
-            });
-        }
-        ui::Intent::SelectPage(page) => controller.state.page = page,
-        ui::Intent::SelectOutput(index) => {
-            controller.state.focus = FocusArea::Outputs;
-            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
-        }
-        ui::Intent::AdjustOutputLevel { index, increase } => {
-            controller.state.focus = FocusArea::Outputs;
-            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
-            let output = controller.state.outputs[controller.state.selected_output];
-            let next = if increase {
-                output.volume.saturating_sub(1)
-            } else {
-                output.volume.saturating_add(1).min(0x60)
-            };
-            controller.send(Command::SetOutputVolume {
-                target: output.target,
-                step: next,
-            })?;
-        }
-        ui::Intent::SetOutputLevel { index, step } => {
-            controller.state.focus = FocusArea::Outputs;
-            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
-            let output = controller.state.outputs[controller.state.selected_output];
-            controller.send(Command::SetOutputVolume {
-                target: output.target,
-                step: step.min(0x60),
-            })?;
-        }
-        ui::Intent::ToggleOutputDim(index) => {
-            controller.state.focus = FocusArea::Outputs;
-            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
-            let output = controller.state.outputs[controller.state.selected_output];
-            controller.send(Command::SetOutputDim {
-                target: output.target,
-                enabled: output.mode != OutputMode::Dim,
-            })?;
-        }
-        ui::Intent::ToggleOutputMute(index) => {
-            controller.state.focus = FocusArea::Outputs;
-            controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
-            let output = controller.state.outputs[controller.state.selected_output];
-            controller.send(Command::SetOutputMute {
-                target: output.target,
-                enabled: output.mode != OutputMode::Mute,
-            })?;
-        }
-        ui::Intent::SelectRawPacketTab(tab) => controller.state.selected_raw_packet = tab,
-        ui::Intent::SelectQueryReplyEntry(index) => {
-            controller.state.selected_query_reply_entry = Some(index)
-        }
-        ui::Intent::ScrollQueryReplyList { increase } => {
-            let total = controller.state.recent_query_reply_entries.len();
-            let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
-            let max_scroll = total.saturating_sub(visible);
-            if increase {
-                controller.state.query_reply_scroll =
-                    (controller.state.query_reply_scroll + 1).min(max_scroll);
-            } else {
-                controller.state.query_reply_scroll =
-                    controller.state.query_reply_scroll.saturating_sub(1);
-            }
-        }
-        ui::Intent::SelectSurface(surface) => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.send(Command::SelectSurface(surface))?;
-        }
-        ui::Intent::SelectMixerChannel(index) => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel = index;
-        }
-        ui::Intent::AdjustMixerLevel { index, increase } => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel =
-                index.min(controller.state.active_mixer_channels().len() - 1);
-            let active_channel =
-                controller.state.active_mixer_channels()[controller.state.selected_channel];
-            let current = active_channel.level.unwrap_or(0x20);
-            let next = if increase {
-                current.saturating_sub(1)
-            } else {
-                current.saturating_add(1).min(0x60)
-            };
-            controller.send_mixer_level_change(
-                MixerSurface::from_surface(controller.state.surface),
-                active_channel.channel,
-                next,
-            )?;
-        }
-        ui::Intent::SetMixerLevel { index, level } => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel =
-                index.min(controller.state.active_mixer_channels().len() - 1);
-            let active_channel =
-                controller.state.active_mixer_channels()[controller.state.selected_channel];
-            controller.send_mixer_level_change(
-                MixerSurface::from_surface(controller.state.surface),
-                active_channel.channel,
-                level.min(0x5a),
-            )?;
-        }
-        ui::Intent::AdjustMixerPan { index, right } => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel =
-                index.min(controller.state.active_mixer_channels().len() - 1);
-            let active_channel =
-                controller.state.active_mixer_channels()[controller.state.selected_channel];
-            let next = if right {
-                active_channel
-                    .pan
-                    .raw()
-                    .saturating_add(1)
-                    .min(PanState::MAX)
-            } else {
-                active_channel
-                    .pan
-                    .raw()
-                    .saturating_sub(1)
-                    .max(PanState::MIN)
-            };
-            controller.send(Command::SetMixerPan {
-                mixer: MixerSurface::from_surface(controller.state.surface),
-                channel: active_channel.channel,
-                pan: PanState::from_raw(next),
-                muted: active_channel.muted.unwrap_or(false),
-                soloed: active_channel.soloed.unwrap_or(false),
-            })?;
-        }
-        ui::Intent::SetMixerPan { index, pan } => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel =
-                index.min(controller.state.active_mixer_channels().len() - 1);
-            let active_channel =
-                controller.state.active_mixer_channels()[controller.state.selected_channel];
-            controller.send(Command::SetMixerPan {
-                mixer: MixerSurface::from_surface(controller.state.surface),
-                channel: active_channel.channel,
-                pan,
-                muted: active_channel.muted.unwrap_or(false),
-                soloed: active_channel.soloed.unwrap_or(false),
-            })?;
-        }
-        ui::Intent::ToggleMixerMute(channel) => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel = channel.saturating_sub(1) as usize;
-            let mixer = MixerSurface::from_surface(controller.state.surface);
-            let active_channel =
-                controller.state.mixer_channels[mixer.index()][channel as usize - 1];
-            controller.send_mixer_mute_change(
-                mixer,
-                channel,
-                !active_channel.muted.unwrap_or(false),
-            )?;
-        }
-        ui::Intent::ToggleMixerSolo(channel) => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel = channel.saturating_sub(1) as usize;
-            let mixer = MixerSurface::from_surface(controller.state.surface);
-            let active_channel =
-                controller.state.mixer_channels[mixer.index()][channel as usize - 1];
-            controller.send_mixer_solo_change(
-                mixer,
-                channel,
-                !active_channel.soloed.unwrap_or(false),
-            )?;
-        }
-        ui::Intent::ToggleMixerLink(channel) => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel = channel.saturating_sub(1) as usize;
-            let mixer = MixerSurface::from_surface(controller.state.surface);
-            let active_channel =
-                controller.state.mixer_channels[mixer.index()][channel as usize - 1];
-            controller.send_mixer_link_change(
-                mixer,
-                channel,
-                !active_channel.linked.unwrap_or(false),
-            )?;
-        }
-        ui::Intent::OpenAssignmentPicker(strip) => {
-            controller.state.focus = FocusArea::Mixer;
-            controller.state.selected_channel = strip.saturating_sub(1) as usize;
-            if !antelope_protocol::MixerStrip::assignment_write_is_grounded(strip) {
-                controller.state.last_message =
-                    "Assignment picking is not grounded for the selected strip.".to_string();
-            } else {
-                controller.state.popup_selected_index = controller.state.mixer_channels
-                    [MixerSurface::from_surface(controller.state.surface).index()]
-                    [controller.state.selected_channel]
-                    .assignment
-                    .and_then(|current| {
-                        MixerAssignment::grounded_choices()
-                            .iter()
-                            .position(|assignment| *assignment == current)
-                    })
-                    .unwrap_or(0);
-                controller.state.assignment_picker =
-                    Some(zen_go_tui::app::AssignmentPickerState { strip });
-                controller.state.last_message = format!("Pick source assignment for CH {strip:02}");
-            }
-        }
-        ui::Intent::PickAssignment { strip, assignment } => {
-            controller.state.assignment_picker = None;
-            controller.state.popup_selected_index = 0;
-            controller.send(Command::SetMixerAssignment { strip, assignment })?;
-        }
-        ui::Intent::CloseAssignmentPicker => {
-            controller.state.assignment_picker = None;
-            controller.state.popup_selected_index = 0;
-            controller.state.last_message = "Closed assignment picker".to_string();
-        }
-        ui::Intent::CloseSelectorPopup => {
-            controller.state.selector_popup = None;
-            controller.state.popup_selected_index = 0;
-            controller.state.last_message = "Closed selector".to_string();
-        }
-        ui::Intent::SelectPreampInput(input) => {
-            controller.state.focus = FocusArea::Preamp;
-            controller.state.selected_preamp_input = input.min(1);
-        }
-        ui::Intent::AdjustPreampGain { input, increase } => {
-            controller.state.focus = FocusArea::Preamp;
-            controller.state.selected_preamp_input = input.min(1) as usize;
-            let current = if input == 0 {
-                controller.state.preamp.input1
-            } else {
-                controller.state.preamp.input2
-            };
-            controller.send(Command::SetPreampGain {
-                input,
-                raw: next_preamp_gain_raw(current, increase),
-            })?;
-        }
-        ui::Intent::SetPreampGain { input, raw } => {
-            controller.state.focus = FocusArea::Preamp;
-            controller.state.selected_preamp_input = input.min(1) as usize;
-            controller.send(Command::SetPreampGain {
-                input: input.min(1),
-                raw,
-            })?;
-        }
-        ui::Intent::OpenPreampModeSelector(input) => {
-            controller.state.focus = FocusArea::Preamp;
-            controller.state.selected_preamp_input = input.min(1) as usize;
-            let current = if input == 0 {
-                controller.state.preamp.input1.mode
-            } else {
-                controller.state.preamp.input2.mode
-            };
-            controller.state.popup_selected_index =
-                [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
-                    .iter()
-                    .position(|mode| *mode == current)
-                    .unwrap_or(0);
-            controller.state.selector_popup = Some(SelectorPopupState {
-                kind: SelectorPopupKind::PreampMode { input },
-            });
-        }
-        ui::Intent::CyclePreampMode(input) => {
-            controller.state.focus = FocusArea::Preamp;
-            controller.state.selected_preamp_input = input.min(1) as usize;
-            let current = if input == 0 {
-                controller.state.preamp.input1.mode
-            } else {
-                controller.state.preamp.input2.mode
-            };
-            let next = match current {
-                PreampMode::Mic => PreampMode::Line,
-                PreampMode::Line => PreampMode::HiZ,
-                PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
-            };
-            controller.send(Command::SetPreampMode { input, mode: next })?;
-        }
-        ui::Intent::PickSampleRate(rate) => {
-            controller.state.selector_popup = None;
-            controller.state.popup_selected_index = 0;
-            controller.send(Command::SetSampleRate(rate))?;
-        }
-        ui::Intent::PickClockSource(source) => {
-            controller.state.selector_popup = None;
-            controller.state.popup_selected_index = 0;
-            controller.send(Command::SetClockSource(source))?;
-        }
-        ui::Intent::PickPreampMode { input, mode } => {
-            controller.state.selector_popup = None;
-            controller.state.popup_selected_index = 0;
-            controller.state.focus = FocusArea::Preamp;
-            controller.state.selected_preamp_input = input.min(1) as usize;
-            controller.send(Command::SetPreampMode { input, mode })?;
-        }
-        ui::Intent::TogglePreampPhase(input) => {
-            controller.state.focus = FocusArea::Preamp;
-            controller.state.selected_preamp_input = input.min(1) as usize;
-            let mode_raw = if input == 0 {
-                controller.state.preamp.input1.mode_raw
-            } else {
-                controller.state.preamp.input2.mode_raw
-            };
-            controller.send(Command::SetPreampPhase {
-                input,
-                enabled: mode_raw & 0x40 == 0,
-            })?;
-        }
-        ui::Intent::TogglePreampPhantom(input) => {
-            controller.state.focus = FocusArea::Preamp;
-            controller.state.selected_preamp_input = input.min(1) as usize;
-            let current = if input == 0 {
-                controller.state.preamp.input1
-            } else {
-                controller.state.preamp.input2
-            };
-            controller.send(Command::SetPreampPhantom {
-                input,
-                enabled: !current.phantom_on,
-            })?;
-        }
-    }
-
-    Ok(())
-}
-
-const PEAK_THRESHOLD_CHOICES: [u8; 10] =
-    [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0a, 0x0f, 0x14];
-
-fn cycle_peak_threshold(controller: &mut Controller, increase: bool) {
-    let current = controller.state.settings.peak_threshold_raw;
-    let pos = PEAK_THRESHOLD_CHOICES
-        .iter()
-        .position(|&v| v == current)
-        .unwrap_or(3);
-    let next_pos = if increase {
-        (pos + 1).min(PEAK_THRESHOLD_CHOICES.len() - 1)
-    } else {
-        pos.saturating_sub(1)
-    };
-    controller.state.settings.peak_threshold_raw = PEAK_THRESHOLD_CHOICES[next_pos];
-    let db = controller.state.settings.peak_threshold_db();
-    controller.state.last_message = format!("Peak threshold set to {} dB", db);
-}
-
-fn cycle_peak_hold_duration(controller: &mut Controller, forward: bool) {
-    let all = PeakHoldDuration::all();
-    let current = controller.state.settings.peak_hold_duration;
-    let pos = all.iter().position(|&v| v == current).unwrap_or(1);
-    let next = if forward {
-        all[(pos + 1) % all.len()]
-    } else {
-        all[pos.checked_sub(1).unwrap_or(all.len() - 1)]
-    };
-    controller.state.settings.peak_hold_duration = next;
-    controller.state.last_message = format!("Peak hold duration set to {}", next.label());
-}
-
-fn cycle_sample_rate(controller: &mut Controller) -> Result<()> {
-    if controller.state.device.clock_source != Some(ClockSource::Internal) {
-        return Ok(());
-    }
-
-    let current = controller
-        .state
-        .device
-        .sample_rate
-        .unwrap_or(SampleRate::Hz48000);
-    let all = SampleRate::all_confirmed();
-    let position = all.iter().position(|rate| *rate == current).unwrap_or(2);
-    let next = all[(position + 1) % all.len()];
-    controller.send(Command::SetSampleRate(next))?;
-    Ok(())
-}
-
-fn cycle_clock_source(controller: &mut Controller) -> Result<()> {
-    let current = controller
-        .state
-        .device
-        .clock_source
-        .unwrap_or(ClockSource::Internal);
-    let all = ClockSource::all_confirmed();
-    let position = all
-        .iter()
-        .position(|source| *source == current)
-        .unwrap_or(0);
-    let next = all[(position + 1) % all.len()];
-    controller.send(Command::SetClockSource(next))?;
-    Ok(())
-}
-
-fn open_preamp_mode_selector(controller: &mut Controller) -> Result<()> {
-    if controller.state.page != MainPage::Mixer {
-        return Ok(());
-    }
-
-    if controller.state.focus != FocusArea::Preamp {
-        return Ok(());
-    }
-
-    let input = controller.state.selected_preamp_input as u8;
-    apply_intent(controller, ui::Intent::OpenPreampModeSelector(input))
-}
-
-fn next_preamp_gain_raw(input: antelope_protocol::PreampInputState, up: bool) -> u8 {
-    match input.mode {
-        PreampMode::Mic => {
-            if up {
-                input.gain_raw.saturating_add(1).min(0x41)
-            } else {
-                input.gain_raw.saturating_sub(1)
-            }
-        }
-        PreampMode::Line => {
-            let current = i8::from_ne_bytes([input.gain_raw]);
-            let next = if up {
-                (current + 1).min(20)
-            } else {
-                (current - 1).max(-6)
-            };
-            next as u8
-        }
-        PreampMode::HiZ => {
-            if up {
-                input.gain_raw.saturating_add(1).min(0x2d)
-            } else {
-                input.gain_raw.saturating_sub(1)
-            }
-        }
-        PreampMode::Unknown(_) => input.gain_raw,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1570,7 +842,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use antelope_protocol::{
-        control_panel_startup_queries, MixerAssignment, MixerSurface, OutputState, OutputTarget,
+        control_panel_startup_queries, MixerAssignment, MixerSurface, OutputMode, OutputState,
+        OutputTarget,
     };
     use zen_go_tui::app::{AssignmentPickerState, ProfileEditorMode, ProfileEditorState};
     use zen_go_tui::terminal::AppModifiers;
@@ -1674,8 +947,14 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
             Some(MixerAssignment::Preamp(1));
 
-        open_mixer_assignment_picker(&mut controller).expect("open assignment picker");
+        let action = handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Char('a')),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("open assignment picker");
 
+        assert_eq!(action, KeyAction::Continue);
         assert!(transport.take_writes().is_empty());
         assert_eq!(
             controller.state.assignment_picker,
@@ -1692,9 +971,14 @@ mod tests {
         controller.state.focus = FocusArea::Mixer;
         controller.state.selected_channel = 5;
 
-        open_mixer_assignment_picker(&mut controller)
-            .expect("open assignment picker from routing popup");
+        let action = handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Char('a')),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("open assignment picker from routing popup");
 
+        assert_eq!(action, KeyAction::Continue);
         assert!(transport.take_writes().is_empty());
         assert_eq!(
             controller.state.assignment_picker,
@@ -1710,8 +994,14 @@ mod tests {
         controller.state.selected_preamp_input = 1;
         controller.state.preamp.input2.mode = PreampMode::Line;
 
-        open_preamp_mode_selector(&mut controller).expect("open preamp mode selector");
+        let action = handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Char('3')),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("open preamp mode selector");
 
+        assert_eq!(action, KeyAction::Continue);
         assert!(transport.take_writes().is_empty());
         assert_eq!(
             controller.state.selector_popup,
@@ -1799,8 +1089,14 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        toggle_mixer_solo(&mut controller).expect("toggle solo");
+        let action = handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Char('o')),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("toggle solo");
 
+        assert_eq!(action, KeyAction::Continue);
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(
@@ -1815,20 +1111,26 @@ mod tests {
         let mut controller = Controller::new(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
 
-        apply_intent(&mut controller, ui::Intent::OpenAssignmentPicker(5)).expect("open picker");
+        controller
+            .apply_intent(
+                ui::Intent::OpenAssignmentPicker(5),
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("open picker");
         assert_eq!(
             controller.state.assignment_picker,
             Some(AssignmentPickerState { strip: 5 })
         );
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::PickAssignment {
-                strip: 5,
-                assignment: MixerAssignment::Oscillator(1),
-            },
-        )
-        .expect("pick assignment");
+        controller
+            .apply_intent(
+                ui::Intent::PickAssignment {
+                    strip: 5,
+                    assignment: MixerAssignment::Oscillator(1),
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("pick assignment");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 5);
@@ -1844,7 +1146,12 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][4].assignment =
             Some(MixerAssignment::Oscillator(1));
 
-        apply_intent(&mut controller, ui::Intent::OpenAssignmentPicker(5)).expect("open picker");
+        controller
+            .apply_intent(
+                ui::Intent::OpenAssignmentPicker(5),
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("open picker");
 
         assert_eq!(controller.state.popup_selected_index, 13);
     }
@@ -1855,7 +1162,12 @@ mod tests {
         let mut controller = Controller::new(Box::new(transport.clone()));
         controller.state.outputs[1] = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
 
-        apply_intent(&mut controller, ui::Intent::ToggleOutputMute(1)).expect("toggle output mute");
+        controller
+            .apply_intent(
+                ui::Intent::ToggleOutputMute(1),
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("toggle output mute");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -1867,14 +1179,15 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::SetOutputLevel {
-                index: 1,
-                step: 0x12,
-            },
-        )
-        .expect("set output level");
+        controller
+            .apply_intent(
+                ui::Intent::SetOutputLevel {
+                    index: 1,
+                    step: 0x12,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("set output level");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -1886,14 +1199,15 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::SetPreampGain {
-                input: 1,
-                raw: 0x11,
-            },
-        )
-        .expect("set preamp gain");
+        controller
+            .apply_intent(
+                ui::Intent::SetPreampGain {
+                    input: 1,
+                    raw: 0x11,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("set preamp gain");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -1908,14 +1222,15 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::SetMixerLevel {
-                index: 0,
-                level: 0x15,
-            },
-        )
-        .expect("set mixer level");
+        controller
+            .apply_intent(
+                ui::Intent::SetMixerLevel {
+                    index: 0,
+                    level: 0x15,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("set mixer level");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -1932,14 +1247,15 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::SetMixerPan {
-                index: 0,
-                pan: PanState::from_raw(0x12),
-            },
-        )
-        .expect("set mixer pan");
+        controller
+            .apply_intent(
+                ui::Intent::SetMixerPan {
+                    index: 0,
+                    pan: PanState::from_raw(0x12),
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("set mixer pan");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -1958,14 +1274,15 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::AdjustMixerLevel {
-                index: 0,
-                increase: true,
-            },
-        )
-        .expect("adjust mixer level");
+        controller
+            .apply_intent(
+                ui::Intent::AdjustMixerLevel {
+                    index: 0,
+                    increase: true,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("adjust mixer level");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -1983,14 +1300,15 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::AdjustMixerPan {
-                index: 0,
-                right: true,
-            },
-        )
-        .expect("adjust mixer pan");
+        controller
+            .apply_intent(
+                ui::Intent::AdjustMixerPan {
+                    index: 0,
+                    right: true,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("adjust mixer pan");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -2082,7 +1400,8 @@ mod tests {
         // Area width 155 gives inner_width=151, card_width=18, stride=19, capacity=8
         let area = ratatui::layout::Rect::new(0, 0, 155, 50);
 
-        apply_intent_with_area(&mut controller, ui::Intent::PageMixerStripsRight, area)
+        controller
+            .apply_intent(ui::Intent::PageMixerStripsRight, area)
             .expect("page strips right");
 
         assert_eq!(controller.state.mixer_strip_scroll, 8);
@@ -2115,10 +1434,20 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
 
-        apply_intent(&mut controller, ui::Intent::ToggleHotkeysPopup).expect("open hotkeys");
+        controller
+            .apply_intent(
+                ui::Intent::ToggleHotkeysPopup,
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("open hotkeys");
         assert!(controller.state.hotkeys_popup_open);
 
-        apply_intent(&mut controller, ui::Intent::ToggleHotkeysPopup).expect("close hotkeys");
+        controller
+            .apply_intent(
+                ui::Intent::ToggleHotkeysPopup,
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("close hotkeys");
         assert!(!controller.state.hotkeys_popup_open);
     }
 
@@ -2128,7 +1457,11 @@ mod tests {
         let mut controller = Controller::new(Box::new(transport.clone()));
         controller.state.device.clock_source = Some(ClockSource::Internal);
 
-        apply_intent(&mut controller, ui::Intent::OpenSampleRateSelector)
+        controller
+            .apply_intent(
+                ui::Intent::OpenSampleRateSelector,
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
             .expect("open sample rate selector");
         assert_eq!(
             controller.state.selector_popup,
@@ -2137,11 +1470,12 @@ mod tests {
             })
         );
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::PickSampleRate(SampleRate::Hz48000),
-        )
-        .expect("pick sample rate");
+        controller
+            .apply_intent(
+                ui::Intent::PickSampleRate(SampleRate::Hz48000),
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("pick sample rate");
         assert_eq!(controller.state.selector_popup, None);
 
         let writes = transport.take_writes();
@@ -2156,11 +1490,22 @@ mod tests {
         controller.state.device.clock_source = Some(ClockSource::Usb);
         controller.state.device.sample_rate = Some(SampleRate::Hz192000);
 
-        apply_intent(&mut controller, ui::Intent::OpenSampleRateSelector)
+        controller
+            .apply_intent(
+                ui::Intent::OpenSampleRateSelector,
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
             .expect("open sample rate selector");
         assert_eq!(controller.state.selector_popup, None);
 
-        cycle_sample_rate(&mut controller).expect("cycle sample rate should no-op");
+        let action = handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Char('s')),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("cycle sample rate should no-op");
+
+        assert_eq!(action, KeyAction::Continue);
         assert!(transport.take_writes().is_empty());
     }
 
@@ -2169,7 +1514,11 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
 
-        apply_intent(&mut controller, ui::Intent::OpenPreampModeSelector(1))
+        controller
+            .apply_intent(
+                ui::Intent::OpenPreampModeSelector(1),
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
             .expect("open preamp mode selector");
         assert_eq!(
             controller.state.selector_popup,
@@ -2178,14 +1527,15 @@ mod tests {
             })
         );
 
-        apply_intent(
-            &mut controller,
-            ui::Intent::PickPreampMode {
-                input: 1,
-                mode: PreampMode::HiZ,
-            },
-        )
-        .expect("pick preamp mode");
+        controller
+            .apply_intent(
+                ui::Intent::PickPreampMode {
+                    input: 1,
+                    mode: PreampMode::HiZ,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("pick preamp mode");
         assert_eq!(controller.state.selector_popup, None);
 
         let writes = transport.take_writes();
@@ -2199,13 +1549,23 @@ mod tests {
         let mut controller = Controller::new(Box::new(transport));
         controller.state.assignment_picker = Some(AssignmentPickerState { strip: 1 });
 
-        move_popup_selection(&mut controller, false);
+        handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Up),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("popup up");
         assert_eq!(
             controller.state.popup_selected_index,
             MixerAssignment::grounded_choices().len() - 1
         );
 
-        move_popup_selection(&mut controller, true);
+        handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Down),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("popup down");
         assert_eq!(controller.state.popup_selected_index, 0);
     }
 
@@ -2216,10 +1576,20 @@ mod tests {
         controller.state.profiles_popup_open = true;
         controller.state.profile_names = vec!["tracking".to_string(), "mixdown".to_string()];
 
-        move_popup_selection(&mut controller, false);
+        handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Up),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("popup up");
         assert_eq!(controller.state.popup_selected_index, 1);
 
-        move_popup_selection(&mut controller, true);
+        handle_key_press(
+            &mut controller,
+            test_key(AppKeyCode::Down),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("popup down");
         assert_eq!(controller.state.popup_selected_index, 0);
     }
 

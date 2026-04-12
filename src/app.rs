@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
+use ratatui::layout::Rect;
 
 use crate::profile::{preamp_mode_raw, DeviceProfile};
 use crate::transport::Transport;
@@ -46,7 +47,7 @@ pub struct ConnectionState {
     pub last_frame_type: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
     // Application lifecycle
     Quit,
@@ -154,6 +155,22 @@ pub enum Intent {
     OpenClockSourceSelector,
     PickSampleRate(antelope_protocol::SampleRate),
     PickClockSource(antelope_protocol::ClockSource),
+
+    // Keyboard-only (context-resolved in handle_key_press)
+    AdjustFocused(bool),
+    ToggleFocusedMute,
+    ToggleFocusedDim,
+    ToggleRoutingPopup,
+    RefreshQueriedState,
+    CycleFocus,
+    MovePopupSelection(bool),
+    ProfileEditorChar(String),
+    ProfileEditorBackspace,
+    ProfileEditorCommit,
+    ProfileEditorCancel,
+    CaptureRawBaseline,
+    ClearRawBaseline,
+    ToggleOptionsPopup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1099,6 +1116,15 @@ enum PendingMutation {
     },
 }
 
+/// Computes the next preamp gain raw value for increment/decrement.
+fn next_preamp_gain_raw(current: u8, up: bool) -> u8 {
+    if up {
+        current.saturating_sub(1)
+    } else {
+        current.saturating_add(1).min(0x3c)
+    }
+}
+
 pub struct Controller {
     transport: Box<dyn Transport>,
     pub state: AppState,
@@ -1292,6 +1318,33 @@ impl Controller {
         Ok(())
     }
 
+    fn resolve_linked_pair(
+        &self,
+        mixer: MixerSurface,
+        channel: u8,
+    ) -> Result<(u8, u8, MixerChannelState, MixerChannelState)> {
+        let (left_channel, right_channel) = if channel % 2 == 1 {
+            (channel, channel.saturating_add(1))
+        } else {
+            (channel.saturating_sub(1), channel)
+        };
+        let left_index = left_channel.saturating_sub(1) as usize;
+        let right_index = right_channel.saturating_sub(1) as usize;
+        let Some(left) = self.state.mixer_channels[mixer.index()]
+            .get(left_index)
+            .copied()
+        else {
+            bail!("invalid linked left channel {left_channel}");
+        };
+        let Some(right) = self.state.mixer_channels[mixer.index()]
+            .get(right_index)
+            .copied()
+        else {
+            bail!("invalid linked right channel {right_channel}");
+        };
+        Ok((left_channel, right_channel, left, right))
+    }
+
     pub fn send_mixer_level_change(
         &mut self,
         mixer: MixerSurface,
@@ -1304,30 +1357,12 @@ impl Controller {
         };
 
         if active.linked == Some(true) {
-            let (left_channel, right_channel) = if channel % 2 == 1 {
-                (channel, channel.saturating_add(1))
-            } else {
-                (channel.saturating_sub(1), channel)
-            };
-            let left_index = left_channel.saturating_sub(1) as usize;
-            let right_index = right_channel.saturating_sub(1) as usize;
-            let Some(left) = self.state.mixer_channels[mixer.index()]
-                .get(left_index)
-                .copied()
-            else {
-                bail!("invalid linked left channel {left_channel}");
-            };
-            let Some(right) = self.state.mixer_channels[mixer.index()]
-                .get(right_index)
-                .copied()
-            else {
-                bail!("invalid linked right channel {right_channel}");
-            };
+            let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
 
             let pending_mutation = Some(PendingMutation::MixerLinkedLevel {
                 mixer,
-                left_channel,
-                right_channel,
+                left_channel: left_ch,
+                right_channel: right_ch,
                 level,
                 left_pan: left.pan,
                 right_pan: right.pan,
@@ -1337,7 +1372,7 @@ impl Controller {
             self.transport
                 .write(&encode_command(Command::SetMixerLevel {
                     mixer,
-                    channel: left_channel,
+                    channel: left_ch,
                     level,
                     pan_state: left.pan,
                     muted: left.muted.unwrap_or(false),
@@ -1346,7 +1381,7 @@ impl Controller {
             self.transport
                 .write(&encode_command(Command::SetMixerLevel {
                     mixer,
-                    channel: right_channel,
+                    channel: right_ch,
                     level,
                     pan_state: right.pan,
                     muted: right.muted.unwrap_or(false),
@@ -1355,7 +1390,7 @@ impl Controller {
             self.pending_mutation = pending_mutation;
             self.state.last_message = format!(
                 "Sent linked mixer level {:?} ch {}-{}",
-                mixer, left_channel, right_channel
+                mixer, left_ch, right_ch
             );
             return Ok(());
         }
@@ -1382,36 +1417,18 @@ impl Controller {
         };
 
         if active.linked == Some(true) {
-            let (left_channel, right_channel) = if channel % 2 == 1 {
-                (channel, channel.saturating_add(1))
-            } else {
-                (channel.saturating_sub(1), channel)
-            };
-            let left_index = left_channel.saturating_sub(1) as usize;
-            let right_index = right_channel.saturating_sub(1) as usize;
-            let Some(left) = self.state.mixer_channels[mixer.index()]
-                .get(left_index)
-                .copied()
-            else {
-                bail!("invalid linked left channel {left_channel}");
-            };
-            let Some(right) = self.state.mixer_channels[mixer.index()]
-                .get(right_index)
-                .copied()
-            else {
-                bail!("invalid linked right channel {right_channel}");
-            };
+            let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
 
             let pending_mutation = Some(PendingMutation::MixerLinkedMute {
                 mixer,
-                left_channel,
-                right_channel,
+                left_channel: left_ch,
+                right_channel: right_ch,
                 muted,
             });
             self.transport
                 .write(&encode_command(Command::SetMixerMute {
                     mixer,
-                    channel: left_channel,
+                    channel: left_ch,
                     muted,
                     pan_state: left.pan,
                     soloed: left.soloed.unwrap_or(false),
@@ -1419,7 +1436,7 @@ impl Controller {
             self.transport
                 .write(&encode_command(Command::SetMixerMute {
                     mixer,
-                    channel: right_channel,
+                    channel: right_ch,
                     muted,
                     pan_state: right.pan,
                     soloed: right.soloed.unwrap_or(false),
@@ -1427,7 +1444,7 @@ impl Controller {
             self.pending_mutation = pending_mutation;
             self.state.last_message = format!(
                 "Sent linked mixer mute {:?} ch {}-{}",
-                mixer, left_channel, right_channel
+                mixer, left_ch, right_ch
             );
             return Ok(());
         }
@@ -1453,36 +1470,18 @@ impl Controller {
         };
 
         if active.linked == Some(true) {
-            let (left_channel, right_channel) = if channel % 2 == 1 {
-                (channel, channel.saturating_add(1))
-            } else {
-                (channel.saturating_sub(1), channel)
-            };
-            let left_index = left_channel.saturating_sub(1) as usize;
-            let right_index = right_channel.saturating_sub(1) as usize;
-            let Some(left) = self.state.mixer_channels[mixer.index()]
-                .get(left_index)
-                .copied()
-            else {
-                bail!("invalid linked left channel {left_channel}");
-            };
-            let Some(right) = self.state.mixer_channels[mixer.index()]
-                .get(right_index)
-                .copied()
-            else {
-                bail!("invalid linked right channel {right_channel}");
-            };
+            let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
 
             let pending_mutation = Some(PendingMutation::MixerLinkedSolo {
                 mixer,
-                left_channel,
-                right_channel,
+                left_channel: left_ch,
+                right_channel: right_ch,
                 soloed,
             });
             self.transport
                 .write(&encode_command(Command::SetMixerSolo {
                     mixer,
-                    channel: left_channel,
+                    channel: left_ch,
                     soloed,
                     muted: left.muted.unwrap_or(false),
                     pan_state: left.pan,
@@ -1490,7 +1489,7 @@ impl Controller {
             self.transport
                 .write(&encode_command(Command::SetMixerSolo {
                     mixer,
-                    channel: right_channel,
+                    channel: right_ch,
                     soloed,
                     muted: right.muted.unwrap_or(false),
                     pan_state: right.pan,
@@ -1498,7 +1497,7 @@ impl Controller {
             self.pending_mutation = pending_mutation;
             self.state.last_message = format!(
                 "Sent linked mixer solo {:?} ch {}-{}",
-                mixer, left_channel, right_channel
+                mixer, left_ch, right_ch
             );
             return Ok(());
         }
@@ -1542,6 +1541,778 @@ impl Controller {
             "Sent mixer link {:?} ch {}-{}",
             mixer, target.left_channel, target.right_channel
         );
+        Ok(())
+    }
+
+    pub fn apply_intent(&mut self, intent: Intent, area: Rect) -> Result<()> {
+        match intent {
+            Intent::Quit => {
+                self.state.quit_requested = true;
+            }
+            Intent::ToggleRawView => self.state.toggle_raw_view(),
+            Intent::ToggleHotkeysPopup => self.state.toggle_hotkeys_popup(),
+            Intent::OpenProfilesPopup => {
+                self.state.assignment_picker = None;
+                self.state.selector_popup = None;
+                self.state.routing_popup_open = false;
+                self.state.profile_editor = None;
+                self.state.profile_names = crate::profile::list_profile_names().unwrap_or_default();
+                self.state.clamp_profile_selection();
+                self.state.profiles_popup_open = true;
+                self.state.last_message = if self.state.profile_names.is_empty() {
+                    "No saved profiles yet. Use SAVE to create one.".to_string()
+                } else {
+                    "Select a profile to load, or use SAVE/RENAME/DELETE.".to_string()
+                };
+            }
+            Intent::CloseProfilesPopup => {
+                self.state.profiles_popup_open = false;
+                self.state.profile_editor = None;
+                self.state.last_message = "Closed profiles popup".to_string();
+            }
+            Intent::OpenRoutingPopup => {
+                self.state.profiles_popup_open = false;
+                self.state.profile_editor = None;
+                self.state.routing_popup_open = true;
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel = self.state.selected_channel.min(7);
+                self.state.last_message =
+                    "Routing popup mirrors mixer assignments for USB recording channels 1-8"
+                        .to_string();
+            }
+            Intent::CloseRoutingPopup => {
+                self.state.routing_popup_open = false;
+                self.state.last_message = "Closed routing popup".to_string();
+            }
+            Intent::OpenOptionsPopup => {
+                self.state.profiles_popup_open = false;
+                self.state.profile_editor = None;
+                self.state.routing_popup_open = false;
+                self.state.options_popup_open = true;
+                self.state.last_message = "Options popup opened".to_string();
+            }
+            Intent::CloseOptionsPopup => {
+                self.state.options_popup_open = false;
+                self.state.last_message = "Closed options popup".to_string();
+            }
+            Intent::SetRefreshRate(rate) => {
+                self.state.settings.refresh_rate = rate;
+                self.state.last_message = format!("Refresh rate set to {}", rate.label());
+                if self.state.settings.auto_save {
+                    let _ = crate::settings::save_settings(&self.state.settings);
+                }
+            }
+            Intent::CyclePeakThreshold(increase) => {
+                const PEAK_THRESHOLD_CHOICES: [u8; 10] =
+                    [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0a, 0x0f, 0x14];
+                let current = self.state.settings.peak_threshold_raw;
+                let pos = PEAK_THRESHOLD_CHOICES
+                    .iter()
+                    .position(|&v| v == current)
+                    .unwrap_or(3);
+                let next_pos = if increase {
+                    (pos + 1).min(PEAK_THRESHOLD_CHOICES.len() - 1)
+                } else {
+                    pos.saturating_sub(1)
+                };
+                self.state.settings.peak_threshold_raw = PEAK_THRESHOLD_CHOICES[next_pos];
+                let db = self.state.settings.peak_threshold_db();
+                self.state.last_message = format!("Peak threshold set to {} dB", db);
+                if self.state.settings.auto_save {
+                    let _ = crate::settings::save_settings(&self.state.settings);
+                }
+            }
+            Intent::TogglePeakEnabled => {
+                self.state.settings.peak_enabled = !self.state.settings.peak_enabled;
+                if self.state.settings.peak_enabled {
+                    self.state.last_message = "Peak detection enabled".to_string();
+                } else {
+                    self.state.preamp_peaks = [None, None];
+                    self.state.mixer_peaks = [[None; 16]; 2];
+                    self.state.last_message = "Peak detection disabled".to_string();
+                }
+                if self.state.settings.auto_save {
+                    let _ = crate::settings::save_settings(&self.state.settings);
+                }
+            }
+            Intent::CyclePeakHoldDuration(duration) => {
+                self.state.settings.peak_hold_duration = duration;
+                self.state.last_message = format!("Peak hold duration set to {}", duration.label());
+                if self.state.settings.auto_save {
+                    let _ = crate::settings::save_settings(&self.state.settings);
+                }
+            }
+            Intent::ToggleAutoSave => {
+                self.state.settings.auto_save = !self.state.settings.auto_save;
+                if self.state.settings.auto_save {
+                    self.state.last_message = "Auto-save enabled".to_string();
+                    let _ = crate::settings::save_settings(&self.state.settings);
+                } else {
+                    self.state.last_message = "Auto-save disabled".to_string();
+                }
+            }
+            Intent::SelectProfile(index) => {
+                self.state.popup_selected_index =
+                    index.min(self.state.profile_names.len().saturating_sub(1));
+            }
+            Intent::LoadSelectedProfile => {
+                if let Some(name) = self.state.selected_profile_name().map(str::to_string) {
+                    let profile_result = crate::profile::DeviceProfile::read_named(&name);
+                    match profile_result {
+                        Ok(profile) => {
+                            let apply_result = self.apply_profile(&profile);
+                            if let Err(e) = apply_result {
+                                self.state.last_message = format!("Profile error: {e}");
+                            } else {
+                                self.state.profiles_popup_open = false;
+                                self.state.profile_editor = None;
+                                self.state.last_message = format!("Loaded profile {name}");
+                            }
+                        }
+                        Err(e) => {
+                            self.state.last_message = format!("Profile error: {e}");
+                        }
+                    }
+                } else {
+                    self.state.last_message = "No profile selected to load.".to_string();
+                }
+            }
+            Intent::StartSaveProfile => {
+                if self.state.profiles_popup_open {
+                    let current_name = self.state.selected_profile_name().map(str::to_string);
+                    let value = current_name.clone().unwrap_or_default();
+                    self.state.profile_editor = Some(ProfileEditorState {
+                        mode: ProfileEditorMode::Save,
+                        original_name: current_name,
+                        value,
+                    });
+                    self.state.last_message =
+                        "Enter a profile name, then press Enter to save.".to_string();
+                }
+            }
+            Intent::StartRenameProfile => {
+                if self.state.selected_profile_name().is_some() {
+                    let current_name = self.state.selected_profile_name().map(str::to_string);
+                    let value = current_name.clone().unwrap_or_default();
+                    self.state.profile_editor = Some(ProfileEditorState {
+                        mode: ProfileEditorMode::Rename,
+                        original_name: current_name,
+                        value,
+                    });
+                    self.state.last_message =
+                        "Edit the profile name, then press Enter to rename.".to_string();
+                } else {
+                    self.state.last_message = "No profile selected to rename.".to_string();
+                }
+            }
+            Intent::DeleteSelectedProfile => {
+                if let Some(name) = self.state.selected_profile_name().map(str::to_string) {
+                    match crate::profile::delete_profile(&name) {
+                        Ok(()) => {
+                            self.state.profile_names =
+                                crate::profile::list_profile_names().unwrap_or_default();
+                            self.state.clamp_profile_selection();
+                            self.state.last_message = format!("Deleted profile {name}");
+                        }
+                        Err(e) => {
+                            self.state.last_message = format!("Profile error: {e}");
+                        }
+                    }
+                } else {
+                    self.state.last_message = "No profile selected to delete.".to_string();
+                }
+            }
+            Intent::PageMixerStripsLeft => {
+                self.state.focus = FocusArea::Mixer;
+                let visible = crate::ui::mixer_strip_viewport_capacity(area, &self.state);
+                self.state.page_mixer_strip_viewport(false, visible);
+            }
+            Intent::PageMixerStripsRight => {
+                self.state.focus = FocusArea::Mixer;
+                let visible = crate::ui::mixer_strip_viewport_capacity(area, &self.state);
+                self.state.page_mixer_strip_viewport(true, visible);
+            }
+            Intent::OpenSampleRateSelector => {
+                if self.state.device.clock_source == Some(ClockSource::Internal) {
+                    self.state.popup_selected_index = self
+                        .state
+                        .device
+                        .sample_rate
+                        .and_then(|current| {
+                            SampleRate::all_confirmed()
+                                .iter()
+                                .position(|rate| *rate == current)
+                        })
+                        .unwrap_or(0);
+                    self.state.selector_popup = Some(SelectorPopupState {
+                        kind: SelectorPopupKind::SampleRate,
+                    });
+                }
+            }
+            Intent::OpenClockSourceSelector => {
+                self.state.popup_selected_index = self
+                    .state
+                    .device
+                    .clock_source
+                    .and_then(|current| {
+                        ClockSource::all_confirmed()
+                            .iter()
+                            .position(|source| *source == current)
+                    })
+                    .unwrap_or(0);
+                self.state.selector_popup = Some(SelectorPopupState {
+                    kind: SelectorPopupKind::ClockSource,
+                });
+            }
+            Intent::SelectPage(page) => self.state.page = page,
+            Intent::SelectRawPacketTab(tab) => self.state.selected_raw_packet = tab,
+            Intent::SelectOutput(index) => {
+                self.state.focus = FocusArea::Outputs;
+                self.state.selected_output = index.min(self.state.outputs.len() - 1);
+            }
+            Intent::AdjustOutputLevel { index, increase } => {
+                self.state.focus = FocusArea::Outputs;
+                self.state.selected_output = index.min(self.state.outputs.len() - 1);
+                let output = self.state.outputs[self.state.selected_output];
+                let next = if increase {
+                    output.volume.saturating_sub(1)
+                } else {
+                    output.volume.saturating_add(1).min(0x60)
+                };
+                self.send(Command::SetOutputVolume {
+                    target: output.target,
+                    step: next,
+                })?;
+            }
+            Intent::SetOutputLevel { index, step } => {
+                self.state.focus = FocusArea::Outputs;
+                self.state.selected_output = index.min(self.state.outputs.len() - 1);
+                let output = self.state.outputs[self.state.selected_output];
+                self.send(Command::SetOutputVolume {
+                    target: output.target,
+                    step: step.min(0x60),
+                })?;
+            }
+            Intent::ToggleOutputDim(index) => {
+                self.state.focus = FocusArea::Outputs;
+                self.state.selected_output = index.min(self.state.outputs.len() - 1);
+                let output = self.state.outputs[self.state.selected_output];
+                self.send(Command::SetOutputDim {
+                    target: output.target,
+                    enabled: output.mode != OutputMode::Dim,
+                })?;
+            }
+            Intent::ToggleOutputMute(index) => {
+                self.state.focus = FocusArea::Outputs;
+                self.state.selected_output = index.min(self.state.outputs.len() - 1);
+                let output = self.state.outputs[self.state.selected_output];
+                self.send(Command::SetOutputMute {
+                    target: output.target,
+                    enabled: output.mode != OutputMode::Mute,
+                })?;
+            }
+            Intent::SelectQueryReplyEntry(index) => {
+                self.state.selected_query_reply_entry = Some(
+                    index.min(
+                        self.state
+                            .recent_query_reply_entries
+                            .len()
+                            .saturating_sub(1),
+                    ),
+                );
+            }
+            Intent::ScrollQueryReplyList { increase } => {
+                self.state.cycle_query_reply_entry(increase);
+            }
+            Intent::SelectSurface(surface) => {
+                self.state.focus = FocusArea::Mixer;
+                self.send(Command::SelectSurface(surface))?;
+            }
+            Intent::SelectMixerChannel(index) => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel = index;
+            }
+            Intent::AdjustMixerLevel { index, increase } => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel =
+                    index.min(self.state.active_mixer_channels().len() - 1);
+                let active_channel =
+                    self.state.active_mixer_channels()[self.state.selected_channel];
+                let current = active_channel.level.unwrap_or(0x20);
+                let next = if increase {
+                    current.saturating_sub(1)
+                } else {
+                    current.saturating_add(1).min(0x60)
+                };
+                self.send_mixer_level_change(
+                    MixerSurface::from_surface(self.state.surface),
+                    active_channel.channel,
+                    next,
+                )?;
+            }
+            Intent::SetMixerLevel { index, level } => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel =
+                    index.min(self.state.active_mixer_channels().len() - 1);
+                let active_channel =
+                    self.state.active_mixer_channels()[self.state.selected_channel];
+                self.send_mixer_level_change(
+                    MixerSurface::from_surface(self.state.surface),
+                    active_channel.channel,
+                    level.min(0x5a),
+                )?;
+            }
+            Intent::AdjustMixerPan { index, right } => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel =
+                    index.min(self.state.active_mixer_channels().len() - 1);
+                let active_channel =
+                    self.state.active_mixer_channels()[self.state.selected_channel];
+                let next = if right {
+                    active_channel
+                        .pan
+                        .raw()
+                        .saturating_add(1)
+                        .min(PanState::MAX)
+                } else {
+                    active_channel
+                        .pan
+                        .raw()
+                        .saturating_sub(1)
+                        .max(PanState::MIN)
+                };
+                self.send(Command::SetMixerPan {
+                    mixer: MixerSurface::from_surface(self.state.surface),
+                    channel: active_channel.channel,
+                    pan: PanState::from_raw(next),
+                    muted: active_channel.muted.unwrap_or(false),
+                    soloed: active_channel.soloed.unwrap_or(false),
+                })?;
+            }
+            Intent::SetMixerPan { index, pan } => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel =
+                    index.min(self.state.active_mixer_channels().len() - 1);
+                let active_channel =
+                    self.state.active_mixer_channels()[self.state.selected_channel];
+                self.send(Command::SetMixerPan {
+                    mixer: MixerSurface::from_surface(self.state.surface),
+                    channel: active_channel.channel,
+                    pan,
+                    muted: active_channel.muted.unwrap_or(false),
+                    soloed: active_channel.soloed.unwrap_or(false),
+                })?;
+            }
+            Intent::ToggleMixerMute(channel) => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel = channel.saturating_sub(1) as usize;
+                let mixer = MixerSurface::from_surface(self.state.surface);
+                let active_channel = self.state.mixer_channels[mixer.index()][channel as usize - 1];
+                self.send_mixer_mute_change(
+                    mixer,
+                    channel,
+                    !active_channel.muted.unwrap_or(false),
+                )?;
+            }
+            Intent::ToggleMixerSolo(channel) => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel = channel.saturating_sub(1) as usize;
+                let mixer = MixerSurface::from_surface(self.state.surface);
+                let active_channel = self.state.mixer_channels[mixer.index()][channel as usize - 1];
+                self.send_mixer_solo_change(
+                    mixer,
+                    channel,
+                    !active_channel.soloed.unwrap_or(false),
+                )?;
+            }
+            Intent::ToggleMixerLink(channel) => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel = channel.saturating_sub(1) as usize;
+                let mixer = MixerSurface::from_surface(self.state.surface);
+                let active_channel = self.state.mixer_channels[mixer.index()][channel as usize - 1];
+                self.send_mixer_link_change(
+                    mixer,
+                    channel,
+                    !active_channel.linked.unwrap_or(false),
+                )?;
+            }
+            Intent::OpenAssignmentPicker(strip) => {
+                self.state.focus = FocusArea::Mixer;
+                self.state.selected_channel = strip.saturating_sub(1) as usize;
+                if !antelope_protocol::MixerStrip::assignment_write_is_grounded(strip) {
+                    self.state.last_message =
+                        "Assignment picking is not grounded for the selected strip.".to_string();
+                } else {
+                    self.state.popup_selected_index = self.state.mixer_channels
+                        [MixerSurface::from_surface(self.state.surface).index()]
+                        [self.state.selected_channel]
+                        .assignment
+                        .and_then(|current| {
+                            MixerAssignment::grounded_choices()
+                                .iter()
+                                .position(|assignment| *assignment == current)
+                        })
+                        .unwrap_or(0);
+                    self.state.assignment_picker = Some(AssignmentPickerState { strip });
+                    self.state.last_message = format!("Pick source assignment for CH {strip:02}");
+                }
+            }
+            Intent::PickAssignment { strip, assignment } => {
+                self.state.assignment_picker = None;
+                self.state.popup_selected_index = 0;
+                self.send(Command::SetMixerAssignment { strip, assignment })?;
+            }
+            Intent::CloseAssignmentPicker => {
+                self.state.assignment_picker = None;
+                self.state.popup_selected_index = 0;
+                self.state.last_message = "Closed assignment picker".to_string();
+            }
+            Intent::CloseSelectorPopup => {
+                self.state.selector_popup = None;
+                self.state.popup_selected_index = 0;
+                self.state.last_message = "Closed selector".to_string();
+            }
+            Intent::SelectPreampInput(input) => {
+                self.state.focus = FocusArea::Preamp;
+                self.state.selected_preamp_input = input.min(1);
+            }
+            Intent::AdjustPreampGain { input, increase } => {
+                self.state.focus = FocusArea::Preamp;
+                self.state.selected_preamp_input = input.min(1) as usize;
+                let current = if input == 0 {
+                    self.state.preamp.input1.gain_raw
+                } else {
+                    self.state.preamp.input2.gain_raw
+                };
+                self.send(Command::SetPreampGain {
+                    input,
+                    raw: next_preamp_gain_raw(current, increase),
+                })?;
+            }
+            Intent::SetPreampGain { input, raw } => {
+                self.state.focus = FocusArea::Preamp;
+                self.state.selected_preamp_input = input.min(1) as usize;
+                self.send(Command::SetPreampGain {
+                    input: input.min(1),
+                    raw,
+                })?;
+            }
+            Intent::OpenPreampModeSelector(input) => {
+                self.state.focus = FocusArea::Preamp;
+                self.state.selected_preamp_input = input.min(1) as usize;
+                let current = if input == 0 {
+                    self.state.preamp.input1.mode
+                } else {
+                    self.state.preamp.input2.mode
+                };
+                self.state.popup_selected_index =
+                    [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
+                        .iter()
+                        .position(|mode| *mode == current)
+                        .unwrap_or(0);
+                self.state.selector_popup = Some(SelectorPopupState {
+                    kind: SelectorPopupKind::PreampMode { input },
+                });
+            }
+            Intent::CyclePreampMode(input) => {
+                self.state.focus = FocusArea::Preamp;
+                self.state.selected_preamp_input = input.min(1) as usize;
+                let current = if input == 0 {
+                    self.state.preamp.input1.mode
+                } else {
+                    self.state.preamp.input2.mode
+                };
+                let next = match current {
+                    PreampMode::Mic => PreampMode::Line,
+                    PreampMode::Line => PreampMode::HiZ,
+                    PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
+                };
+                self.send(Command::SetPreampMode { input, mode: next })?;
+            }
+            Intent::PickSampleRate(rate) => {
+                self.state.selector_popup = None;
+                self.state.popup_selected_index = 0;
+                self.send(Command::SetSampleRate(rate))?;
+            }
+            Intent::PickClockSource(source) => {
+                self.state.selector_popup = None;
+                self.state.popup_selected_index = 0;
+                self.send(Command::SetClockSource(source))?;
+            }
+            Intent::PickPreampMode { input, mode } => {
+                self.state.selector_popup = None;
+                self.state.popup_selected_index = 0;
+                self.state.focus = FocusArea::Preamp;
+                self.state.selected_preamp_input = input.min(1) as usize;
+                self.send(Command::SetPreampMode { input, mode })?;
+            }
+            Intent::TogglePreampPhase(input) => {
+                self.state.focus = FocusArea::Preamp;
+                self.state.selected_preamp_input = input.min(1) as usize;
+                let mode_raw = if input == 0 {
+                    self.state.preamp.input1.mode_raw
+                } else {
+                    self.state.preamp.input2.mode_raw
+                };
+                self.send(Command::SetPreampPhase {
+                    input,
+                    enabled: mode_raw & 0x40 == 0,
+                })?;
+            }
+            Intent::TogglePreampPhantom(input) => {
+                self.state.focus = FocusArea::Preamp;
+                self.state.selected_preamp_input = input.min(1) as usize;
+                let current = if input == 0 {
+                    self.state.preamp.input1
+                } else {
+                    self.state.preamp.input2
+                };
+                self.send(Command::SetPreampPhantom {
+                    input,
+                    enabled: !current.phantom_on,
+                })?;
+            }
+            Intent::AdjustFocused(increase) => match self.state.focus {
+                FocusArea::Outputs => {
+                    let index = self.state.selected_output;
+                    let output = self.state.outputs[index];
+                    let next = if increase {
+                        output.volume.saturating_sub(1)
+                    } else {
+                        output.volume.saturating_add(1).min(0x60)
+                    };
+                    self.send(Command::SetOutputVolume {
+                        target: output.target,
+                        step: next,
+                    })?;
+                }
+                FocusArea::Mixer => {
+                    let active_channel =
+                        self.state.active_mixer_channels()[self.state.selected_channel];
+                    let channel = active_channel.channel;
+                    let current = active_channel.level.unwrap_or(0x20);
+                    let next = if increase {
+                        current.saturating_sub(1)
+                    } else {
+                        current.saturating_add(1).min(0x60)
+                    };
+                    self.send_mixer_level_change(
+                        MixerSurface::from_surface(self.state.surface),
+                        channel,
+                        next,
+                    )?;
+                }
+                FocusArea::Preamp => {
+                    let input = self.state.selected_preamp_input as u8;
+                    let preamp_input = if input == 0 {
+                        &self.state.preamp.input1
+                    } else {
+                        &self.state.preamp.input2
+                    };
+                    let next = match preamp_input.mode {
+                        PreampMode::Mic => {
+                            if increase {
+                                preamp_input.gain_raw.saturating_add(1).min(0x41)
+                            } else {
+                                preamp_input.gain_raw.saturating_sub(1)
+                            }
+                        }
+                        PreampMode::Line => {
+                            let current = i8::from_ne_bytes([preamp_input.gain_raw]);
+                            let next = if increase {
+                                (current + 1).min(20)
+                            } else {
+                                (current - 1).max(-6)
+                            };
+                            next as u8
+                        }
+                        PreampMode::HiZ => {
+                            if increase {
+                                preamp_input.gain_raw.saturating_add(1).min(0x2d)
+                            } else {
+                                preamp_input.gain_raw.saturating_sub(1)
+                            }
+                        }
+                        PreampMode::Unknown(_) => preamp_input.gain_raw,
+                    };
+                    self.send(Command::SetPreampGain { input, raw: next })?;
+                }
+                _ => {}
+            },
+            Intent::ToggleFocusedMute => match self.state.focus {
+                FocusArea::Outputs => {
+                    let index = self.state.selected_output;
+                    let output = self.state.outputs[index];
+                    self.send(Command::SetOutputMute {
+                        target: output.target,
+                        enabled: output.mode != OutputMode::Mute,
+                    })?;
+                }
+                FocusArea::Mixer => {
+                    let active_channel =
+                        self.state.active_mixer_channels()[self.state.selected_channel];
+                    let channel = active_channel.channel;
+                    let muted = !active_channel.muted.unwrap_or(false);
+                    self.send_mixer_mute_change(
+                        MixerSurface::from_surface(self.state.surface),
+                        channel,
+                        muted,
+                    )?;
+                }
+                FocusArea::Preamp => {
+                    let input = self.state.selected_preamp_input as u8;
+                    let current = if input == 0 {
+                        self.state.preamp.input1
+                    } else {
+                        self.state.preamp.input2
+                    };
+                    self.send(Command::SetPreampPhantom {
+                        input,
+                        enabled: !current.phantom_on,
+                    })?;
+                }
+                _ => {}
+            },
+            Intent::ToggleFocusedDim => {
+                if self.state.focus == FocusArea::Outputs {
+                    let index = self.state.selected_output;
+                    let output = self.state.outputs[index];
+                    self.send(Command::SetOutputDim {
+                        target: output.target,
+                        enabled: output.mode != OutputMode::Dim,
+                    })?;
+                }
+            }
+            Intent::ToggleRoutingPopup => {
+                self.state.routing_popup_open = !self.state.routing_popup_open;
+                self.state.last_message = if self.state.routing_popup_open {
+                    "Routing popup mirrors mixer assignments for USB recording channels 1-8"
+                        .to_string()
+                } else {
+                    "Closed routing popup".to_string()
+                };
+            }
+            Intent::RefreshQueriedState => {
+                self.refresh_queried_state()?;
+                self.state.last_message =
+                    "Sent captured 0x74 startup/state refresh sweep".to_string();
+            }
+            Intent::CycleFocus => {
+                if self.state.page == MainPage::Mixer {
+                    self.state.cycle_focus();
+                }
+            }
+            Intent::MovePopupSelection(down) => {
+                let item_count = if self.state.assignment_picker.is_some() {
+                    antelope_protocol::MixerAssignment::grounded_choices().len()
+                } else if self.state.profiles_popup_open {
+                    self.state.profile_names.len()
+                } else if let Some(popup) = self.state.selector_popup {
+                    match popup.kind {
+                        SelectorPopupKind::SampleRate => SampleRate::all_confirmed().len(),
+                        SelectorPopupKind::ClockSource => ClockSource::all_confirmed().len(),
+                        SelectorPopupKind::PreampMode { .. } => 3,
+                    }
+                } else {
+                    0
+                };
+                if item_count == 0 {
+                    return Ok(());
+                }
+                self.state.popup_selected_index = if down {
+                    (self.state.popup_selected_index + 1) % item_count
+                } else {
+                    self.state
+                        .popup_selected_index
+                        .checked_sub(1)
+                        .unwrap_or(item_count - 1)
+                };
+            }
+            Intent::ProfileEditorChar(ch) => {
+                if let Some(editor) = self.state.profile_editor.as_mut() {
+                    editor.value.push_str(&ch);
+                }
+            }
+            Intent::ProfileEditorBackspace => {
+                if let Some(editor) = self.state.profile_editor.as_mut() {
+                    editor.value.pop();
+                }
+            }
+            Intent::ProfileEditorCommit => {
+                if let Some(editor) = self.state.profile_editor.take() {
+                    let name = editor.value.trim().to_string();
+                    if name.is_empty() {
+                        self.state.last_message = "Profile name cannot be empty".to_string();
+                        self.state.profile_editor = Some(editor);
+                    } else {
+                        match editor.mode {
+                            ProfileEditorMode::Save => {
+                                let profile = DeviceProfile::capture(&self.state);
+                                match profile {
+                                    Ok(profile) => match profile.write_named(&name) {
+                                        Ok(path) => {
+                                            self.state.profiles_popup_open = false;
+                                            self.state.last_message =
+                                                format!("Saved profile to {}", path.display());
+                                        }
+                                        Err(e) => {
+                                            self.state.last_message = format!("Profile error: {e}");
+                                        }
+                                    },
+                                    Err(e) => {
+                                        self.state.last_message = format!("Profile error: {e}");
+                                    }
+                                }
+                            }
+                            ProfileEditorMode::Rename => {
+                                if let Some(original) = &editor.original_name {
+                                    if original != &name {
+                                        match crate::profile::rename_profile(original, &name) {
+                                            Ok(_path) => {
+                                                self.state.profile_names =
+                                                    crate::profile::list_profile_names()
+                                                        .unwrap_or_default();
+                                                self.state.clamp_profile_selection();
+                                                self.state.last_message =
+                                                    format!("Renamed {original} to {name}");
+                                            }
+                                            Err(e) => {
+                                                self.state.last_message =
+                                                    format!("Profile error: {e}");
+                                            }
+                                        }
+                                    } else {
+                                        self.state.last_message =
+                                            "Profile name unchanged".to_string();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Intent::ProfileEditorCancel => {
+                self.state.profile_editor = None;
+                self.state.last_message = "Cancelled profile edit".to_string();
+            }
+            Intent::CaptureRawBaseline => {
+                self.state.capture_raw_baseline();
+                self.state.last_message =
+                    "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
+            }
+            Intent::ClearRawBaseline => {
+                self.state.clear_raw_baseline();
+                self.state.last_message = "Cleared raw baseline".to_string();
+            }
+            Intent::ToggleOptionsPopup => {
+                self.state.toggle_options_popup();
+                self.state.last_message = if self.state.options_popup_open {
+                    "Options popup opened".to_string()
+                } else {
+                    "Closed options popup".to_string()
+                };
+            }
+        }
         Ok(())
     }
 
