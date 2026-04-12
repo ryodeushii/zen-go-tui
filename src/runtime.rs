@@ -38,11 +38,11 @@ pub fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     let input_rx = spawn_input_reader();
     let mut controller = Controller::new(transport);
     if let Ok(saved) = settings::load_settings() {
-        controller.state.settings = saved;
+        controller.state.ui.settings = saved;
     }
     controller.bootstrap()?;
     let result = app_loop(&mut terminal, &mut controller, &input_rx);
-    let _ = settings::save_settings(&controller.state.settings);
+    let _ = settings::save_settings(&controller.state.ui.settings);
     disable_raw_mode()?;
     terminal.show_cursor()?;
     io::stdout().execute(DisableMouseCapture)?;
@@ -107,7 +107,7 @@ pub fn headless_loop(controller: &mut Controller) -> Result<()> {
 pub fn handle_runtime_error(controller: &mut Controller, error: anyhow::Error) -> Result<()> {
     if is_device_error(&error) {
         controller.state.mark_disconnected();
-        controller.state.last_message = "Waiting for Zen Go device...".to_string();
+        controller.state.ui.last_message = "Waiting for Zen Go device...".to_string();
         return Ok(());
     }
 
@@ -128,7 +128,8 @@ pub fn refresh_after_reconnect_if_needed(
 
     match controller.refresh_queried_state() {
         Ok(()) => {
-            controller.state.last_message = "Zen Go reconnected, refreshing state...".to_string();
+            controller.state.ui.last_message =
+                "Zen Go reconnected, refreshing state...".to_string();
             *reconnect_refresh_pending = false;
             Ok(())
         }
@@ -170,7 +171,7 @@ pub fn handle_key_press(
         }
     }
 
-    if controller.state.hotkeys_popup_open {
+    if controller.state.popup.hotkeys_open {
         match key_code {
             AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
             AppKeyCode::Char('?') | AppKeyCode::Esc => {
@@ -181,7 +182,7 @@ pub fn handle_key_press(
         return Ok(KeyAction::Continue);
     }
 
-    if controller.state.options_popup_open {
+    if controller.state.popup.options_open {
         match key_code {
             AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
             AppKeyCode::Esc => {
@@ -207,22 +208,22 @@ pub fn handle_key_press(
             }
             AppKeyCode::Char('h') | AppKeyCode::Char('H') => {
                 let all = PeakHoldDuration::all();
-                let current = controller.state.settings.peak_hold_duration;
+                let current = controller.state.ui.settings.peak_hold_duration;
                 let pos = all.iter().position(|&v| v == current).unwrap_or(1);
                 let next = all[(pos + 1) % all.len()];
                 controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
-                if controller.state.settings.auto_save {
-                    let _ = settings::save_settings(&controller.state.settings);
+                if controller.state.ui.settings.auto_save {
+                    let _ = settings::save_settings(&controller.state.ui.settings);
                 }
             }
             AppKeyCode::Char('l') | AppKeyCode::Char('L') => {
                 let all = PeakHoldDuration::all();
-                let current = controller.state.settings.peak_hold_duration;
+                let current = controller.state.ui.settings.peak_hold_duration;
                 let pos = all.iter().position(|&v| v == current).unwrap_or(1);
                 let next = all[pos.checked_sub(1).unwrap_or(all.len() - 1)];
                 controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
-                if controller.state.settings.auto_save {
-                    let _ = settings::save_settings(&controller.state.settings);
+                if controller.state.ui.settings.auto_save {
+                    let _ = settings::save_settings(&controller.state.ui.settings);
                 }
             }
             AppKeyCode::Char('a') => {
@@ -233,7 +234,7 @@ pub fn handle_key_press(
         return Ok(KeyAction::Continue);
     }
 
-    if controller.state.profile_editor.is_some() {
+    if controller.state.popup.profile_editor.is_some() {
         match key_code {
             AppKeyCode::Char(ch) => {
                 let valid: String = ch
@@ -259,7 +260,7 @@ pub fn handle_key_press(
         return Ok(KeyAction::Continue);
     }
 
-    if controller.state.profiles_popup_open {
+    if controller.state.popup.profiles_open {
         match key_code {
             AppKeyCode::Up => {
                 controller.apply_intent(Intent::MovePopupSelection(false), area)?;
@@ -277,7 +278,7 @@ pub fn handle_key_press(
                 if controller.state.selected_profile_name().is_some() {
                     controller.apply_intent(Intent::StartRenameProfile, area)?;
                 } else {
-                    controller.state.last_message = "No profile selected to rename.".to_string();
+                    controller.state.ui.last_message = "No profile selected to rename.".to_string();
                 }
             }
             AppKeyCode::Char('d') => {
@@ -298,7 +299,7 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('p') => {
-            if controller.state.profiles_popup_open {
+            if controller.state.popup.profiles_open {
                 controller.apply_intent(Intent::CloseProfilesPopup, area)?;
             } else {
                 controller.apply_intent(Intent::OpenProfilesPopup, area)?;
@@ -323,35 +324,35 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Up
-            if controller.state.assignment_picker.is_some()
-                || controller.state.selector_popup.is_some() =>
+            if controller.state.popup.assignment_picker.is_some()
+                || controller.state.popup.selector_popup.is_some() =>
         {
             controller.apply_intent(Intent::MovePopupSelection(false), area)?;
             Ok(())
         }
         AppKeyCode::Down
-            if controller.state.assignment_picker.is_some()
-                || controller.state.selector_popup.is_some() =>
+            if controller.state.popup.assignment_picker.is_some()
+                || controller.state.popup.selector_popup.is_some() =>
         {
             controller.apply_intent(Intent::MovePopupSelection(true), area)?;
             Ok(())
         }
         AppKeyCode::Enter
-            if controller.state.assignment_picker.is_some()
-                || controller.state.selector_popup.is_some() =>
+            if controller.state.popup.assignment_picker.is_some()
+                || controller.state.popup.selector_popup.is_some() =>
         {
             activate_popup_selection(controller)
         }
-        AppKeyCode::Left if controller.state.raw_view_open => {
-            if controller.state.selected_raw_packet == zen_go_tui::app::RawPacketTab::Query75 {
+        AppKeyCode::Left if controller.state.popup.raw_view_open => {
+            if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
                 controller.apply_intent(Intent::ScrollQueryReplyList { increase: false }, area)?;
             } else {
                 controller.state.cycle_raw_packet(false);
             }
             Ok(())
         }
-        AppKeyCode::Right if controller.state.raw_view_open => {
-            if controller.state.selected_raw_packet == zen_go_tui::app::RawPacketTab::Query75 {
+        AppKeyCode::Right if controller.state.popup.raw_view_open => {
+            if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
                 controller.apply_intent(Intent::ScrollQueryReplyList { increase: true }, area)?;
             } else {
                 controller.state.cycle_raw_packet(true);
@@ -383,12 +384,12 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('o') => {
-            if controller.state.page == MainPage::Mixer
-                && controller.state.focus == FocusArea::Mixer
+            if controller.state.ui.page == MainPage::Mixer
+                && controller.state.ui.focus == FocusArea::Mixer
             {
-                let active_channel =
-                    controller.state.active_mixer_channels()[controller.state.selected_channel];
-                let mixer = MixerSurface::from_surface(controller.state.surface);
+                let active_channel = controller.state.active_mixer_channels()
+                    [controller.state.mixer.selected_channel];
+                let mixer = MixerSurface::from_surface(controller.state.mixer.surface);
                 controller.send_mixer_solo_change(
                     mixer,
                     active_channel.channel,
@@ -398,15 +399,15 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('a') => {
-            if controller.state.page == MainPage::Mixer
-                && controller.state.focus == FocusArea::Mixer
+            if controller.state.ui.page == MainPage::Mixer
+                && controller.state.ui.focus == FocusArea::Mixer
             {
-                let active_channel =
-                    controller.state.active_mixer_channels()[controller.state.selected_channel];
+                let active_channel = controller.state.active_mixer_channels()
+                    [controller.state.mixer.selected_channel];
                 if !antelope_protocol::MixerStrip::assignment_write_is_grounded(
                     active_channel.channel,
                 ) {
-                    controller.state.last_message =
+                    controller.state.ui.last_message =
                         "Assignment picking is not grounded for the selected strip.".to_string();
                 } else {
                     controller
@@ -416,12 +417,12 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('l') => {
-            if controller.state.page == MainPage::Mixer
-                && controller.state.focus == FocusArea::Mixer
+            if controller.state.ui.page == MainPage::Mixer
+                && controller.state.ui.focus == FocusArea::Mixer
             {
-                let active_channel =
-                    controller.state.active_mixer_channels()[controller.state.selected_channel];
-                let mixer = MixerSurface::from_surface(controller.state.surface);
+                let active_channel = controller.state.active_mixer_channels()
+                    [controller.state.mixer.selected_channel];
+                let mixer = MixerSurface::from_surface(controller.state.mixer.surface);
                 controller.send_mixer_link_change(
                     mixer,
                     active_channel.channel,
@@ -431,18 +432,18 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('[') => {
-            if controller.state.page == MainPage::Mixer
-                && controller.state.focus == FocusArea::Mixer
+            if controller.state.ui.page == MainPage::Mixer
+                && controller.state.ui.focus == FocusArea::Mixer
             {
-                let active_channel =
-                    controller.state.active_mixer_channels()[controller.state.selected_channel];
+                let active_channel = controller.state.active_mixer_channels()
+                    [controller.state.mixer.selected_channel];
                 let next = active_channel
                     .pan
                     .raw()
                     .saturating_sub(1)
                     .max(PanState::MIN);
                 controller.send(Command::SetMixerPan {
-                    mixer: MixerSurface::from_surface(controller.state.surface),
+                    mixer: MixerSurface::from_surface(controller.state.mixer.surface),
                     channel: active_channel.channel,
                     pan: PanState::from_raw(next),
                     muted: active_channel.muted.unwrap_or(false),
@@ -452,18 +453,18 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char(']') => {
-            if controller.state.page == MainPage::Mixer
-                && controller.state.focus == FocusArea::Mixer
+            if controller.state.ui.page == MainPage::Mixer
+                && controller.state.ui.focus == FocusArea::Mixer
             {
-                let active_channel =
-                    controller.state.active_mixer_channels()[controller.state.selected_channel];
+                let active_channel = controller.state.active_mixer_channels()
+                    [controller.state.mixer.selected_channel];
                 let next = active_channel
                     .pan
                     .raw()
                     .saturating_add(1)
                     .min(PanState::MAX);
                 controller.send(Command::SetMixerPan {
-                    mixer: MixerSurface::from_surface(controller.state.surface),
+                    mixer: MixerSurface::from_surface(controller.state.mixer.surface),
                     channel: active_channel.channel,
                     pan: PanState::from_raw(next),
                     muted: active_channel.muted.unwrap_or(false),
@@ -473,33 +474,34 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('3') => {
-            if controller.state.page == MainPage::Mixer
-                && controller.state.focus == FocusArea::Preamp
+            if controller.state.ui.page == MainPage::Mixer
+                && controller.state.ui.focus == FocusArea::Preamp
             {
-                let input = controller.state.selected_preamp_input as u8;
+                let input = controller.state.preamp.selected_input as u8;
                 let current = if input == 0 {
-                    controller.state.preamp.input1.mode
+                    controller.state.preamp.state.input1.mode
                 } else {
-                    controller.state.preamp.input2.mode
+                    controller.state.preamp.state.input2.mode
                 };
-                controller.state.popup_selected_index =
+                controller.state.popup.selected_index =
                     [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
                         .iter()
                         .position(|mode| *mode == current)
                         .unwrap_or(0);
-                controller.state.selector_popup = Some(SelectorPopupState {
+                controller.state.popup.selector_popup = Some(SelectorPopupState {
                     kind: SelectorPopupKind::PreampMode { input },
                 });
-                controller.state.focus = FocusArea::Preamp;
-                controller.state.selected_preamp_input = input.min(1) as usize;
+                controller.state.ui.focus = FocusArea::Preamp;
+                controller.state.preamp.selected_input = input.min(1) as usize;
             }
             Ok(())
         }
         AppKeyCode::Char('s') => {
-            if controller.state.device.clock_source == Some(ClockSource::Internal) {
+            if controller.state.device.status.clock_source == Some(ClockSource::Internal) {
                 let current = controller
                     .state
                     .device
+                    .status
                     .sample_rate
                     .unwrap_or(SampleRate::Hz48000);
                 let all = SampleRate::all_confirmed();
@@ -513,6 +515,7 @@ pub fn handle_key_press(
             let current = controller
                 .state
                 .device
+                .status
                 .clock_source
                 .unwrap_or(ClockSource::Internal);
             let all = ClockSource::all_confirmed();
@@ -526,28 +529,28 @@ pub fn handle_key_press(
         }
         AppKeyCode::Char('1') => controller.send(Command::SelectSurface(Surface::MonitorHp1)),
         AppKeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2)),
-        AppKeyCode::Char('b') if controller.state.raw_view_open => {
+        AppKeyCode::Char('b') if controller.state.popup.raw_view_open => {
             controller.apply_intent(Intent::CaptureRawBaseline, area)?;
             Ok(())
         }
-        AppKeyCode::Char('x') if controller.state.raw_view_open => {
+        AppKeyCode::Char('x') if controller.state.popup.raw_view_open => {
             controller.apply_intent(Intent::ClearRawBaseline, area)?;
             Ok(())
         }
         AppKeyCode::Esc
-            if controller.state.assignment_picker.is_some()
-                || controller.state.selector_popup.is_some()
-                || controller.state.routing_popup_open
-                || controller.state.hotkeys_popup_open
-                || controller.state.options_popup_open =>
+            if controller.state.popup.assignment_picker.is_some()
+                || controller.state.popup.selector_popup.is_some()
+                || controller.state.popup.routing_open
+                || controller.state.popup.hotkeys_open
+                || controller.state.popup.options_open =>
         {
-            controller.state.assignment_picker = None;
-            controller.state.selector_popup = None;
-            controller.state.routing_popup_open = false;
-            controller.state.popup_selected_index = 0;
-            controller.state.hotkeys_popup_open = false;
-            controller.state.options_popup_open = false;
-            controller.state.last_message = "Closed popup".to_string();
+            controller.state.popup.assignment_picker = None;
+            controller.state.popup.selector_popup = None;
+            controller.state.popup.routing_open = false;
+            controller.state.popup.selected_index = 0;
+            controller.state.popup.hotkeys_open = false;
+            controller.state.popup.options_open = false;
+            controller.state.ui.last_message = "Closed popup".to_string();
             Ok(())
         }
         _ => Ok(()),
@@ -628,13 +631,13 @@ pub fn app_loop(
                             }
                             handle_runtime_error(controller, error)?;
                         }
-                        if controller.state.quit_requested {
+                        if controller.state.ui.quit_requested {
                             break 'app;
                         }
                         needs_redraw = true;
                     }
                     zen_go_tui::terminal::AppInputEvent::Paste(text) => {
-                        if controller.state.profile_editor.is_some() {
+                        if controller.state.popup.profile_editor.is_some() {
                             append_profile_editor_text(controller, &text);
                         }
                         needs_redraw = true;
@@ -669,7 +672,7 @@ pub fn app_loop(
 
         let now = std::time::Instant::now();
         controller.state.prune_expired_peaks();
-        let fps = controller.state.settings.refresh_rate.fps();
+        let fps = controller.state.ui.settings.refresh_rate.fps();
         if should_draw_frame(last_draw_at, needs_redraw, now, fps) {
             terminal.draw(|frame| {
                 ui::draw(frame, &controller.state);
@@ -677,7 +680,7 @@ pub fn app_loop(
                     frame.set_cursor_position((x, y));
                 }
             })?;
-            if controller.state.profile_editor.is_some() {
+            if controller.state.popup.profile_editor.is_some() {
                 terminal.show_cursor()?;
             } else {
                 terminal.hide_cursor()?;
@@ -693,29 +696,31 @@ pub fn app_loop(
 }
 
 pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layout::Rect) {
-    if controller.state.page != MainPage::Mixer {
+    if controller.state.ui.page != MainPage::Mixer {
         return;
     }
 
-    match controller.state.focus {
+    match controller.state.ui.focus {
         FocusArea::Outputs => {
-            controller.state.selected_output = if right {
-                (controller.state.selected_output + 1) % controller.state.outputs.len()
+            controller.state.output.selected = if right {
+                (controller.state.output.selected + 1) % controller.state.output.states.len()
             } else {
                 controller
                     .state
-                    .selected_output
+                    .output
+                    .selected
                     .checked_sub(1)
-                    .unwrap_or(controller.state.outputs.len() - 1)
+                    .unwrap_or(controller.state.output.states.len() - 1)
             };
         }
         FocusArea::Mixer => {
             let channels_len = controller.state.active_mixer_channels().len();
-            controller.state.selected_channel = if right {
-                (controller.state.selected_channel + 1) % channels_len
+            controller.state.mixer.selected_channel = if right {
+                (controller.state.mixer.selected_channel + 1) % channels_len
             } else {
                 controller
                     .state
+                    .mixer
                     .selected_channel
                     .checked_sub(1)
                     .unwrap_or(channels_len - 1)
@@ -726,16 +731,16 @@ pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::l
                 .ensure_selected_mixer_channel_visible(visible);
         }
         FocusArea::Preamp => {
-            controller.state.selected_preamp_input = if right { 1 } else { 0 };
+            controller.state.preamp.selected_input = if right { 1 } else { 0 };
         }
         _ => {}
     }
 }
 
 pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
-    if let Some(picker) = controller.state.assignment_picker {
+    if let Some(picker) = controller.state.popup.assignment_picker {
         if let Some(assignment) = MixerAssignment::grounded_choices()
-            .get(controller.state.popup_selected_index)
+            .get(controller.state.popup.selected_index)
             .copied()
         {
             return controller.apply_intent(
@@ -748,23 +753,23 @@ pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
         }
     }
 
-    if controller.state.profiles_popup_open {
+    if controller.state.popup.profiles_open {
         return load_selected_profile(controller);
     }
 
-    if let Some(popup) = controller.state.selector_popup {
+    if let Some(popup) = controller.state.popup.selector_popup {
         let action = match popup.kind {
             SelectorPopupKind::SampleRate => SampleRate::all_confirmed()
-                .get(controller.state.popup_selected_index)
+                .get(controller.state.popup.selected_index)
                 .copied()
                 .map(ui::Intent::PickSampleRate),
             SelectorPopupKind::ClockSource => ClockSource::all_confirmed()
-                .get(controller.state.popup_selected_index)
+                .get(controller.state.popup.selected_index)
                 .copied()
                 .map(ui::Intent::PickClockSource),
             SelectorPopupKind::PreampMode { input } => {
                 [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
-                    .get(controller.state.popup_selected_index)
+                    .get(controller.state.popup.selected_index)
                     .copied()
                     .map(|mode| ui::Intent::PickPreampMode { input, mode })
             }

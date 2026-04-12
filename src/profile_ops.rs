@@ -53,14 +53,14 @@ fn collect_profile_state(controller: &mut Controller) -> Result<()> {
 
 /// Close the profiles popup and set a status message.
 pub(crate) fn close_profiles_popup(controller: &mut Controller, message: &str) {
-    controller.state.profiles_popup_open = false;
-    controller.state.profile_editor = None;
-    controller.state.last_message = message.to_string();
+    controller.state.popup.profiles_open = false;
+    controller.state.popup.profile_editor = None;
+    controller.state.ui.last_message = message.to_string();
 }
 
 /// Append valid characters to the profile editor text.
 pub(crate) fn append_profile_editor_text(controller: &mut Controller, text: &str) {
-    let Some(editor) = controller.state.profile_editor.as_mut() else {
+    let Some(editor) = controller.state.popup.profile_editor.as_mut() else {
         return;
     };
 
@@ -74,7 +74,7 @@ pub(crate) fn append_profile_editor_text(controller: &mut Controller, text: &str
 /// Load the currently selected profile onto the device.
 pub(crate) fn load_selected_profile(controller: &mut Controller) -> Result<()> {
     let Some(name) = controller.state.selected_profile_name().map(str::to_string) else {
-        controller.state.last_message = "No profile selected to load.".to_string();
+        controller.state.ui.last_message = "No profile selected to load.".to_string();
         return Ok(());
     };
     let profile = DeviceProfile::read_named(&name)?;

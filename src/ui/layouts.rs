@@ -35,7 +35,7 @@ pub(crate) fn titlebar_layout(area: Rect) -> [Rect; 2] {
 }
 
 pub(crate) fn device_metadata_width(state: &AppState) -> u16 {
-    let Some(metadata) = state.device.metadata.as_ref() else {
+    let Some(metadata) = state.device.status.metadata.as_ref() else {
         return "metadata pending".chars().count() as u16;
     };
 
@@ -55,7 +55,7 @@ pub(crate) fn device_panel_layout(area: Rect, state: &AppState) -> [Rect; 2] {
 }
 
 pub(crate) fn current_sample_rate_label(state: &AppState) -> String {
-    if let Some(hz) = state.device.sample_rate_hz {
+    if let Some(hz) = state.device.status.sample_rate_hz {
         if hz % 1000 == 0 {
             return format!("{} kHz", hz / 1000);
         }
@@ -65,6 +65,7 @@ pub(crate) fn current_sample_rate_label(state: &AppState) -> String {
 
     state
         .device
+        .status
         .sample_rate
         .map(|value| value.label())
         .unwrap_or_else(|| "rate ?".to_string())
@@ -74,6 +75,7 @@ pub(crate) fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect>
     let inner = device_panel_layout(area, state)[0];
     let product = state
         .device
+        .status
         .metadata
         .as_ref()
         .map(|metadata| metadata.product_name.clone())
@@ -81,6 +83,7 @@ pub(crate) fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect>
     let sample = current_sample_rate_label(state);
     let clock = state
         .device
+        .status
         .clock_source
         .map(|value| value.label().to_string())
         .unwrap_or_else(|| "clock ?".to_string());
@@ -162,7 +165,7 @@ pub(crate) fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
 pub(crate) fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize, usize) {
     let visible = mixer_strip_viewport_capacity_for_inner(area);
     let total = state.active_mixer_channels().len();
-    let start = state.mixer_strip_scroll.min(total.saturating_sub(visible));
+    let start = state.mixer.strip_scroll.min(total.saturating_sub(visible));
     let end = usize::min(start + visible, total);
     (start, end)
 }
@@ -469,7 +472,7 @@ pub(crate) fn afx_routing_row_columns(area: Rect) -> Vec<Rect> {
 
 pub(crate) fn afx_routing_row_labels(state: &AppState, pair: usize) -> [String; 5] {
     use antelope_protocol::MixerSurface;
-    let assignments = &state.mixer_channels[MixerSurface::Mix1.index()];
+    let assignments = &state.mixer.channels[MixerSurface::Mix1.index()];
     let (left_index, right_index) = afx_routing_pair_channels(pair);
     let left = &assignments[left_index];
     let right = &assignments[right_index];

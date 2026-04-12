@@ -254,7 +254,7 @@ pub(crate) fn render_mixer_strip_widget(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
+    let selected = state.ui.focus == FocusArea::Mixer && state.mixer.selected_channel == index;
     let source = channel
         .assignment
         .map(|value| value.short_label())
@@ -320,7 +320,8 @@ pub(crate) fn render_mixer_strip_widget(
     .alignment(Alignment::Center)
     .render(rows[4], buffer);
     let peak_raw = state
-        .mixer_peaks
+        .mixer
+        .peaks
         .get(state.active_mixer_surface().index())
         .and_then(|mix| mix.get(index))
         .and_then(|peak| peak.as_ref())

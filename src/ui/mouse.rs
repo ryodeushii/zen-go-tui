@@ -23,7 +23,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Inte
     let point = (x, y);
     let chunks = root_chunks(area);
 
-    if state.hotkeys_popup_open {
+    if state.popup.hotkeys_open {
         return Some(Intent::ToggleHotkeysPopup);
     }
 
@@ -35,31 +35,31 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Inte
         return system_panel_mouse_action(titlebar_layout(chunks[0])[1], state, point);
     }
 
-    if state.raw_view_open {
+    if state.popup.raw_view_open {
         return raw_mouse_action(area, state, point);
     }
 
-    if state.profile_editor.is_some() {
+    if state.popup.profile_editor.is_some() {
         return profile_editor_mouse_action(area, point);
     }
 
-    if state.profiles_popup_open {
+    if state.popup.profiles_open {
         return profiles_popup_mouse_action(area, state, point);
     }
 
-    if let Some(popup) = state.selector_popup {
+    if let Some(popup) = state.popup.selector_popup {
         return selector_popup_mouse_action(area, popup, point);
     }
 
-    if let Some(picker) = state.assignment_picker {
+    if let Some(picker) = state.popup.assignment_picker {
         return assignment_picker_mouse_action(area, picker, point);
     }
 
-    if state.routing_popup_open {
+    if state.popup.routing_open {
         return routing_popup_mouse_action(area, state, point);
     }
 
-    if state.options_popup_open {
+    if state.popup.options_open {
         return options_popup_mouse_action(area, state, point);
     }
 
@@ -88,13 +88,13 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Inte
 }
 
 pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Intent> {
-    if state.hotkeys_popup_open
-        || state.raw_view_open
-        || state.profiles_popup_open
-        || state.selector_popup.is_some()
-        || state.assignment_picker.is_some()
-        || state.routing_popup_open
-        || state.options_popup_open
+    if state.popup.hotkeys_open
+        || state.popup.raw_view_open
+        || state.popup.profiles_open
+        || state.popup.selector_popup.is_some()
+        || state.popup.assignment_picker.is_some()
+        || state.popup.routing_open
+        || state.popup.options_open
     {
         return None;
     }
@@ -117,26 +117,26 @@ pub fn slider_wheel_action(
     y: u16,
     increase: bool,
 ) -> Option<Intent> {
-    if state.hotkeys_popup_open
-        || state.profiles_popup_open
-        || state.selector_popup.is_some()
-        || state.assignment_picker.is_some()
-        || state.routing_popup_open
-        || state.options_popup_open
+    if state.popup.hotkeys_open
+        || state.popup.profiles_open
+        || state.popup.selector_popup.is_some()
+        || state.popup.assignment_picker.is_some()
+        || state.popup.routing_open
+        || state.popup.options_open
     {
         return None;
     }
 
     let point = (x, y);
 
-    if state.raw_view_open && state.selected_raw_packet == RawPacketTab::Query75 {
+    if state.popup.raw_view_open && state.raw_view.selected_tab == RawPacketTab::Query75 {
         if let Some(action) = query_reply_wheel_action(area, state, point, increase) {
             return Some(action);
         }
         return None;
     }
 
-    if state.raw_view_open {
+    if state.popup.raw_view_open {
         return None;
     }
 
@@ -181,7 +181,7 @@ fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
         let prefix = "Refresh: ";
         let mut x = refresh_row.x + prefix.chars().count() as u16;
         for r in refresh_rates {
-            let label = if *r == state.settings.refresh_rate {
+            let label = if *r == state.ui.settings.refresh_rate {
                 format!("* {}", r.label())
             } else {
                 r.label().to_string()
@@ -197,8 +197,8 @@ fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
 
     if contains_point(peak_threshold_row, point) {
         let prefix = "Peaks:  ";
-        let status_text = if state.settings.peak_enabled {
-            format!("ON ({} dB)", state.settings.peak_threshold_db())
+        let status_text = if state.ui.settings.peak_enabled {
+            format!("ON ({} dB)", state.ui.settings.peak_threshold_db())
         } else {
             "OFF".to_string()
         };
@@ -221,7 +221,7 @@ fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
 
     if contains_point(peak_toggle_row, point) {
         let prefix = "Toggle: ";
-        let label = if state.settings.peak_enabled {
+        let label = if state.ui.settings.peak_enabled {
             "Disable"
         } else {
             "Enable"
@@ -239,7 +239,7 @@ fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
         let prefix = "Hold:   ";
         let mut x = peak_hold_row.x + prefix.chars().count() as u16;
         for h in hold_durations {
-            let label = if *h == state.settings.peak_hold_duration {
+            let label = if *h == state.ui.settings.peak_hold_duration {
                 format!("* {}", h.label())
             } else {
                 h.label().to_string()
@@ -284,11 +284,12 @@ fn profiles_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) 
     }
 
     let list_area = profiles_popup_layout(popup)[0];
-    if !contains_point(list_area, point) || state.profile_names.is_empty() {
+    if !contains_point(list_area, point) || state.popup.profile_names.is_empty() {
         return None;
     }
     let index = point.1.saturating_sub(list_area.y) as usize;
     state
+        .popup
         .profile_names
         .get(index)
         .map(|_| Intent::SelectProfile(index))
@@ -322,7 +323,7 @@ fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<I
             return Some(Intent::SelectRawPacketTab(RawPacketTab::DeviceNotification));
         }
     }
-    if state.selected_raw_packet == RawPacketTab::Query75 {
+    if state.raw_view.selected_tab == RawPacketTab::Query75 {
         let sections = query_reply_history_layout(layout[2]);
         if !contains_point(sections[0], point) {
             return None;
@@ -331,9 +332,12 @@ fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<I
         if point.1 < inner.y + 1 {
             return None;
         }
-        let total = state.recent_query_reply_entries.len();
+        let total = state.raw_view.recent_query_reply_entries.len();
         let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
-        let start = state.query_reply_scroll.min(total.saturating_sub(visible));
+        let start = state
+            .raw_view
+            .query_reply_scroll
+            .min(total.saturating_sub(visible));
         let row = point.1.saturating_sub(inner.y + 1) as usize;
         if row >= visible {
             return None;
@@ -353,14 +357,14 @@ fn query_reply_wheel_action(
     increase: bool,
 ) -> Option<Intent> {
     let layout = raw_page_layout(area);
-    if state.selected_raw_packet != RawPacketTab::Query75 {
+    if state.raw_view.selected_tab != RawPacketTab::Query75 {
         return None;
     }
     let sections = query_reply_history_layout(layout[2]);
     if !contains_point(sections[0], point) {
         return None;
     }
-    let total = state.recent_query_reply_entries.len();
+    let total = state.raw_view.recent_query_reply_entries.len();
     if total <= QUERY_REPLY_VISIBLE_COUNT {
         return None;
     }
@@ -438,7 +442,7 @@ fn system_panel_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) ->
         return Some(Intent::ToggleRawView);
     }
     if contains_point(rects[1], point) {
-        if state.options_popup_open {
+        if state.popup.options_open {
             return Some(Intent::CloseOptionsPopup);
         } else {
             return Some(Intent::OpenOptionsPopup);
@@ -456,7 +460,7 @@ fn device_header_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     }
     let chips = device_header_hit_areas(area, state);
     if contains_point(chips[1], point) {
-        if state.device.clock_source == Some(ClockSource::Internal) {
+        if state.device.status.clock_source == Some(ClockSource::Internal) {
             Some(Intent::OpenSampleRateSelector)
         } else {
             None
@@ -629,9 +633,9 @@ fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Optio
             continue;
         }
         let input_state = if input == 0 {
-            state.preamp.input1
+            state.preamp.state.input1
         } else {
-            state.preamp.input2
+            state.preamp.state.input2
         };
         if let Some(action) = preamp_card_slider_mouse_action(card, input as u8, input_state, point)
         {
@@ -674,9 +678,9 @@ fn preamp_slider_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
             continue;
         }
         let input_state = if input == 0 {
-            state.preamp.input1
+            state.preamp.state.input1
         } else {
-            state.preamp.input2
+            state.preamp.state.input2
         };
         return preamp_card_slider_mouse_action(card, input as u8, input_state, point);
     }
@@ -727,7 +731,7 @@ fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
         .into_iter()
         .enumerate()
         .find(|(_, card)| contains_point(*card, point))?;
-    state.outputs.get(index)?;
+    state.output.states.get(index)?;
     let controls = output_control_rects(card);
 
     if let Some(action) = output_card_slider_mouse_action(card, index, point) {
@@ -952,7 +956,7 @@ fn slider_ratio_for_vertical_point(area: Rect, point: (u16, u16)) -> Option<f64>
 }
 
 pub(crate) fn mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
-    let bytes = state.latest_raw_73.as_deref()?;
+    let bytes = state.raw_view.latest_raw_73.as_deref()?;
     let payload = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..)?;
 
     match payload.get(OFFSET_SURFACE_SELECTOR).copied() {

@@ -29,7 +29,7 @@ pub(crate) use mixer::*;
 pub(crate) use signals::*;
 
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
-    if state.raw_view_open {
+    if state.popup.raw_view_open {
         draw_raw_page(frame, frame.area(), state);
         draw_hotkeys_popup(frame, frame.area(), state);
         return;
@@ -48,7 +48,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
 }
 
 pub fn profile_editor_cursor(area: Rect, state: &AppState) -> Option<(u16, u16)> {
-    let editor = state.profile_editor.as_ref()?;
+    let editor = state.popup.profile_editor.as_ref()?;
     let editor_area = profile_editor_area(area);
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -105,7 +105,7 @@ fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    if !state.routing_popup_open {
+    if !state.popup.routing_open {
         return;
     }
 
@@ -153,14 +153,17 @@ fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     .render(rows[8], frame.buffer_mut());
     Paragraph::new(Line::from(vec![
         Span::styled("STATUS ", subdued_style()),
-        Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
+        Span::styled(
+            state.ui.last_message.clone(),
+            strong_style(Color::LightCyan),
+        ),
     ]))
     .wrap(Wrap { trim: false })
     .render(rows[9], frame.buffer_mut());
 }
 
 fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    if !state.profiles_popup_open {
+    if !state.popup.profiles_open {
         return;
     }
 
@@ -169,7 +172,7 @@ fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(panel_block("Profiles", Color::LightGreen, true), popup);
 
     let sections = profiles_popup_layout(popup);
-    if state.profile_names.is_empty() {
+    if state.popup.profile_names.is_empty() {
         Paragraph::new(Line::from(Span::styled(
             "No saved profiles yet.",
             muted_style(),
@@ -177,6 +180,7 @@ fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .render(sections[0], frame.buffer_mut());
     } else {
         let items = state
+            .popup
             .profile_names
             .iter()
             .map(|name| ListItem::new(name.clone()))
@@ -184,7 +188,8 @@ fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         let mut list_state = ListState::default();
         list_state.select(Some(
             state
-                .popup_selected_index
+                .popup
+                .selected_index
                 .min(items.len().saturating_sub(1)),
         ));
         frame.render_stateful_widget(
@@ -227,7 +232,7 @@ fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     .wrap(Wrap { trim: false })
     .render(sections[2], frame.buffer_mut());
 
-    if let Some(editor) = state.profile_editor.as_ref() {
+    if let Some(editor) = state.popup.profile_editor.as_ref() {
         let editor_area = profile_editor_area(area);
         frame.render_widget(Clear, editor_area);
         frame.render_widget(
@@ -279,13 +284,14 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         panel_block(
             "Outputs",
             Color::Rgb(70, 120, 90),
-            state.focus == FocusArea::Outputs,
+            state.ui.focus == FocusArea::Outputs,
         ),
         area,
     );
     let inner = inner_area(area);
     for (index, (output, card)) in state
-        .outputs
+        .output
+        .states
         .iter()
         .zip(output_card_areas(inner).into_iter())
         .enumerate()
@@ -294,7 +300,7 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             card,
             frame.buffer_mut(),
             output,
-            state.focus == FocusArea::Outputs && state.selected_output == index,
+            state.ui.focus == FocusArea::Outputs && state.output.selected == index,
         );
     }
     let help_button = output_hotkeys_button_rect(area);
@@ -313,11 +319,11 @@ fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let cards = preamp_bar_layout(area);
     for (index, card) in cards.into_iter().enumerate() {
         let input = if index == 0 {
-            state.preamp.input1
+            state.preamp.state.input1
         } else {
-            state.preamp.input2
+            state.preamp.state.input2
         };
-        let title = if state.focus == FocusArea::Preamp && state.selected_preamp_input == index {
+        let title = if state.ui.focus == FocusArea::Preamp && state.preamp.selected_input == index {
             if index == 0 {
                 "Preamp 1 ←"
             } else {
@@ -334,8 +340,8 @@ fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             frame.buffer_mut(),
             title,
             input,
-            state.focus == FocusArea::Preamp && state.selected_preamp_input == index,
-            state.preamp_peaks[index].as_ref().map(|p| p.raw),
+            state.ui.focus == FocusArea::Preamp && state.preamp.selected_input == index,
+            state.preamp.peaks[index].as_ref().map(|p| p.raw),
         );
     }
 }
@@ -343,7 +349,7 @@ fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let layout = mixer_layout(area);
 
-    let surface = MixerSurface::from_surface(state.surface);
+    let surface = MixerSurface::from_surface(state.mixer.surface);
     let line = Line::from(vec![
         tab_chip(
             "MIX 1 / Monitor-HP1",
@@ -362,7 +368,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .block(panel_block(
                 "Mixer Surface",
                 Color::Rgb(80, 110, 150),
-                state.focus == FocusArea::Mixer,
+                state.ui.focus == FocusArea::Mixer,
             ))
             .wrap(Wrap { trim: false }),
         layout[0],
@@ -371,7 +377,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     Paragraph::new(Line::from(vec![chip(
         "PROFILES",
         Color::Black,
-        if state.profiles_popup_open {
+        if state.popup.profiles_open {
             Color::Yellow
         } else {
             Color::LightGreen
@@ -381,7 +387,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     Paragraph::new(Line::from(vec![chip(
         "ROUTING",
         Color::Black,
-        if state.routing_popup_open {
+        if state.popup.routing_open {
             Color::Yellow
         } else {
             Color::LightMagenta
@@ -407,14 +413,14 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         panel_block(
             &title,
             Color::Rgb(70, 100, 130),
-            state.focus == FocusArea::Mixer,
+            state.ui.focus == FocusArea::Mixer,
         ),
         layout[1],
     );
     let page_buttons = mixer_strip_page_button_rects(layout[1]);
     let visible = visible_end.saturating_sub(visible_start);
-    let can_page_left = state.mixer_strip_scroll > 0;
-    let can_page_right = state.mixer_strip_scroll + visible < total;
+    let can_page_left = state.mixer.strip_scroll > 0;
+    let can_page_right = state.mixer.strip_scroll + visible < total;
     Paragraph::new(Line::from(vec![chip(
         "←",
         Color::Black,
@@ -462,7 +468,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let Some(picker) = state.assignment_picker else {
+    let Some(picker) = state.popup.assignment_picker else {
         return;
     };
 
@@ -475,7 +481,8 @@ fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let mut list_state = ListState::default();
     list_state.select(Some(
         state
-            .popup_selected_index
+            .popup
+            .selected_index
             .min(items.len().saturating_sub(1)),
     ));
 
@@ -499,7 +506,7 @@ fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let Some(popup_state) = state.selector_popup else {
+    let Some(popup_state) = state.popup.selector_popup else {
         return;
     };
 
@@ -532,7 +539,8 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let mut list_state = ListState::default();
     list_state.select(Some(
         state
-            .popup_selected_index
+            .popup
+            .selected_index
             .min(items.len().saturating_sub(1)),
     ));
 
@@ -551,7 +559,7 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_hotkeys_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    if !state.hotkeys_popup_open {
+    if !state.popup.hotkeys_open {
         return;
     }
 
@@ -566,7 +574,7 @@ fn draw_hotkeys_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    if !state.options_popup_open {
+    if !state.popup.options_open {
         return;
     }
 
@@ -579,7 +587,7 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .render(rows[0], frame.buffer_mut());
 
     let refresh_rates = RefreshRate::all();
-    let current_refresh = state.settings.refresh_rate;
+    let current_refresh = state.ui.settings.refresh_rate;
     let mut refresh_spans = vec![Span::styled("Refresh: ", subdued_style())];
     for r in refresh_rates {
         if *r == current_refresh {
@@ -595,13 +603,13 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     }
     Paragraph::new(Line::from(refresh_spans)).render(rows[1], frame.buffer_mut());
 
-    let peak_db = state.settings.peak_threshold_db();
-    let peak_status = if state.settings.peak_enabled {
+    let peak_db = state.ui.settings.peak_threshold_db();
+    let peak_status = if state.ui.settings.peak_enabled {
         format!("ON ({} dB)", peak_db)
     } else {
         "OFF".to_string()
     };
-    let peak_color = if state.settings.peak_enabled {
+    let peak_color = if state.ui.settings.peak_enabled {
         Color::LightGreen
     } else {
         Color::DarkGray
@@ -619,7 +627,7 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     Paragraph::new(Line::from(vec![
         Span::styled("Toggle: ", subdued_style()),
         chip(
-            if state.settings.peak_enabled {
+            if state.ui.settings.peak_enabled {
                 "Disable"
             } else {
                 "Enable"
@@ -634,7 +642,7 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     .render(rows[3], frame.buffer_mut());
 
     let hold_durations = crate::app::PeakHoldDuration::all();
-    let current_hold = state.settings.peak_hold_duration;
+    let current_hold = state.ui.settings.peak_hold_duration;
     let mut hold_spans = vec![Span::styled("Hold:   ", subdued_style())];
     for h in hold_durations {
         if *h == current_hold {
@@ -650,12 +658,12 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     }
     Paragraph::new(Line::from(hold_spans)).render(rows[4], frame.buffer_mut());
 
-    let auto_save_status = if state.settings.auto_save {
+    let auto_save_status = if state.ui.settings.auto_save {
         "ON"
     } else {
         "OFF"
     };
-    let auto_save_color = if state.settings.auto_save {
+    let auto_save_color = if state.ui.settings.auto_save {
         Color::LightGreen
     } else {
         Color::DarkGray
@@ -716,7 +724,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         header[1],
     );
 
-    let selected = state.selected_raw_packet;
+    let selected = state.raw_view.selected_tab;
     let tabs = Line::from(vec![
         tab_chip(
             "0x74",
@@ -747,10 +755,11 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         layout[1],
     );
 
-    let (title, text) = match state.selected_raw_packet {
+    let (title, text) = match state.raw_view.selected_tab {
         RawPacketTab::Query74 => (
             "0x74 Query Requests",
             state
+                .raw_view
                 .latest_raw_74
                 .as_deref()
                 .map(|bytes| render_query_request_panel(bytes, state))
@@ -759,22 +768,29 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         RawPacketTab::State73 => (
             "0x73 State",
             state
+                .raw_view
                 .latest_raw_73
                 .as_deref()
-                .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_73.as_deref()))
+                .map(|bytes| {
+                    render_full_packet_dump(bytes, state.raw_view.baseline_raw_73.as_deref())
+                })
                 .unwrap_or_else(|| Text::from("Waiting for first 0x73 snapshot...")),
         ),
         RawPacketTab::Auxiliary => (
             "0x83 State",
             state
+                .raw_view
                 .latest_raw_83
                 .as_deref()
-                .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_83.as_deref()))
+                .map(|bytes| {
+                    render_full_packet_dump(bytes, state.raw_view.baseline_raw_83.as_deref())
+                })
                 .unwrap_or_else(|| Text::from("Waiting for first 0x83 auxiliary packet...")),
         ),
         RawPacketTab::Query75 => (
             "0x75 Query Replies",
             state
+                .raw_view
                 .latest_raw_75
                 .as_deref()
                 .map(|bytes| render_query_reply_panel(bytes, state))
@@ -783,13 +799,16 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         RawPacketTab::DeviceNotification => (
             "0x81 Notification",
             state
+                .raw_view
                 .latest_raw_81
                 .as_deref()
-                .map(|bytes| render_full_packet_dump(bytes, state.baseline_raw_81.as_deref()))
+                .map(|bytes| {
+                    render_full_packet_dump(bytes, state.raw_view.baseline_raw_81.as_deref())
+                })
                 .unwrap_or_else(|| Text::from("Waiting for first 0x81 notification...")),
         ),
     };
-    if state.selected_raw_packet == RawPacketTab::Query75 {
+    if state.raw_view.selected_tab == RawPacketTab::Query75 {
         let sections = query_reply_history_layout(layout[2]);
         let list_items = build_query_reply_list_items(state);
         frame.render_widget(
@@ -817,8 +836,10 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 fn render_afx_routing_row(area: Rect, buffer: &mut Buffer, state: &AppState, pair: usize) {
     let labels = afx_routing_row_labels(state, pair);
     let (left_index, right_index) = afx_routing_pair_channels(pair);
-    let selected_left = state.focus == FocusArea::Mixer && state.selected_channel == left_index;
-    let selected_right = state.focus == FocusArea::Mixer && state.selected_channel == right_index;
+    let selected_left =
+        state.ui.focus == FocusArea::Mixer && state.mixer.selected_channel == left_index;
+    let selected_right =
+        state.ui.focus == FocusArea::Mixer && state.mixer.selected_channel == right_index;
     let columns = afx_routing_row_columns(area);
     let row_style = terminal::adapt_style(Style::default().fg(if pair.is_multiple_of(2) {
         Color::DarkGray
@@ -878,7 +899,7 @@ pub(crate) fn afx_routing_source_label(assignment: Option<MixerAssignment>) -> S
 
 #[cfg(test)]
 pub(crate) fn render_afx_routing_text(state: &AppState) -> Text<'static> {
-    let assignments = &state.mixer_channels[MixerSurface::Mix1.index()];
+    let assignments = &state.mixer.channels[MixerSurface::Mix1.index()];
     let mut lines = vec![
         Line::from(vec![chip("ROUTING", Color::Black, Color::LightMagenta)]),
         Line::from(""),
@@ -910,7 +931,10 @@ pub(crate) fn render_afx_routing_text(state: &AppState) -> Text<'static> {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("STATUS ", subdued_style()),
-        Span::styled(state.last_message.clone(), strong_style(Color::LightCyan)),
+        Span::styled(
+            state.ui.last_message.clone(),
+            strong_style(Color::LightCyan),
+        ),
     ]));
     Text::from(lines)
 }
@@ -918,16 +942,17 @@ pub(crate) fn render_afx_routing_text(state: &AppState) -> Text<'static> {
 pub(crate) fn render_query_reply_panel(_state_bytes: &[u8], state: &AppState) -> Text<'static> {
     state
         .selected_query_reply_entry()
-        .map(|entry| render_full_packet_dump(&entry.raw, state.baseline_raw_75.as_deref()))
+        .map(|entry| render_full_packet_dump(&entry.raw, state.raw_view.baseline_raw_75.as_deref()))
         .unwrap_or_else(|| Text::from("No 0x75 reply selected yet."))
 }
 
 pub(crate) fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
-    let mut lines = render_full_packet_dump(state_bytes, state.baseline_raw_74.as_deref()).lines;
-    if !state.recent_query_request_log.is_empty() {
+    let mut lines =
+        render_full_packet_dump(state_bytes, state.raw_view.baseline_raw_74.as_deref()).lines;
+    if !state.raw_view.recent_query_request_log.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from("Recent 0x74 requests:"));
-        for entry in state.recent_query_request_log.iter().rev().take(8) {
+        for entry in state.raw_view.recent_query_request_log.iter().rev().take(8) {
             lines.push(Line::from(entry.clone()));
         }
     }
@@ -936,21 +961,24 @@ pub(crate) fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -
 
 pub(crate) fn build_query_reply_list_items(state: &AppState) -> Vec<ListItem<'static>> {
     let mut items = Vec::new();
-    if state.recent_query_reply_entries.is_empty() {
+    if state.raw_view.recent_query_reply_entries.is_empty() {
         items.push(ListItem::new(Line::from(Span::styled(
             "Waiting for first 0x75 query reply...",
             muted_style(),
         ))));
         return items;
     }
-    let total = state.recent_query_reply_entries.len();
+    let total = state.raw_view.recent_query_reply_entries.len();
     let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
-    let start = state.query_reply_scroll.min(total.saturating_sub(visible));
+    let start = state
+        .raw_view
+        .query_reply_scroll
+        .min(total.saturating_sub(visible));
     let end = (start + visible).min(total);
     for rev_index in start..end {
         let index = total - 1 - rev_index;
-        let entry = &state.recent_query_reply_entries[index];
-        let marker = if state.selected_query_reply_entry == Some(index) {
+        let entry = &state.raw_view.recent_query_reply_entries[index];
+        let marker = if state.raw_view.selected_query_reply_entry == Some(index) {
             ">"
         } else {
             " "
@@ -994,7 +1022,7 @@ pub(crate) fn render_mixer_strip_controls(
 }
 
 pub(crate) fn render_experimental_pair_state_line(state: &AppState) -> String {
-    let Some(bytes) = state.latest_raw_73.as_deref() else {
+    let Some(bytes) = state.raw_view.latest_raw_73.as_deref() else {
         return "exp pair pending: waiting for 0x73 snapshot".to_string();
     };
     let Some(payload) = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..) else {
@@ -1031,7 +1059,7 @@ pub(crate) fn render_mixer_strip_line(
     index: usize,
     channel: &antelope_protocol::MixerChannelState,
 ) -> String {
-    let selected = state.focus == FocusArea::Mixer && state.selected_channel == index;
+    let selected = state.ui.focus == FocusArea::Mixer && state.mixer.selected_channel == index;
     let bar = channel
         .meter_ratio()
         .or_else(|| channel.gain_ratio())
@@ -1094,6 +1122,7 @@ pub(crate) fn observed_meter_label(input: PreampInputState) -> String {
 pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {
     let product = state
         .device
+        .status
         .metadata
         .as_ref()
         .map(|metadata| metadata.product_name.clone())
@@ -1101,11 +1130,12 @@ pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {
     let sample = current_sample_rate_label(state);
     let clock = state
         .device
+        .status
         .clock_source
         .map(|value| value.label().to_string())
         .unwrap_or_else(|| "clock ?".to_string());
-    let lock = if state.device.lock_known {
-        if state.device.locked == Some(true) {
+    let lock = if state.device.status.lock_known {
+        if state.device.status.locked == Some(true) {
             "locked"
         } else {
             "unlocked"
@@ -1113,7 +1143,7 @@ pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {
     } else {
         "lock ?"
     };
-    let connection = if state.connection.connected {
+    let connection = if state.device.connection.connected {
         "connected"
     } else {
         "waiting"
@@ -1136,7 +1166,7 @@ pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {
 }
 
 pub(crate) fn render_device_metadata(state: &AppState) -> Line<'static> {
-    if let Some(metadata) = state.device.metadata.as_ref() {
+    if let Some(metadata) = state.device.status.metadata.as_ref() {
         Line::from(vec![
             labeled_value_chip(
                 "SN",
@@ -1160,12 +1190,12 @@ pub(crate) fn render_device_metadata(state: &AppState) -> Line<'static> {
 }
 
 pub(crate) fn render_system_summary(state: &AppState) -> Line<'static> {
-    let raw_color = if state.raw_view_open {
+    let raw_color = if state.popup.raw_view_open {
         Color::Yellow
     } else {
         Color::LightRed
     };
-    let options_color = if state.options_popup_open {
+    let options_color = if state.popup.options_open {
         Color::Yellow
     } else {
         Color::Cyan
@@ -1180,9 +1210,10 @@ pub(crate) fn render_system_summary(state: &AppState) -> Line<'static> {
 }
 
 pub(crate) fn connection_badge_color(state: &AppState) -> Color {
-    if state.connection.connected {
+    if state.device.connection.connected {
         Color::LightGreen
     } else if state
+        .device
         .connection
         .last_snapshot_at
         .is_some_and(|instant| instant.elapsed() >= CONNECTION_STALE_AFTER)

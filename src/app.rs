@@ -376,54 +376,189 @@ impl AppSettings {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct AppState {
-    pub device: DeviceStatus,
-    pub outputs: [OutputState; 3],
-    pub preamp: PreampState,
-    pub surface: Surface,
-    pub mixer_channels: [Vec<MixerChannelState>; 2],
+/// Device connection and status tracking.
+#[derive(Debug, Clone, Default)]
+pub struct DeviceState {
+    pub status: DeviceStatus,
     pub connection: ConnectionState,
-    pub focus: FocusArea,
-    pub selected_output: usize,
-    pub selected_channel: usize,
-    pub mixer_strip_scroll: usize,
-    pub selected_preamp_input: usize,
-    pub raw_view_open: bool,
-    pub page: MainPage,
-    pub selected_raw_packet: RawPacketTab,
-    pub last_message: String,
-    pub last_auxiliary_len: Option<usize>,
     pub dsp_cluster: [u8; 4],
-    latest_structural_snapshot: Option<StructuralSnapshot>,
+}
+
+/// Mixer surface state — channels, selection, scroll, and peak meters.
+#[derive(Debug, Clone)]
+pub struct MixerState {
+    pub surface: Surface,
+    pub channels: [Vec<MixerChannelState>; 2],
+    pub selected_channel: usize,
+    pub strip_scroll: usize,
+    pub peaks: [[Option<MeterPeak>; 16]; 2],
+}
+
+/// Output state — physical outputs and selection.
+#[derive(Debug, Clone)]
+pub struct OutputData {
+    pub states: [OutputState; 3],
+    pub selected: usize,
+}
+
+/// Preamp state — inputs, selection, and peak meters.
+#[derive(Debug, Clone)]
+pub struct PreampData {
+    pub state: PreampState,
+    pub selected_input: usize,
+    pub peaks: [Option<MeterPeak>; 2],
+}
+
+/// UI navigation, messaging, and settings.
+#[derive(Debug, Clone)]
+pub struct UiState {
+    pub focus: FocusArea,
+    pub page: MainPage,
+    pub last_message: String,
+    pub settings: AppSettings,
+    pub quit_requested: bool,
+}
+
+/// Popup and overlay state — mutually exclusive overlays.
+#[derive(Debug, Clone)]
+pub struct PopupState {
+    pub hotkeys_open: bool,
+    pub options_open: bool,
+    pub routing_open: bool,
+    pub profiles_open: bool,
+    pub raw_view_open: bool,
+    pub assignment_picker: Option<AssignmentPickerState>,
+    pub selector_popup: Option<SelectorPopupState>,
+    pub profile_names: Vec<String>,
+    pub profile_editor: Option<ProfileEditorState>,
+    pub selected_index: usize,
+}
+
+/// Raw packet debug view state — buffers, baselines, query logs.
+#[derive(Debug, Clone)]
+pub struct RawViewState {
+    pub selected_tab: RawPacketTab,
     pub latest_raw_73: Option<Vec<u8>>,
     pub latest_raw_83: Option<Vec<u8>>,
     pub latest_raw_74: Option<Vec<u8>>,
     pub latest_raw_75: Option<Vec<u8>>,
     pub latest_raw_81: Option<Vec<u8>>,
-    pub recent_query_request_log: Vec<String>,
-    pub recent_query_reply_log: Vec<String>,
-    pub recent_query_reply_entries: Vec<QueryReplyLogEntry>,
-    pub selected_query_reply_entry: Option<usize>,
-    pub query_reply_scroll: usize,
     pub baseline_raw_73: Option<Vec<u8>>,
     pub baseline_raw_83: Option<Vec<u8>>,
     pub baseline_raw_74: Option<Vec<u8>>,
     pub baseline_raw_75: Option<Vec<u8>>,
     pub baseline_raw_81: Option<Vec<u8>>,
-    pub assignment_picker: Option<AssignmentPickerState>,
-    pub selector_popup: Option<SelectorPopupState>,
-    pub routing_popup_open: bool,
-    pub profiles_popup_open: bool,
-    pub profile_names: Vec<String>,
-    pub profile_editor: Option<ProfileEditorState>,
-    pub popup_selected_index: usize,
-    pub hotkeys_popup_open: bool,
-    pub preamp_peaks: [Option<MeterPeak>; 2],
-    pub mixer_peaks: [[Option<MeterPeak>; 16]; 2],
-    pub settings: AppSettings,
-    pub options_popup_open: bool,
-    pub quit_requested: bool,
+    pub recent_query_request_log: Vec<String>,
+    pub recent_query_reply_log: Vec<String>,
+    pub recent_query_reply_entries: Vec<QueryReplyLogEntry>,
+    pub selected_query_reply_entry: Option<usize>,
+    pub query_reply_scroll: usize,
+    pub last_auxiliary_len: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AppState {
+    pub device: DeviceState,
+    pub mixer: MixerState,
+    pub output: OutputData,
+    pub preamp: PreampData,
+    pub ui: UiState,
+    pub popup: PopupState,
+    pub raw_view: RawViewState,
+    latest_structural_snapshot: Option<StructuralSnapshot>,
+}
+
+impl Default for MixerState {
+    fn default() -> Self {
+        Self {
+            surface: Surface::MonitorHp1,
+            channels: [
+                (1..=16).map(MixerChannelState::unknown).collect(),
+                (1..=16).map(MixerChannelState::unknown).collect(),
+            ],
+            selected_channel: 0,
+            strip_scroll: 0,
+            peaks: [[None; 16]; 2],
+        }
+    }
+}
+
+impl Default for OutputData {
+    fn default() -> Self {
+        Self {
+            states: [
+                OutputState::new(OutputTarget::Monitor, 0, OutputMode::Normal),
+                OutputState::new(OutputTarget::Hp1, 0, OutputMode::Normal),
+                OutputState::new(OutputTarget::Hp2, 0, OutputMode::Normal),
+            ],
+            selected: 0,
+        }
+    }
+}
+
+impl Default for PreampData {
+    fn default() -> Self {
+        Self {
+            state: PreampState::default(),
+            selected_input: 0,
+            peaks: [None, None],
+        }
+    }
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            focus: FocusArea::Outputs,
+            page: MainPage::Mixer,
+            last_message:
+                "Press ? for help. Device state is authoritative where decoding is confirmed."
+                    .to_string(),
+            settings: AppSettings::default(),
+            quit_requested: false,
+        }
+    }
+}
+
+impl Default for PopupState {
+    fn default() -> Self {
+        Self {
+            hotkeys_open: false,
+            options_open: false,
+            routing_open: false,
+            profiles_open: false,
+            raw_view_open: false,
+            assignment_picker: None,
+            selector_popup: None,
+            profile_names: Vec::new(),
+            profile_editor: None,
+            selected_index: 0,
+        }
+    }
+}
+
+impl Default for RawViewState {
+    fn default() -> Self {
+        Self {
+            selected_tab: RawPacketTab::State73,
+            latest_raw_73: None,
+            latest_raw_83: None,
+            latest_raw_74: None,
+            latest_raw_75: None,
+            latest_raw_81: None,
+            baseline_raw_73: None,
+            baseline_raw_83: None,
+            baseline_raw_74: None,
+            baseline_raw_75: None,
+            baseline_raw_81: None,
+            recent_query_request_log: Vec::new(),
+            recent_query_reply_log: Vec::new(),
+            recent_query_reply_entries: Vec::new(),
+            selected_query_reply_entry: None,
+            query_reply_scroll: 0,
+            last_auxiliary_len: None,
+        }
+    }
 }
 
 pub const MIXER_STRIP_PAGE_SIZE: usize = 8;
@@ -449,81 +584,34 @@ impl MeterPeak {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            device: DeviceStatus::default(),
-            outputs: [
-                OutputState::new(OutputTarget::Monitor, 0, OutputMode::Normal),
-                OutputState::new(OutputTarget::Hp1, 0, OutputMode::Normal),
-                OutputState::new(OutputTarget::Hp2, 0, OutputMode::Normal),
-            ],
-            preamp: PreampState::default(),
-            surface: Surface::MonitorHp1,
-            mixer_channels: [
-                (1..=16).map(MixerChannelState::unknown).collect(),
-                (1..=16).map(MixerChannelState::unknown).collect(),
-            ],
-            connection: ConnectionState::default(),
-            focus: FocusArea::Outputs,
-            selected_output: 0,
-            selected_channel: 0,
-            mixer_strip_scroll: 0,
-            selected_preamp_input: 0,
-            raw_view_open: false,
-            page: MainPage::Mixer,
-            selected_raw_packet: RawPacketTab::State73,
-            last_message:
-                "Press ? for help. Device state is authoritative where decoding is confirmed."
-                    .to_string(),
-            last_auxiliary_len: None,
-            dsp_cluster: [0; 4],
+            device: DeviceState::default(),
+            mixer: MixerState::default(),
+            output: OutputData::default(),
+            preamp: PreampData::default(),
+            ui: UiState::default(),
+            popup: PopupState::default(),
+            raw_view: RawViewState::default(),
             latest_structural_snapshot: None,
-            latest_raw_73: None,
-            latest_raw_83: None,
-            latest_raw_74: None,
-            latest_raw_75: None,
-            latest_raw_81: None,
-            recent_query_request_log: Vec::new(),
-            recent_query_reply_log: Vec::new(),
-            recent_query_reply_entries: Vec::new(),
-            selected_query_reply_entry: None,
-            query_reply_scroll: 0,
-            baseline_raw_73: None,
-            baseline_raw_83: None,
-            baseline_raw_74: None,
-            baseline_raw_75: None,
-            baseline_raw_81: None,
-            assignment_picker: None,
-            selector_popup: None,
-            routing_popup_open: false,
-            profiles_popup_open: false,
-            profile_names: Vec::new(),
-            profile_editor: None,
-            popup_selected_index: 0,
-            hotkeys_popup_open: false,
-            preamp_peaks: [None, None],
-            mixer_peaks: [[None; 16]; 2],
-            settings: AppSettings::default(),
-            options_popup_open: false,
-            quit_requested: false,
         }
     }
 }
 
 impl AppState {
     pub fn prune_expired_peaks(&mut self) {
-        let hold = self.settings.peak_hold_duration.duration();
+        let hold = self.ui.settings.peak_hold_duration.duration();
         for mix_idx in 0..2 {
             for ch_idx in 0..16 {
-                if let Some(peak) = self.mixer_peaks[mix_idx][ch_idx] {
+                if let Some(peak) = self.mixer.peaks[mix_idx][ch_idx] {
                     if peak.detected_at.elapsed() >= hold {
-                        self.mixer_peaks[mix_idx][ch_idx] = None;
+                        self.mixer.peaks[mix_idx][ch_idx] = None;
                     }
                 }
             }
         }
         for input_idx in 0..2 {
-            if let Some(peak) = self.preamp_peaks[input_idx] {
+            if let Some(peak) = self.preamp.peaks[input_idx] {
                 if peak.detected_at.elapsed() >= hold {
-                    self.preamp_peaks[input_idx] = None;
+                    self.preamp.peaks[input_idx] = None;
                 }
             }
         }
@@ -531,37 +619,38 @@ impl AppState {
 
     pub fn startup_query_summary(&self, query_id: u8) -> Option<&str> {
         startup_query_slot(query_id)
-            .and_then(|index| self.device.startup_query_summaries[index].as_deref())
+            .and_then(|index| self.device.status.startup_query_summaries[index].as_deref())
     }
 
     pub fn selected_query_reply_entry(&self) -> Option<&QueryReplyLogEntry> {
-        self.selected_query_reply_entry
-            .and_then(|index| self.recent_query_reply_entries.get(index))
+        self.raw_view
+            .selected_query_reply_entry
+            .and_then(|index| self.raw_view.recent_query_reply_entries.get(index))
     }
 
     pub fn active_mixer_surface(&self) -> MixerSurface {
-        MixerSurface::from_surface(self.surface)
+        MixerSurface::from_surface(self.mixer.surface)
     }
 
     pub fn active_mixer_channels(&self) -> &[MixerChannelState] {
-        &self.mixer_channels[self.active_mixer_surface().index()]
+        &self.mixer.channels[self.active_mixer_surface().index()]
     }
 
     pub fn clamp_mixer_strip_scroll(&mut self, visible_count: usize) {
         let visible_count = visible_count.max(1);
         let total = self.active_mixer_channels().len();
         let max_scroll = total.saturating_sub(visible_count);
-        self.mixer_strip_scroll = self.mixer_strip_scroll.min(max_scroll);
+        self.mixer.strip_scroll = self.mixer.strip_scroll.min(max_scroll);
     }
 
     pub fn ensure_selected_mixer_channel_visible(&mut self, visible_count: usize) {
         let visible_count = visible_count.max(1);
         self.clamp_mixer_strip_scroll(visible_count);
 
-        if self.selected_channel < self.mixer_strip_scroll {
-            self.mixer_strip_scroll = self.selected_channel;
-        } else if self.selected_channel >= self.mixer_strip_scroll + visible_count {
-            self.mixer_strip_scroll = self.selected_channel + 1 - visible_count;
+        if self.mixer.selected_channel < self.mixer.strip_scroll {
+            self.mixer.strip_scroll = self.mixer.selected_channel;
+        } else if self.mixer.selected_channel >= self.mixer.strip_scroll + visible_count {
+            self.mixer.strip_scroll = self.mixer.selected_channel + 1 - visible_count;
         }
 
         self.clamp_mixer_strip_scroll(visible_count);
@@ -572,12 +661,14 @@ impl AppState {
         let total = self.active_mixer_channels().len();
         let max_scroll = total.saturating_sub(visible_count);
 
-        self.mixer_strip_scroll = if delta >= 0 {
-            self.mixer_strip_scroll
+        self.mixer.strip_scroll = if delta >= 0 {
+            self.mixer
+                .strip_scroll
                 .saturating_add(delta as usize)
                 .min(max_scroll)
         } else {
-            self.mixer_strip_scroll
+            self.mixer
+                .strip_scroll
                 .saturating_sub(delta.saturating_abs() as usize)
         };
     }
@@ -588,18 +679,19 @@ impl AppState {
         let max_page_start =
             total.saturating_sub(1).checked_div(page_size).unwrap_or(0) * page_size;
 
-        self.mixer_strip_scroll = if right {
-            self.mixer_strip_scroll
+        self.mixer.strip_scroll = if right {
+            self.mixer
+                .strip_scroll
                 .saturating_add(page_size)
                 .min(max_page_start)
         } else {
-            self.mixer_strip_scroll.saturating_sub(page_size)
+            self.mixer.strip_scroll.saturating_sub(page_size)
         };
 
-        if self.selected_channel < self.mixer_strip_scroll
-            || self.selected_channel >= self.mixer_strip_scroll + page_size
+        if self.mixer.selected_channel < self.mixer.strip_scroll
+            || self.mixer.selected_channel >= self.mixer.strip_scroll + page_size
         {
-            self.selected_channel = self.mixer_strip_scroll.min(total.saturating_sub(1));
+            self.mixer.selected_channel = self.mixer.strip_scroll.min(total.saturating_sub(1));
         }
     }
 
@@ -639,27 +731,27 @@ impl AppState {
         if let Some(meter) = snapshot.mixer_decode.observed_preamp1_meter {
             self.track_preamp_peak(0, meter);
         }
-        self.preamp.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
+        self.preamp.state.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
         if let Some(meter) = snapshot.mixer_decode.observed_preamp2_meter {
             self.track_preamp_peak(1, meter);
         }
-        self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
+        self.preamp.state.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
     }
 
     fn track_mixer_peak(&mut self, mix_idx: usize, channel_idx: usize, meter: u8) {
-        if !self.settings.peak_enabled || meter > self.settings.peak_threshold_raw {
+        if !self.ui.settings.peak_enabled || meter > self.ui.settings.peak_threshold_raw {
             return;
         }
-        let existing = self.mixer_peaks[mix_idx][channel_idx];
+        let existing = self.mixer.peaks[mix_idx][channel_idx];
         match existing {
             Some(peak) if meter < peak.raw => {
-                self.mixer_peaks[mix_idx][channel_idx] = Some(MeterPeak {
+                self.mixer.peaks[mix_idx][channel_idx] = Some(MeterPeak {
                     raw: meter,
                     detected_at: Instant::now(),
                 });
             }
             None => {
-                self.mixer_peaks[mix_idx][channel_idx] = Some(MeterPeak {
+                self.mixer.peaks[mix_idx][channel_idx] = Some(MeterPeak {
                     raw: meter,
                     detected_at: Instant::now(),
                 });
@@ -669,19 +761,19 @@ impl AppState {
     }
 
     fn track_preamp_peak(&mut self, input_idx: usize, meter: u8) {
-        if !self.settings.peak_enabled || meter > self.settings.peak_threshold_raw {
+        if !self.ui.settings.peak_enabled || meter > self.ui.settings.peak_threshold_raw {
             return;
         }
-        let existing = self.preamp_peaks[input_idx];
+        let existing = self.preamp.peaks[input_idx];
         match existing {
             Some(peak) if meter < peak.raw => {
-                self.preamp_peaks[input_idx] = Some(MeterPeak {
+                self.preamp.peaks[input_idx] = Some(MeterPeak {
                     raw: meter,
                     detected_at: Instant::now(),
                 });
             }
             None => {
-                self.preamp_peaks[input_idx] = Some(MeterPeak {
+                self.preamp.peaks[input_idx] = Some(MeterPeak {
                     raw: meter,
                     detected_at: Instant::now(),
                 });
@@ -691,27 +783,27 @@ impl AppState {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &DeviceStateSnapshot) {
-        self.device.sample_rate = Some(snapshot.sample_rate);
-        self.device.sample_rate_hz = Some(snapshot.sample_rate_hz);
-        self.device.clock_source = Some(snapshot.clock_source);
-        self.device.last_refresh_summary = format!(
+        self.device.status.sample_rate = Some(snapshot.sample_rate);
+        self.device.status.sample_rate_hz = Some(snapshot.sample_rate_hz);
+        self.device.status.clock_source = Some(snapshot.clock_source);
+        self.device.status.last_refresh_summary = format!(
             "snapshot {} / {} / surface {}",
             snapshot.sample_rate.label(),
             snapshot.clock_source.label(),
             snapshot.surface.label()
         );
-        self.outputs = snapshot.outputs;
-        self.dsp_cluster = snapshot.dsp_cluster;
-        self.preamp = PreampState::from_cluster(snapshot.dsp_cluster);
+        self.output.states = snapshot.outputs;
+        self.device.dsp_cluster = snapshot.dsp_cluster;
+        self.preamp.state = PreampState::from_cluster(snapshot.dsp_cluster);
         if let Some(meter) = snapshot.mixer_decode.observed_preamp1_meter {
             self.track_preamp_peak(0, meter);
         }
-        self.preamp.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
+        self.preamp.state.input1.observed_meter = snapshot.mixer_decode.observed_preamp1_meter;
         if let Some(meter) = snapshot.mixer_decode.observed_preamp2_meter {
             self.track_preamp_peak(1, meter);
         }
-        self.preamp.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
-        self.surface = snapshot.surface;
+        self.preamp.state.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
+        self.mixer.surface = snapshot.surface;
         self.apply_passive_mixer_decode(snapshot);
     }
 
@@ -748,28 +840,29 @@ impl AppState {
         mixer: MixerSurface,
         channel: u8,
     ) -> Option<&mut MixerChannelState> {
-        self.mixer_channels[mixer.index()].get_mut(channel.checked_sub(1)? as usize)
+        self.mixer.channels[mixer.index()].get_mut(channel.checked_sub(1)? as usize)
     }
 
     fn refresh_preamp_from_cluster_preserving_observed_meter(&mut self) {
-        let observed_meter_input1 = self.preamp.input1.observed_meter;
-        let observed_meter_input2 = self.preamp.input2.observed_meter;
-        self.preamp = PreampState::from_cluster(self.dsp_cluster);
-        self.preamp.input1.observed_meter = observed_meter_input1;
-        self.preamp.input2.observed_meter = observed_meter_input2;
+        let observed_meter_input1 = self.preamp.state.input1.observed_meter;
+        let observed_meter_input2 = self.preamp.state.input2.observed_meter;
+        self.preamp.state = PreampState::from_cluster(self.device.dsp_cluster);
+        self.preamp.state.input1.observed_meter = observed_meter_input1;
+        self.preamp.state.input2.observed_meter = observed_meter_input2;
     }
 
     pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: Vec<u8>) -> bool {
-        let was_connected = self.connection.connected;
-        self.connection.connected = true;
-        self.connection.last_snapshot_at = Some(Instant::now());
+        let was_connected = self.device.connection.connected;
+        self.device.connection.connected = true;
+        self.device.connection.last_snapshot_at = Some(Instant::now());
         match frame {
             DeviceSnapshot::Snapshot(snapshot) => {
                 let structural_changed =
                     !was_connected || self.snapshot_structurally_differs(&snapshot);
-                let raw_changed = self.raw_view_open && self.latest_raw_73.as_ref() != Some(&raw);
+                let raw_changed =
+                    self.popup.raw_view_open && self.raw_view.latest_raw_73.as_ref() != Some(&raw);
                 let changed = structural_changed || raw_changed;
-                self.connection.last_frame_type = Some("0x73 snapshot");
+                self.device.connection.last_frame_type = Some("0x73 snapshot");
                 if structural_changed {
                     self.apply_snapshot(&snapshot);
                 } else {
@@ -777,36 +870,37 @@ impl AppState {
                 }
                 self.latest_structural_snapshot =
                     Some(StructuralSnapshot::from_snapshot(&snapshot));
-                self.latest_raw_73 = Some(raw);
+                self.raw_view.latest_raw_73 = Some(raw);
                 changed
             }
             DeviceSnapshot::Auxiliary(bytes) => {
                 let changed = !was_connected
-                    || (self.raw_view_open && self.latest_raw_83.as_ref() != Some(&raw));
-                self.connection.last_frame_type = Some("0x83 auxiliary");
-                self.last_auxiliary_len = Some(bytes.len());
-                self.latest_raw_83 = Some(raw);
+                    || (self.popup.raw_view_open
+                        && self.raw_view.latest_raw_83.as_ref() != Some(&raw));
+                self.device.connection.last_frame_type = Some("0x83 auxiliary");
+                self.raw_view.last_auxiliary_len = Some(bytes.len());
+                self.raw_view.latest_raw_83 = Some(raw);
                 changed
             }
             DeviceSnapshot::QueryReply(reply) => {
-                self.connection.last_frame_type = Some("0x75 query reply");
-                self.latest_raw_75 = Some(raw.clone());
+                self.device.connection.last_frame_type = Some("0x75 query reply");
+                self.raw_view.latest_raw_75 = Some(raw.clone());
                 self.store_startup_query_summary(&reply);
                 self.apply_query_reply_readback(&reply);
                 self.push_query_reply_log(&reply, raw);
                 if let Some(metadata) = reply.metadata() {
-                    self.last_message = format!(
+                    self.ui.last_message = format!(
                         "Connected to {} (hw {}, serial {})",
                         metadata.product_name, metadata.hardware_version, metadata.serial
                     );
-                    self.device.metadata = Some(metadata);
+                    self.device.status.metadata = Some(metadata);
                 }
                 true
             }
             DeviceSnapshot::Notification(_) => {
-                let changed = !was_connected || self.raw_view_open;
-                self.connection.last_frame_type = Some("0x81 notification");
-                self.latest_raw_81 = Some(raw);
+                let changed = !was_connected || self.popup.raw_view_open;
+                self.device.connection.last_frame_type = Some("0x81 notification");
+                self.raw_view.latest_raw_81 = Some(raw);
                 changed
             }
         }
@@ -814,7 +908,7 @@ impl AppState {
 
     fn store_startup_query_summary(&mut self, reply: &QueryResponse) {
         if let Some(index) = startup_query_slot(reply.query_id) {
-            self.device.startup_query_summaries[index] = Some(reply.summary_label());
+            self.device.status.startup_query_summaries[index] = Some(reply.summary_label());
         }
     }
 
@@ -835,15 +929,19 @@ impl AppState {
             "0x75 {:02x}/{:02x} {}",
             reply.query_id, reply.sub_id, detail
         );
-        self.recent_query_reply_log.push(summary.clone());
-        self.recent_query_reply_entries
+        self.raw_view.recent_query_reply_log.push(summary.clone());
+        self.raw_view
+            .recent_query_reply_entries
             .push(QueryReplyLogEntry { summary, raw });
-        if self.recent_query_reply_log.len() > 16 {
-            let drop_count = self.recent_query_reply_log.len() - 16;
-            self.recent_query_reply_log.drain(0..drop_count);
-            self.recent_query_reply_entries.drain(0..drop_count);
+        if self.raw_view.recent_query_reply_log.len() > 16 {
+            let drop_count = self.raw_view.recent_query_reply_log.len() - 16;
+            self.raw_view.recent_query_reply_log.drain(0..drop_count);
+            self.raw_view
+                .recent_query_reply_entries
+                .drain(0..drop_count);
         }
-        self.selected_query_reply_entry = Some(self.recent_query_reply_entries.len() - 1);
+        self.raw_view.selected_query_reply_entry =
+            Some(self.raw_view.recent_query_reply_entries.len() - 1);
     }
 
     fn apply_query_reply_readback(&mut self, reply: &QueryResponse) {
@@ -852,7 +950,7 @@ impl AppState {
                 let Some(assignment) = assignment else {
                     continue;
                 };
-                for channels in &mut self.mixer_channels {
+                for channels in &mut self.mixer.channels {
                     channels[index].assignment = Some(assignment);
                 }
             }
@@ -864,7 +962,7 @@ impl AppState {
                     let Some(linked) = linked else {
                         continue;
                     };
-                    let Some(slot) = self.mixer_channels[mixer.index()].get_mut(index) else {
+                    let Some(slot) = self.mixer.channels[mixer.index()].get_mut(index) else {
                         continue;
                     };
                     slot.linked = Some(linked);
@@ -877,7 +975,7 @@ impl AppState {
                 let Some(state) = state else {
                     continue;
                 };
-                let Some(slot) = self.mixer_channels[mixer.index()].get_mut(index) else {
+                let Some(slot) = self.mixer.channels[mixer.index()].get_mut(index) else {
                     continue;
                 };
                 slot.level = Some(state.level);
@@ -890,7 +988,7 @@ impl AppState {
         if let Some(readback) = reply.mixer_strip_readback() {
             for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
                 for (index, state) in readback.surfaces[mixer.index()].into_iter().enumerate() {
-                    let Some(slot) = self.mixer_channels[mixer.index()].get_mut(index) else {
+                    let Some(slot) = self.mixer.channels[mixer.index()].get_mut(index) else {
                         continue;
                     };
                     slot.soloed = Some(state.soloed);
@@ -900,12 +998,12 @@ impl AppState {
     }
 
     pub fn mark_disconnected(&mut self) {
-        self.connection.connected = false;
-        self.connection.last_frame_type = Some("disconnected");
+        self.device.connection.connected = false;
+        self.device.connection.last_frame_type = Some("disconnected");
     }
 
     pub fn cycle_focus(&mut self) {
-        self.focus = match self.focus {
+        self.ui.focus = match self.ui.focus {
             FocusArea::Status => FocusArea::Outputs,
             FocusArea::Outputs => FocusArea::Mixer,
             FocusArea::Mixer => FocusArea::Preamp,
@@ -914,30 +1012,32 @@ impl AppState {
     }
 
     pub fn toggle_raw_view(&mut self) {
-        self.raw_view_open = !self.raw_view_open;
+        self.popup.raw_view_open = !self.popup.raw_view_open;
     }
 
     pub fn toggle_hotkeys_popup(&mut self) {
-        self.hotkeys_popup_open = !self.hotkeys_popup_open;
+        self.popup.hotkeys_open = !self.popup.hotkeys_open;
     }
 
     pub fn toggle_options_popup(&mut self) {
-        self.options_popup_open = !self.options_popup_open;
+        self.popup.options_open = !self.popup.options_open;
     }
 
     pub fn selected_profile_name(&self) -> Option<&str> {
-        self.profile_names
-            .get(self.popup_selected_index)
+        self.popup
+            .profile_names
+            .get(self.popup.selected_index)
             .map(String::as_str)
     }
 
     pub fn clamp_profile_selection(&mut self) {
-        if self.profile_names.is_empty() {
-            self.popup_selected_index = 0;
+        if self.popup.profile_names.is_empty() {
+            self.popup.selected_index = 0;
         } else {
-            self.popup_selected_index = self
-                .popup_selected_index
-                .min(self.profile_names.len().saturating_sub(1));
+            self.popup.selected_index = self
+                .popup
+                .selected_index
+                .min(self.popup.profile_names.len().saturating_sub(1));
         }
     }
 
@@ -951,9 +1051,9 @@ impl AppState {
         ];
         let index = tabs
             .iter()
-            .position(|tab| *tab == self.selected_raw_packet)
+            .position(|tab| *tab == self.raw_view.selected_tab)
             .unwrap_or(0);
-        self.selected_raw_packet = if forward {
+        self.raw_view.selected_tab = if forward {
             tabs[(index + 1) % tabs.len()]
         } else {
             tabs[index.checked_sub(1).unwrap_or(tabs.len() - 1)]
@@ -961,62 +1061,64 @@ impl AppState {
     }
 
     pub fn cycle_query_reply_entry(&mut self, forward: bool) {
-        if self.recent_query_reply_entries.is_empty() {
-            self.selected_query_reply_entry = None;
+        if self.raw_view.recent_query_reply_entries.is_empty() {
+            self.raw_view.selected_query_reply_entry = None;
             return;
         }
         let current = self
+            .raw_view
             .selected_query_reply_entry
-            .unwrap_or(self.recent_query_reply_entries.len() - 1);
-        self.selected_query_reply_entry = Some(if forward {
-            (current + 1) % self.recent_query_reply_entries.len()
+            .unwrap_or(self.raw_view.recent_query_reply_entries.len() - 1);
+        self.raw_view.selected_query_reply_entry = Some(if forward {
+            (current + 1) % self.raw_view.recent_query_reply_entries.len()
         } else {
             current
                 .checked_sub(1)
-                .unwrap_or(self.recent_query_reply_entries.len() - 1)
+                .unwrap_or(self.raw_view.recent_query_reply_entries.len() - 1)
         });
         self.ensure_query_reply_visible();
     }
 
     fn ensure_query_reply_visible(&mut self) {
-        let Some(selected) = self.selected_query_reply_entry else {
+        let Some(selected) = self.raw_view.selected_query_reply_entry else {
             return;
         };
-        let total = self.recent_query_reply_entries.len();
+        let total = self.raw_view.recent_query_reply_entries.len();
         let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
         let reversed_index = total - 1 - selected;
-        if reversed_index < self.query_reply_scroll {
-            self.query_reply_scroll = reversed_index;
-        } else if reversed_index >= self.query_reply_scroll + visible {
-            self.query_reply_scroll = reversed_index - visible + 1;
+        if reversed_index < self.raw_view.query_reply_scroll {
+            self.raw_view.query_reply_scroll = reversed_index;
+        } else if reversed_index >= self.raw_view.query_reply_scroll + visible {
+            self.raw_view.query_reply_scroll = reversed_index - visible + 1;
         }
     }
 
     pub fn capture_raw_baseline(&mut self) {
-        self.baseline_raw_73 = self.latest_raw_73.clone();
-        self.baseline_raw_83 = self.latest_raw_83.clone();
-        self.baseline_raw_74 = self.latest_raw_74.clone();
-        self.baseline_raw_75 = self.latest_raw_75.clone();
-        self.baseline_raw_81 = self.latest_raw_81.clone();
+        self.raw_view.baseline_raw_73 = self.raw_view.latest_raw_73.clone();
+        self.raw_view.baseline_raw_83 = self.raw_view.latest_raw_83.clone();
+        self.raw_view.baseline_raw_74 = self.raw_view.latest_raw_74.clone();
+        self.raw_view.baseline_raw_75 = self.raw_view.latest_raw_75.clone();
+        self.raw_view.baseline_raw_81 = self.raw_view.latest_raw_81.clone();
     }
 
     pub fn clear_raw_baseline(&mut self) {
-        self.baseline_raw_73 = None;
-        self.baseline_raw_83 = None;
-        self.baseline_raw_74 = None;
-        self.baseline_raw_75 = None;
-        self.baseline_raw_81 = None;
+        self.raw_view.baseline_raw_73 = None;
+        self.raw_view.baseline_raw_83 = None;
+        self.raw_view.baseline_raw_74 = None;
+        self.raw_view.baseline_raw_75 = None;
+        self.raw_view.baseline_raw_81 = None;
     }
 
     pub fn observe_query_request(&mut self, raw: Vec<u8>) {
-        self.latest_raw_74 = Some(raw.clone());
+        self.raw_view.latest_raw_74 = Some(raw.clone());
         let query_id = raw.get(0x08).copied().unwrap_or(0);
         let sub_id = raw.get(0x0c).copied().unwrap_or(0);
-        self.recent_query_request_log
+        self.raw_view
+            .recent_query_request_log
             .push(format!("0x74 {:02x}/{:02x}", query_id, sub_id));
-        if self.recent_query_request_log.len() > 16 {
-            let drop_count = self.recent_query_request_log.len() - 16;
-            self.recent_query_request_log.drain(0..drop_count);
+        if self.raw_view.recent_query_request_log.len() > 16 {
+            let drop_count = self.raw_view.recent_query_request_log.len() - 16;
+            self.raw_view.recent_query_request_log.drain(0..drop_count);
         }
     }
 }
@@ -1256,9 +1358,9 @@ impl Controller {
 
         profile.apply_to_state(&mut self.state);
         self.pending_mutation = None;
-        self.state.preamp.cluster = [
-            self.state.preamp.input1.gain_raw,
-            self.state.preamp.input2.gain_raw,
+        self.state.preamp.state.cluster = [
+            self.state.preamp.state.input1.gain_raw,
+            self.state.preamp.state.input2.gain_raw,
             preamp_mode_raw(
                 profile.preamps.input1.mode,
                 profile.preamps.input1.phantom_on,
@@ -1270,16 +1372,16 @@ impl Controller {
                 profile.preamps.input2.phase_inverted,
             ),
         ];
-        self.state.last_message = "Applied profile".to_string();
+        self.state.ui.last_message = "Applied profile".to_string();
         Ok(())
     }
 
     fn shared_assignment_table(&self) -> Result<[MixerAssignment; 16]> {
         let mut assignments = [MixerAssignment::Mute; 16];
         for (index, slot) in assignments.iter_mut().enumerate() {
-            *slot = self.state.mixer_channels[0][index]
+            *slot = self.state.mixer.channels[0][index]
                 .assignment
-                .or(self.state.mixer_channels[1][index].assignment)
+                .or(self.state.mixer.channels[1][index].assignment)
                 .ok_or_else(|| {
                     anyhow::anyhow!("assignment table is incomplete for CH {:02}", index + 1)
                 })?;
@@ -1298,7 +1400,7 @@ impl Controller {
                 self.transport.write(&frame)?;
             }
             self.pending_mutation = pending_mutation;
-            self.state.last_message = format!("Sent {:?}", command);
+            self.state.ui.last_message = format!("Sent {:?}", command);
             return Ok(());
         }
 
@@ -1315,7 +1417,7 @@ impl Controller {
             self.transport.write(&encode_command(command))?;
             self.apply_command_state_update(&command);
             self.pending_mutation = pending_mutation;
-            self.state.last_message = format!("Sent {:?}", command);
+            self.state.ui.last_message = format!("Sent {:?}", command);
             return Ok(());
         }
 
@@ -1325,7 +1427,7 @@ impl Controller {
             self.transport.write(&encode_command(command))?;
             self.apply_command_state_update(&command);
             self.pending_mutation = pending_mutation;
-            self.state.last_message = format!("Sent {:?}", command);
+            self.state.ui.last_message = format!("Sent {:?}", command);
             self.refresh_queried_state()?;
             return Ok(());
         }
@@ -1334,7 +1436,7 @@ impl Controller {
         self.command_queue.enqueue(command.clone());
         self.apply_command_state_update(&command);
         self.pending_mutation = pending_mutation;
-        self.state.last_message = format!("Sent {:?}", command);
+        self.state.ui.last_message = format!("Sent {:?}", command);
         Ok(())
     }
 
@@ -1342,11 +1444,11 @@ impl Controller {
     fn apply_command_state_update(&mut self, command: &Command) {
         match command {
             Command::SetClockSource(source) => {
-                self.state.device.clock_source = Some(*source);
+                self.state.device.status.clock_source = Some(*source);
             }
             Command::SetSampleRate(rate) => {
-                self.state.device.sample_rate = Some(*rate);
-                self.state.device.sample_rate_hz = rate.hz();
+                self.state.device.status.sample_rate = Some(*rate);
+                self.state.device.status.sample_rate_hz = rate.hz();
             }
             _ => {}
         }
@@ -1370,13 +1472,13 @@ impl Controller {
         };
         let left_index = left_channel.saturating_sub(1) as usize;
         let right_index = right_channel.saturating_sub(1) as usize;
-        let Some(left) = self.state.mixer_channels[mixer.index()]
+        let Some(left) = self.state.mixer.channels[mixer.index()]
             .get(left_index)
             .copied()
         else {
             bail!("invalid linked left channel {left_channel}");
         };
-        let Some(right) = self.state.mixer_channels[mixer.index()]
+        let Some(right) = self.state.mixer.channels[mixer.index()]
             .get(right_index)
             .copied()
         else {
@@ -1392,7 +1494,7 @@ impl Controller {
         level: u8,
     ) -> Result<()> {
         let index = channel.saturating_sub(1) as usize;
-        let Some(active) = self.state.mixer_channels[mixer.index()].get(index).copied() else {
+        let Some(active) = self.state.mixer.channels[mixer.index()].get(index).copied() else {
             bail!("invalid mixer channel {channel}");
         };
 
@@ -1429,7 +1531,7 @@ impl Controller {
                     soloed: right.soloed.unwrap_or(false),
                 }))?;
             self.pending_mutation = pending_mutation;
-            self.state.last_message = format!(
+            self.state.ui.last_message = format!(
                 "Sent linked mixer level {:?} ch {}-{}",
                 mixer, left_ch, right_ch
             );
@@ -1453,7 +1555,7 @@ impl Controller {
         muted: bool,
     ) -> Result<()> {
         let index = channel.saturating_sub(1) as usize;
-        let Some(active) = self.state.mixer_channels[mixer.index()].get(index).copied() else {
+        let Some(active) = self.state.mixer.channels[mixer.index()].get(index).copied() else {
             bail!("invalid mixer channel {channel}");
         };
 
@@ -1484,7 +1586,7 @@ impl Controller {
                     soloed: right.soloed.unwrap_or(false),
                 }))?;
             self.pending_mutation = pending_mutation;
-            self.state.last_message = format!(
+            self.state.ui.last_message = format!(
                 "Sent linked mixer mute {:?} ch {}-{}",
                 mixer, left_ch, right_ch
             );
@@ -1507,7 +1609,7 @@ impl Controller {
         soloed: bool,
     ) -> Result<()> {
         let index = channel.saturating_sub(1) as usize;
-        let Some(active) = self.state.mixer_channels[mixer.index()].get(index).copied() else {
+        let Some(active) = self.state.mixer.channels[mixer.index()].get(index).copied() else {
             bail!("invalid mixer channel {channel}");
         };
 
@@ -1538,7 +1640,7 @@ impl Controller {
                     pan_state: right.pan,
                 }))?;
             self.pending_mutation = pending_mutation;
-            self.state.last_message = format!(
+            self.state.ui.last_message = format!(
                 "Sent linked mixer solo {:?} ch {}-{}",
                 mixer, left_ch, right_ch
             );
@@ -1581,7 +1683,7 @@ impl Controller {
                 companion_bank: None,
             }))?;
         self.pending_mutation = pending_mutation;
-        self.state.last_message = format!(
+        self.state.ui.last_message = format!(
             "Sent mixer link {:?} ch {}-{}",
             mixer, target.left_channel, target.right_channel
         );
@@ -1591,65 +1693,66 @@ impl Controller {
     pub fn apply_intent(&mut self, intent: Intent, area: Rect) -> Result<()> {
         match intent {
             Intent::Quit => {
-                self.state.quit_requested = true;
+                self.state.ui.quit_requested = true;
             }
             Intent::ToggleRawView => self.state.toggle_raw_view(),
             Intent::ToggleHotkeysPopup => self.state.toggle_hotkeys_popup(),
             Intent::OpenProfilesPopup => {
-                self.state.assignment_picker = None;
-                self.state.selector_popup = None;
-                self.state.routing_popup_open = false;
-                self.state.profile_editor = None;
-                self.state.profile_names = crate::profile::list_profile_names().unwrap_or_default();
+                self.state.popup.assignment_picker = None;
+                self.state.popup.selector_popup = None;
+                self.state.popup.routing_open = false;
+                self.state.popup.profile_editor = None;
+                self.state.popup.profile_names =
+                    crate::profile::list_profile_names().unwrap_or_default();
                 self.state.clamp_profile_selection();
-                self.state.profiles_popup_open = true;
-                self.state.last_message = if self.state.profile_names.is_empty() {
+                self.state.popup.profiles_open = true;
+                self.state.ui.last_message = if self.state.popup.profile_names.is_empty() {
                     "No saved profiles yet. Use SAVE to create one.".to_string()
                 } else {
                     "Select a profile to load, or use SAVE/RENAME/DELETE.".to_string()
                 };
             }
             Intent::CloseProfilesPopup => {
-                self.state.profiles_popup_open = false;
-                self.state.profile_editor = None;
-                self.state.last_message = "Closed profiles popup".to_string();
+                self.state.popup.profiles_open = false;
+                self.state.popup.profile_editor = None;
+                self.state.ui.last_message = "Closed profiles popup".to_string();
             }
             Intent::OpenRoutingPopup => {
-                self.state.profiles_popup_open = false;
-                self.state.profile_editor = None;
-                self.state.routing_popup_open = true;
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel = self.state.selected_channel.min(7);
-                self.state.last_message =
+                self.state.popup.profiles_open = false;
+                self.state.popup.profile_editor = None;
+                self.state.popup.routing_open = true;
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel = self.state.mixer.selected_channel.min(7);
+                self.state.ui.last_message =
                     "Routing popup mirrors mixer assignments for USB recording channels 1-8"
                         .to_string();
             }
             Intent::CloseRoutingPopup => {
-                self.state.routing_popup_open = false;
-                self.state.last_message = "Closed routing popup".to_string();
+                self.state.popup.routing_open = false;
+                self.state.ui.last_message = "Closed routing popup".to_string();
             }
             Intent::OpenOptionsPopup => {
-                self.state.profiles_popup_open = false;
-                self.state.profile_editor = None;
-                self.state.routing_popup_open = false;
-                self.state.options_popup_open = true;
-                self.state.last_message = "Options popup opened".to_string();
+                self.state.popup.profiles_open = false;
+                self.state.popup.profile_editor = None;
+                self.state.popup.routing_open = false;
+                self.state.popup.options_open = true;
+                self.state.ui.last_message = "Options popup opened".to_string();
             }
             Intent::CloseOptionsPopup => {
-                self.state.options_popup_open = false;
-                self.state.last_message = "Closed options popup".to_string();
+                self.state.popup.options_open = false;
+                self.state.ui.last_message = "Closed options popup".to_string();
             }
             Intent::SetRefreshRate(rate) => {
-                self.state.settings.refresh_rate = rate;
-                self.state.last_message = format!("Refresh rate set to {}", rate.label());
-                if self.state.settings.auto_save {
-                    let _ = crate::settings::save_settings(&self.state.settings);
+                self.state.ui.settings.refresh_rate = rate;
+                self.state.ui.last_message = format!("Refresh rate set to {}", rate.label());
+                if self.state.ui.settings.auto_save {
+                    let _ = crate::settings::save_settings(&self.state.ui.settings);
                 }
             }
             Intent::CyclePeakThreshold(increase) => {
                 const PEAK_THRESHOLD_CHOICES: [u8; 10] =
                     [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x0a, 0x0f, 0x14];
-                let current = self.state.settings.peak_threshold_raw;
+                let current = self.state.ui.settings.peak_threshold_raw;
                 let pos = PEAK_THRESHOLD_CHOICES
                     .iter()
                     .position(|&v| v == current)
@@ -1659,45 +1762,46 @@ impl Controller {
                 } else {
                     pos.saturating_sub(1)
                 };
-                self.state.settings.peak_threshold_raw = PEAK_THRESHOLD_CHOICES[next_pos];
-                let db = self.state.settings.peak_threshold_db();
-                self.state.last_message = format!("Peak threshold set to {} dB", db);
-                if self.state.settings.auto_save {
-                    let _ = crate::settings::save_settings(&self.state.settings);
+                self.state.ui.settings.peak_threshold_raw = PEAK_THRESHOLD_CHOICES[next_pos];
+                let db = self.state.ui.settings.peak_threshold_db();
+                self.state.ui.last_message = format!("Peak threshold set to {} dB", db);
+                if self.state.ui.settings.auto_save {
+                    let _ = crate::settings::save_settings(&self.state.ui.settings);
                 }
             }
             Intent::TogglePeakEnabled => {
-                self.state.settings.peak_enabled = !self.state.settings.peak_enabled;
-                if self.state.settings.peak_enabled {
-                    self.state.last_message = "Peak detection enabled".to_string();
+                self.state.ui.settings.peak_enabled = !self.state.ui.settings.peak_enabled;
+                if self.state.ui.settings.peak_enabled {
+                    self.state.ui.last_message = "Peak detection enabled".to_string();
                 } else {
-                    self.state.preamp_peaks = [None, None];
-                    self.state.mixer_peaks = [[None; 16]; 2];
-                    self.state.last_message = "Peak detection disabled".to_string();
+                    self.state.preamp.peaks = [None, None];
+                    self.state.mixer.peaks = [[None; 16]; 2];
+                    self.state.ui.last_message = "Peak detection disabled".to_string();
                 }
-                if self.state.settings.auto_save {
-                    let _ = crate::settings::save_settings(&self.state.settings);
+                if self.state.ui.settings.auto_save {
+                    let _ = crate::settings::save_settings(&self.state.ui.settings);
                 }
             }
             Intent::CyclePeakHoldDuration(duration) => {
-                self.state.settings.peak_hold_duration = duration;
-                self.state.last_message = format!("Peak hold duration set to {}", duration.label());
-                if self.state.settings.auto_save {
-                    let _ = crate::settings::save_settings(&self.state.settings);
+                self.state.ui.settings.peak_hold_duration = duration;
+                self.state.ui.last_message =
+                    format!("Peak hold duration set to {}", duration.label());
+                if self.state.ui.settings.auto_save {
+                    let _ = crate::settings::save_settings(&self.state.ui.settings);
                 }
             }
             Intent::ToggleAutoSave => {
-                self.state.settings.auto_save = !self.state.settings.auto_save;
-                if self.state.settings.auto_save {
-                    self.state.last_message = "Auto-save enabled".to_string();
-                    let _ = crate::settings::save_settings(&self.state.settings);
+                self.state.ui.settings.auto_save = !self.state.ui.settings.auto_save;
+                if self.state.ui.settings.auto_save {
+                    self.state.ui.last_message = "Auto-save enabled".to_string();
+                    let _ = crate::settings::save_settings(&self.state.ui.settings);
                 } else {
-                    self.state.last_message = "Auto-save disabled".to_string();
+                    self.state.ui.last_message = "Auto-save disabled".to_string();
                 }
             }
             Intent::SelectProfile(index) => {
-                self.state.popup_selected_index =
-                    index.min(self.state.profile_names.len().saturating_sub(1));
+                self.state.popup.selected_index =
+                    index.min(self.state.popup.profile_names.len().saturating_sub(1));
             }
             Intent::LoadSelectedProfile => {
                 if let Some(name) = self.state.selected_profile_name().map(str::to_string) {
@@ -1706,31 +1810,31 @@ impl Controller {
                         Ok(profile) => {
                             let apply_result = self.apply_profile(&profile);
                             if let Err(e) = apply_result {
-                                self.state.last_message = format!("Profile error: {e}");
+                                self.state.ui.last_message = format!("Profile error: {e}");
                             } else {
-                                self.state.profiles_popup_open = false;
-                                self.state.profile_editor = None;
-                                self.state.last_message = format!("Loaded profile {name}");
+                                self.state.popup.profiles_open = false;
+                                self.state.popup.profile_editor = None;
+                                self.state.ui.last_message = format!("Loaded profile {name}");
                             }
                         }
                         Err(e) => {
-                            self.state.last_message = format!("Profile error: {e}");
+                            self.state.ui.last_message = format!("Profile error: {e}");
                         }
                     }
                 } else {
-                    self.state.last_message = "No profile selected to load.".to_string();
+                    self.state.ui.last_message = "No profile selected to load.".to_string();
                 }
             }
             Intent::StartSaveProfile => {
-                if self.state.profiles_popup_open {
+                if self.state.popup.profiles_open {
                     let current_name = self.state.selected_profile_name().map(str::to_string);
                     let value = current_name.clone().unwrap_or_default();
-                    self.state.profile_editor = Some(ProfileEditorState {
+                    self.state.popup.profile_editor = Some(ProfileEditorState {
                         mode: ProfileEditorMode::Save,
                         original_name: current_name,
                         value,
                     });
-                    self.state.last_message =
+                    self.state.ui.last_message =
                         "Enter a profile name, then press Enter to save.".to_string();
                 }
             }
@@ -1738,49 +1842,50 @@ impl Controller {
                 if self.state.selected_profile_name().is_some() {
                     let current_name = self.state.selected_profile_name().map(str::to_string);
                     let value = current_name.clone().unwrap_or_default();
-                    self.state.profile_editor = Some(ProfileEditorState {
+                    self.state.popup.profile_editor = Some(ProfileEditorState {
                         mode: ProfileEditorMode::Rename,
                         original_name: current_name,
                         value,
                     });
-                    self.state.last_message =
+                    self.state.ui.last_message =
                         "Edit the profile name, then press Enter to rename.".to_string();
                 } else {
-                    self.state.last_message = "No profile selected to rename.".to_string();
+                    self.state.ui.last_message = "No profile selected to rename.".to_string();
                 }
             }
             Intent::DeleteSelectedProfile => {
                 if let Some(name) = self.state.selected_profile_name().map(str::to_string) {
                     match crate::profile::delete_profile(&name) {
                         Ok(()) => {
-                            self.state.profile_names =
+                            self.state.popup.profile_names =
                                 crate::profile::list_profile_names().unwrap_or_default();
                             self.state.clamp_profile_selection();
-                            self.state.last_message = format!("Deleted profile {name}");
+                            self.state.ui.last_message = format!("Deleted profile {name}");
                         }
                         Err(e) => {
-                            self.state.last_message = format!("Profile error: {e}");
+                            self.state.ui.last_message = format!("Profile error: {e}");
                         }
                     }
                 } else {
-                    self.state.last_message = "No profile selected to delete.".to_string();
+                    self.state.ui.last_message = "No profile selected to delete.".to_string();
                 }
             }
             Intent::PageMixerStripsLeft => {
-                self.state.focus = FocusArea::Mixer;
+                self.state.ui.focus = FocusArea::Mixer;
                 let visible = crate::ui::mixer_strip_viewport_capacity(area, &self.state);
                 self.state.page_mixer_strip_viewport(false, visible);
             }
             Intent::PageMixerStripsRight => {
-                self.state.focus = FocusArea::Mixer;
+                self.state.ui.focus = FocusArea::Mixer;
                 let visible = crate::ui::mixer_strip_viewport_capacity(area, &self.state);
                 self.state.page_mixer_strip_viewport(true, visible);
             }
             Intent::OpenSampleRateSelector => {
-                if self.state.device.clock_source == Some(ClockSource::Internal) {
-                    self.state.popup_selected_index = self
+                if self.state.device.status.clock_source == Some(ClockSource::Internal) {
+                    self.state.popup.selected_index = self
                         .state
                         .device
+                        .status
                         .sample_rate
                         .and_then(|current| {
                             SampleRate::all_confirmed()
@@ -1788,15 +1893,16 @@ impl Controller {
                                 .position(|rate| *rate == current)
                         })
                         .unwrap_or(0);
-                    self.state.selector_popup = Some(SelectorPopupState {
+                    self.state.popup.selector_popup = Some(SelectorPopupState {
                         kind: SelectorPopupKind::SampleRate,
                     });
                 }
             }
             Intent::OpenClockSourceSelector => {
-                self.state.popup_selected_index = self
+                self.state.popup.selected_index = self
                     .state
                     .device
+                    .status
                     .clock_source
                     .and_then(|current| {
                         ClockSource::all_confirmed()
@@ -1804,20 +1910,20 @@ impl Controller {
                             .position(|source| *source == current)
                     })
                     .unwrap_or(0);
-                self.state.selector_popup = Some(SelectorPopupState {
+                self.state.popup.selector_popup = Some(SelectorPopupState {
                     kind: SelectorPopupKind::ClockSource,
                 });
             }
-            Intent::SelectPage(page) => self.state.page = page,
-            Intent::SelectRawPacketTab(tab) => self.state.selected_raw_packet = tab,
+            Intent::SelectPage(page) => self.state.ui.page = page,
+            Intent::SelectRawPacketTab(tab) => self.state.raw_view.selected_tab = tab,
             Intent::SelectOutput(index) => {
-                self.state.focus = FocusArea::Outputs;
-                self.state.selected_output = index.min(self.state.outputs.len() - 1);
+                self.state.ui.focus = FocusArea::Outputs;
+                self.state.output.selected = index.min(self.state.output.states.len() - 1);
             }
             Intent::AdjustOutputLevel { index, increase } => {
-                self.state.focus = FocusArea::Outputs;
-                self.state.selected_output = index.min(self.state.outputs.len() - 1);
-                let output = self.state.outputs[self.state.selected_output];
+                self.state.ui.focus = FocusArea::Outputs;
+                self.state.output.selected = index.min(self.state.output.states.len() - 1);
+                let output = self.state.output.states[self.state.output.selected];
                 let next = if increase {
                     output.volume.saturating_sub(1)
                 } else {
@@ -1829,36 +1935,37 @@ impl Controller {
                 })?;
             }
             Intent::SetOutputLevel { index, step } => {
-                self.state.focus = FocusArea::Outputs;
-                self.state.selected_output = index.min(self.state.outputs.len() - 1);
-                let output = self.state.outputs[self.state.selected_output];
+                self.state.ui.focus = FocusArea::Outputs;
+                self.state.output.selected = index.min(self.state.output.states.len() - 1);
+                let output = self.state.output.states[self.state.output.selected];
                 self.send(Command::SetOutputVolume {
                     target: output.target,
                     step: step.min(0x60),
                 })?;
             }
             Intent::ToggleOutputDim(index) => {
-                self.state.focus = FocusArea::Outputs;
-                self.state.selected_output = index.min(self.state.outputs.len() - 1);
-                let output = self.state.outputs[self.state.selected_output];
+                self.state.ui.focus = FocusArea::Outputs;
+                self.state.output.selected = index.min(self.state.output.states.len() - 1);
+                let output = self.state.output.states[self.state.output.selected];
                 self.send(Command::SetOutputDim {
                     target: output.target,
                     enabled: output.mode != OutputMode::Dim,
                 })?;
             }
             Intent::ToggleOutputMute(index) => {
-                self.state.focus = FocusArea::Outputs;
-                self.state.selected_output = index.min(self.state.outputs.len() - 1);
-                let output = self.state.outputs[self.state.selected_output];
+                self.state.ui.focus = FocusArea::Outputs;
+                self.state.output.selected = index.min(self.state.output.states.len() - 1);
+                let output = self.state.output.states[self.state.output.selected];
                 self.send(Command::SetOutputMute {
                     target: output.target,
                     enabled: output.mode != OutputMode::Mute,
                 })?;
             }
             Intent::SelectQueryReplyEntry(index) => {
-                self.state.selected_query_reply_entry = Some(
+                self.state.raw_view.selected_query_reply_entry = Some(
                     index.min(
                         self.state
+                            .raw_view
                             .recent_query_reply_entries
                             .len()
                             .saturating_sub(1),
@@ -1869,21 +1976,21 @@ impl Controller {
                 self.state.cycle_query_reply_entry(increase);
             }
             Intent::SelectSurface(surface) => {
-                self.state.focus = FocusArea::Mixer;
+                self.state.ui.focus = FocusArea::Mixer;
                 self.send(Command::SelectSurface(surface))?;
                 self.flush_commands()?;
                 self.refresh_queried_state()?;
             }
             Intent::SelectMixerChannel(index) => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel = index;
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel = index;
             }
             Intent::AdjustMixerLevel { index, increase } => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel =
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel =
                     index.min(self.state.active_mixer_channels().len() - 1);
                 let active_channel =
-                    self.state.active_mixer_channels()[self.state.selected_channel];
+                    self.state.active_mixer_channels()[self.state.mixer.selected_channel];
                 let current = active_channel.level.unwrap_or(0x20);
                 let next = if increase {
                     current.saturating_sub(1)
@@ -1891,29 +1998,29 @@ impl Controller {
                     current.saturating_add(1).min(0x60)
                 };
                 self.send_mixer_level_change(
-                    MixerSurface::from_surface(self.state.surface),
+                    MixerSurface::from_surface(self.state.mixer.surface),
                     active_channel.channel,
                     next,
                 )?;
             }
             Intent::SetMixerLevel { index, level } => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel =
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel =
                     index.min(self.state.active_mixer_channels().len() - 1);
                 let active_channel =
-                    self.state.active_mixer_channels()[self.state.selected_channel];
+                    self.state.active_mixer_channels()[self.state.mixer.selected_channel];
                 self.send_mixer_level_change(
-                    MixerSurface::from_surface(self.state.surface),
+                    MixerSurface::from_surface(self.state.mixer.surface),
                     active_channel.channel,
                     level.min(0x5a),
                 )?;
             }
             Intent::AdjustMixerPan { index, right } => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel =
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel =
                     index.min(self.state.active_mixer_channels().len() - 1);
                 let active_channel =
-                    self.state.active_mixer_channels()[self.state.selected_channel];
+                    self.state.active_mixer_channels()[self.state.mixer.selected_channel];
                 let next = if right {
                     active_channel
                         .pan
@@ -1928,7 +2035,7 @@ impl Controller {
                         .max(PanState::MIN)
                 };
                 self.send(Command::SetMixerPan {
-                    mixer: MixerSurface::from_surface(self.state.surface),
+                    mixer: MixerSurface::from_surface(self.state.mixer.surface),
                     channel: active_channel.channel,
                     pan: PanState::from_raw(next),
                     muted: active_channel.muted.unwrap_or(false),
@@ -1936,13 +2043,13 @@ impl Controller {
                 })?;
             }
             Intent::SetMixerPan { index, pan } => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel =
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel =
                     index.min(self.state.active_mixer_channels().len() - 1);
                 let active_channel =
-                    self.state.active_mixer_channels()[self.state.selected_channel];
+                    self.state.active_mixer_channels()[self.state.mixer.selected_channel];
                 self.send(Command::SetMixerPan {
-                    mixer: MixerSurface::from_surface(self.state.surface),
+                    mixer: MixerSurface::from_surface(self.state.mixer.surface),
                     channel: active_channel.channel,
                     pan,
                     muted: active_channel.muted.unwrap_or(false),
@@ -1950,10 +2057,10 @@ impl Controller {
                 })?;
             }
             Intent::ToggleMixerMute(channel) => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel = channel.saturating_sub(1) as usize;
-                let mixer = MixerSurface::from_surface(self.state.surface);
-                let active_channel = self.state.mixer_channels[mixer.index()][channel as usize - 1];
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
+                let mixer = MixerSurface::from_surface(self.state.mixer.surface);
+                let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
                 self.send_mixer_mute_change(
                     mixer,
                     channel,
@@ -1961,10 +2068,10 @@ impl Controller {
                 )?;
             }
             Intent::ToggleMixerSolo(channel) => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel = channel.saturating_sub(1) as usize;
-                let mixer = MixerSurface::from_surface(self.state.surface);
-                let active_channel = self.state.mixer_channels[mixer.index()][channel as usize - 1];
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
+                let mixer = MixerSurface::from_surface(self.state.mixer.surface);
+                let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
                 self.send_mixer_solo_change(
                     mixer,
                     channel,
@@ -1972,10 +2079,10 @@ impl Controller {
                 )?;
             }
             Intent::ToggleMixerLink(channel) => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel = channel.saturating_sub(1) as usize;
-                let mixer = MixerSurface::from_surface(self.state.surface);
-                let active_channel = self.state.mixer_channels[mixer.index()][channel as usize - 1];
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
+                let mixer = MixerSurface::from_surface(self.state.mixer.surface);
+                let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
                 self.send_mixer_link_change(
                     mixer,
                     channel,
@@ -1983,15 +2090,15 @@ impl Controller {
                 )?;
             }
             Intent::OpenAssignmentPicker(strip) => {
-                self.state.focus = FocusArea::Mixer;
-                self.state.selected_channel = strip.saturating_sub(1) as usize;
+                self.state.ui.focus = FocusArea::Mixer;
+                self.state.mixer.selected_channel = strip.saturating_sub(1) as usize;
                 if !antelope_protocol::MixerStrip::assignment_write_is_grounded(strip) {
-                    self.state.last_message =
+                    self.state.ui.last_message =
                         "Assignment picking is not grounded for the selected strip.".to_string();
                 } else {
-                    self.state.popup_selected_index = self.state.mixer_channels
-                        [MixerSurface::from_surface(self.state.surface).index()]
-                        [self.state.selected_channel]
+                    self.state.popup.selected_index = self.state.mixer.channels
+                        [MixerSurface::from_surface(self.state.mixer.surface).index()]
+                        [self.state.mixer.selected_channel]
                         .assignment
                         .and_then(|current| {
                             MixerAssignment::grounded_choices()
@@ -1999,36 +2106,37 @@ impl Controller {
                                 .position(|assignment| *assignment == current)
                         })
                         .unwrap_or(0);
-                    self.state.assignment_picker = Some(AssignmentPickerState { strip });
-                    self.state.last_message = format!("Pick source assignment for CH {strip:02}");
+                    self.state.popup.assignment_picker = Some(AssignmentPickerState { strip });
+                    self.state.ui.last_message =
+                        format!("Pick source assignment for CH {strip:02}");
                 }
             }
             Intent::PickAssignment { strip, assignment } => {
-                self.state.assignment_picker = None;
-                self.state.popup_selected_index = 0;
+                self.state.popup.assignment_picker = None;
+                self.state.popup.selected_index = 0;
                 self.send(Command::SetMixerAssignment { strip, assignment })?;
             }
             Intent::CloseAssignmentPicker => {
-                self.state.assignment_picker = None;
-                self.state.popup_selected_index = 0;
-                self.state.last_message = "Closed assignment picker".to_string();
+                self.state.popup.assignment_picker = None;
+                self.state.popup.selected_index = 0;
+                self.state.ui.last_message = "Closed assignment picker".to_string();
             }
             Intent::CloseSelectorPopup => {
-                self.state.selector_popup = None;
-                self.state.popup_selected_index = 0;
-                self.state.last_message = "Closed selector".to_string();
+                self.state.popup.selector_popup = None;
+                self.state.popup.selected_index = 0;
+                self.state.ui.last_message = "Closed selector".to_string();
             }
             Intent::SelectPreampInput(input) => {
-                self.state.focus = FocusArea::Preamp;
-                self.state.selected_preamp_input = input.min(1);
+                self.state.ui.focus = FocusArea::Preamp;
+                self.state.preamp.selected_input = input.min(1);
             }
             Intent::AdjustPreampGain { input, increase } => {
-                self.state.focus = FocusArea::Preamp;
-                self.state.selected_preamp_input = input.min(1) as usize;
+                self.state.ui.focus = FocusArea::Preamp;
+                self.state.preamp.selected_input = input.min(1) as usize;
                 let current = if input == 0 {
-                    self.state.preamp.input1.gain_raw
+                    self.state.preamp.state.input1.gain_raw
                 } else {
-                    self.state.preamp.input2.gain_raw
+                    self.state.preamp.state.input2.gain_raw
                 };
                 self.send(Command::SetPreampGain {
                     input,
@@ -2036,37 +2144,37 @@ impl Controller {
                 })?;
             }
             Intent::SetPreampGain { input, raw } => {
-                self.state.focus = FocusArea::Preamp;
-                self.state.selected_preamp_input = input.min(1) as usize;
+                self.state.ui.focus = FocusArea::Preamp;
+                self.state.preamp.selected_input = input.min(1) as usize;
                 self.send(Command::SetPreampGain {
                     input: input.min(1),
                     raw,
                 })?;
             }
             Intent::OpenPreampModeSelector(input) => {
-                self.state.focus = FocusArea::Preamp;
-                self.state.selected_preamp_input = input.min(1) as usize;
+                self.state.ui.focus = FocusArea::Preamp;
+                self.state.preamp.selected_input = input.min(1) as usize;
                 let current = if input == 0 {
-                    self.state.preamp.input1.mode
+                    self.state.preamp.state.input1.mode
                 } else {
-                    self.state.preamp.input2.mode
+                    self.state.preamp.state.input2.mode
                 };
-                self.state.popup_selected_index =
+                self.state.popup.selected_index =
                     [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
                         .iter()
                         .position(|mode| *mode == current)
                         .unwrap_or(0);
-                self.state.selector_popup = Some(SelectorPopupState {
+                self.state.popup.selector_popup = Some(SelectorPopupState {
                     kind: SelectorPopupKind::PreampMode { input },
                 });
             }
             Intent::CyclePreampMode(input) => {
-                self.state.focus = FocusArea::Preamp;
-                self.state.selected_preamp_input = input.min(1) as usize;
+                self.state.ui.focus = FocusArea::Preamp;
+                self.state.preamp.selected_input = input.min(1) as usize;
                 let current = if input == 0 {
-                    self.state.preamp.input1.mode
+                    self.state.preamp.state.input1.mode
                 } else {
-                    self.state.preamp.input2.mode
+                    self.state.preamp.state.input2.mode
                 };
                 let next = match current {
                     PreampMode::Mic => PreampMode::Line,
@@ -2076,29 +2184,29 @@ impl Controller {
                 self.send(Command::SetPreampMode { input, mode: next })?;
             }
             Intent::PickSampleRate(rate) => {
-                self.state.selector_popup = None;
-                self.state.popup_selected_index = 0;
+                self.state.popup.selector_popup = None;
+                self.state.popup.selected_index = 0;
                 self.send(Command::SetSampleRate(rate))?;
             }
             Intent::PickClockSource(source) => {
-                self.state.selector_popup = None;
-                self.state.popup_selected_index = 0;
+                self.state.popup.selector_popup = None;
+                self.state.popup.selected_index = 0;
                 self.send(Command::SetClockSource(source))?;
             }
             Intent::PickPreampMode { input, mode } => {
-                self.state.selector_popup = None;
-                self.state.popup_selected_index = 0;
-                self.state.focus = FocusArea::Preamp;
-                self.state.selected_preamp_input = input.min(1) as usize;
+                self.state.popup.selector_popup = None;
+                self.state.popup.selected_index = 0;
+                self.state.ui.focus = FocusArea::Preamp;
+                self.state.preamp.selected_input = input.min(1) as usize;
                 self.send(Command::SetPreampMode { input, mode })?;
             }
             Intent::TogglePreampPhase(input) => {
-                self.state.focus = FocusArea::Preamp;
-                self.state.selected_preamp_input = input.min(1) as usize;
+                self.state.ui.focus = FocusArea::Preamp;
+                self.state.preamp.selected_input = input.min(1) as usize;
                 let mode_raw = if input == 0 {
-                    self.state.preamp.input1.mode_raw
+                    self.state.preamp.state.input1.mode_raw
                 } else {
-                    self.state.preamp.input2.mode_raw
+                    self.state.preamp.state.input2.mode_raw
                 };
                 self.send(Command::SetPreampPhase {
                     input,
@@ -2106,22 +2214,22 @@ impl Controller {
                 })?;
             }
             Intent::TogglePreampPhantom(input) => {
-                self.state.focus = FocusArea::Preamp;
-                self.state.selected_preamp_input = input.min(1) as usize;
+                self.state.ui.focus = FocusArea::Preamp;
+                self.state.preamp.selected_input = input.min(1) as usize;
                 let current = if input == 0 {
-                    self.state.preamp.input1
+                    self.state.preamp.state.input1
                 } else {
-                    self.state.preamp.input2
+                    self.state.preamp.state.input2
                 };
                 self.send(Command::SetPreampPhantom {
                     input,
                     enabled: !current.phantom_on,
                 })?;
             }
-            Intent::AdjustFocused(increase) => match self.state.focus {
+            Intent::AdjustFocused(increase) => match self.state.ui.focus {
                 FocusArea::Outputs => {
-                    let index = self.state.selected_output;
-                    let output = self.state.outputs[index];
+                    let index = self.state.output.selected;
+                    let output = self.state.output.states[index];
                     let next = if increase {
                         output.volume.saturating_sub(1)
                     } else {
@@ -2134,7 +2242,7 @@ impl Controller {
                 }
                 FocusArea::Mixer => {
                     let active_channel =
-                        self.state.active_mixer_channels()[self.state.selected_channel];
+                        self.state.active_mixer_channels()[self.state.mixer.selected_channel];
                     let channel = active_channel.channel;
                     let current = active_channel.level.unwrap_or(0x20);
                     let next = if increase {
@@ -2143,17 +2251,17 @@ impl Controller {
                         current.saturating_add(1).min(0x60)
                     };
                     self.send_mixer_level_change(
-                        MixerSurface::from_surface(self.state.surface),
+                        MixerSurface::from_surface(self.state.mixer.surface),
                         channel,
                         next,
                     )?;
                 }
                 FocusArea::Preamp => {
-                    let input = self.state.selected_preamp_input as u8;
+                    let input = self.state.preamp.selected_input as u8;
                     let preamp_input = if input == 0 {
-                        &self.state.preamp.input1
+                        &self.state.preamp.state.input1
                     } else {
-                        &self.state.preamp.input2
+                        &self.state.preamp.state.input2
                     };
                     let next = match preamp_input.mode {
                         PreampMode::Mic => {
@@ -2185,10 +2293,10 @@ impl Controller {
                 }
                 _ => {}
             },
-            Intent::ToggleFocusedMute => match self.state.focus {
+            Intent::ToggleFocusedMute => match self.state.ui.focus {
                 FocusArea::Outputs => {
-                    let index = self.state.selected_output;
-                    let output = self.state.outputs[index];
+                    let index = self.state.output.selected;
+                    let output = self.state.output.states[index];
                     self.send(Command::SetOutputMute {
                         target: output.target,
                         enabled: output.mode != OutputMode::Mute,
@@ -2196,21 +2304,21 @@ impl Controller {
                 }
                 FocusArea::Mixer => {
                     let active_channel =
-                        self.state.active_mixer_channels()[self.state.selected_channel];
+                        self.state.active_mixer_channels()[self.state.mixer.selected_channel];
                     let channel = active_channel.channel;
                     let muted = !active_channel.muted.unwrap_or(false);
                     self.send_mixer_mute_change(
-                        MixerSurface::from_surface(self.state.surface),
+                        MixerSurface::from_surface(self.state.mixer.surface),
                         channel,
                         muted,
                     )?;
                 }
                 FocusArea::Preamp => {
-                    let input = self.state.selected_preamp_input as u8;
+                    let input = self.state.preamp.selected_input as u8;
                     let current = if input == 0 {
-                        self.state.preamp.input1
+                        self.state.preamp.state.input1
                     } else {
-                        self.state.preamp.input2
+                        self.state.preamp.state.input2
                     };
                     self.send(Command::SetPreampPhantom {
                         input,
@@ -2220,9 +2328,9 @@ impl Controller {
                 _ => {}
             },
             Intent::ToggleFocusedDim => {
-                if self.state.focus == FocusArea::Outputs {
-                    let index = self.state.selected_output;
-                    let output = self.state.outputs[index];
+                if self.state.ui.focus == FocusArea::Outputs {
+                    let index = self.state.output.selected;
+                    let output = self.state.output.states[index];
                     self.send(Command::SetOutputDim {
                         target: output.target,
                         enabled: output.mode != OutputMode::Dim,
@@ -2230,8 +2338,8 @@ impl Controller {
                 }
             }
             Intent::ToggleRoutingPopup => {
-                self.state.routing_popup_open = !self.state.routing_popup_open;
-                self.state.last_message = if self.state.routing_popup_open {
+                self.state.popup.routing_open = !self.state.popup.routing_open;
+                self.state.ui.last_message = if self.state.popup.routing_open {
                     "Routing popup mirrors mixer assignments for USB recording channels 1-8"
                         .to_string()
                 } else {
@@ -2240,20 +2348,20 @@ impl Controller {
             }
             Intent::RefreshQueriedState => {
                 self.refresh_queried_state()?;
-                self.state.last_message =
+                self.state.ui.last_message =
                     "Sent captured 0x74 startup/state refresh sweep".to_string();
             }
             Intent::CycleFocus => {
-                if self.state.page == MainPage::Mixer {
+                if self.state.ui.page == MainPage::Mixer {
                     self.state.cycle_focus();
                 }
             }
             Intent::MovePopupSelection(down) => {
-                let item_count = if self.state.assignment_picker.is_some() {
+                let item_count = if self.state.popup.assignment_picker.is_some() {
                     antelope_protocol::MixerAssignment::grounded_choices().len()
-                } else if self.state.profiles_popup_open {
-                    self.state.profile_names.len()
-                } else if let Some(popup) = self.state.selector_popup {
+                } else if self.state.popup.profiles_open {
+                    self.state.popup.profile_names.len()
+                } else if let Some(popup) = self.state.popup.selector_popup {
                     match popup.kind {
                         SelectorPopupKind::SampleRate => SampleRate::all_confirmed().len(),
                         SelectorPopupKind::ClockSource => ClockSource::all_confirmed().len(),
@@ -2265,31 +2373,32 @@ impl Controller {
                 if item_count == 0 {
                     return Ok(());
                 }
-                self.state.popup_selected_index = if down {
-                    (self.state.popup_selected_index + 1) % item_count
+                self.state.popup.selected_index = if down {
+                    (self.state.popup.selected_index + 1) % item_count
                 } else {
                     self.state
-                        .popup_selected_index
+                        .popup
+                        .selected_index
                         .checked_sub(1)
                         .unwrap_or(item_count - 1)
                 };
             }
             Intent::ProfileEditorChar(ch) => {
-                if let Some(editor) = self.state.profile_editor.as_mut() {
+                if let Some(editor) = self.state.popup.profile_editor.as_mut() {
                     editor.value.push_str(&ch);
                 }
             }
             Intent::ProfileEditorBackspace => {
-                if let Some(editor) = self.state.profile_editor.as_mut() {
+                if let Some(editor) = self.state.popup.profile_editor.as_mut() {
                     editor.value.pop();
                 }
             }
             Intent::ProfileEditorCommit => {
-                if let Some(editor) = self.state.profile_editor.take() {
+                if let Some(editor) = self.state.popup.profile_editor.take() {
                     let name = editor.value.trim().to_string();
                     if name.is_empty() {
-                        self.state.last_message = "Profile name cannot be empty".to_string();
-                        self.state.profile_editor = Some(editor);
+                        self.state.ui.last_message = "Profile name cannot be empty".to_string();
+                        self.state.popup.profile_editor = Some(editor);
                     } else {
                         match editor.mode {
                             ProfileEditorMode::Save => {
@@ -2297,16 +2406,17 @@ impl Controller {
                                 match profile {
                                     Ok(profile) => match profile.write_named(&name) {
                                         Ok(path) => {
-                                            self.state.profiles_popup_open = false;
-                                            self.state.last_message =
+                                            self.state.popup.profiles_open = false;
+                                            self.state.ui.last_message =
                                                 format!("Saved profile to {}", path.display());
                                         }
                                         Err(e) => {
-                                            self.state.last_message = format!("Profile error: {e}");
+                                            self.state.ui.last_message =
+                                                format!("Profile error: {e}");
                                         }
                                     },
                                     Err(e) => {
-                                        self.state.last_message = format!("Profile error: {e}");
+                                        self.state.ui.last_message = format!("Profile error: {e}");
                                     }
                                 }
                             }
@@ -2315,20 +2425,20 @@ impl Controller {
                                     if original != &name {
                                         match crate::profile::rename_profile(original, &name) {
                                             Ok(_path) => {
-                                                self.state.profile_names =
+                                                self.state.popup.profile_names =
                                                     crate::profile::list_profile_names()
                                                         .unwrap_or_default();
                                                 self.state.clamp_profile_selection();
-                                                self.state.last_message =
+                                                self.state.ui.last_message =
                                                     format!("Renamed {original} to {name}");
                                             }
                                             Err(e) => {
-                                                self.state.last_message =
+                                                self.state.ui.last_message =
                                                     format!("Profile error: {e}");
                                             }
                                         }
                                     } else {
-                                        self.state.last_message =
+                                        self.state.ui.last_message =
                                             "Profile name unchanged".to_string();
                                     }
                                 }
@@ -2338,21 +2448,21 @@ impl Controller {
                 }
             }
             Intent::ProfileEditorCancel => {
-                self.state.profile_editor = None;
-                self.state.last_message = "Cancelled profile edit".to_string();
+                self.state.popup.profile_editor = None;
+                self.state.ui.last_message = "Cancelled profile edit".to_string();
             }
             Intent::CaptureRawBaseline => {
                 self.state.capture_raw_baseline();
-                self.state.last_message =
+                self.state.ui.last_message =
                     "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
             }
             Intent::ClearRawBaseline => {
                 self.state.clear_raw_baseline();
-                self.state.last_message = "Cleared raw baseline".to_string();
+                self.state.ui.last_message = "Cleared raw baseline".to_string();
             }
             Intent::ToggleOptionsPopup => {
                 self.state.toggle_options_popup();
-                self.state.last_message = if self.state.options_popup_open {
+                self.state.ui.last_message = if self.state.popup.options_open {
                     "Options popup opened".to_string()
                 } else {
                     "Closed options popup".to_string()
@@ -2400,7 +2510,7 @@ impl Controller {
                 pan,
                 muted,
             } => {
-                if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                if let Some(slot) = self.state.mixer.channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
                     slot.level = Some(level);
@@ -2423,7 +2533,7 @@ impl Controller {
                     (left_channel, left_pan, left_muted),
                     (right_channel, right_pan, right_muted),
                 ] {
-                    if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                    if let Some(slot) = self.state.mixer.channels[mixer.index()]
                         .get_mut(channel.saturating_sub(1) as usize)
                     {
                         slot.level = Some(level);
@@ -2438,7 +2548,7 @@ impl Controller {
                 channel,
                 muted,
             } => {
-                if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                if let Some(slot) = self.state.mixer.channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
                     slot.muted = Some(muted);
@@ -2450,7 +2560,7 @@ impl Controller {
                 channel,
                 soloed,
             } => {
-                if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                if let Some(slot) = self.state.mixer.channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
                     slot.soloed = Some(soloed);
@@ -2464,7 +2574,7 @@ impl Controller {
                 muted,
             } => {
                 for channel in [left_channel, right_channel] {
-                    if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                    if let Some(slot) = self.state.mixer.channels[mixer.index()]
                         .get_mut(channel.saturating_sub(1) as usize)
                     {
                         slot.muted = Some(muted);
@@ -2479,7 +2589,7 @@ impl Controller {
                 soloed,
             } => {
                 for channel in [left_channel, right_channel] {
-                    if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                    if let Some(slot) = self.state.mixer.channels[mixer.index()]
                         .get_mut(channel.saturating_sub(1) as usize)
                     {
                         slot.soloed = Some(soloed);
@@ -2492,7 +2602,7 @@ impl Controller {
                 channel,
                 pan,
             } => {
-                if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                if let Some(slot) = self.state.mixer.channels[mixer.index()]
                     .get_mut(channel.saturating_sub(1) as usize)
                 {
                     slot.pan = pan;
@@ -2501,7 +2611,7 @@ impl Controller {
             }
             PendingMutation::MixerAssignment { strip, assignment } => {
                 let index = strip.saturating_sub(1) as usize;
-                for channels in &mut self.state.mixer_channels {
+                for channels in &mut self.state.mixer.channels {
                     if let Some(slot) = channels.get_mut(index) {
                         slot.assignment = Some(assignment);
                     }
@@ -2515,7 +2625,7 @@ impl Controller {
             } => {
                 if let Some((left, right)) = link_pair_from_selector(mixer, selector) {
                     for channel in [left, right] {
-                        if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                        if let Some(slot) = self.state.mixer.channels[mixer.index()]
                             .get_mut(channel.saturating_sub(1) as usize)
                         {
                             slot.linked = Some(enabled);
@@ -2531,7 +2641,7 @@ impl Controller {
                 enabled,
             } => {
                 for channel in [left_channel, right_channel] {
-                    if let Some(slot) = self.state.mixer_channels[mixer.index()]
+                    if let Some(slot) = self.state.mixer.channels[mixer.index()]
                         .get_mut(channel.saturating_sub(1) as usize)
                     {
                         slot.linked = Some(enabled);
@@ -2540,39 +2650,39 @@ impl Controller {
                 true
             }
             PendingMutation::OutputVolume { target, step } => {
-                self.state.outputs[target.index() as usize].volume = step;
+                self.state.output.states[target.index() as usize].volume = step;
                 true
             }
             PendingMutation::OutputMode { target, mode } => {
-                self.state.outputs[target.index() as usize].mode = mode;
+                self.state.output.states[target.index() as usize].mode = mode;
                 true
             }
             PendingMutation::PreampGain { input, raw } => {
-                self.state.dsp_cluster[input.min(1) as usize] = raw;
+                self.state.device.dsp_cluster[input.min(1) as usize] = raw;
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
                 true
             }
             PendingMutation::PreampMode { input, mode } => {
                 let offset = 2 + input.min(1) as usize;
-                let preserved_bits = self.state.dsp_cluster[offset] & 0xf0;
-                self.state.dsp_cluster[offset] = preserved_bits | mode.code();
+                let preserved_bits = self.state.device.dsp_cluster[offset] & 0xf0;
+                self.state.device.dsp_cluster[offset] = preserved_bits | mode.code();
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
                 true
             }
             PendingMutation::PreampPhantom { input, enabled } => {
                 let offset = 2 + input.min(1) as usize;
-                let low = self.state.dsp_cluster[offset] & 0x0f;
-                self.state.dsp_cluster[offset] = low | if enabled { 0x10 } else { 0x00 };
+                let low = self.state.device.dsp_cluster[offset] & 0x0f;
+                self.state.device.dsp_cluster[offset] = low | if enabled { 0x10 } else { 0x00 };
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
                 true
             }
             PendingMutation::PreampPhase { input, enabled } => {
                 let offset = 2 + input.min(1) as usize;
-                let low = self.state.dsp_cluster[offset] & 0x1f;
-                self.state.dsp_cluster[offset] = low | if enabled { 0x40 } else { 0x00 };
+                let low = self.state.device.dsp_cluster[offset] & 0x1f;
+                self.state.device.dsp_cluster[offset] = low | if enabled { 0x40 } else { 0x00 };
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
                 true
@@ -2744,7 +2854,7 @@ mod tests {
             MixerAssignment::Mute,
         ];
 
-        for surface in &mut state.mixer_channels {
+        for surface in &mut state.mixer.channels {
             for (channel, assignment) in surface.iter_mut().zip(assignments) {
                 channel.assignment = Some(assignment);
             }
@@ -2901,14 +3011,14 @@ mod tests {
     #[test]
     fn reducer_prefers_device_snapshot_state() {
         let mut state = AppState::default();
-        state.outputs[0].volume = 0x10;
+        state.output.states[0].volume = 0x10;
 
         state.apply_snapshot(&snapshot());
 
-        assert_eq!(state.device.sample_rate, Some(SampleRate::Hz48000));
-        assert_eq!(state.outputs[0].volume, 0x50);
-        assert_eq!(state.outputs[1].mode, OutputMode::Mute);
-        assert_eq!(state.surface, Surface::MonitorHp1);
+        assert_eq!(state.device.status.sample_rate, Some(SampleRate::Hz48000));
+        assert_eq!(state.output.states[0].volume, 0x50);
+        assert_eq!(state.output.states[1].mode, OutputMode::Mute);
+        assert_eq!(state.mixer.surface, Surface::MonitorHp1);
     }
 
     #[test]
@@ -2919,11 +3029,11 @@ mod tests {
 
         state.apply_snapshot(&device_snapshot);
 
-        assert_eq!(state.preamp.input1.mode, PreampMode::Line);
-        assert_eq!(state.preamp.input1.gain_raw, 0x14);
-        assert_eq!(state.preamp.input2.mode, PreampMode::Mic);
-        assert_eq!(state.preamp.input2.gain_raw, 0x2a);
-        assert!(!state.preamp.input2.phantom_on);
+        assert_eq!(state.preamp.state.input1.mode, PreampMode::Line);
+        assert_eq!(state.preamp.state.input1.gain_raw, 0x14);
+        assert_eq!(state.preamp.state.input2.mode, PreampMode::Mic);
+        assert_eq!(state.preamp.state.input2.gain_raw, 0x2a);
+        assert!(!state.preamp.state.input2.phantom_on);
     }
 
     #[test]
@@ -2940,34 +3050,34 @@ mod tests {
 
         state.apply_snapshot(&device_snapshot);
 
-        assert_eq!(state.preamp.input1.observed_meter, Some(0x28));
-        assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
+        assert_eq!(state.preamp.state.input1.observed_meter, Some(0x28));
+        assert_eq!(state.preamp.state.input2.observed_meter, Some(0x30));
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
+            state.mixer.channels[MixerSurface::Mix1.index()][0].meter,
             Some(0x30)
         );
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix2.index()][0].meter,
+            state.mixer.channels[MixerSurface::Mix2.index()][0].meter,
             Some(0x30)
         );
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].level,
+            state.mixer.channels[MixerSurface::Mix1.index()][0].level,
             None
         );
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].muted,
+            state.mixer.channels[MixerSurface::Mix1.index()][0].muted,
             Some(false)
         );
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].pan,
+            state.mixer.channels[MixerSurface::Mix1.index()][0].pan,
             PanState::center()
         );
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
+            state.mixer.channels[MixerSurface::Mix1.index()][0].linked,
             Some(true)
         );
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
+            state.mixer.channels[MixerSurface::Mix1.index()][1].linked,
             Some(true)
         );
     }
@@ -2975,7 +3085,7 @@ mod tests {
     #[test]
     fn passive_snapshot_pan_decode_does_not_override_channel_pan() {
         let mut state = AppState::default();
-        state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
 
         let mut device_snapshot = snapshot();
         device_snapshot.mixer_decode.surfaces[MixerSurface::Mix1.index()][0].pan =
@@ -2984,7 +3094,7 @@ mod tests {
         state.apply_snapshot(&device_snapshot);
 
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].pan,
+            state.mixer.channels[MixerSurface::Mix1.index()][0].pan,
             PanState::center()
         );
     }
@@ -3015,7 +3125,7 @@ mod tests {
         );
 
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
-            let channels = &state.mixer_channels[mixer.index()];
+            let channels = &state.mixer.channels[mixer.index()];
             assert_eq!(channels[0].assignment, Some(MixerAssignment::Preamp(1)));
             assert_eq!(channels[1].assignment, Some(MixerAssignment::Preamp(2)));
             assert_eq!(
@@ -3057,7 +3167,7 @@ mod tests {
         );
 
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
-            let channels = &state.mixer_channels[mixer.index()];
+            let channels = &state.mixer.channels[mixer.index()];
             let expected_primary = if mixer == MixerSurface::Mix1 {
                 Some(true)
             } else {
@@ -3084,8 +3194,8 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
 
-        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
-        let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
+        let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
+        let mix2 = &state.mixer.channels[MixerSurface::Mix2.index()];
         assert!(mix1[10..].iter().all(|slot| slot.linked == Some(true)));
         assert!(mix2[10..].iter().all(|slot| slot.linked == Some(true)));
     }
@@ -3119,8 +3229,8 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
 
-        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
-        let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
+        let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
+        let mix2 = &state.mixer.channels[MixerSurface::Mix2.index()];
         assert_eq!(mix1[0].level, Some(0x00));
         assert_eq!(mix1[0].pan, PanState::from_raw(0x1e));
         assert_eq!(mix1[0].muted, Some(true));
@@ -3170,8 +3280,8 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
 
-        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
-        let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
+        let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
+        let mix2 = &state.mixer.channels[MixerSurface::Mix2.index()];
         assert_eq!(mix1[0].level, Some(0x12));
         assert_eq!(mix2[10].level, Some(0x1e));
         assert_eq!(mix2[11].level, Some(0x1e));
@@ -3196,8 +3306,8 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
 
-        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
-        let mix2 = &state.mixer_channels[MixerSurface::Mix2.index()];
+        let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
+        let mix2 = &state.mixer.channels[MixerSurface::Mix2.index()];
         assert_eq!(mix1[0].level, None);
         assert_eq!(mix1[0].pan, PanState::center());
         assert_eq!(mix1[0].muted, None);
@@ -3228,7 +3338,7 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
 
-        let mix1 = &state.mixer_channels[MixerSurface::Mix1.index()];
+        let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
         assert_eq!(mix1[0].muted, None);
         assert_eq!(mix1[0].pan, PanState::center());
         assert!(mix1.iter().all(|slot| slot.muted.is_none()));
@@ -3238,7 +3348,7 @@ mod tests {
     #[test]
     fn passive_meter_does_not_override_known_level_value() {
         let mut state = AppState::default();
-        state.mixer_channels[MixerSurface::Mix1.index()][0].level = Some(0x00);
+        state.mixer.channels[MixerSurface::Mix1.index()][0].level = Some(0x00);
 
         let mut device_snapshot = snapshot();
         device_snapshot.mixer_decode.observed_preamp2_meter = Some(0x30);
@@ -3247,17 +3357,17 @@ mod tests {
 
         state.apply_snapshot(&device_snapshot);
 
-        assert_eq!(state.preamp.input2.observed_meter, Some(0x30));
+        assert_eq!(state.preamp.state.input2.observed_meter, Some(0x30));
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].level,
+            state.mixer.channels[MixerSurface::Mix1.index()][0].level,
             Some(0x00)
         );
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][0].meter,
+            state.mixer.channels[MixerSurface::Mix1.index()][0].meter,
             Some(0x30)
         );
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix2.index()][0].meter,
+            state.mixer.channels[MixerSurface::Mix2.index()][0].meter,
             Some(0x30)
         );
     }
@@ -3266,8 +3376,9 @@ mod tests {
     fn preamp_pending_gain_updates_authoritative_cluster() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
-        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+        controller.state.device.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
+        controller.state.preamp.state =
+            PreampState::from_cluster(controller.state.device.dsp_cluster);
 
         controller
             .send(Command::SetPreampGain {
@@ -3277,17 +3388,18 @@ mod tests {
             .expect("send preamp gain");
         controller.confirm_pending_write();
 
-        assert_eq!(controller.state.preamp.input2.gain_raw, 0x2d);
-        assert_eq!(controller.state.dsp_cluster[1], 0x2d);
+        assert_eq!(controller.state.preamp.state.input2.gain_raw, 0x2d);
+        assert_eq!(controller.state.device.dsp_cluster[1], 0x2d);
     }
 
     #[test]
     fn preamp_pending_updates_preserve_observed_input_meters() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
-        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
-        controller.state.preamp.input2.observed_meter = Some(0x30);
+        controller.state.device.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
+        controller.state.preamp.state =
+            PreampState::from_cluster(controller.state.device.dsp_cluster);
+        controller.state.preamp.state.input2.observed_meter = Some(0x30);
 
         controller
             .send(Command::SetPreampGain {
@@ -3297,17 +3409,21 @@ mod tests {
             .expect("send preamp gain");
         controller.confirm_pending_write();
 
-        assert_eq!(controller.state.preamp.input2.gain_raw, 0x2d);
-        assert_eq!(controller.state.preamp.input1.observed_meter, None);
-        assert_eq!(controller.state.preamp.input2.observed_meter, Some(0x30));
+        assert_eq!(controller.state.preamp.state.input2.gain_raw, 0x2d);
+        assert_eq!(controller.state.preamp.state.input1.observed_meter, None);
+        assert_eq!(
+            controller.state.preamp.state.input2.observed_meter,
+            Some(0x30)
+        );
     }
 
     #[test]
     fn preamp_pending_mode_phantom_and_phase_update_state() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
-        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+        controller.state.device.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
+        controller.state.preamp.state =
+            PreampState::from_cluster(controller.state.device.dsp_cluster);
 
         controller
             .send(Command::SetPreampMode {
@@ -3316,10 +3432,11 @@ mod tests {
             })
             .expect("send preamp mode");
         controller.confirm_pending_write();
-        assert_eq!(controller.state.preamp.input1.mode, PreampMode::Line);
+        assert_eq!(controller.state.preamp.state.input1.mode, PreampMode::Line);
 
-        controller.state.dsp_cluster[3] = 0x00;
-        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+        controller.state.device.dsp_cluster[3] = 0x00;
+        controller.state.preamp.state =
+            PreampState::from_cluster(controller.state.device.dsp_cluster);
         controller
             .send(Command::SetPreampPhantom {
                 input: 1,
@@ -3327,10 +3444,11 @@ mod tests {
             })
             .expect("send preamp phantom");
         controller.confirm_pending_write();
-        assert!(controller.state.preamp.input2.phantom_on);
+        assert!(controller.state.preamp.state.input2.phantom_on);
 
-        controller.state.dsp_cluster[3] = 0x00;
-        controller.state.preamp = PreampState::from_cluster(controller.state.dsp_cluster);
+        controller.state.device.dsp_cluster[3] = 0x00;
+        controller.state.preamp.state =
+            PreampState::from_cluster(controller.state.device.dsp_cluster);
         controller
             .send(Command::SetPreampPhase {
                 input: 1,
@@ -3338,7 +3456,7 @@ mod tests {
             })
             .expect("send preamp phase");
         controller.confirm_pending_write();
-        assert_eq!(controller.state.dsp_cluster[3], 0x40);
+        assert_eq!(controller.state.device.dsp_cluster[3], 0x40);
     }
 
     #[test]
@@ -3414,30 +3532,30 @@ mod tests {
 
         controller.apply_profile(&profile).expect("apply profile");
 
-        assert_eq!(controller.state.outputs[0].volume, 0x12);
-        assert_eq!(controller.state.outputs[0].mode, OutputMode::Dim);
-        assert_eq!(controller.state.outputs[1].mode, OutputMode::Mute);
-        assert_eq!(controller.state.preamp.input1.mode, PreampMode::Mic);
-        assert!(controller.state.preamp.input1.phantom_on);
-        assert_eq!(controller.state.preamp.input1.mode_raw & 0x40, 0x40);
+        assert_eq!(controller.state.output.states[0].volume, 0x12);
+        assert_eq!(controller.state.output.states[0].mode, OutputMode::Dim);
+        assert_eq!(controller.state.output.states[1].mode, OutputMode::Mute);
+        assert_eq!(controller.state.preamp.state.input1.mode, PreampMode::Mic);
+        assert!(controller.state.preamp.state.input1.phantom_on);
+        assert_eq!(controller.state.preamp.state.input1.mode_raw & 0x40, 0x40);
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][0].assignment,
             Some(MixerAssignment::Preamp(1))
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan,
             PanState::right()
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][1].soloed,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][1].soloed,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][0].linked,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][0].pan,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][0].pan,
             PanState::left()
         );
         assert!(!transport.take_writes().is_empty());
@@ -3467,14 +3585,14 @@ mod tests {
     fn clock_source_command_updates_visible_state_immediately() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.device.clock_source = Some(ClockSource::Usb);
+        controller.state.device.status.clock_source = Some(ClockSource::Usb);
 
         controller
             .send(Command::SetClockSource(ClockSource::Internal))
             .expect("set clock source");
 
         assert_eq!(
-            controller.state.device.clock_source,
+            controller.state.device.status.clock_source,
             Some(ClockSource::Internal)
         );
     }
@@ -3556,7 +3674,7 @@ mod tests {
             .expect("send mixer");
 
         assert!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][2]
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][2]
                 .level
                 .is_none()
         );
@@ -3564,7 +3682,7 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][2],
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][2],
             MixerChannelState::known(3, Some(0x2c), Some(false), PanState::left(), None, None)
         );
     }
@@ -3573,10 +3691,10 @@ mod tests {
     fn linked_mixer_level_change_writes_and_updates_both_channels() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].linked = Some(true);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].linked = Some(true);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][2].linked = Some(true);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][3].linked = Some(true);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
 
         controller
             .send_mixer_level_change(MixerSurface::Mix1, 4, 0x2c)
@@ -3596,19 +3714,19 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].level,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][2].level,
             Some(0x2c)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][3].level,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][3].level,
             Some(0x2c)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].pan,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan,
             PanState::left()
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][3].pan,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][3].pan,
             PanState::right()
         );
     }
@@ -3617,10 +3735,10 @@ mod tests {
     fn linked_mixer_mute_change_writes_and_updates_both_channels() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].linked = Some(true);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].linked = Some(true);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][2].linked = Some(true);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][3].linked = Some(true);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
 
         controller
             .send_mixer_mute_change(MixerSurface::Mix1, 3, true)
@@ -3640,11 +3758,11 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].muted,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][2].muted,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][3].muted,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][3].muted,
             Some(true)
         );
     }
@@ -3653,12 +3771,12 @@ mod tests {
     fn linked_mixer_solo_change_writes_and_updates_both_channels() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].linked = Some(true);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].linked = Some(true);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][2].muted = Some(false);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][3].muted = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][2].linked = Some(true);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][3].linked = Some(true);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][2].muted = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][3].muted = Some(false);
 
         controller
             .send_mixer_solo_change(MixerSurface::Mix1, 4, true)
@@ -3678,11 +3796,11 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].soloed,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][2].soloed,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][3].soloed,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][3].soloed,
             Some(true)
         );
     }
@@ -3707,11 +3825,11 @@ mod tests {
         );
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][0].soloed,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][0].soloed,
             Some(false)
         );
     }
@@ -3746,11 +3864,11 @@ mod tests {
         assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x03, 0x05, 0x01]);
         controller.confirm_pending_write();
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][10].linked,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][10].linked,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][11].linked,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][11].linked,
             Some(true)
         );
 
@@ -3762,11 +3880,11 @@ mod tests {
         assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x03, 0x17, 0x01]);
         controller.confirm_pending_write();
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][14].linked,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][14].linked,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][15].linked,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][15].linked,
             Some(true)
         );
     }
@@ -3775,10 +3893,10 @@ mod tests {
     fn app_state_starts_with_16_strips_per_surface() {
         let state = AppState::default();
 
-        assert_eq!(state.mixer_channels[MixerSurface::Mix1.index()].len(), 16);
-        assert_eq!(state.mixer_channels[MixerSurface::Mix2.index()].len(), 16);
+        assert_eq!(state.mixer.channels[MixerSurface::Mix1.index()].len(), 16);
+        assert_eq!(state.mixer.channels[MixerSurface::Mix2.index()].len(), 16);
         assert_eq!(
-            state.mixer_channels[MixerSurface::Mix1.index()][15].channel,
+            state.mixer.channels[MixerSurface::Mix1.index()][15].channel,
             16
         );
     }
@@ -3805,27 +3923,27 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][10].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][10].assignment,
             Some(MixerAssignment::Oscillator(2))
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][10].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][10].assignment,
             Some(MixerAssignment::Oscillator(2))
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][0].linked,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][0].linked,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][1].linked,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][1].linked,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][0].linked,
             None
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][1].linked,
             None
         );
     }
@@ -3842,11 +3960,11 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][10].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][10].assignment,
             Some(MixerAssignment::Mute)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][10].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][10].assignment,
             Some(MixerAssignment::Mute)
         );
     }
@@ -3871,11 +3989,11 @@ mod tests {
 
         controller.confirm_pending_write();
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][4].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][4].assignment,
             Some(MixerAssignment::Oscillator(1))
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][4].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][4].assignment,
             Some(MixerAssignment::Oscillator(1))
         );
     }
@@ -3900,11 +4018,11 @@ mod tests {
 
         controller.confirm_pending_write();
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][0].assignment,
             Some(MixerAssignment::Oscillator(1))
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][0].assignment,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][0].assignment,
             Some(MixerAssignment::Oscillator(1))
         );
     }
@@ -3973,13 +4091,13 @@ mod tests {
             controller.confirm_pending_write();
 
             assert_eq!(
-                controller.state.mixer_channels[target.mixer.index()]
+                controller.state.mixer.channels[target.mixer.index()]
                     [target.left_channel as usize - 1]
                     .linked,
                 Some(true)
             );
             assert_eq!(
-                controller.state.mixer_channels[target.mixer.index()]
+                controller.state.mixer.channels[target.mixer.index()]
                     [target.right_channel as usize - 1]
                     .linked,
                 Some(true)
@@ -4009,11 +4127,11 @@ mod tests {
 
         controller.confirm_pending_write();
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][0].linked,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][0].linked,
             Some(true)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][1].linked,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][1].linked,
             Some(true)
         );
     }
@@ -4046,13 +4164,13 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][3]
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][3]
                 .pan
                 .raw(),
             0x08
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][3]
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][3]
                 .pan
                 .raw(),
             0x36
@@ -4077,11 +4195,11 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][6].level,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][6].level,
             None
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][6].muted,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][6].muted,
             Some(true)
         );
 
@@ -4098,11 +4216,11 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][6].level,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][6].level,
             None
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][6].muted,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][6].muted,
             Some(false)
         );
     }
@@ -4137,11 +4255,11 @@ mod tests {
         controller.confirm_pending_write();
 
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix1.index()][2].level,
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][2].level,
             Some(0x2c)
         );
         assert_eq!(
-            controller.state.mixer_channels[MixerSurface::Mix2.index()][2].level,
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][2].level,
             Some(0x10)
         );
     }
@@ -4150,13 +4268,13 @@ mod tests {
     fn mixer_first_adjustment_starts_from_safe_midpoint_not_minimum() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.focus = FocusArea::Mixer;
-        controller.state.selected_channel = 0;
+        controller.state.ui.focus = FocusArea::Mixer;
+        controller.state.mixer.selected_channel = 0;
 
         let channel = controller.state.active_mixer_channels()[0].channel;
         controller
             .send(Command::SetMixerLevel {
-                mixer: MixerSurface::from_surface(controller.state.surface),
+                mixer: MixerSurface::from_surface(controller.state.mixer.surface),
                 channel,
                 level: 0x1f,
                 pan_state: antelope_protocol::PanState::center(),
@@ -4178,12 +4296,12 @@ mod tests {
     fn connection_status_changes_when_frames_arrive() {
         let mut state = AppState::default();
         state.mark_disconnected();
-        assert!(!state.connection.connected);
+        assert!(!state.device.connection.connected);
 
         state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 0]);
 
-        assert!(state.connection.connected);
-        assert!(state.connection.last_snapshot_at.is_some());
+        assert!(state.device.connection.connected);
+        assert!(state.device.connection.last_snapshot_at.is_some());
     }
 
     #[test]
@@ -4198,9 +4316,9 @@ mod tests {
     #[test]
     fn raw_only_snapshot_difference_is_not_visible_when_raw_view_is_closed() {
         let mut state = AppState::default();
-        state.connection.connected = true;
+        state.device.connection.connected = true;
         state.latest_structural_snapshot = Some(StructuralSnapshot::from_snapshot(&snapshot()));
-        state.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
+        state.raw_view.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
 
         assert!(!state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 1],));
     }
@@ -4208,10 +4326,10 @@ mod tests {
     #[test]
     fn raw_only_snapshot_difference_is_visible_when_raw_view_is_open() {
         let mut state = AppState::default();
-        state.connection.connected = true;
-        state.raw_view_open = true;
+        state.device.connection.connected = true;
+        state.popup.raw_view_open = true;
         state.latest_structural_snapshot = Some(StructuralSnapshot::from_snapshot(&snapshot()));
-        state.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
+        state.raw_view.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
 
         assert!(state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 1],));
     }
@@ -4219,7 +4337,7 @@ mod tests {
     #[test]
     fn auxiliary_frame_is_not_visible_when_raw_view_is_closed() {
         let mut state = AppState::default();
-        state.connection.connected = true;
+        state.device.connection.connected = true;
 
         assert!(!state.observe_frame(
             DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
@@ -4230,8 +4348,8 @@ mod tests {
     #[test]
     fn auxiliary_frame_is_visible_when_raw_view_is_open() {
         let mut state = AppState::default();
-        state.connection.connected = true;
-        state.raw_view_open = true;
+        state.device.connection.connected = true;
+        state.popup.raw_view_open = true;
 
         assert!(state.observe_frame(
             DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
@@ -4249,10 +4367,10 @@ mod tests {
             .as_snapshot()
             .expect("snapshot")
             .clone();
-        controller.state.connection.connected = true;
+        controller.state.device.connection.connected = true;
         controller.state.latest_structural_snapshot =
             Some(StructuralSnapshot::from_snapshot(&snapshot));
-        controller.state.latest_raw_73 = Some(raw.clone());
+        controller.state.raw_view.latest_raw_73 = Some(raw.clone());
         controller.state.apply_snapshot(&snapshot);
 
         transport.push_read(raw);
@@ -4314,10 +4432,13 @@ mod tests {
 
         assert!(observed_frame);
         assert_eq!(
-            controller.state.device.sample_rate,
+            controller.state.device.status.sample_rate,
             Some(SampleRate::Hz48000)
         );
-        assert_eq!(controller.state.device.clock_source, Some(ClockSource::Usb));
+        assert_eq!(
+            controller.state.device.status.clock_source,
+            Some(ClockSource::Usb)
+        );
     }
 
     #[test]
@@ -4346,14 +4467,14 @@ mod tests {
             raw83.clone(),
         );
 
-        assert!(state.latest_raw_73.is_some());
-        assert!(state.latest_raw_83.is_some());
+        assert!(state.raw_view.latest_raw_73.is_some());
+        assert!(state.raw_view.latest_raw_83.is_some());
         assert_eq!(
-            state.latest_raw_73.as_ref().expect("0x73")[0x10 + 0xcf],
+            state.raw_view.latest_raw_73.as_ref().expect("0x73")[0x10 + 0xcf],
             0x4c
         );
         assert_eq!(
-            &state.latest_raw_83.as_ref().expect("0x83")[0..4],
+            &state.raw_view.latest_raw_83.as_ref().expect("0x83")[0..4],
             &raw83[0..4]
         );
 
@@ -4379,13 +4500,13 @@ mod tests {
             raw81.clone(),
         );
 
-        assert_eq!(state.latest_raw_75, Some(raw75));
-        assert_eq!(state.latest_raw_81, Some(raw81));
-        assert_eq!(state.latest_raw_74, Some(raw74));
-        assert_eq!(state.recent_query_request_log.len(), 1);
-        assert!(state.recent_query_request_log[0].contains("0x74 11/03"));
-        assert_eq!(state.recent_query_reply_log.len(), 1);
-        assert!(state.recent_query_reply_log[0].contains("0x75 01/00"));
+        assert_eq!(state.raw_view.latest_raw_75, Some(raw75));
+        assert_eq!(state.raw_view.latest_raw_81, Some(raw81));
+        assert_eq!(state.raw_view.latest_raw_74, Some(raw74));
+        assert_eq!(state.raw_view.recent_query_request_log.len(), 1);
+        assert!(state.raw_view.recent_query_request_log[0].contains("0x74 11/03"));
+        assert_eq!(state.raw_view.recent_query_reply_log.len(), 1);
+        assert!(state.raw_view.recent_query_reply_log[0].contains("0x75 01/00"));
         assert_eq!(
             state.startup_query_summary(0x01),
             Some("Metadata: undecoded")
@@ -4417,18 +4538,18 @@ mod tests {
         );
 
         state.capture_raw_baseline();
-        assert_eq!(state.baseline_raw_73, state.latest_raw_73);
-        assert_eq!(state.baseline_raw_83, state.latest_raw_83);
-        assert_eq!(state.baseline_raw_74, state.latest_raw_74);
-        assert_eq!(state.baseline_raw_75, state.latest_raw_75);
-        assert_eq!(state.baseline_raw_81, state.latest_raw_81);
+        assert_eq!(state.raw_view.baseline_raw_73, state.raw_view.latest_raw_73);
+        assert_eq!(state.raw_view.baseline_raw_83, state.raw_view.latest_raw_83);
+        assert_eq!(state.raw_view.baseline_raw_74, state.raw_view.latest_raw_74);
+        assert_eq!(state.raw_view.baseline_raw_75, state.raw_view.latest_raw_75);
+        assert_eq!(state.raw_view.baseline_raw_81, state.raw_view.latest_raw_81);
 
         state.clear_raw_baseline();
-        assert!(state.baseline_raw_73.is_none());
-        assert!(state.baseline_raw_83.is_none());
-        assert!(state.baseline_raw_74.is_none());
-        assert!(state.baseline_raw_75.is_none());
-        assert!(state.baseline_raw_81.is_none());
+        assert!(state.raw_view.baseline_raw_73.is_none());
+        assert!(state.raw_view.baseline_raw_83.is_none());
+        assert!(state.raw_view.baseline_raw_74.is_none());
+        assert!(state.raw_view.baseline_raw_75.is_none());
+        assert!(state.raw_view.baseline_raw_81.is_none());
     }
 
     #[test]
@@ -4483,12 +4604,12 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
 
-        let metadata = state.device.metadata.expect("metadata");
+        let metadata = state.device.status.metadata.expect("metadata");
         assert_eq!(metadata.product_name, "Zen Go Synergy Core");
         assert_eq!(metadata.serial, "4502721001300");
         assert_eq!(metadata.hardware_version, "6.6");
         assert_eq!(
-            state.last_message,
+            state.ui.last_message,
             "Connected to Zen Go Synergy Core (hw 6.6, serial 4502721001300)"
         );
     }
@@ -4508,18 +4629,20 @@ mod tests {
             );
         }
 
-        assert_eq!(state.recent_query_reply_log.len(), 16);
+        assert_eq!(state.raw_view.recent_query_reply_log.len(), 16);
         assert!(state
+            .raw_view
             .recent_query_reply_log
             .first()
             .unwrap()
             .contains("0x75 03/04"));
         assert!(state
+            .raw_view
             .recent_query_reply_log
             .last()
             .unwrap()
             .contains("0x75 03/13"));
-        assert_eq!(state.selected_query_reply_entry, Some(15));
+        assert_eq!(state.raw_view.selected_query_reply_entry, Some(15));
     }
 
     #[test]
@@ -4552,8 +4675,8 @@ mod tests {
             vec![0x75, 0, 0, 0],
         );
 
-        assert!(state.recent_query_reply_log[0].contains("Selector bitmap"));
-        assert!(state.recent_query_reply_log[1].contains("Startup Mix2 pan categories"));
+        assert!(state.raw_view.recent_query_reply_log[0].contains("Selector bitmap"));
+        assert!(state.raw_view.recent_query_reply_log[1].contains("Startup Mix2 pan categories"));
     }
 
     #[test]
@@ -4570,7 +4693,7 @@ mod tests {
             );
         }
 
-        assert_eq!(state.selected_query_reply_entry, Some(2));
+        assert_eq!(state.raw_view.selected_query_reply_entry, Some(2));
         assert_eq!(
             state
                 .selected_query_reply_entry()
@@ -4579,9 +4702,9 @@ mod tests {
         );
 
         state.cycle_query_reply_entry(false);
-        assert_eq!(state.selected_query_reply_entry, Some(1));
+        assert_eq!(state.raw_view.selected_query_reply_entry, Some(1));
         state.cycle_query_reply_entry(true);
-        assert_eq!(state.selected_query_reply_entry, Some(2));
+        assert_eq!(state.raw_view.selected_query_reply_entry, Some(2));
     }
 
     #[test]
@@ -4592,13 +4715,15 @@ mod tests {
             state.observe_query_request(vec![0x74, 0, 0, 0, 0, 0, 0, 0, 0x03, 0, 0, 0, sub_id]);
         }
 
-        assert_eq!(state.recent_query_request_log.len(), 16);
+        assert_eq!(state.raw_view.recent_query_request_log.len(), 16);
         assert!(state
+            .raw_view
             .recent_query_request_log
             .first()
             .unwrap()
             .contains("0x74 03/04"));
         assert!(state
+            .raw_view
             .recent_query_request_log
             .last()
             .unwrap()
@@ -4608,16 +4733,16 @@ mod tests {
     #[test]
     fn focus_cycle_skips_raw_view_state() {
         let mut state = AppState::default();
-        state.focus = FocusArea::Status;
+        state.ui.focus = FocusArea::Status;
 
         state.cycle_focus();
-        assert_eq!(state.focus, FocusArea::Outputs);
+        assert_eq!(state.ui.focus, FocusArea::Outputs);
         state.cycle_focus();
-        assert_eq!(state.focus, FocusArea::Mixer);
+        assert_eq!(state.ui.focus, FocusArea::Mixer);
         state.cycle_focus();
-        assert_eq!(state.focus, FocusArea::Preamp);
+        assert_eq!(state.ui.focus, FocusArea::Preamp);
         state.cycle_focus();
-        assert_eq!(state.focus, FocusArea::Outputs);
+        assert_eq!(state.ui.focus, FocusArea::Outputs);
     }
 
     #[test]
@@ -4625,26 +4750,26 @@ mod tests {
         let mut state = AppState::default();
 
         state.toggle_raw_view();
-        assert!(state.raw_view_open);
-        assert_eq!(state.selected_raw_packet, RawPacketTab::State73);
+        assert!(state.popup.raw_view_open);
+        assert_eq!(state.raw_view.selected_tab, RawPacketTab::State73);
 
         state.cycle_raw_packet(true);
-        assert_eq!(state.selected_raw_packet, RawPacketTab::Auxiliary);
+        assert_eq!(state.raw_view.selected_tab, RawPacketTab::Auxiliary);
         state.cycle_raw_packet(false);
-        assert_eq!(state.selected_raw_packet, RawPacketTab::State73);
+        assert_eq!(state.raw_view.selected_tab, RawPacketTab::State73);
 
         state.toggle_raw_view();
-        assert!(!state.raw_view_open);
+        assert!(!state.popup.raw_view_open);
     }
 
     #[test]
     fn ensure_selected_mixer_channel_visible_advances_scroll_window() {
         let mut state = AppState::default();
-        state.selected_channel = 6;
+        state.mixer.selected_channel = 6;
 
         state.ensure_selected_mixer_channel_visible(4);
 
-        assert_eq!(state.mixer_strip_scroll, 3);
+        assert_eq!(state.mixer.strip_scroll, 3);
     }
 
     #[test]
@@ -4652,10 +4777,10 @@ mod tests {
         let mut state = AppState::default();
 
         state.scroll_mixer_strip_viewport(99, 5);
-        assert_eq!(state.mixer_strip_scroll, 11);
+        assert_eq!(state.mixer.strip_scroll, 11);
 
         state.scroll_mixer_strip_viewport(-99, 5);
-        assert_eq!(state.mixer_strip_scroll, 0);
+        assert_eq!(state.mixer.strip_scroll, 0);
     }
 
     #[test]
@@ -4664,12 +4789,12 @@ mod tests {
         let page = 8;
 
         state.page_mixer_strip_viewport(true, page);
-        assert_eq!(state.mixer_strip_scroll, 8);
+        assert_eq!(state.mixer.strip_scroll, 8);
 
         state.page_mixer_strip_viewport(true, page);
-        assert_eq!(state.mixer_strip_scroll, 8);
+        assert_eq!(state.mixer.strip_scroll, 8);
 
         state.page_mixer_strip_viewport(false, page);
-        assert_eq!(state.mixer_strip_scroll, 0);
+        assert_eq!(state.mixer.strip_scroll, 0);
     }
 }

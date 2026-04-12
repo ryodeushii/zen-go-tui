@@ -130,7 +130,7 @@ mod tests {
             MixerAssignment::Mute,
         ];
 
-        for surface in &mut controller.state.mixer_channels {
+        for surface in &mut controller.state.mixer.channels {
             for (channel, assignment) in surface.iter_mut().zip(assignments) {
                 channel.assignment = Some(assignment);
             }
@@ -142,9 +142,9 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
-        controller.state.focus = FocusArea::Mixer;
-        controller.state.selected_channel = 0;
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
+        controller.state.ui.focus = FocusArea::Mixer;
+        controller.state.mixer.selected_channel = 0;
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].assignment =
             Some(MixerAssignment::Preamp(1));
 
         let action = handle_key_press(
@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(action, KeyAction::Continue);
         assert!(transport.take_writes().is_empty());
         assert_eq!(
-            controller.state.assignment_picker,
+            controller.state.popup.assignment_picker,
             Some(AssignmentPickerState { strip: 1 })
         );
     }
@@ -167,9 +167,9 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
-        controller.state.routing_popup_open = true;
-        controller.state.focus = FocusArea::Mixer;
-        controller.state.selected_channel = 5;
+        controller.state.popup.routing_open = true;
+        controller.state.ui.focus = FocusArea::Mixer;
+        controller.state.mixer.selected_channel = 5;
 
         let action = handle_key_press(
             &mut controller,
@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(action, KeyAction::Continue);
         assert!(transport.take_writes().is_empty());
         assert_eq!(
-            controller.state.assignment_picker,
+            controller.state.popup.assignment_picker,
             Some(AssignmentPickerState { strip: 6 })
         );
     }
@@ -190,9 +190,9 @@ mod tests {
     fn opening_preamp_mode_selector_from_keyboard_does_not_send_mode_change() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.focus = FocusArea::Preamp;
-        controller.state.selected_preamp_input = 1;
-        controller.state.preamp.input2.mode = PreampMode::Line;
+        controller.state.ui.focus = FocusArea::Preamp;
+        controller.state.preamp.selected_input = 1;
+        controller.state.preamp.state.input2.mode = PreampMode::Line;
 
         let action = handle_key_press(
             &mut controller,
@@ -204,20 +204,20 @@ mod tests {
         assert_eq!(action, KeyAction::Continue);
         assert!(transport.take_writes().is_empty());
         assert_eq!(
-            controller.state.selector_popup,
+            controller.state.popup.selector_popup,
             Some(SelectorPopupState {
                 kind: SelectorPopupKind::PreampMode { input: 1 }
             })
         );
-        assert_eq!(controller.state.popup_selected_index, 1);
+        assert_eq!(controller.state.popup.selected_index, 1);
     }
 
     #[test]
     fn up_key_adjusts_focused_output_level() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.focus = FocusArea::Outputs;
-        controller.state.outputs[0] =
+        controller.state.ui.focus = FocusArea::Outputs;
+        controller.state.output.states[0] =
             OutputState::new(OutputTarget::Monitor, 0x30, OutputMode::Normal);
 
         let action = handle_key_press(
@@ -238,10 +238,10 @@ mod tests {
     fn down_key_adjusts_focused_preamp_gain() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.focus = FocusArea::Preamp;
-        controller.state.selected_preamp_input = 1;
-        controller.state.preamp.input2.mode = PreampMode::Mic;
-        controller.state.preamp.input2.gain_raw = 0x10;
+        controller.state.ui.focus = FocusArea::Preamp;
+        controller.state.preamp.selected_input = 1;
+        controller.state.preamp.state.input2.mode = PreampMode::Mic;
+        controller.state.preamp.state.input2.gain_raw = 0x10;
 
         let action = handle_key_press(
             &mut controller,
@@ -261,13 +261,14 @@ mod tests {
     fn up_key_moves_popup_selection_before_adjusting_controls() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.focus = FocusArea::Outputs;
-        controller.state.selected_output = 1;
-        controller.state.outputs[1] = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
-        controller.state.selector_popup = Some(SelectorPopupState {
+        controller.state.ui.focus = FocusArea::Outputs;
+        controller.state.output.selected = 1;
+        controller.state.output.states[1] =
+            OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
+        controller.state.popup.selector_popup = Some(SelectorPopupState {
             kind: SelectorPopupKind::SampleRate,
         });
-        controller.state.popup_selected_index = 1;
+        controller.state.popup.selected_index = 1;
 
         let action = handle_key_press(
             &mut controller,
@@ -277,7 +278,7 @@ mod tests {
         .expect("popup up key");
 
         assert_eq!(action, KeyAction::Continue);
-        assert_eq!(controller.state.popup_selected_index, 0);
+        assert_eq!(controller.state.popup.selected_index, 0);
         assert!(transport.take_writes().is_empty());
     }
 
@@ -285,11 +286,11 @@ mod tests {
     fn toggle_mixer_solo_sends_selected_channel_state() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.focus = FocusArea::Mixer;
-        controller.state.selected_channel = 0;
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        controller.state.ui.focus = FocusArea::Mixer;
+        controller.state.mixer.selected_channel = 0;
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
         let action = handle_key_press(
             &mut controller,
@@ -321,7 +322,7 @@ mod tests {
             )
             .expect("open picker");
         assert_eq!(
-            controller.state.assignment_picker,
+            controller.state.popup.assignment_picker,
             Some(AssignmentPickerState { strip: 5 })
         );
 
@@ -346,8 +347,8 @@ mod tests {
     fn opening_assignment_picker_preselects_current_assignment() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.surface = Surface::MonitorHp1;
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][4].assignment =
+        controller.state.mixer.surface = Surface::MonitorHp1;
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][4].assignment =
             Some(MixerAssignment::Oscillator(1));
 
         controller
@@ -357,14 +358,15 @@ mod tests {
             )
             .expect("open picker");
 
-        assert_eq!(controller.state.popup_selected_index, 13);
+        assert_eq!(controller.state.popup.selected_index, 13);
     }
 
     #[test]
     fn mouse_output_mute_uses_selected_output_target() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.outputs[1] = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
+        controller.state.output.states[1] =
+            OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
 
         controller
             .apply_intent(
@@ -425,9 +427,9 @@ mod tests {
     fn mouse_mixer_level_action_sends_exact_level() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
         controller
             .apply_intent(
@@ -452,8 +454,8 @@ mod tests {
     fn mouse_mixer_pan_action_sends_exact_pan() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
         controller
             .apply_intent(
@@ -478,10 +480,10 @@ mod tests {
     fn mouse_adjust_mixer_level_action_sends_single_step_change() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].level = Some(0x20);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].level = Some(0x20);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
         controller
             .apply_intent(
@@ -506,9 +508,9 @@ mod tests {
     fn mouse_adjust_mixer_pan_action_sends_single_step_change() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
+        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
         controller
             .apply_intent(
@@ -533,7 +535,7 @@ mod tests {
     fn handle_mouse_event_scroll_up_on_output_slider_sends_adjustment() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.outputs[0] =
+        controller.state.output.states[0] =
             OutputState::new(OutputTarget::Monitor, 0x30, OutputMode::Normal);
         let area = ratatui::layout::Rect::new(0, 0, 120, 50);
         let chunks = ratatui::layout::Layout::default()
@@ -616,14 +618,14 @@ mod tests {
             .apply_intent(ui::Intent::PageMixerStripsRight, area)
             .expect("page strips right");
 
-        assert_eq!(controller.state.mixer_strip_scroll, 8);
+        assert_eq!(controller.state.mixer.strip_scroll, 8);
     }
 
     #[test]
     fn handle_mouse_event_scroll_in_strip_panel_does_not_scroll_viewport() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.mixer_strip_scroll = 8;
+        controller.state.mixer.strip_scroll = 8;
         let area = ratatui::layout::Rect::new(0, 0, 120, 50);
 
         handle_mouse_event(
@@ -638,7 +640,7 @@ mod tests {
         )
         .expect("scroll strip panel");
 
-        assert_eq!(controller.state.mixer_strip_scroll, 8);
+        assert_eq!(controller.state.mixer.strip_scroll, 8);
     }
 
     #[test]
@@ -652,7 +654,7 @@ mod tests {
                 ratatui::layout::Rect::new(0, 0, 160, 50),
             )
             .expect("open hotkeys");
-        assert!(controller.state.hotkeys_popup_open);
+        assert!(controller.state.popup.hotkeys_open);
 
         controller
             .apply_intent(
@@ -660,14 +662,14 @@ mod tests {
                 ratatui::layout::Rect::new(0, 0, 160, 50),
             )
             .expect("close hotkeys");
-        assert!(!controller.state.hotkeys_popup_open);
+        assert!(!controller.state.popup.hotkeys_open);
     }
 
     #[test]
     fn mouse_sample_rate_selector_opens_and_pick_sends_exact_rate() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.device.clock_source = Some(ClockSource::Internal);
+        controller.state.device.status.clock_source = Some(ClockSource::Internal);
 
         controller
             .apply_intent(
@@ -676,7 +678,7 @@ mod tests {
             )
             .expect("open sample rate selector");
         assert_eq!(
-            controller.state.selector_popup,
+            controller.state.popup.selector_popup,
             Some(SelectorPopupState {
                 kind: SelectorPopupKind::SampleRate,
             })
@@ -688,7 +690,7 @@ mod tests {
                 ratatui::layout::Rect::new(0, 0, 160, 50),
             )
             .expect("pick sample rate");
-        assert_eq!(controller.state.selector_popup, None);
+        assert_eq!(controller.state.popup.selector_popup, None);
 
         controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
@@ -700,8 +702,8 @@ mod tests {
     fn sample_rate_controls_are_disabled_when_clock_source_is_not_internal() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
-        controller.state.device.clock_source = Some(ClockSource::Usb);
-        controller.state.device.sample_rate = Some(SampleRate::Hz192000);
+        controller.state.device.status.clock_source = Some(ClockSource::Usb);
+        controller.state.device.status.sample_rate = Some(SampleRate::Hz192000);
 
         controller
             .apply_intent(
@@ -709,7 +711,7 @@ mod tests {
                 ratatui::layout::Rect::new(0, 0, 160, 50),
             )
             .expect("open sample rate selector");
-        assert_eq!(controller.state.selector_popup, None);
+        assert_eq!(controller.state.popup.selector_popup, None);
 
         let action = handle_key_press(
             &mut controller,
@@ -734,7 +736,7 @@ mod tests {
             )
             .expect("open preamp mode selector");
         assert_eq!(
-            controller.state.selector_popup,
+            controller.state.popup.selector_popup,
             Some(SelectorPopupState {
                 kind: SelectorPopupKind::PreampMode { input: 1 },
             })
@@ -749,7 +751,7 @@ mod tests {
                 ratatui::layout::Rect::new(0, 0, 160, 50),
             )
             .expect("pick preamp mode");
-        assert_eq!(controller.state.selector_popup, None);
+        assert_eq!(controller.state.popup.selector_popup, None);
 
         controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
@@ -761,7 +763,7 @@ mod tests {
     fn popup_selection_wraps_with_keyboard_navigation() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.assignment_picker = Some(AssignmentPickerState { strip: 1 });
+        controller.state.popup.assignment_picker = Some(AssignmentPickerState { strip: 1 });
 
         handle_key_press(
             &mut controller,
@@ -770,7 +772,7 @@ mod tests {
         )
         .expect("popup up");
         assert_eq!(
-            controller.state.popup_selected_index,
+            controller.state.popup.selected_index,
             MixerAssignment::grounded_choices().len() - 1
         );
 
@@ -780,15 +782,15 @@ mod tests {
             ratatui::layout::Rect::new(0, 0, 120, 50),
         )
         .expect("popup down");
-        assert_eq!(controller.state.popup_selected_index, 0);
+        assert_eq!(controller.state.popup.selected_index, 0);
     }
 
     #[test]
     fn profile_popup_selection_uses_saved_profile_list() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.profiles_popup_open = true;
-        controller.state.profile_names = vec!["tracking".to_string(), "mixdown".to_string()];
+        controller.state.popup.profiles_open = true;
+        controller.state.popup.profile_names = vec!["tracking".to_string(), "mixdown".to_string()];
 
         handle_key_press(
             &mut controller,
@@ -796,7 +798,7 @@ mod tests {
             ratatui::layout::Rect::new(0, 0, 120, 50),
         )
         .expect("popup up");
-        assert_eq!(controller.state.popup_selected_index, 1);
+        assert_eq!(controller.state.popup.selected_index, 1);
 
         handle_key_press(
             &mut controller,
@@ -804,14 +806,14 @@ mod tests {
             ratatui::layout::Rect::new(0, 0, 120, 50),
         )
         .expect("popup down");
-        assert_eq!(controller.state.popup_selected_index, 0);
+        assert_eq!(controller.state.popup.selected_index, 0);
     }
 
     #[test]
     fn profile_editor_accepts_characters_and_backspace() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.profile_editor = Some(ProfileEditorState {
+        controller.state.popup.profile_editor = Some(ProfileEditorState {
             mode: ProfileEditorMode::Save,
             original_name: None,
             value: "mix".to_string(),
@@ -833,6 +835,7 @@ mod tests {
         assert_eq!(
             controller
                 .state
+                .popup
                 .profile_editor
                 .as_ref()
                 .map(|editor| &editor.value),
@@ -845,8 +848,8 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
-        controller.state.assignment_picker = Some(AssignmentPickerState { strip: 5 });
-        controller.state.popup_selected_index = 13;
+        controller.state.popup.assignment_picker = Some(AssignmentPickerState { strip: 5 });
+        controller.state.popup.selected_index = 13;
 
         activate_popup_selection(&mut controller).expect("activate popup selection");
 
@@ -855,7 +858,7 @@ mod tests {
         assert_eq!(writes.len(), 5);
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
         assert_eq!(&writes[0][0x10 + 0x0b..0x10 + 0x0d], &[0x09, 0x00]);
-        assert_eq!(controller.state.assignment_picker, None);
+        assert_eq!(controller.state.popup.assignment_picker, None);
     }
 
     #[test]
@@ -896,14 +899,14 @@ mod tests {
     fn handle_runtime_error_marks_controller_disconnected_for_device_errors() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
-        controller.state.connection.connected = true;
+        controller.state.device.connection.connected = true;
 
         handle_runtime_error(&mut controller, TransportError::DeviceDisconnected.into())
             .expect("device errors should be swallowed");
 
-        assert!(!controller.state.connection.connected);
+        assert!(!controller.state.device.connection.connected);
         assert_eq!(
-            controller.state.last_message,
+            controller.state.ui.last_message,
             "Waiting for Zen Go device..."
         );
     }

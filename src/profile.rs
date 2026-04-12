@@ -102,18 +102,18 @@ impl DeviceProfile {
     pub fn capture(state: &AppState) -> Result<Self> {
         Ok(Self {
             outputs: OutputProfiles {
-                monitor: OutputProfile::from_device(state.outputs[0])?,
-                hp1: OutputProfile::from_device(state.outputs[1])?,
-                hp2: OutputProfile::from_device(state.outputs[2])?,
+                monitor: OutputProfile::from_device(state.output.states[0])?,
+                hp1: OutputProfile::from_device(state.output.states[1])?,
+                hp2: OutputProfile::from_device(state.output.states[2])?,
             },
             preamps: PreampProfiles {
-                input1: PreampInputProfile::from_device(state.preamp.input1)?,
-                input2: PreampInputProfile::from_device(state.preamp.input2)?,
+                input1: PreampInputProfile::from_device(state.preamp.state.input1)?,
+                input2: PreampInputProfile::from_device(state.preamp.state.input2)?,
             },
             assignments: capture_assignments(state)?,
             mixers: MixerProfiles {
-                mix1: capture_surface(&state.mixer_channels[MixerSurface::Mix1.index()])?,
-                mix2: capture_surface(&state.mixer_channels[MixerSurface::Mix2.index()])?,
+                mix1: capture_surface(&state.mixer.channels[MixerSurface::Mix1.index()])?,
+                mix2: capture_surface(&state.mixer.channels[MixerSurface::Mix2.index()])?,
             },
         })
     }
@@ -143,25 +143,25 @@ impl DeviceProfile {
     }
 
     pub fn apply_to_state(&self, state: &mut AppState) {
-        state.outputs[0].volume = self.outputs.monitor.volume_step;
-        state.outputs[0].mode = self.outputs.monitor.mode.into_device();
-        state.outputs[1].volume = self.outputs.hp1.volume_step;
-        state.outputs[1].mode = self.outputs.hp1.mode.into_device();
-        state.outputs[2].volume = self.outputs.hp2.volume_step;
-        state.outputs[2].mode = self.outputs.hp2.mode.into_device();
+        state.output.states[0].volume = self.outputs.monitor.volume_step;
+        state.output.states[0].mode = self.outputs.monitor.mode.into_device();
+        state.output.states[1].volume = self.outputs.hp1.volume_step;
+        state.output.states[1].mode = self.outputs.hp1.mode.into_device();
+        state.output.states[2].volume = self.outputs.hp2.volume_step;
+        state.output.states[2].mode = self.outputs.hp2.mode.into_device();
 
-        apply_preamp_to_state(&mut state.preamp.input1, &self.preamps.input1);
-        apply_preamp_to_state(&mut state.preamp.input2, &self.preamps.input2);
-        state.preamp.cluster = [
-            state.preamp.input1.gain_raw,
-            state.preamp.input2.gain_raw,
-            state.preamp.input1.mode_raw,
-            state.preamp.input2.mode_raw,
+        apply_preamp_to_state(&mut state.preamp.state.input1, &self.preamps.input1);
+        apply_preamp_to_state(&mut state.preamp.state.input2, &self.preamps.input2);
+        state.preamp.state.cluster = [
+            state.preamp.state.input1.gain_raw,
+            state.preamp.state.input2.gain_raw,
+            state.preamp.state.input1.mode_raw,
+            state.preamp.state.input2.mode_raw,
         ];
 
         for entry in &self.assignments {
             let assignment = Some(entry.source.into_device());
-            for surface in &mut state.mixer_channels {
+            for surface in &mut state.mixer.channels {
                 surface[entry.channel as usize - 1].assignment = assignment;
             }
         }
@@ -172,7 +172,7 @@ impl DeviceProfile {
         ] {
             for strip in strips {
                 if let Some(channel) =
-                    state.mixer_channels[mixer.index()].get_mut(strip.channel as usize - 1)
+                    state.mixer.channels[mixer.index()].get_mut(strip.channel as usize - 1)
                 {
                     channel.level = Some(strip.level_raw);
                     channel.pan = PanState::from_raw(strip.pan_raw);
@@ -421,8 +421,8 @@ fn delete_profile_at_path(path: &Path) -> Result<()> {
 fn capture_assignments(state: &AppState) -> Result<Vec<MixerAssignmentEntry>> {
     (0..16)
         .map(|index| {
-            let mix1 = state.mixer_channels[MixerSurface::Mix1.index()][index].assignment;
-            let mix2 = state.mixer_channels[MixerSurface::Mix2.index()][index].assignment;
+            let mix1 = state.mixer.channels[MixerSurface::Mix1.index()][index].assignment;
+            let mix2 = state.mixer.channels[MixerSurface::Mix2.index()][index].assignment;
             let assignment = match (mix1, mix2) {
                 (Some(left), Some(right)) if left != right => {
                     bail!(
@@ -564,20 +564,20 @@ mod tests {
     #[test]
     fn device_profile_captures_known_controls_and_round_trips_through_toml() {
         let mut state = AppState::default();
-        state.outputs[0].volume = 0x12;
-        state.outputs[0].mode = OutputMode::Dim;
-        state.outputs[1].volume = 0x21;
-        state.outputs[1].mode = OutputMode::Mute;
-        state.outputs[2].volume = 0x05;
-        state.outputs[2].mode = OutputMode::Normal;
+        state.output.states[0].volume = 0x12;
+        state.output.states[0].mode = OutputMode::Dim;
+        state.output.states[1].volume = 0x21;
+        state.output.states[1].mode = OutputMode::Mute;
+        state.output.states[2].volume = 0x05;
+        state.output.states[2].mode = OutputMode::Normal;
 
-        state.preamp.input1.gain_raw = 0x20;
-        state.preamp.input1.mode = PreampMode::Mic;
-        state.preamp.input1.mode_raw = 0x50;
-        state.preamp.input1.phantom_on = true;
-        state.preamp.input2.gain_raw = 0x11;
-        state.preamp.input2.mode = PreampMode::Line;
-        state.preamp.input2.mode_raw = 0x41;
+        state.preamp.state.input1.gain_raw = 0x20;
+        state.preamp.state.input1.mode = PreampMode::Mic;
+        state.preamp.state.input1.mode_raw = 0x50;
+        state.preamp.state.input1.phantom_on = true;
+        state.preamp.state.input2.gain_raw = 0x11;
+        state.preamp.state.input2.mode = PreampMode::Line;
+        state.preamp.state.input2.mode_raw = 0x41;
 
         for index in 0..16 {
             let assignment = if index == 0 {
@@ -586,7 +586,7 @@ mod tests {
                 MixerAssignment::Mute
             };
             for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
-                let channel = &mut state.mixer_channels[mixer.index()][index];
+                let channel = &mut state.mixer.channels[mixer.index()][index];
                 channel.assignment = Some(assignment);
                 channel.level = Some(index as u8);
                 channel.pan = if index == 0 {

@@ -119,9 +119,9 @@ fn meter_value_labels_reserve_width_and_use_negative_infinity() {
 #[test]
 fn mixer_strip_widget_renders_compact_vertical_strip_layout() {
     let mut state = AppState::default();
-    state.focus = FocusArea::Mixer;
-    state.selected_channel = 10;
-    state.mixer_channels[0][10] = MixerChannelState {
+    state.ui.focus = FocusArea::Mixer;
+    state.mixer.selected_channel = 10;
+    state.mixer.channels[0][10] = MixerChannelState {
         channel: 11,
         level: Some(0x10),
         meter: Some(0x30),
@@ -140,7 +140,7 @@ fn mixer_strip_widget_renders_compact_vertical_strip_layout() {
                 buffer,
                 &state,
                 10,
-                &state.mixer_channels[0][10],
+                &state.mixer.channels[0][10],
             );
         },
     );
@@ -188,15 +188,15 @@ fn preamp_visual_stacks_observed_meter_and_gain_sliders() {
 #[test]
 fn mixer_strip_widget_uses_reserved_meter_width_for_silence() {
     let mut state = AppState::default();
-    state.focus = FocusArea::Mixer;
-    state.selected_channel = 0;
-    state.mixer_channels[0][0].level = Some(0x00);
-    state.mixer_channels[0][0].meter = Some(0x60);
+    state.ui.focus = FocusArea::Mixer;
+    state.mixer.selected_channel = 0;
+    state.mixer.channels[0][0].level = Some(0x00);
+    state.mixer.channels[0][0].meter = Some(0x60);
 
     let rendered = render_buffer(
         Rect::new(0, 0, 72, layouts::mixer_strip_height()),
         |area, buffer| {
-            render::render_mixer_strip_widget(area, buffer, &state, 0, &state.mixer_channels[0][0]);
+            render::render_mixer_strip_widget(area, buffer, &state, 0, &state.mixer.channels[0][0]);
         },
     );
 
@@ -206,15 +206,15 @@ fn mixer_strip_widget_uses_reserved_meter_width_for_silence() {
 #[test]
 fn mixer_strip_widget_keeps_db_scale_markers_in_wide_area() {
     let mut state = AppState::default();
-    state.focus = FocusArea::Mixer;
-    state.selected_channel = 0;
-    state.mixer_channels[0][0].level = Some(0x00);
-    state.mixer_channels[0][0].meter = Some(0x10);
+    state.ui.focus = FocusArea::Mixer;
+    state.mixer.selected_channel = 0;
+    state.mixer.channels[0][0].level = Some(0x00);
+    state.mixer.channels[0][0].meter = Some(0x10);
 
     let rendered = render_buffer(
         Rect::new(0, 0, 120, layouts::mixer_strip_height()),
         |area, buffer| {
-            render::render_mixer_strip_widget(area, buffer, &state, 0, &state.mixer_channels[0][0]);
+            render::render_mixer_strip_widget(area, buffer, &state, 0, &state.mixer.channels[0][0]);
         },
     );
 
@@ -243,9 +243,9 @@ fn labeled_level_slider_keeps_handle_visible_at_maximum() {
 #[test]
 fn status_strip_surfaces_message_surface_and_output() {
     let mut state = AppState::default();
-    state.surface = Surface::Hp2;
-    state.selected_output = 1;
-    state.last_message = "Applied dim change".to_string();
+    state.mixer.surface = Surface::Hp2;
+    state.output.selected = 1;
+    state.ui.last_message = "Applied dim change".to_string();
 
     let rendered = render::render_status_strip(&state).to_string();
 
@@ -266,7 +266,7 @@ fn mix_meter_extracts_mix1_lane_pair() {
     frame[0x10 + 0x6a] = 0x0f;
     frame[0x10 + 0xda] = 0x0a;
     frame[0x10 + 0xdb] = 0x05;
-    state.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame);
 
     assert_eq!(mouse::mix_meter(&state), Some(("MIX 1", 0x0a, 0x05)));
 }
@@ -291,7 +291,7 @@ fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
     frame[0x10 + 0x6a] = 0x0f;
     frame[0x10 + 0xda] = 0x0a;
     frame[0x10 + 0xdb] = 0x05;
-    state.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame);
 
     let mixer = layouts::mixer_layout(Rect::new(0, 0, 100, 20));
     let meter_area = layouts::mixer_strip_panel_layout(mixer[1], true)[1];
@@ -323,15 +323,15 @@ fn mix_meter_widget_renders_two_row_stereo_bar_and_fixed_db_labels() {
 #[test]
 fn device_header_surfaces_serial_and_hw_without_duplicate_status_line() {
     let mut state = AppState::default();
-    state.device.metadata = Some(antelope_protocol::DeviceMetadata {
+    state.device.status.metadata = Some(antelope_protocol::DeviceMetadata {
         product_name: "Zen Go Synergy Core".to_string(),
         serial: "1234567890".to_string(),
         hardware_version: "6.6".to_string(),
     });
-    state.device.sample_rate = Some(SampleRate::Hz48000);
-    state.device.clock_source = Some(ClockSource::Internal);
-    state.device.lock_known = true;
-    state.device.locked = Some(true);
+    state.device.status.sample_rate = Some(SampleRate::Hz48000);
+    state.device.status.clock_source = Some(ClockSource::Internal);
+    state.device.status.lock_known = true;
+    state.device.status.locked = Some(true);
 
     let rendered = render::render_device_header(&state).to_string();
     let metadata = render::render_device_metadata(&state).to_string();
@@ -348,7 +348,7 @@ fn device_header_surfaces_serial_and_hw_without_duplicate_status_line() {
 #[test]
 fn device_panel_layout_reserves_full_width_for_serial_and_hw_chips() {
     let mut state = AppState::default();
-    state.device.metadata = Some(antelope_protocol::DeviceMetadata {
+    state.device.status.metadata = Some(antelope_protocol::DeviceMetadata {
         product_name: "Zen Go Synergy Core".to_string(),
         serial: "1234567890".to_string(),
         hardware_version: "6.6".to_string(),
@@ -365,8 +365,8 @@ fn device_panel_layout_reserves_full_width_for_serial_and_hw_chips() {
 #[test]
 fn device_header_prefers_live_sample_rate_readout_over_configured_rate() {
     let mut state = AppState::default();
-    state.device.sample_rate = Some(SampleRate::Hz96000);
-    state.device.sample_rate_hz = Some(44_100);
+    state.device.status.sample_rate = Some(SampleRate::Hz96000);
+    state.device.status.sample_rate_hz = Some(44_100);
 
     let rendered = render::render_device_header(&state).to_string();
 
@@ -377,12 +377,12 @@ fn device_header_prefers_live_sample_rate_readout_over_configured_rate() {
 #[test]
 fn afx_page_renders_usb_recording_pairs_from_mixer_assignments() {
     let mut state = AppState::default();
-    state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
+    state.mixer.channels[MixerSurface::Mix1.index()][0].assignment =
         Some(MixerAssignment::Preamp(1));
-    state.mixer_channels[MixerSurface::Mix1.index()][1].assignment =
+    state.mixer.channels[MixerSurface::Mix1.index()][1].assignment =
         Some(MixerAssignment::Preamp(2));
     for channel in 2..8 {
-        state.mixer_channels[MixerSurface::Mix1.index()][channel].assignment =
+        state.mixer.channels[MixerSurface::Mix1.index()][channel].assignment =
             Some(MixerAssignment::Mute);
     }
 
@@ -413,30 +413,31 @@ fn connection_badge_uses_green_orange_and_red_states() {
         Color::Rgb(255, 165, 0)
     );
 
-    state.connection.connected = true;
+    state.device.connection.connected = true;
     assert_eq!(render::connection_badge_color(&state), Color::LightGreen);
 
-    state.connection.connected = false;
-    state.connection.last_snapshot_at = Some(Instant::now() - std::time::Duration::from_secs(3));
+    state.device.connection.connected = false;
+    state.device.connection.last_snapshot_at =
+        Some(Instant::now() - std::time::Duration::from_secs(3));
     assert_eq!(render::connection_badge_color(&state), Color::LightRed);
 }
 
 #[test]
 fn mixer_strip_rendering_includes_solo_state() {
     let mut state = AppState::default();
-    state.focus = crate::app::FocusArea::Mixer;
-    state.selected_channel = 0;
-    state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(true);
+    state.ui.focus = crate::app::FocusArea::Mixer;
+    state.mixer.selected_channel = 0;
+    state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(true);
 
     let line = render::render_mixer_strip_line(
         &state,
         0,
-        &state.mixer_channels[MixerSurface::Mix1.index()][0],
+        &state.mixer.channels[MixerSurface::Mix1.index()][0],
     );
     let controls = render::render_mixer_strip_controls(
         &state,
         0,
-        &state.mixer_channels[MixerSurface::Mix1.index()][0],
+        &state.mixer.channels[MixerSurface::Mix1.index()][0],
     );
 
     assert!(line.contains("solo=on"));
@@ -468,7 +469,7 @@ fn zero_bytes_are_dimmed_and_offsets_are_bold() {
 #[test]
 fn query_reply_panel_includes_recent_reply_log() {
     let mut state = AppState::default();
-    state.recent_query_reply_entries = vec![
+    state.raw_view.recent_query_reply_entries = vec![
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/05 [64 bytes] 05 00 00 00 01 01 00 01".to_string(),
             raw: vec![0x75, 0x05],
@@ -478,7 +479,7 @@ fn query_reply_panel_includes_recent_reply_log() {
             raw: vec![0x75, 0x06],
         },
     ];
-    state.selected_query_reply_entry = Some(1);
+    state.raw_view.selected_query_reply_entry = Some(1);
 
     let text = render::render_query_reply_panel(&[0x75, 0x00, 0x00, 0x00], &state).to_string();
 
@@ -488,7 +489,8 @@ fn query_reply_panel_includes_recent_reply_log() {
 #[test]
 fn query_request_panel_includes_recent_request_log() {
     let mut state = AppState::default();
-    state.recent_query_request_log = vec!["0x74 03/05".to_string(), "0x74 03/06".to_string()];
+    state.raw_view.recent_query_request_log =
+        vec!["0x74 03/05".to_string(), "0x74 03/06".to_string()];
 
     let text = render::render_query_request_panel(&[0x74, 0x00, 0x00, 0x00], &state).to_string();
 
@@ -525,7 +527,7 @@ fn mouse_action_selects_raw_packet_tab_when_raw_view_is_open() {
     let tabs = layouts::raw_tab_hit_areas(layout[1]);
     let point = (tabs[3].x + tabs[3].width / 2, tabs[3].y);
     let mut state = AppState::default();
-    state.raw_view_open = true;
+    state.popup.raw_view_open = true;
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
@@ -605,11 +607,11 @@ fn mouse_action_pages_mixer_strips_right_from_panel_button() {
 fn mouse_action_opens_assignment_picker_from_afx_routing_source_chip() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = AppState::default();
-    state.routing_popup_open = true;
-    state.focus = FocusArea::Mixer;
-    state.mixer_channels[MixerSurface::Mix1.index()][0].assignment =
+    state.popup.routing_open = true;
+    state.ui.focus = FocusArea::Mixer;
+    state.mixer.channels[MixerSurface::Mix1.index()][0].assignment =
         Some(MixerAssignment::Preamp(1));
-    state.mixer_channels[MixerSurface::Mix1.index()][1].assignment =
+    state.mixer.channels[MixerSurface::Mix1.index()][1].assignment =
         Some(MixerAssignment::Preamp(2));
     let row_area = layouts::afx_routing_layout(layouts::routing_popup_area(area))[4];
     let rects = layouts::afx_routing_row_rects(row_area, &state, 0);
@@ -625,12 +627,12 @@ fn mouse_action_opens_assignment_picker_from_afx_routing_source_chip() {
 fn afx_routing_source_columns_stay_aligned_for_different_label_lengths() {
     let area = Rect::new(0, 0, 120, 1);
     let mut state = AppState::default();
-    state.mixer_channels[MixerSurface::Mix1.index()][0].assignment = Some(MixerAssignment::Mute);
-    state.mixer_channels[MixerSurface::Mix1.index()][1].assignment =
+    state.mixer.channels[MixerSurface::Mix1.index()][0].assignment = Some(MixerAssignment::Mute);
+    state.mixer.channels[MixerSurface::Mix1.index()][1].assignment =
         Some(MixerAssignment::Preamp(2));
-    state.mixer_channels[MixerSurface::Mix1.index()][2].assignment =
+    state.mixer.channels[MixerSurface::Mix1.index()][2].assignment =
         Some(MixerAssignment::ComputerPlay(8));
-    state.mixer_channels[MixerSurface::Mix1.index()][3].assignment =
+    state.mixer.channels[MixerSurface::Mix1.index()][3].assignment =
         Some(MixerAssignment::Oscillator(1));
 
     let first = layouts::afx_routing_row_rects(area, &state, 0);
@@ -644,7 +646,7 @@ fn afx_routing_source_columns_stay_aligned_for_different_label_lengths() {
 fn mouse_action_opens_sample_rate_selector_from_device_chip() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = AppState::default();
-    state.device.clock_source = Some(ClockSource::Internal);
+    state.device.status.clock_source = Some(ClockSource::Internal);
     let chips = layouts::device_header_hit_areas(
         layouts::titlebar_layout(layouts::root_chunks(area)[0])[0],
         &state,
@@ -660,7 +662,7 @@ fn mouse_action_opens_sample_rate_selector_from_device_chip() {
 fn mouse_action_does_not_open_sample_rate_selector_when_clock_is_external() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = AppState::default();
-    state.device.clock_source = Some(ClockSource::Usb);
+    state.device.status.clock_source = Some(ClockSource::Usb);
     let chips = layouts::device_header_hit_areas(
         layouts::titlebar_layout(layouts::root_chunks(area)[0])[0],
         &state,
@@ -721,9 +723,9 @@ fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
     let sections = layouts::query_reply_history_layout(layout[2]);
     let inner = layouts::inner_area(sections[0]);
     let mut state = AppState::default();
-    state.raw_view_open = true;
-    state.selected_raw_packet = RawPacketTab::Query75;
-    state.recent_query_reply_entries = vec![
+    state.popup.raw_view_open = true;
+    state.raw_view.selected_tab = RawPacketTab::Query75;
+    state.raw_view.recent_query_reply_entries = vec![
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/05".to_string(),
             raw: vec![0x75, 0x05],
@@ -748,7 +750,7 @@ fn mouse_action_hits_preamp_gain_up_button() {
     let page = layouts::mixer_page_layout(chunks[1]);
     let main = layouts::mixer_main_layout(page[0]);
     let cards = layouts::preamp_bar_layout(main[0]);
-    let buttons = layouts::preamp_button_rects(cards[0], AppState::default().preamp.input1);
+    let buttons = layouts::preamp_button_rects(cards[0], AppState::default().preamp.state.input1);
     let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
 
     assert_eq!(
@@ -762,7 +764,8 @@ fn mouse_action_hits_preamp_gain_up_button() {
 
 #[test]
 fn output_card_renders_arrow_adjust_buttons() {
-    let rendered = styles::render_output_card(&AppState::default().outputs[0], true).to_string();
+    let rendered =
+        styles::render_output_card(&AppState::default().output.states[0], true).to_string();
 
     assert!(rendered.contains(" ↑ "));
     assert!(rendered.contains(" ↓ "));
@@ -773,7 +776,7 @@ fn output_card_renders_arrow_adjust_buttons() {
 #[test]
 fn preamp_controls_render_arrow_adjust_buttons() {
     let rendered =
-        render::render_preamp_controls_text(AppState::default().preamp.input1).to_string();
+        render::render_preamp_controls_text(AppState::default().preamp.state.input1).to_string();
 
     assert!(rendered.contains(" ↑ "));
     assert!(rendered.contains(" ↓ "));
@@ -1039,7 +1042,7 @@ fn mouse_action_hits_visible_preamp_mode_chip_position() {
     let main = layouts::mixer_main_layout(page[0]);
     let cards = layouts::preamp_bar_layout(main[0]);
     let state = AppState::default();
-    let mode = layouts::preamp_button_rects(cards[0], state.preamp.input1)[2];
+    let mode = layouts::preamp_button_rects(cards[0], state.preamp.state.input1)[2];
 
     assert_eq!(
         mouse_action(area, &state, mode.x + mode.width / 2, mode.y),
@@ -1051,7 +1054,7 @@ fn mouse_action_hits_visible_preamp_mode_chip_position() {
 fn mouse_action_picks_preamp_mode_from_selector_popup() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = AppState::default();
-    state.selector_popup = Some(SelectorPopupState {
+    state.popup.selector_popup = Some(SelectorPopupState {
         kind: SelectorPopupKind::PreampMode { input: 0 },
     });
     let popup = layouts::assignment_picker_area(area);
@@ -1072,7 +1075,7 @@ fn mouse_action_picks_first_assignment_from_first_popup_row() {
     let popup = layouts::assignment_picker_area(area);
     let inner = layouts::popup_list_inner_area(popup, "Assign CH 11");
     let mut state = AppState::default();
-    state.assignment_picker = Some(AssignmentPickerState { strip: 11 });
+    state.popup.assignment_picker = Some(AssignmentPickerState { strip: 11 });
 
     assert_eq!(
         mouse_action(area, &state, inner.x + 1, inner.y),
@@ -1087,7 +1090,7 @@ fn mouse_action_picks_first_assignment_from_first_popup_row() {
 fn preamp_control_row_keeps_leading_chip_padding_when_rendered() {
     let mut buffer = Buffer::empty(Rect::new(0, 0, 40, 1));
     ratatui::widgets::Paragraph::new(render::render_preamp_controls_text(
-        AppState::default().preamp.input1,
+        AppState::default().preamp.state.input1,
     ))
     .render(Rect::new(0, 0, 40, 1), &mut buffer);
 
@@ -1159,8 +1162,8 @@ fn mouse_action_opens_assignment_picker_from_src_button() {
     let mixer = layouts::mixer_layout(main[1]);
     let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
     let mut state = AppState::default();
-    state.selected_channel = 3;
-    state.mixer_channels[0][3].assignment = Some(MixerAssignment::ComputerPlay(2));
+    state.mixer.selected_channel = 3;
+    state.mixer.channels[0][3].assignment = Some(MixerAssignment::ComputerPlay(2));
     let card = layouts::mixer_strip_card_area(list_inner, 3);
     let (_, source_rect) = layouts::mixer_header_chip_rects(card, "C2");
     let point = (source_rect.x + source_rect.width / 2, source_rect.y);
@@ -1177,7 +1180,7 @@ fn mouse_action_picks_assignment_from_modal() {
     let popup = layouts::assignment_picker_area(area);
     let inner = layouts::popup_list_inner_area(popup, "Assign CH 11");
     let mut state = AppState::default();
-    state.assignment_picker = Some(AssignmentPickerState { strip: 11 });
+    state.popup.assignment_picker = Some(AssignmentPickerState { strip: 11 });
 
     assert_eq!(
         mouse_action(area, &state, inner.x + inner.width / 2, inner.y + 4),
@@ -1191,9 +1194,9 @@ fn mouse_action_picks_assignment_from_modal() {
 #[test]
 fn status_panel_surfaces_grounded_non_metadata_startup_queries() {
     let mut state = AppState::default();
-    state.device.startup_query_summaries[1] =
+    state.device.status.startup_query_summaries[1] =
         Some("Capability/default block: 3 bytes [aa bb cc]".to_string());
-    state.device.startup_query_summaries[2] =
+    state.device.status.startup_query_summaries[2] =
         Some("Status/capability value: 1 bytes [12]".to_string());
 
     let lines = vec![
@@ -1219,14 +1222,14 @@ fn status_panel_surfaces_grounded_non_metadata_startup_queries() {
 #[test]
 fn mixer_strip_line_includes_assignment_pan_and_link() {
     let mut state = AppState::default();
-    state.mixer_channels[0][10].assignment = Some(MixerAssignment::ComputerPlay(8));
-    state.mixer_channels[0][10].pan = PanState::from_raw(0x3e);
-    state.mixer_channels[0][10].linked = Some(true);
-    state.mixer_channels[0][10].level = Some(0x10);
-    state.mixer_channels[0][10].meter = Some(0x08);
-    state.mixer_channels[0][10].muted = Some(false);
+    state.mixer.channels[0][10].assignment = Some(MixerAssignment::ComputerPlay(8));
+    state.mixer.channels[0][10].pan = PanState::from_raw(0x3e);
+    state.mixer.channels[0][10].linked = Some(true);
+    state.mixer.channels[0][10].level = Some(0x10);
+    state.mixer.channels[0][10].meter = Some(0x08);
+    state.mixer.channels[0][10].muted = Some(false);
 
-    let channel = &state.mixer_channels[0][10];
+    let channel = &state.mixer.channels[0][10];
     let line = render::render_mixer_strip_line(&state, 10, channel);
 
     assert!(line.contains("Computer Play 8"));
@@ -1238,11 +1241,11 @@ fn mixer_strip_line_includes_assignment_pan_and_link() {
 #[test]
 fn mixer_strip_line_renders_meter_separately_from_level_value() {
     let mut state = AppState::default();
-    state.mixer_channels[0][0].level = Some(0x00);
-    state.mixer_channels[0][0].meter = Some(0x30);
-    state.mixer_channels[0][0].muted = Some(false);
+    state.mixer.channels[0][0].level = Some(0x00);
+    state.mixer.channels[0][0].meter = Some(0x30);
+    state.mixer.channels[0][0].muted = Some(false);
 
-    let line = render::render_mixer_strip_line(&state, 0, &state.mixer_channels[0][0]);
+    let line = render::render_mixer_strip_line(&state, 0, &state.mixer.channels[0][0]);
 
     assert!(line.contains("level=0 dB"));
     assert!(line.contains("meter=-48 dB"));
@@ -1251,11 +1254,11 @@ fn mixer_strip_line_renders_meter_separately_from_level_value() {
 #[test]
 fn mixer_strip_line_hides_meter_value_below_ui_floor() {
     let mut state = AppState::default();
-    state.mixer_channels[0][0].level = Some(0x00);
-    state.mixer_channels[0][0].meter = Some(0x60);
-    state.mixer_channels[0][0].muted = Some(false);
+    state.mixer.channels[0][0].level = Some(0x00);
+    state.mixer.channels[0][0].meter = Some(0x60);
+    state.mixer.channels[0][0].muted = Some(false);
 
-    let line = render::render_mixer_strip_line(&state, 0, &state.mixer_channels[0][0]);
+    let line = render::render_mixer_strip_line(&state, 0, &state.mixer.channels[0][0]);
 
     assert!(line.contains("meter= mute=off"));
 }
@@ -1264,15 +1267,15 @@ fn mixer_strip_line_hides_meter_value_below_ui_floor() {
 fn mixer_strip_line_renders_newly_grounded_pair_link() {
     let mut state = AppState::default();
     let target = MixerLinkTarget::from_channel(MixerSurface::Mix1, 7).expect("grounded pair");
-    state.mixer_channels[target.mixer.index()][target.left_channel as usize - 1].linked =
+    state.mixer.channels[target.mixer.index()][target.left_channel as usize - 1].linked =
         Some(true);
-    state.mixer_channels[target.mixer.index()][target.left_channel as usize - 1].assignment =
+    state.mixer.channels[target.mixer.index()][target.left_channel as usize - 1].assignment =
         Some(MixerAssignment::SpdifIn(1));
 
     let line = render::render_mixer_strip_line(
         &state,
         target.left_channel as usize - 1,
-        &state.mixer_channels[target.mixer.index()][target.left_channel as usize - 1],
+        &state.mixer.channels[target.mixer.index()][target.left_channel as usize - 1],
     );
 
     assert!(line.contains("CH 07"));
@@ -1293,7 +1296,7 @@ fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
     frame[0x10 + 0xdd] = 0x05;
     frame[0x10 + 0xe0] = 0x60;
     frame[0x10 + 0xe1] = 0x60;
-    state.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame);
 
     let line = render::render_experimental_pair_state_line(&state);
 
@@ -1313,7 +1316,7 @@ fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
     frame[0x10 + 0xdf] = 0x06;
     frame[0x10 + 0xe0] = 0x60;
     frame[0x10 + 0xe1] = 0x60;
-    state.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame);
 
     let line = render::render_experimental_pair_state_line(&state);
 
@@ -1334,7 +1337,7 @@ fn experimental_pair_state_line_surfaces_no_signal_family_as_pending_meter() {
     frame[0x10 + 0x6e] = 0x60;
     frame[0x10 + 0x8e] = 0x60;
     frame[0x10 + 0xe2] = 0x60;
-    state.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame);
 
     let line = render::render_experimental_pair_state_line(&state);
 
@@ -1352,7 +1355,7 @@ fn experimental_pair_state_line_keeps_unknown_meter_bytes_visible() {
     frame[0x10 + 0x6a] = 0x0c;
     frame[0x10 + 0xde] = 0x12;
     frame[0x10 + 0xdf] = 0x34;
-    state.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame);
 
     let line = render::render_experimental_pair_state_line(&state);
 
@@ -1392,22 +1395,22 @@ fn perf_draw_full_frame() {
     let backend = TestBackend::new(140, 42);
     let mut terminal = Terminal::new(backend).expect("terminal");
     let mut state = AppState::default();
-    state.connection.connected = true;
-    state.device.metadata = Some(antelope_protocol::DeviceMetadata {
+    state.device.connection.connected = true;
+    state.device.status.metadata = Some(antelope_protocol::DeviceMetadata {
         product_name: "Zen Go Synergy Core".to_string(),
         serial: "4502721001300".to_string(),
         hardware_version: "6.6".to_string(),
     });
-    state.device.sample_rate = Some(SampleRate::Hz48000);
-    state.device.clock_source = Some(ClockSource::Internal);
-    state.selected_channel = 7;
-    state.focus = FocusArea::Mixer;
-    state.mixer_channels[MixerSurface::Mix1.index()][7].level = Some(0x18);
-    state.mixer_channels[MixerSurface::Mix1.index()][7].meter = Some(0x24);
-    state.mixer_channels[MixerSurface::Mix1.index()][7].assignment =
+    state.device.status.sample_rate = Some(SampleRate::Hz48000);
+    state.device.status.clock_source = Some(ClockSource::Internal);
+    state.mixer.selected_channel = 7;
+    state.ui.focus = FocusArea::Mixer;
+    state.mixer.channels[MixerSurface::Mix1.index()][7].level = Some(0x18);
+    state.mixer.channels[MixerSurface::Mix1.index()][7].meter = Some(0x24);
+    state.mixer.channels[MixerSurface::Mix1.index()][7].assignment =
         Some(MixerAssignment::ComputerPlay(4));
-    state.mixer_channels[MixerSurface::Mix1.index()][7].soloed = Some(true);
-    state.mixer_channels[MixerSurface::Mix1.index()][7].linked = Some(true);
+    state.mixer.channels[MixerSurface::Mix1.index()][7].soloed = Some(true);
+    state.mixer.channels[MixerSurface::Mix1.index()][7].linked = Some(true);
 
     let started = Instant::now();
     for _ in 0..FRAMES {
