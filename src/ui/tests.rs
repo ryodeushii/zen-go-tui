@@ -9,7 +9,8 @@ use ratatui::widgets::Widget;
 use ratatui::Terminal;
 
 use crate::app::{
-    AppState, AssignmentPickerState, FocusArea, RawPacketTab, SelectorPopupKind, SelectorPopupState,
+    AppState, AssignmentPickerState, FocusArea, Intent, RawPacketTab, SelectorPopupKind,
+    SelectorPopupState, QUERY_REPLY_VISIBLE_COUNT,
 };
 use antelope_protocol::{
     ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
@@ -78,6 +79,16 @@ fn hotkeys_popup_text_lists_core_shortcuts() {
 }
 
 #[test]
+fn mouse_action_returns_intent_not_mouse_action() {
+    let area = Rect::new(0, 0, 120, 50);
+    let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
+    let button = layouts::output_hotkeys_button_rect(page[1]);
+
+    let result = mouse_action(area, &AppState::default(), button.x + 1, button.y);
+    assert_eq!(result, Some(Intent::ToggleHotkeysPopup));
+}
+
+#[test]
 fn mouse_action_hits_output_hotkeys_button() {
     let area = Rect::new(0, 0, 120, 50);
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
@@ -85,7 +96,7 @@ fn mouse_action_hits_output_hotkeys_button() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), button.x + 1, button.y),
-        Some(MouseAction::ToggleHotkeysPopup)
+        Some(Intent::ToggleHotkeysPopup)
     );
 }
 
@@ -495,7 +506,7 @@ fn mouse_action_hits_status_raw_view_toggle() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(MouseAction::ToggleRawView)
+        Some(Intent::ToggleRawView)
     );
 }
 
@@ -518,7 +529,7 @@ fn mouse_action_selects_raw_packet_tab_when_raw_view_is_open() {
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
-        Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75))
+        Some(Intent::SelectRawPacketTab(RawPacketTab::Query75))
     );
 }
 
@@ -533,7 +544,7 @@ fn mouse_action_opens_routing_popup_from_mixer_surface_button() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(MouseAction::OpenRoutingPopup)
+        Some(Intent::OpenRoutingPopup)
     );
 }
 
@@ -548,7 +559,7 @@ fn mouse_action_opens_profiles_popup_from_mixer_surface_button() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(MouseAction::OpenProfilesPopup)
+        Some(Intent::OpenProfilesPopup)
     );
 }
 
@@ -567,7 +578,7 @@ fn mouse_action_pages_mixer_strips_left_from_panel_button() {
             button.x + button.width / 2,
             button.y
         ),
-        Some(MouseAction::PageMixerStripsLeft)
+        Some(Intent::PageMixerStripsLeft)
     );
 }
 
@@ -586,7 +597,7 @@ fn mouse_action_pages_mixer_strips_right_from_panel_button() {
             button.x + button.width / 2,
             button.y
         ),
-        Some(MouseAction::PageMixerStripsRight)
+        Some(Intent::PageMixerStripsRight)
     );
 }
 
@@ -606,7 +617,7 @@ fn mouse_action_opens_assignment_picker_from_afx_routing_source_chip() {
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
-        Some(MouseAction::OpenAssignmentPicker(1))
+        Some(Intent::OpenAssignmentPicker(1))
     );
 }
 
@@ -641,7 +652,7 @@ fn mouse_action_opens_sample_rate_selector_from_device_chip() {
 
     assert_eq!(
         mouse_action(area, &state, chips[1].x + 1, chips[1].y),
-        Some(MouseAction::OpenSampleRateSelector)
+        Some(Intent::OpenSampleRateSelector)
     );
 }
 
@@ -669,7 +680,7 @@ fn mouse_action_hits_visible_surface_tab_position() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), tabs[1].x + 1, tabs[1].y),
-        Some(MouseAction::SelectSurface(Surface::Hp2))
+        Some(Intent::SelectSurface(Surface::Hp2))
     );
 }
 
@@ -684,7 +695,7 @@ fn mouse_action_hits_visible_output_dim_chip_position() {
 
     assert_eq!(
         mouse_action(area, &state, dim.x + dim.width / 2, dim.y),
-        Some(MouseAction::ToggleOutputDim(0))
+        Some(Intent::ToggleOutputDim(0))
     );
 }
 
@@ -699,7 +710,7 @@ fn mouse_action_hits_visible_output_mute_chip_position_on_hp1() {
 
     assert_eq!(
         mouse_action(area, &state, mute.x + mute.width / 2, mute.y),
-        Some(MouseAction::ToggleOutputMute(1))
+        Some(Intent::ToggleOutputMute(1))
     );
 }
 
@@ -726,7 +737,7 @@ fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
-        Some(MouseAction::SelectQueryReplyEntry(1))
+        Some(Intent::SelectQueryReplyEntry(1))
     );
 }
 
@@ -742,7 +753,7 @@ fn mouse_action_hits_preamp_gain_up_button() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(MouseAction::AdjustPreampGain {
+        Some(Intent::AdjustPreampGain {
             input: 0,
             increase: true,
         })
@@ -779,7 +790,7 @@ fn slider_wheel_action_adjusts_output_level_one_step() {
 
     assert_eq!(
         slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
-        Some(MouseAction::AdjustOutputLevel {
+        Some(Intent::AdjustOutputLevel {
             index: 0,
             increase: true,
         })
@@ -796,7 +807,7 @@ fn slider_wheel_action_adjusts_preamp_gain_one_step() {
 
     assert_eq!(
         slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
-        Some(MouseAction::AdjustPreampGain {
+        Some(Intent::AdjustPreampGain {
             input: 0,
             increase: true,
         })
@@ -816,7 +827,7 @@ fn slider_wheel_action_adjusts_mixer_pan_inside_strip_panel() {
 
     assert_eq!(
         slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
-        Some(MouseAction::AdjustMixerPan {
+        Some(Intent::AdjustMixerPan {
             index: 0,
             right: true,
         })
@@ -836,7 +847,7 @@ fn slider_wheel_action_adjusts_mixer_level_inside_strip_panel() {
 
     assert_eq!(
         slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
-        Some(MouseAction::AdjustMixerLevel {
+        Some(Intent::AdjustMixerLevel {
             index: 0,
             increase: true,
         })
@@ -862,7 +873,7 @@ fn slider_wheel_action_uses_wider_hitbox_for_thin_mixer_level_slider() {
             track.y,
             true
         ),
-        Some(MouseAction::AdjustMixerLevel {
+        Some(Intent::AdjustMixerLevel {
             index: 0,
             increase: true,
         })
@@ -898,7 +909,7 @@ fn mouse_action_hits_visible_output_level_slider_position() {
             track.x + track.width.saturating_sub(1),
             track.y
         ),
-        Some(MouseAction::SetOutputLevel { index: 0, step: 0 })
+        Some(Intent::SetOutputLevel { index: 0, step: 0 })
     );
 }
 
@@ -929,7 +940,7 @@ fn mouse_action_hits_visible_preamp_gain_slider_position() {
             track.x + track.width.saturating_sub(1),
             track.y
         ),
-        Some(MouseAction::SetPreampGain {
+        Some(Intent::SetPreampGain {
             input: 0,
             raw: 0x41
         })
@@ -966,7 +977,7 @@ fn mouse_action_hits_visible_mixer_pan_slider_position() {
             rows[2].x + rows[2].width.saturating_sub(1),
             rows[2].y
         ),
-        Some(MouseAction::SetMixerPan {
+        Some(Intent::SetMixerPan {
             index: 0,
             pan: PanState::right(),
         })
@@ -1016,7 +1027,7 @@ fn mouse_action_hits_visible_mixer_level_slider_position() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), level.x, level.y),
-        Some(MouseAction::SetMixerLevel { index: 0, level: 0 })
+        Some(Intent::SetMixerLevel { index: 0, level: 0 })
     );
 }
 
@@ -1032,7 +1043,7 @@ fn mouse_action_hits_visible_preamp_mode_chip_position() {
 
     assert_eq!(
         mouse_action(area, &state, mode.x + mode.width / 2, mode.y),
-        Some(MouseAction::OpenPreampModeSelector(0))
+        Some(Intent::OpenPreampModeSelector(0))
     );
 }
 
@@ -1048,7 +1059,7 @@ fn mouse_action_picks_preamp_mode_from_selector_popup() {
 
     assert_eq!(
         mouse_action(area, &state, inner.x + 1, inner.y + 1),
-        Some(MouseAction::PickPreampMode {
+        Some(Intent::PickPreampMode {
             input: 0,
             mode: PreampMode::Line,
         })
@@ -1065,7 +1076,7 @@ fn mouse_action_picks_first_assignment_from_first_popup_row() {
 
     assert_eq!(
         mouse_action(area, &state, inner.x + 1, inner.y),
-        Some(MouseAction::PickAssignment {
+        Some(Intent::PickAssignment {
             strip: 11,
             assignment: MixerAssignment::Mute,
         })
@@ -1098,7 +1109,7 @@ fn mouse_action_hits_mixer_link_button_on_odd_strip() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(MouseAction::ToggleMixerLink(1))
+        Some(Intent::ToggleMixerLink(1))
     );
 }
 
@@ -1116,7 +1127,7 @@ fn mouse_action_hits_mixer_solo_button() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(MouseAction::ToggleMixerSolo(1))
+        Some(Intent::ToggleMixerSolo(1))
     );
 }
 
@@ -1135,7 +1146,7 @@ fn mouse_action_hits_visible_mixer_solo_chip_position() {
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
-        Some(MouseAction::ToggleMixerSolo(1))
+        Some(Intent::ToggleMixerSolo(1))
     );
 }
 
@@ -1156,7 +1167,7 @@ fn mouse_action_opens_assignment_picker_from_src_button() {
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
-        Some(MouseAction::OpenAssignmentPicker(4))
+        Some(Intent::OpenAssignmentPicker(4))
     );
 }
 
@@ -1170,7 +1181,7 @@ fn mouse_action_picks_assignment_from_modal() {
 
     assert_eq!(
         mouse_action(area, &state, inner.x + inner.width / 2, inner.y + 4),
-        Some(MouseAction::PickAssignment {
+        Some(Intent::PickAssignment {
             strip: 11,
             assignment: MixerAssignment::ComputerPlay(2),
         })

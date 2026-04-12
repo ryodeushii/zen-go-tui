@@ -1,7 +1,7 @@
 use ratatui::layout::Rect;
 
 use crate::app::{
-    AppState, AssignmentPickerState, RawPacketTab, SelectorPopupKind, SelectorPopupState,
+    AppState, AssignmentPickerState, Intent, RawPacketTab, SelectorPopupKind, SelectorPopupState,
     QUERY_REPLY_VISIBLE_COUNT,
 };
 use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, SampleRate};
@@ -11,7 +11,6 @@ use antelope_protocol::{
 };
 
 use super::layouts::*;
-use super::MouseAction;
 
 pub(crate) fn contains_point(area: Rect, point: (u16, u16)) -> bool {
     point.0 >= area.x
@@ -20,12 +19,12 @@ pub(crate) fn contains_point(area: Rect, point: (u16, u16)) -> bool {
         && point.1 < area.y.saturating_add(area.height)
 }
 
-pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<MouseAction> {
+pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Intent> {
     let point = (x, y);
     let chunks = root_chunks(area);
 
     if state.hotkeys_popup_open {
-        return Some(MouseAction::ToggleHotkeysPopup);
+        return Some(Intent::ToggleHotkeysPopup);
     }
 
     if let Some(action) = device_header_mouse_action(titlebar_layout(chunks[0])[0], state, point) {
@@ -88,7 +87,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Mous
     None
 }
 
-pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<MouseAction> {
+pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Intent> {
     if state.hotkeys_popup_open
         || state.raw_view_open
         || state.profiles_popup_open
@@ -117,7 +116,7 @@ pub fn slider_wheel_action(
     x: u16,
     y: u16,
     increase: bool,
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     if state.hotkeys_popup_open
         || state.profiles_popup_open
         || state.selector_popup.is_some()
@@ -151,26 +150,18 @@ pub fn slider_wheel_action(
         .or_else(|| preamp_slider_wheel_action(main[0], state, point, increase))
 }
 
-fn routing_popup_mouse_action(
-    area: Rect,
-    state: &AppState,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn routing_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     let popup = routing_popup_area(area);
     if !contains_point(popup, point) {
-        return Some(MouseAction::CloseRoutingPopup);
+        return Some(Intent::CloseRoutingPopup);
     }
     afx_routing_mouse_action(popup, state, point)
 }
 
-fn options_popup_mouse_action(
-    area: Rect,
-    state: &AppState,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     let popup = options_popup_area(area);
     if !contains_point(popup, point) {
-        return Some(MouseAction::CloseOptionsPopup);
+        return Some(Intent::CloseOptionsPopup);
     }
 
     let rows = options_popup_layout(popup);
@@ -182,7 +173,7 @@ fn options_popup_mouse_action(
     let button_rects = options_popup_button_rects(popup);
 
     if contains_point(button_rects[0], point) {
-        return Some(MouseAction::CloseOptionsPopup);
+        return Some(Intent::CloseOptionsPopup);
     }
 
     if contains_point(refresh_row, point) {
@@ -198,7 +189,7 @@ fn options_popup_mouse_action(
             let w = crate::ui::styles::chip_width(&label);
             let rect = Rect::new(x, refresh_row.y, w, 1);
             if contains_point(rect, point) {
-                return Some(MouseAction::SetRefreshRate(*r));
+                return Some(Intent::SetRefreshRate(*r));
             }
             x += w + 1;
         }
@@ -218,13 +209,13 @@ fn options_popup_mouse_action(
         let down_w = crate::ui::styles::chip_width("↓");
         let down_rect = Rect::new(x, peak_threshold_row.y, down_w, 1);
         if contains_point(down_rect, point) {
-            return Some(MouseAction::CyclePeakThreshold(false));
+            return Some(Intent::CyclePeakThreshold(false));
         }
         x += down_w + 1;
         let up_w = crate::ui::styles::chip_width("↑");
         let up_rect = Rect::new(x, peak_threshold_row.y, up_w, 1);
         if contains_point(up_rect, point) {
-            return Some(MouseAction::CyclePeakThreshold(true));
+            return Some(Intent::CyclePeakThreshold(true));
         }
     }
 
@@ -239,7 +230,7 @@ fn options_popup_mouse_action(
         let w = crate::ui::styles::chip_width(label);
         let rect = Rect::new(x, peak_toggle_row.y, w, 1);
         if contains_point(rect, point) {
-            return Some(MouseAction::TogglePeakEnabled);
+            return Some(Intent::TogglePeakEnabled);
         }
     }
 
@@ -256,44 +247,40 @@ fn options_popup_mouse_action(
             let w = crate::ui::styles::chip_width(&label);
             let rect = Rect::new(x, peak_hold_row.y, w, 1);
             if contains_point(rect, point) {
-                return Some(MouseAction::CyclePeakHoldDuration(*h));
+                return Some(Intent::CyclePeakHoldDuration(*h));
             }
             x += w + 1;
         }
     }
 
     if contains_point(auto_save_row, point) {
-        return Some(MouseAction::ToggleAutoSave);
+        return Some(Intent::ToggleAutoSave);
     }
 
     None
 }
 
-fn profiles_popup_mouse_action(
-    area: Rect,
-    state: &AppState,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn profiles_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     let popup = profiles_popup_area(area);
     if !contains_point(popup, point) {
-        return Some(MouseAction::CloseProfilesPopup);
+        return Some(Intent::CloseProfilesPopup);
     }
 
     let button_rects = profiles_popup_button_rects(popup);
     if contains_point(button_rects[0], point) {
-        return Some(MouseAction::LoadSelectedProfile);
+        return Some(Intent::LoadSelectedProfile);
     }
     if contains_point(button_rects[1], point) {
-        return Some(MouseAction::StartSaveProfile);
+        return Some(Intent::StartSaveProfile);
     }
     if contains_point(button_rects[2], point) {
-        return Some(MouseAction::StartRenameProfile);
+        return Some(Intent::StartRenameProfile);
     }
     if contains_point(button_rects[3], point) {
-        return Some(MouseAction::DeleteSelectedProfile);
+        return Some(Intent::DeleteSelectedProfile);
     }
     if contains_point(button_rects[4], point) {
-        return Some(MouseAction::CloseProfilesPopup);
+        return Some(Intent::CloseProfilesPopup);
     }
 
     let list_area = profiles_popup_layout(popup)[0];
@@ -304,37 +291,35 @@ fn profiles_popup_mouse_action(
     state
         .profile_names
         .get(index)
-        .map(|_| MouseAction::SelectProfile(index))
+        .map(|_| Intent::SelectProfile(index))
 }
 
-fn profile_editor_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+fn profile_editor_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> {
     if contains_point(profile_editor_area(area), point) {
         None
     } else {
-        Some(MouseAction::CloseProfilesPopup)
+        Some(Intent::CloseProfilesPopup)
     }
 }
 
-fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
+fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     let layout = raw_page_layout(area);
     let header = raw_header_layout(layout[0]);
     if contains_point(header[1], point) {
-        return Some(MouseAction::ToggleRawView);
+        return Some(Intent::ToggleRawView);
     }
     if contains_point(layout[1], point) {
         let tabs = raw_tab_hit_areas(layout[1]);
         if contains_point(tabs[0], point) {
-            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query74));
+            return Some(Intent::SelectRawPacketTab(RawPacketTab::Query74));
         } else if contains_point(tabs[1], point) {
-            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::State73));
+            return Some(Intent::SelectRawPacketTab(RawPacketTab::State73));
         } else if contains_point(tabs[2], point) {
-            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Auxiliary));
+            return Some(Intent::SelectRawPacketTab(RawPacketTab::Auxiliary));
         } else if contains_point(tabs[3], point) {
-            return Some(MouseAction::SelectRawPacketTab(RawPacketTab::Query75));
+            return Some(Intent::SelectRawPacketTab(RawPacketTab::Query75));
         } else if contains_point(tabs[4], point) {
-            return Some(MouseAction::SelectRawPacketTab(
-                RawPacketTab::DeviceNotification,
-            ));
+            return Some(Intent::SelectRawPacketTab(RawPacketTab::DeviceNotification));
         }
     }
     if state.selected_raw_packet == RawPacketTab::Query75 {
@@ -355,7 +340,7 @@ fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<M
         }
         let rev_index = start + row;
         let index = total - 1 - rev_index;
-        Some(MouseAction::SelectQueryReplyEntry(index))
+        Some(Intent::SelectQueryReplyEntry(index))
     } else {
         None
     }
@@ -366,7 +351,7 @@ fn query_reply_wheel_action(
     state: &AppState,
     point: (u16, u16),
     increase: bool,
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     let layout = raw_page_layout(area);
     if state.selected_raw_packet != RawPacketTab::Query75 {
         return None;
@@ -379,17 +364,17 @@ fn query_reply_wheel_action(
     if total <= QUERY_REPLY_VISIBLE_COUNT {
         return None;
     }
-    Some(MouseAction::ScrollQueryReplyList { increase })
+    Some(Intent::ScrollQueryReplyList { increase })
 }
 
 fn assignment_picker_mouse_action(
     area: Rect,
     picker: AssignmentPickerState,
     point: (u16, u16),
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     let popup = assignment_picker_area(area);
     if !contains_point(popup, point) {
-        return Some(MouseAction::CloseAssignmentPicker);
+        return Some(Intent::CloseAssignmentPicker);
     }
 
     let inner = popup_list_inner_area(popup, &format!("Assign CH {:02}", picker.strip));
@@ -398,7 +383,7 @@ fn assignment_picker_mouse_action(
     }
     let index = point.1.saturating_sub(inner.y) as usize;
     let assignment = *MixerAssignment::grounded_choices().get(index)?;
-    Some(MouseAction::PickAssignment {
+    Some(Intent::PickAssignment {
         strip: picker.strip,
         assignment,
     })
@@ -408,10 +393,10 @@ fn selector_popup_mouse_action(
     area: Rect,
     popup: SelectorPopupState,
     point: (u16, u16),
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     let popup_area = assignment_picker_area(area);
     if !contains_point(popup_area, point) {
-        return Some(MouseAction::CloseSelectorPopup);
+        return Some(Intent::CloseSelectorPopup);
     }
 
     let title = match popup.kind {
@@ -428,25 +413,21 @@ fn selector_popup_mouse_action(
         SelectorPopupKind::SampleRate => SampleRate::all_confirmed()
             .get(index)
             .copied()
-            .map(MouseAction::PickSampleRate),
+            .map(Intent::PickSampleRate),
         SelectorPopupKind::ClockSource => ClockSource::all_confirmed()
             .get(index)
             .copied()
-            .map(MouseAction::PickClockSource),
+            .map(Intent::PickClockSource),
         SelectorPopupKind::PreampMode { input } => {
             [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
                 .get(index)
                 .copied()
-                .map(|mode| MouseAction::PickPreampMode { input, mode })
+                .map(|mode| Intent::PickPreampMode { input, mode })
         }
     }
 }
 
-fn system_panel_mouse_action(
-    area: Rect,
-    state: &AppState,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn system_panel_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -454,75 +435,71 @@ fn system_panel_mouse_action(
     let labels = ["RAW", "OPTNS", "X"];
     let rects = inline_chip_rects(inner.x, inner.y, &labels);
     if contains_point(rects[0], point) {
-        return Some(MouseAction::ToggleRawView);
+        return Some(Intent::ToggleRawView);
     }
     if contains_point(rects[1], point) {
         if state.options_popup_open {
-            return Some(MouseAction::CloseOptionsPopup);
+            return Some(Intent::CloseOptionsPopup);
         } else {
-            return Some(MouseAction::OpenOptionsPopup);
+            return Some(Intent::OpenOptionsPopup);
         }
     }
     if contains_point(rects[2], point) {
-        return Some(MouseAction::Quit);
+        return Some(Intent::Quit);
     }
     None
 }
 
-fn device_header_mouse_action(
-    area: Rect,
-    state: &AppState,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn device_header_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
     let chips = device_header_hit_areas(area, state);
     if contains_point(chips[1], point) {
         if state.device.clock_source == Some(ClockSource::Internal) {
-            Some(MouseAction::OpenSampleRateSelector)
+            Some(Intent::OpenSampleRateSelector)
         } else {
             None
         }
     } else if contains_point(chips[2], point) {
-        Some(MouseAction::OpenClockSourceSelector)
+        Some(Intent::OpenClockSourceSelector)
     } else {
         None
     }
 }
 
-fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
     let buttons = mixer_header_button_rects(area);
     if contains_point(buttons[0], point) {
-        return Some(MouseAction::OpenProfilesPopup);
+        return Some(Intent::OpenProfilesPopup);
     }
     if contains_point(buttons[1], point) {
-        return Some(MouseAction::OpenRoutingPopup);
+        return Some(Intent::OpenRoutingPopup);
     }
     let tabs = surface_tab_hit_areas(area);
     if contains_point(tabs[0], point) {
-        Some(MouseAction::SelectSurface(
+        Some(Intent::SelectSurface(
             antelope_protocol::Surface::MonitorHp1,
         ))
     } else if contains_point(tabs[1], point) {
-        Some(MouseAction::SelectSurface(antelope_protocol::Surface::Hp2))
+        Some(Intent::SelectSurface(antelope_protocol::Surface::Hp2))
     } else {
         None
     }
 }
 
-fn mixer_panel_mouse_action(area: Rect, point: (u16, u16)) -> Option<MouseAction> {
+fn mixer_panel_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
     let buttons = mixer_strip_page_button_rects(area);
     if contains_point(buttons[0], point) {
-        Some(MouseAction::PageMixerStripsLeft)
+        Some(Intent::PageMixerStripsLeft)
     } else if contains_point(buttons[1], point) {
-        Some(MouseAction::PageMixerStripsRight)
+        Some(Intent::PageMixerStripsRight)
     } else {
         None
     }
@@ -532,7 +509,7 @@ pub(crate) fn mixer_list_mouse_action(
     area: Rect,
     state: &AppState,
     point: (u16, u16),
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -559,12 +536,12 @@ pub(crate) fn mixer_list_mouse_action(
             return Some(action);
         }
         if contains_point(source_rect, point) {
-            return Some(MouseAction::OpenAssignmentPicker(channel.channel));
+            return Some(Intent::OpenAssignmentPicker(channel.channel));
         }
 
         let controls = mixer_control_button_rects(card, channel.channel % 2 == 1);
         if channel.channel % 2 == 1 && contains_point(controls[0], point) {
-            return Some(MouseAction::ToggleMixerLink(channel.channel));
+            return Some(Intent::ToggleMixerLink(channel.channel));
         }
         let solo_rect = if channel.channel % 2 == 1 {
             controls[1]
@@ -572,7 +549,7 @@ pub(crate) fn mixer_list_mouse_action(
             controls[0]
         };
         if contains_point(solo_rect, point) {
-            return Some(MouseAction::ToggleMixerSolo(channel.channel));
+            return Some(Intent::ToggleMixerSolo(channel.channel));
         }
         let mute_rect = if channel.channel % 2 == 1 {
             controls[2]
@@ -580,10 +557,10 @@ pub(crate) fn mixer_list_mouse_action(
             controls[1]
         };
         if contains_point(mute_rect, point) {
-            return Some(MouseAction::ToggleMixerMute(channel.channel));
+            return Some(Intent::ToggleMixerMute(channel.channel));
         }
 
-        return Some(MouseAction::SelectMixerChannel(index));
+        return Some(Intent::SelectMixerChannel(index));
     }
 
     None
@@ -593,7 +570,7 @@ pub(crate) fn mixer_list_slider_mouse_action(
     area: Rect,
     state: &AppState,
     point: (u16, u16),
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -620,7 +597,7 @@ pub(crate) fn mixer_list_slider_wheel_action(
     state: &AppState,
     point: (u16, u16),
     increase: bool,
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -642,7 +619,7 @@ pub(crate) fn mixer_list_slider_wheel_action(
     None
 }
 
-fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<MouseAction> {
+fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -662,36 +639,32 @@ fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Optio
         }
         let buttons = preamp_button_rects(card, input_state);
         if contains_point(buttons[0], point) {
-            return Some(MouseAction::AdjustPreampGain {
+            return Some(Intent::AdjustPreampGain {
                 input: input as u8,
                 increase: false,
             });
         }
         if contains_point(buttons[1], point) {
-            return Some(MouseAction::AdjustPreampGain {
+            return Some(Intent::AdjustPreampGain {
                 input: input as u8,
                 increase: true,
             });
         }
         if contains_point(buttons[2], point) {
-            return Some(MouseAction::OpenPreampModeSelector(input as u8));
+            return Some(Intent::OpenPreampModeSelector(input as u8));
         }
         if contains_point(buttons[3], point) {
-            return Some(MouseAction::TogglePreampPhantom(input as u8));
+            return Some(Intent::TogglePreampPhantom(input as u8));
         }
         if contains_point(buttons[4], point) {
-            return Some(MouseAction::TogglePreampPhase(input as u8));
+            return Some(Intent::TogglePreampPhase(input as u8));
         }
-        return Some(MouseAction::SelectPreampInput(input));
+        return Some(Intent::SelectPreampInput(input));
     }
     None
 }
 
-fn preamp_slider_mouse_action(
-    area: Rect,
-    state: &AppState,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn preamp_slider_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -715,7 +688,7 @@ fn preamp_slider_wheel_action(
     _state: &AppState,
     point: (u16, u16),
     increase: bool,
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -726,7 +699,7 @@ fn preamp_slider_wheel_action(
         }
         let track = preamp_gain_slider_rect(card);
         if contains_point(wheel_hitbox(track), point) {
-            return Some(MouseAction::AdjustPreampGain {
+            return Some(Intent::AdjustPreampGain {
                 input: input as u8,
                 increase,
             });
@@ -736,17 +709,13 @@ fn preamp_slider_wheel_action(
     None
 }
 
-fn output_list_mouse_action(
-    area: Rect,
-    state: &AppState,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
 
     if contains_point(output_hotkeys_button_rect(area), point) {
-        return Some(MouseAction::ToggleHotkeysPopup);
+        return Some(Intent::ToggleHotkeysPopup);
     }
 
     let inner = inner_area(area);
@@ -766,32 +735,32 @@ fn output_list_mouse_action(
     }
 
     if contains_point(controls[0], point) {
-        return Some(MouseAction::AdjustOutputLevel {
+        return Some(Intent::AdjustOutputLevel {
             index,
             increase: false,
         });
     }
     if contains_point(controls[1], point) {
-        return Some(MouseAction::AdjustOutputLevel {
+        return Some(Intent::AdjustOutputLevel {
             index,
             increase: true,
         });
     }
     if contains_point(controls[2], point) {
-        return Some(MouseAction::ToggleOutputDim(index));
+        return Some(Intent::ToggleOutputDim(index));
     }
     if contains_point(controls[3], point) {
-        return Some(MouseAction::ToggleOutputMute(index));
+        return Some(Intent::ToggleOutputMute(index));
     }
 
-    Some(MouseAction::SelectOutput(index))
+    Some(Intent::SelectOutput(index))
 }
 
 fn output_list_slider_mouse_action(
     area: Rect,
     _state: &AppState,
     point: (u16, u16),
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -813,7 +782,7 @@ fn output_list_slider_wheel_action(
     _state: &AppState,
     point: (u16, u16),
     increase: bool,
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -829,7 +798,7 @@ fn output_list_slider_wheel_action(
         .find(|(_, card)| contains_point(*card, point))?;
     let track = output_level_slider_rect(card);
     contains_point(wheel_hitbox(track), point)
-        .then_some(MouseAction::AdjustOutputLevel { index, increase })
+        .then_some(Intent::AdjustOutputLevel { index, increase })
 }
 
 pub(crate) fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect> {
@@ -862,14 +831,10 @@ pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) 
     contains_point(list[0], (x, y))
 }
 
-fn output_card_slider_mouse_action(
-    area: Rect,
-    index: usize,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn output_card_slider_mouse_action(area: Rect, index: usize, point: (u16, u16)) -> Option<Intent> {
     let track = output_level_slider_rect(area);
     let ratio = slider_ratio_for_horizontal_point(track, point)?;
-    Some(MouseAction::SetOutputLevel {
+    Some(Intent::SetOutputLevel {
         index,
         step: output_step_from_ratio(ratio).min(0x60),
     })
@@ -880,10 +845,10 @@ fn preamp_card_slider_mouse_action(
     input: u8,
     input_state: antelope_protocol::PreampInputState,
     point: (u16, u16),
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     let track = preamp_gain_slider_rect(area);
     let ratio = slider_ratio_for_horizontal_point(track, point)?;
-    Some(MouseAction::SetPreampGain {
+    Some(Intent::SetPreampGain {
         input,
         raw: preamp_gain_from_ratio(input_state, ratio)?,
     })
@@ -894,10 +859,10 @@ fn mixer_strip_slider_mouse_action(
     index: usize,
     _channel: &antelope_protocol::MixerChannelState,
     point: (u16, u16),
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     let pan = mixer_pan_slider_rect(area);
     if let Some(ratio) = slider_ratio_for_horizontal_point(pan, point) {
-        return Some(MouseAction::SetMixerPan {
+        return Some(Intent::SetMixerPan {
             index,
             pan: pan_from_ratio(ratio),
         });
@@ -905,7 +870,7 @@ fn mixer_strip_slider_mouse_action(
 
     let level = mixer_level_slider_rect(area);
     let ratio = slider_ratio_for_vertical_point(level, point)?;
-    Some(MouseAction::SetMixerLevel {
+    Some(Intent::SetMixerLevel {
         index,
         level: mixer_level_from_ratio(ratio).min(0x5a),
     })
@@ -917,10 +882,10 @@ fn mixer_strip_slider_wheel_action(
     _channel: &antelope_protocol::MixerChannelState,
     point: (u16, u16),
     increase: bool,
-) -> Option<MouseAction> {
+) -> Option<Intent> {
     let pan = mixer_pan_slider_rect(area);
     if contains_point(wheel_hitbox(pan), point) {
-        return Some(MouseAction::AdjustMixerPan {
+        return Some(Intent::AdjustMixerPan {
             index,
             right: increase,
         });
@@ -928,14 +893,10 @@ fn mixer_strip_slider_wheel_action(
 
     let level = mixer_level_slider_rect(area);
     contains_point(wheel_hitbox(level), point)
-        .then_some(MouseAction::AdjustMixerLevel { index, increase })
+        .then_some(Intent::AdjustMixerLevel { index, increase })
 }
 
-fn afx_routing_mouse_action(
-    area: Rect,
-    state: &AppState,
-    point: (u16, u16),
-) -> Option<MouseAction> {
+fn afx_routing_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -950,15 +911,15 @@ fn afx_routing_mouse_action(
         let rects = afx_routing_row_rects(row_area, state, pair);
         let (left_index, right_index) = afx_routing_pair_channels(pair);
         if contains_point(rects[2], point) {
-            return Some(MouseAction::OpenAssignmentPicker((left_index + 1) as u8));
+            return Some(Intent::OpenAssignmentPicker((left_index + 1) as u8));
         }
         if contains_point(rects[4], point) {
-            return Some(MouseAction::OpenAssignmentPicker((right_index + 1) as u8));
+            return Some(Intent::OpenAssignmentPicker((right_index + 1) as u8));
         }
         if point.0 < rects[3].x {
-            return Some(MouseAction::SelectMixerChannel(left_index));
+            return Some(Intent::SelectMixerChannel(left_index));
         }
-        return Some(MouseAction::SelectMixerChannel(right_index));
+        return Some(Intent::SelectMixerChannel(right_index));
     }
 
     None

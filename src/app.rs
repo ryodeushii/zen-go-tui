@@ -47,6 +47,116 @@ pub struct ConnectionState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intent {
+    // Application lifecycle
+    Quit,
+
+    // View navigation
+    ToggleRawView,
+    ToggleHotkeysPopup,
+    SelectPage(MainPage),
+    SelectRawPacketTab(RawPacketTab),
+
+    // Popup management
+    OpenProfilesPopup,
+    CloseProfilesPopup,
+    OpenRoutingPopup,
+    CloseRoutingPopup,
+    OpenOptionsPopup,
+    CloseOptionsPopup,
+    CloseSelectorPopup,
+    CloseAssignmentPicker,
+
+    // Settings
+    SetRefreshRate(RefreshRate),
+    CyclePeakThreshold(bool),
+    TogglePeakEnabled,
+    CyclePeakHoldDuration(PeakHoldDuration),
+    ToggleAutoSave,
+
+    // Profile management
+    SelectProfile(usize),
+    LoadSelectedProfile,
+    StartSaveProfile,
+    StartRenameProfile,
+    DeleteSelectedProfile,
+
+    // Navigation/selection
+    PageMixerStripsLeft,
+    PageMixerStripsRight,
+    SelectSurface(antelope_protocol::Surface),
+    SelectMixerChannel(usize),
+    SelectOutput(usize),
+    SelectPreampInput(usize),
+    SelectQueryReplyEntry(usize),
+    ScrollQueryReplyList {
+        increase: bool,
+    },
+
+    // Output controls
+    AdjustOutputLevel {
+        index: usize,
+        increase: bool,
+    },
+    SetOutputLevel {
+        index: usize,
+        step: u8,
+    },
+    ToggleOutputMute(usize),
+    ToggleOutputDim(usize),
+
+    // Mixer controls
+    AdjustMixerLevel {
+        index: usize,
+        increase: bool,
+    },
+    SetMixerLevel {
+        index: usize,
+        level: u8,
+    },
+    AdjustMixerPan {
+        index: usize,
+        right: bool,
+    },
+    SetMixerPan {
+        index: usize,
+        pan: antelope_protocol::PanState,
+    },
+    ToggleMixerMute(u8),
+    ToggleMixerSolo(u8),
+    ToggleMixerLink(u8),
+    OpenAssignmentPicker(u8),
+    PickAssignment {
+        strip: u8,
+        assignment: antelope_protocol::MixerAssignment,
+    },
+
+    // Preamp controls
+    AdjustPreampGain {
+        input: u8,
+        increase: bool,
+    },
+    SetPreampGain {
+        input: u8,
+        raw: u8,
+    },
+    OpenPreampModeSelector(u8),
+    CyclePreampMode(u8),
+    PickPreampMode {
+        input: u8,
+        mode: antelope_protocol::PreampMode,
+    },
+    TogglePreampPhase(u8),
+    TogglePreampPhantom(u8),
+
+    // Selector popups
+    OpenSampleRateSelector,
+    OpenClockSourceSelector,
+    PickSampleRate(antelope_protocol::SampleRate),
+    PickClockSource(antelope_protocol::ClockSource),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusArea {
     Status,
     Outputs,
@@ -1849,6 +1959,123 @@ mod tests {
         payload[0x6a] = 0x0f;
         payload[0xcf] = meter;
         frame
+    }
+
+    #[test]
+    fn intent_enum_exists_and_can_be_created() {
+        // Test that Intent enum exists and can be constructed
+        let intent = Intent::Quit;
+        assert!(matches!(intent, Intent::Quit));
+    }
+
+    #[test]
+    fn intent_enum_covers_output_actions() {
+        // Test output-related intents
+        let adjust = Intent::AdjustOutputLevel {
+            index: 0,
+            increase: true,
+        };
+        assert!(matches!(adjust, Intent::AdjustOutputLevel { .. }));
+
+        let set = Intent::SetOutputLevel {
+            index: 0,
+            step: 0x30,
+        };
+        assert!(matches!(set, Intent::SetOutputLevel { .. }));
+
+        let mute = Intent::ToggleOutputMute(0);
+        assert!(matches!(mute, Intent::ToggleOutputMute(0)));
+
+        let dim = Intent::ToggleOutputDim(0);
+        assert!(matches!(dim, Intent::ToggleOutputDim(0)));
+    }
+
+    #[test]
+    fn intent_enum_covers_mixer_actions() {
+        // Test mixer-related intents
+        let adjust = Intent::AdjustMixerLevel {
+            index: 0,
+            increase: true,
+        };
+        assert!(matches!(adjust, Intent::AdjustMixerLevel { .. }));
+
+        let set = Intent::SetMixerLevel {
+            index: 0,
+            level: 0x50,
+        };
+        assert!(matches!(set, Intent::SetMixerLevel { .. }));
+
+        let pan = Intent::AdjustMixerPan {
+            index: 0,
+            right: true,
+        };
+        assert!(matches!(pan, Intent::AdjustMixerPan { .. }));
+
+        let set_pan = Intent::SetMixerPan {
+            index: 0,
+            pan: PanState::center(),
+        };
+        assert!(matches!(set_pan, Intent::SetMixerPan { .. }));
+
+        let mute = Intent::ToggleMixerMute(1);
+        assert!(matches!(mute, Intent::ToggleMixerMute(1)));
+
+        let solo = Intent::ToggleMixerSolo(1);
+        assert!(matches!(solo, Intent::ToggleMixerSolo(1)));
+    }
+
+    #[test]
+    fn intent_enum_covers_preamp_actions() {
+        // Test preamp-related intents
+        let adjust = Intent::AdjustPreampGain {
+            input: 0,
+            increase: true,
+        };
+        assert!(matches!(adjust, Intent::AdjustPreampGain { .. }));
+
+        let set = Intent::SetPreampGain {
+            input: 0,
+            raw: 0x30,
+        };
+        assert!(matches!(set, Intent::SetPreampGain { .. }));
+
+        let mode = Intent::PickPreampMode {
+            input: 0,
+            mode: PreampMode::Mic,
+        };
+        assert!(matches!(mode, Intent::PickPreampMode { .. }));
+
+        let phase = Intent::TogglePreampPhase(0);
+        assert!(matches!(phase, Intent::TogglePreampPhase(0)));
+
+        let phantom = Intent::TogglePreampPhantom(0);
+        assert!(matches!(phantom, Intent::TogglePreampPhantom(0)));
+    }
+
+    #[test]
+    fn intent_enum_covers_navigation_actions() {
+        // Test navigation intents
+        let quit = Intent::Quit;
+        assert!(matches!(quit, Intent::Quit));
+
+        let raw = Intent::ToggleRawView;
+        assert!(matches!(raw, Intent::ToggleRawView));
+
+        let page = Intent::SelectPage(MainPage::Mixer);
+        assert!(matches!(page, Intent::SelectPage(_)));
+
+        let surface = Intent::SelectSurface(Surface::MonitorHp1);
+        assert!(matches!(surface, Intent::SelectSurface(_)));
+    }
+
+    #[test]
+    fn intent_enum_covers_selector_actions() {
+        // Test selector popup intents
+        let sample = Intent::PickSampleRate(SampleRate::Hz48000);
+        assert!(matches!(sample, Intent::PickSampleRate(_)));
+
+        let clock = Intent::PickClockSource(ClockSource::Internal);
+        assert!(matches!(clock, Intent::PickClockSource(_)));
     }
 
     #[test]

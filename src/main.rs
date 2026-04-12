@@ -688,9 +688,9 @@ fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
             .get(controller.state.popup_selected_index)
             .copied()
         {
-            return apply_mouse_action(
+            return apply_intent(
                 controller,
-                ui::MouseAction::PickAssignment {
+                ui::Intent::PickAssignment {
                     strip: picker.strip,
                     assignment,
                 },
@@ -707,21 +707,21 @@ fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
             SelectorPopupKind::SampleRate => SampleRate::all_confirmed()
                 .get(controller.state.popup_selected_index)
                 .copied()
-                .map(ui::MouseAction::PickSampleRate),
+                .map(ui::Intent::PickSampleRate),
             SelectorPopupKind::ClockSource => ClockSource::all_confirmed()
                 .get(controller.state.popup_selected_index)
                 .copied()
-                .map(ui::MouseAction::PickClockSource),
+                .map(ui::Intent::PickClockSource),
             SelectorPopupKind::PreampMode { input } => {
                 [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
                     .get(controller.state.popup_selected_index)
                     .copied()
-                    .map(|mode| ui::MouseAction::PickPreampMode { input, mode })
+                    .map(|mode| ui::Intent::PickPreampMode { input, mode })
             }
         };
 
         if let Some(action) = action {
-            return apply_mouse_action(controller, action);
+            return apply_intent(controller, action);
         }
     }
 
@@ -910,9 +910,9 @@ fn open_mixer_assignment_picker(controller: &mut Controller) -> Result<()> {
         return Ok(());
     }
 
-    apply_mouse_action(
+    apply_intent(
         controller,
-        ui::MouseAction::OpenAssignmentPicker(active_channel.channel),
+        ui::Intent::OpenAssignmentPicker(active_channel.channel),
     )
 }
 
@@ -946,14 +946,14 @@ fn handle_mouse_event(
         AppMouseEventKind::Down(AppMouseButton::Left) => {
             if let Some(action) = ui::mouse_action(area, &controller.state, mouse.column, mouse.row)
             {
-                apply_mouse_action_with_area(controller, action, area)?;
+                apply_intent_with_area(controller, action, area)?;
             }
         }
         AppMouseEventKind::Drag(AppMouseButton::Left) => {
             if let Some(action) =
                 ui::slider_mouse_action(area, &controller.state, mouse.column, mouse.row)
             {
-                apply_mouse_action_with_area(controller, action, area)?;
+                apply_intent_with_area(controller, action, area)?;
             }
         }
         AppMouseEventKind::ScrollLeft
@@ -967,7 +967,7 @@ fn handle_mouse_event(
             if let Some(action) =
                 ui::slider_wheel_action(area, &controller.state, mouse.column, mouse.row, increase)
             {
-                apply_mouse_action_with_area(controller, action, area)?;
+                apply_intent_with_area(controller, action, area)?;
                 return Ok(());
             }
         }
@@ -977,33 +977,33 @@ fn handle_mouse_event(
     Ok(())
 }
 
-fn apply_mouse_action(controller: &mut Controller, action: ui::MouseAction) -> Result<()> {
-    apply_mouse_action_with_area(
+fn apply_intent(controller: &mut Controller, intent: ui::Intent) -> Result<()> {
+    apply_intent_with_area(
         controller,
-        action,
+        intent,
         ratatui::layout::Rect::new(0, 0, 160, 50),
     )
 }
 
-fn apply_mouse_action_with_area(
+fn apply_intent_with_area(
     controller: &mut Controller,
-    action: ui::MouseAction,
+    action: ui::Intent,
     area: ratatui::layout::Rect,
 ) -> Result<()> {
     match action {
-        ui::MouseAction::Quit => {
+        ui::Intent::Quit => {
             controller.state.quit_requested = true;
         }
-        ui::MouseAction::ToggleRawView => controller.state.toggle_raw_view(),
-        ui::MouseAction::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
-        ui::MouseAction::OpenProfilesPopup => {
+        ui::Intent::ToggleRawView => controller.state.toggle_raw_view(),
+        ui::Intent::ToggleHotkeysPopup => controller.state.toggle_hotkeys_popup(),
+        ui::Intent::OpenProfilesPopup => {
             let result = open_profiles_popup(controller);
             handle_profile_result(controller, result)?
         }
-        ui::MouseAction::CloseProfilesPopup => {
+        ui::Intent::CloseProfilesPopup => {
             close_profiles_popup(controller, "Closed profiles popup");
         }
-        ui::MouseAction::OpenRoutingPopup => {
+        ui::Intent::OpenRoutingPopup => {
             controller.state.profiles_popup_open = false;
             controller.state.profile_editor = None;
             controller.state.routing_popup_open = true;
@@ -1013,35 +1013,35 @@ fn apply_mouse_action_with_area(
                 "Routing popup mirrors mixer assignments for USB recording channels 1-8"
                     .to_string();
         }
-        ui::MouseAction::CloseRoutingPopup => {
+        ui::Intent::CloseRoutingPopup => {
             controller.state.routing_popup_open = false;
             controller.state.last_message = "Closed routing popup".to_string();
         }
-        ui::MouseAction::OpenOptionsPopup => {
+        ui::Intent::OpenOptionsPopup => {
             controller.state.profiles_popup_open = false;
             controller.state.profile_editor = None;
             controller.state.routing_popup_open = false;
             controller.state.options_popup_open = true;
             controller.state.last_message = "Options popup opened".to_string();
         }
-        ui::MouseAction::CloseOptionsPopup => {
+        ui::Intent::CloseOptionsPopup => {
             controller.state.options_popup_open = false;
             controller.state.last_message = "Closed options popup".to_string();
         }
-        ui::MouseAction::SetRefreshRate(rate) => {
+        ui::Intent::SetRefreshRate(rate) => {
             controller.state.settings.refresh_rate = rate;
             controller.state.last_message = format!("Refresh rate set to {}", rate.label());
             if controller.state.settings.auto_save {
                 let _ = settings::save_settings(&controller.state.settings);
             }
         }
-        ui::MouseAction::CyclePeakThreshold(increase) => {
+        ui::Intent::CyclePeakThreshold(increase) => {
             cycle_peak_threshold(controller, increase);
             if controller.state.settings.auto_save {
                 let _ = settings::save_settings(&controller.state.settings);
             }
         }
-        ui::MouseAction::TogglePeakEnabled => {
+        ui::Intent::TogglePeakEnabled => {
             controller.state.settings.peak_enabled = !controller.state.settings.peak_enabled;
             if controller.state.settings.peak_enabled {
                 controller.state.last_message = "Peak detection enabled".to_string();
@@ -1054,7 +1054,7 @@ fn apply_mouse_action_with_area(
                 let _ = settings::save_settings(&controller.state.settings);
             }
         }
-        ui::MouseAction::CyclePeakHoldDuration(duration) => {
+        ui::Intent::CyclePeakHoldDuration(duration) => {
             controller.state.settings.peak_hold_duration = duration;
             controller.state.last_message =
                 format!("Peak hold duration set to {}", duration.label());
@@ -1062,7 +1062,7 @@ fn apply_mouse_action_with_area(
                 let _ = settings::save_settings(&controller.state.settings);
             }
         }
-        ui::MouseAction::ToggleAutoSave => {
+        ui::Intent::ToggleAutoSave => {
             controller.state.settings.auto_save = !controller.state.settings.auto_save;
             if controller.state.settings.auto_save {
                 controller.state.last_message = "Auto-save enabled".to_string();
@@ -1071,41 +1071,41 @@ fn apply_mouse_action_with_area(
                 controller.state.last_message = "Auto-save disabled".to_string();
             }
         }
-        ui::MouseAction::SelectProfile(index) => {
+        ui::Intent::SelectProfile(index) => {
             controller.state.popup_selected_index =
                 index.min(controller.state.profile_names.len().saturating_sub(1));
         }
-        ui::MouseAction::LoadSelectedProfile => {
+        ui::Intent::LoadSelectedProfile => {
             let result = load_selected_profile(controller);
             handle_profile_result(controller, result)?
         }
-        ui::MouseAction::StartSaveProfile => {
+        ui::Intent::StartSaveProfile => {
             if controller.state.profiles_popup_open {
                 start_profile_editor(controller, ProfileEditorMode::Save);
             }
         }
-        ui::MouseAction::StartRenameProfile => {
+        ui::Intent::StartRenameProfile => {
             if controller.state.selected_profile_name().is_some() {
                 start_profile_editor(controller, ProfileEditorMode::Rename);
             } else {
                 controller.state.last_message = "No profile selected to rename.".to_string();
             }
         }
-        ui::MouseAction::DeleteSelectedProfile => {
+        ui::Intent::DeleteSelectedProfile => {
             let result = delete_selected_profile(controller);
             handle_profile_result(controller, result)?
         }
-        ui::MouseAction::PageMixerStripsLeft => {
+        ui::Intent::PageMixerStripsLeft => {
             controller.state.focus = FocusArea::Mixer;
             let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
             controller.state.page_mixer_strip_viewport(false, visible);
         }
-        ui::MouseAction::PageMixerStripsRight => {
+        ui::Intent::PageMixerStripsRight => {
             controller.state.focus = FocusArea::Mixer;
             let visible = ui::mixer_strip_viewport_capacity(area, &controller.state);
             controller.state.page_mixer_strip_viewport(true, visible);
         }
-        ui::MouseAction::OpenSampleRateSelector => {
+        ui::Intent::OpenSampleRateSelector => {
             if controller.state.device.clock_source == Some(ClockSource::Internal) {
                 controller.state.popup_selected_index = controller
                     .state
@@ -1122,7 +1122,7 @@ fn apply_mouse_action_with_area(
                 });
             }
         }
-        ui::MouseAction::OpenClockSourceSelector => {
+        ui::Intent::OpenClockSourceSelector => {
             controller.state.popup_selected_index = controller
                 .state
                 .device
@@ -1137,12 +1137,12 @@ fn apply_mouse_action_with_area(
                 kind: SelectorPopupKind::ClockSource,
             });
         }
-        ui::MouseAction::SelectPage(page) => controller.state.page = page,
-        ui::MouseAction::SelectOutput(index) => {
+        ui::Intent::SelectPage(page) => controller.state.page = page,
+        ui::Intent::SelectOutput(index) => {
             controller.state.focus = FocusArea::Outputs;
             controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
         }
-        ui::MouseAction::AdjustOutputLevel { index, increase } => {
+        ui::Intent::AdjustOutputLevel { index, increase } => {
             controller.state.focus = FocusArea::Outputs;
             controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
             let output = controller.state.outputs[controller.state.selected_output];
@@ -1156,7 +1156,7 @@ fn apply_mouse_action_with_area(
                 step: next,
             })?;
         }
-        ui::MouseAction::SetOutputLevel { index, step } => {
+        ui::Intent::SetOutputLevel { index, step } => {
             controller.state.focus = FocusArea::Outputs;
             controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
             let output = controller.state.outputs[controller.state.selected_output];
@@ -1165,7 +1165,7 @@ fn apply_mouse_action_with_area(
                 step: step.min(0x60),
             })?;
         }
-        ui::MouseAction::ToggleOutputDim(index) => {
+        ui::Intent::ToggleOutputDim(index) => {
             controller.state.focus = FocusArea::Outputs;
             controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
             let output = controller.state.outputs[controller.state.selected_output];
@@ -1174,7 +1174,7 @@ fn apply_mouse_action_with_area(
                 enabled: output.mode != OutputMode::Dim,
             })?;
         }
-        ui::MouseAction::ToggleOutputMute(index) => {
+        ui::Intent::ToggleOutputMute(index) => {
             controller.state.focus = FocusArea::Outputs;
             controller.state.selected_output = index.min(controller.state.outputs.len() - 1);
             let output = controller.state.outputs[controller.state.selected_output];
@@ -1183,11 +1183,11 @@ fn apply_mouse_action_with_area(
                 enabled: output.mode != OutputMode::Mute,
             })?;
         }
-        ui::MouseAction::SelectRawPacketTab(tab) => controller.state.selected_raw_packet = tab,
-        ui::MouseAction::SelectQueryReplyEntry(index) => {
+        ui::Intent::SelectRawPacketTab(tab) => controller.state.selected_raw_packet = tab,
+        ui::Intent::SelectQueryReplyEntry(index) => {
             controller.state.selected_query_reply_entry = Some(index)
         }
-        ui::MouseAction::ScrollQueryReplyList { increase } => {
+        ui::Intent::ScrollQueryReplyList { increase } => {
             let total = controller.state.recent_query_reply_entries.len();
             let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
             let max_scroll = total.saturating_sub(visible);
@@ -1199,15 +1199,15 @@ fn apply_mouse_action_with_area(
                     controller.state.query_reply_scroll.saturating_sub(1);
             }
         }
-        ui::MouseAction::SelectSurface(surface) => {
+        ui::Intent::SelectSurface(surface) => {
             controller.state.focus = FocusArea::Mixer;
             controller.send(Command::SelectSurface(surface))?;
         }
-        ui::MouseAction::SelectMixerChannel(index) => {
+        ui::Intent::SelectMixerChannel(index) => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = index;
         }
-        ui::MouseAction::AdjustMixerLevel { index, increase } => {
+        ui::Intent::AdjustMixerLevel { index, increase } => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel =
                 index.min(controller.state.active_mixer_channels().len() - 1);
@@ -1225,7 +1225,7 @@ fn apply_mouse_action_with_area(
                 next,
             )?;
         }
-        ui::MouseAction::SetMixerLevel { index, level } => {
+        ui::Intent::SetMixerLevel { index, level } => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel =
                 index.min(controller.state.active_mixer_channels().len() - 1);
@@ -1237,7 +1237,7 @@ fn apply_mouse_action_with_area(
                 level.min(0x5a),
             )?;
         }
-        ui::MouseAction::AdjustMixerPan { index, right } => {
+        ui::Intent::AdjustMixerPan { index, right } => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel =
                 index.min(controller.state.active_mixer_channels().len() - 1);
@@ -1264,7 +1264,7 @@ fn apply_mouse_action_with_area(
                 soloed: active_channel.soloed.unwrap_or(false),
             })?;
         }
-        ui::MouseAction::SetMixerPan { index, pan } => {
+        ui::Intent::SetMixerPan { index, pan } => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel =
                 index.min(controller.state.active_mixer_channels().len() - 1);
@@ -1278,7 +1278,7 @@ fn apply_mouse_action_with_area(
                 soloed: active_channel.soloed.unwrap_or(false),
             })?;
         }
-        ui::MouseAction::ToggleMixerMute(channel) => {
+        ui::Intent::ToggleMixerMute(channel) => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = channel.saturating_sub(1) as usize;
             let mixer = MixerSurface::from_surface(controller.state.surface);
@@ -1290,7 +1290,7 @@ fn apply_mouse_action_with_area(
                 !active_channel.muted.unwrap_or(false),
             )?;
         }
-        ui::MouseAction::ToggleMixerSolo(channel) => {
+        ui::Intent::ToggleMixerSolo(channel) => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = channel.saturating_sub(1) as usize;
             let mixer = MixerSurface::from_surface(controller.state.surface);
@@ -1302,7 +1302,7 @@ fn apply_mouse_action_with_area(
                 !active_channel.soloed.unwrap_or(false),
             )?;
         }
-        ui::MouseAction::ToggleMixerLink(channel) => {
+        ui::Intent::ToggleMixerLink(channel) => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = channel.saturating_sub(1) as usize;
             let mixer = MixerSurface::from_surface(controller.state.surface);
@@ -1314,7 +1314,7 @@ fn apply_mouse_action_with_area(
                 !active_channel.linked.unwrap_or(false),
             )?;
         }
-        ui::MouseAction::OpenAssignmentPicker(strip) => {
+        ui::Intent::OpenAssignmentPicker(strip) => {
             controller.state.focus = FocusArea::Mixer;
             controller.state.selected_channel = strip.saturating_sub(1) as usize;
             if !antelope_protocol::MixerStrip::assignment_write_is_grounded(strip) {
@@ -1336,26 +1336,26 @@ fn apply_mouse_action_with_area(
                 controller.state.last_message = format!("Pick source assignment for CH {strip:02}");
             }
         }
-        ui::MouseAction::PickAssignment { strip, assignment } => {
+        ui::Intent::PickAssignment { strip, assignment } => {
             controller.state.assignment_picker = None;
             controller.state.popup_selected_index = 0;
             controller.send(Command::SetMixerAssignment { strip, assignment })?;
         }
-        ui::MouseAction::CloseAssignmentPicker => {
+        ui::Intent::CloseAssignmentPicker => {
             controller.state.assignment_picker = None;
             controller.state.popup_selected_index = 0;
             controller.state.last_message = "Closed assignment picker".to_string();
         }
-        ui::MouseAction::CloseSelectorPopup => {
+        ui::Intent::CloseSelectorPopup => {
             controller.state.selector_popup = None;
             controller.state.popup_selected_index = 0;
             controller.state.last_message = "Closed selector".to_string();
         }
-        ui::MouseAction::SelectPreampInput(input) => {
+        ui::Intent::SelectPreampInput(input) => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1);
         }
-        ui::MouseAction::AdjustPreampGain { input, increase } => {
+        ui::Intent::AdjustPreampGain { input, increase } => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
             let current = if input == 0 {
@@ -1368,7 +1368,7 @@ fn apply_mouse_action_with_area(
                 raw: next_preamp_gain_raw(current, increase),
             })?;
         }
-        ui::MouseAction::SetPreampGain { input, raw } => {
+        ui::Intent::SetPreampGain { input, raw } => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
             controller.send(Command::SetPreampGain {
@@ -1376,7 +1376,7 @@ fn apply_mouse_action_with_area(
                 raw,
             })?;
         }
-        ui::MouseAction::OpenPreampModeSelector(input) => {
+        ui::Intent::OpenPreampModeSelector(input) => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
             let current = if input == 0 {
@@ -1393,7 +1393,7 @@ fn apply_mouse_action_with_area(
                 kind: SelectorPopupKind::PreampMode { input },
             });
         }
-        ui::MouseAction::CyclePreampMode(input) => {
+        ui::Intent::CyclePreampMode(input) => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
             let current = if input == 0 {
@@ -1408,24 +1408,24 @@ fn apply_mouse_action_with_area(
             };
             controller.send(Command::SetPreampMode { input, mode: next })?;
         }
-        ui::MouseAction::PickSampleRate(rate) => {
+        ui::Intent::PickSampleRate(rate) => {
             controller.state.selector_popup = None;
             controller.state.popup_selected_index = 0;
             controller.send(Command::SetSampleRate(rate))?;
         }
-        ui::MouseAction::PickClockSource(source) => {
+        ui::Intent::PickClockSource(source) => {
             controller.state.selector_popup = None;
             controller.state.popup_selected_index = 0;
             controller.send(Command::SetClockSource(source))?;
         }
-        ui::MouseAction::PickPreampMode { input, mode } => {
+        ui::Intent::PickPreampMode { input, mode } => {
             controller.state.selector_popup = None;
             controller.state.popup_selected_index = 0;
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
             controller.send(Command::SetPreampMode { input, mode })?;
         }
-        ui::MouseAction::TogglePreampPhase(input) => {
+        ui::Intent::TogglePreampPhase(input) => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
             let mode_raw = if input == 0 {
@@ -1438,7 +1438,7 @@ fn apply_mouse_action_with_area(
                 enabled: mode_raw & 0x40 == 0,
             })?;
         }
-        ui::MouseAction::TogglePreampPhantom(input) => {
+        ui::Intent::TogglePreampPhantom(input) => {
             controller.state.focus = FocusArea::Preamp;
             controller.state.selected_preamp_input = input.min(1) as usize;
             let current = if input == 0 {
@@ -1531,7 +1531,7 @@ fn open_preamp_mode_selector(controller: &mut Controller) -> Result<()> {
     }
 
     let input = controller.state.selected_preamp_input as u8;
-    apply_mouse_action(controller, ui::MouseAction::OpenPreampModeSelector(input))
+    apply_intent(controller, ui::Intent::OpenPreampModeSelector(input))
 }
 
 fn next_preamp_gain_raw(input: antelope_protocol::PreampInputState, up: bool) -> u8 {
@@ -1815,16 +1815,15 @@ mod tests {
         let mut controller = Controller::new(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
 
-        apply_mouse_action(&mut controller, ui::MouseAction::OpenAssignmentPicker(5))
-            .expect("open picker");
+        apply_intent(&mut controller, ui::Intent::OpenAssignmentPicker(5)).expect("open picker");
         assert_eq!(
             controller.state.assignment_picker,
             Some(AssignmentPickerState { strip: 5 })
         );
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::PickAssignment {
+            ui::Intent::PickAssignment {
                 strip: 5,
                 assignment: MixerAssignment::Oscillator(1),
             },
@@ -1845,8 +1844,7 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][4].assignment =
             Some(MixerAssignment::Oscillator(1));
 
-        apply_mouse_action(&mut controller, ui::MouseAction::OpenAssignmentPicker(5))
-            .expect("open picker");
+        apply_intent(&mut controller, ui::Intent::OpenAssignmentPicker(5)).expect("open picker");
 
         assert_eq!(controller.state.popup_selected_index, 13);
     }
@@ -1857,8 +1855,7 @@ mod tests {
         let mut controller = Controller::new(Box::new(transport.clone()));
         controller.state.outputs[1] = OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
 
-        apply_mouse_action(&mut controller, ui::MouseAction::ToggleOutputMute(1))
-            .expect("toggle output mute");
+        apply_intent(&mut controller, ui::Intent::ToggleOutputMute(1)).expect("toggle output mute");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -1870,9 +1867,9 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::SetOutputLevel {
+            ui::Intent::SetOutputLevel {
                 index: 1,
                 step: 0x12,
             },
@@ -1889,9 +1886,9 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::SetPreampGain {
+            ui::Intent::SetPreampGain {
                 input: 1,
                 raw: 0x11,
             },
@@ -1911,9 +1908,9 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::SetMixerLevel {
+            ui::Intent::SetMixerLevel {
                 index: 0,
                 level: 0x15,
             },
@@ -1935,9 +1932,9 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::SetMixerPan {
+            ui::Intent::SetMixerPan {
                 index: 0,
                 pan: PanState::from_raw(0x12),
             },
@@ -1961,9 +1958,9 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::AdjustMixerLevel {
+            ui::Intent::AdjustMixerLevel {
                 index: 0,
                 increase: true,
             },
@@ -1986,9 +1983,9 @@ mod tests {
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer_channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::AdjustMixerPan {
+            ui::Intent::AdjustMixerPan {
                 index: 0,
                 right: true,
             },
@@ -2085,7 +2082,7 @@ mod tests {
         // Area width 155 gives inner_width=151, card_width=18, stride=19, capacity=8
         let area = ratatui::layout::Rect::new(0, 0, 155, 50);
 
-        apply_mouse_action_with_area(&mut controller, ui::MouseAction::PageMixerStripsRight, area)
+        apply_intent_with_area(&mut controller, ui::Intent::PageMixerStripsRight, area)
             .expect("page strips right");
 
         assert_eq!(controller.state.mixer_strip_scroll, 8);
@@ -2118,12 +2115,10 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport));
 
-        apply_mouse_action(&mut controller, ui::MouseAction::ToggleHotkeysPopup)
-            .expect("open hotkeys");
+        apply_intent(&mut controller, ui::Intent::ToggleHotkeysPopup).expect("open hotkeys");
         assert!(controller.state.hotkeys_popup_open);
 
-        apply_mouse_action(&mut controller, ui::MouseAction::ToggleHotkeysPopup)
-            .expect("close hotkeys");
+        apply_intent(&mut controller, ui::Intent::ToggleHotkeysPopup).expect("close hotkeys");
         assert!(!controller.state.hotkeys_popup_open);
     }
 
@@ -2133,7 +2128,7 @@ mod tests {
         let mut controller = Controller::new(Box::new(transport.clone()));
         controller.state.device.clock_source = Some(ClockSource::Internal);
 
-        apply_mouse_action(&mut controller, ui::MouseAction::OpenSampleRateSelector)
+        apply_intent(&mut controller, ui::Intent::OpenSampleRateSelector)
             .expect("open sample rate selector");
         assert_eq!(
             controller.state.selector_popup,
@@ -2142,9 +2137,9 @@ mod tests {
             })
         );
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::PickSampleRate(SampleRate::Hz48000),
+            ui::Intent::PickSampleRate(SampleRate::Hz48000),
         )
         .expect("pick sample rate");
         assert_eq!(controller.state.selector_popup, None);
@@ -2161,7 +2156,7 @@ mod tests {
         controller.state.device.clock_source = Some(ClockSource::Usb);
         controller.state.device.sample_rate = Some(SampleRate::Hz192000);
 
-        apply_mouse_action(&mut controller, ui::MouseAction::OpenSampleRateSelector)
+        apply_intent(&mut controller, ui::Intent::OpenSampleRateSelector)
             .expect("open sample rate selector");
         assert_eq!(controller.state.selector_popup, None);
 
@@ -2174,7 +2169,7 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
 
-        apply_mouse_action(&mut controller, ui::MouseAction::OpenPreampModeSelector(1))
+        apply_intent(&mut controller, ui::Intent::OpenPreampModeSelector(1))
             .expect("open preamp mode selector");
         assert_eq!(
             controller.state.selector_popup,
@@ -2183,9 +2178,9 @@ mod tests {
             })
         );
 
-        apply_mouse_action(
+        apply_intent(
             &mut controller,
-            ui::MouseAction::PickPreampMode {
+            ui::Intent::PickPreampMode {
                 input: 1,
                 mode: PreampMode::HiZ,
             },
