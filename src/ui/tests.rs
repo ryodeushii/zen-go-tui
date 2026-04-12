@@ -15,6 +15,10 @@ use crate::app::{
 use antelope_protocol::{
     ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
     OutputState, OutputTarget, PanState, PreampInputState, PreampMode, SampleRate, Surface,
+    FRAME_TYPE_SNAPSHOT, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
+    OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
+    OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2,
+    OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
 };
 
 use super::*;
@@ -263,9 +267,9 @@ fn mix_meter_extracts_mix1_lane_pair() {
     let mut frame = vec![0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[0x10 + 0x6a] = 0x0f;
-    frame[0x10 + 0xda] = 0x0a;
-    frame[0x10 + 0xdb] = 0x05;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
     state.raw_view.latest_raw_73 = Some(frame);
 
     assert_eq!(mouse::mix_meter(&state), Some(("MIX 1", 0x0a, 0x05)));
@@ -288,9 +292,9 @@ fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
     let mut frame = vec![0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[0x10 + 0x6a] = 0x0f;
-    frame[0x10 + 0xda] = 0x0a;
-    frame[0x10 + 0xdb] = 0x05;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
     state.raw_view.latest_raw_73 = Some(frame);
 
     let mixer = layouts::mixer_layout(Rect::new(0, 0, 100, 20));
@@ -1289,13 +1293,13 @@ fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
     let mut frame = vec![0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[0x10 + 0x6a] = 0x0f;
-    frame[0x10 + 0xda] = 0x0a;
-    frame[0x10 + 0xdb] = 0x05;
-    frame[0x10 + 0xdc] = 0x0a;
-    frame[0x10 + 0xdd] = 0x05;
-    frame[0x10 + 0xe0] = 0x60;
-    frame[0x10 + 0xe1] = 0x60;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_MIRROR_A] = 0x0a;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_MIRROR_B] = 0x05;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_0] = 0x60;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_1] = 0x60;
     state.raw_view.latest_raw_73 = Some(frame);
 
     let line = render::render_experimental_pair_state_line(&state);
@@ -1311,11 +1315,11 @@ fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
     let mut frame = vec![0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[0x10 + 0x6a] = 0x0c;
-    frame[0x10 + 0xde] = 0x00;
-    frame[0x10 + 0xdf] = 0x06;
-    frame[0x10 + 0xe0] = 0x60;
-    frame[0x10 + 0xe1] = 0x60;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x00;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x06;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_0] = 0x60;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_1] = 0x60;
     state.raw_view.latest_raw_73 = Some(frame);
 
     let line = render::render_experimental_pair_state_line(&state);
@@ -1331,12 +1335,12 @@ fn experimental_pair_state_line_surfaces_no_signal_family_as_pending_meter() {
     let mut frame = vec![0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[0x10 + 0x6a] = 0x0c;
-    frame[0x10 + 0xde] = 0x5a;
-    frame[0x10 + 0xdf] = 0x5a;
-    frame[0x10 + 0x6e] = 0x60;
-    frame[0x10 + 0x8e] = 0x60;
-    frame[0x10 + 0xe2] = 0x60;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x5a;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x5a;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_UNKNOWN_6E] = 0x60;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_METER_LANES_START] = 0x60;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_2] = 0x60;
     state.raw_view.latest_raw_73 = Some(frame);
 
     let line = render::render_experimental_pair_state_line(&state);
@@ -1352,9 +1356,9 @@ fn experimental_pair_state_line_keeps_unknown_meter_bytes_visible() {
     let mut frame = vec![0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[0x10 + 0x6a] = 0x0c;
-    frame[0x10 + 0xde] = 0x12;
-    frame[0x10 + 0xdf] = 0x34;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x12;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x34;
     state.raw_view.latest_raw_73 = Some(frame);
 
     let line = render::render_experimental_pair_state_line(&state);

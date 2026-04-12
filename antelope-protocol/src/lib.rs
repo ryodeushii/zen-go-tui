@@ -110,6 +110,8 @@ pub use types::{
     OFFSET_STATUS_FLAGS_1,
     // Snapshot payload offsets — surface selector
     OFFSET_SURFACE_SELECTOR,
+    // Snapshot payload offset — unknown byte between surface selector and meter lanes
+    OFFSET_UNKNOWN_6E,
     SNAPSHOT_PAYLOAD_OFFSET,
     SNAPSHOT_PAYLOAD_SIZE,
     SURFACE_CODE_HP2,

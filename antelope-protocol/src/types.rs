@@ -45,6 +45,10 @@ pub const OFFSET_PREAMP2_MODE: usize = 0x1b;
 /// Snapshot payload offset — surface selector byte.
 pub const OFFSET_SURFACE_SELECTOR: usize = 0x6a;
 
+/// Snapshot payload offset — unknown byte between surface selector and meter lanes.
+#[allow(dead_code)]
+pub const OFFSET_UNKNOWN_6E: usize = 0x6e;
+
 /// Snapshot payload offsets — meter lane region (bytes 0x8e–0x9d).
 pub const OFFSET_METER_LANES_START: usize = 0x8e;
 pub const OFFSET_METER_LANES_END: usize = 0x9d;
