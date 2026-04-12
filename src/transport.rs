@@ -51,7 +51,7 @@ struct HidTransportState {
 pub struct HidTransport {
     vid: u16,
     pid: u16,
-    state: Arc<Mutex<HidTransportState>>,
+    state: Mutex<HidTransportState>,
 }
 
 impl HidTransport {
@@ -60,11 +60,11 @@ impl HidTransport {
         Ok(Self {
             vid,
             pid,
-            state: Arc::new(Mutex::new(HidTransportState {
+            state: Mutex::new(HidTransportState {
                 device: Some(device),
                 last_open_attempt: None,
                 read_buffer: vec![0_u8; 320],
-            })),
+            }),
         })
     }
 
