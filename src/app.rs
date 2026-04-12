@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Result};
 use ratatui::layout::Rect;
 
+use crate::command_queue::CommandQueue;
 use crate::profile::{preamp_mode_raw, DeviceProfile};
 use crate::transport::Transport;
 use antelope_protocol::{
@@ -1129,6 +1130,7 @@ pub struct Controller {
     transport: Box<dyn Transport>,
     pub state: AppState,
     pending_mutation: Option<PendingMutation>,
+    command_queue: CommandQueue,
 }
 
 const MAX_FRAMES_PER_POLL: usize = 32;
@@ -1139,6 +1141,7 @@ impl Controller {
             transport,
             state: AppState::default(),
             pending_mutation: None,
+            command_queue: CommandQueue::new(),
         }
     }
 
@@ -1161,6 +1164,9 @@ impl Controller {
 
     pub fn apply_profile(&mut self, profile: &DeviceProfile) -> Result<()> {
         profile.validate()?;
+
+        // Flush any pending commands before applying profile
+        self.flush_commands()?;
 
         for (target, output) in [
             (OutputTarget::Monitor, &profile.outputs.monitor),
@@ -1192,6 +1198,7 @@ impl Controller {
                 OutputMode::Unknown(_) => unreachable!(),
             }
         }
+        self.flush_commands()?;
 
         for (input, preamp) in [
             (0_u8, &profile.preamps.input1),
@@ -1214,6 +1221,7 @@ impl Controller {
                 enabled: preamp.phase_inverted,
             })?;
         }
+        self.flush_commands()?;
 
         let assignments = profile.assignment_table()?;
         for entry in &profile.assignments {
@@ -1244,6 +1252,7 @@ impl Controller {
                 })?;
             }
         }
+        self.flush_commands()?;
 
         profile.apply_to_state(&mut self.state);
         self.pending_mutation = None;
@@ -1280,6 +1289,8 @@ impl Controller {
 
     pub fn send(&mut self, command: Command) -> Result<()> {
         let pending_mutation = pending_from_command(command);
+
+        // Multi-frame assignment: always write directly
         if let Command::SetMixerAssignment { strip, assignment } = command {
             let assignments = self.shared_assignment_table()?;
             for frame in encode_mixer_assignment_frames_with_table(strip, assignment, &assignments)
@@ -1290,31 +1301,60 @@ impl Controller {
             self.state.last_message = format!("Sent {:?}", command);
             return Ok(());
         }
+
+        // Link state with companion bank: flush queue first, then write directly
         if let Command::SetLinkState {
             enabled,
             companion_bank: Some(bank),
             ..
         } = command
         {
+            self.flush_commands()?;
             self.transport
                 .write(&encode_link_companion(bank, enabled))?;
+            self.transport.write(&encode_command(command))?;
+            self.apply_command_state_update(&command);
+            self.pending_mutation = pending_mutation;
+            self.state.last_message = format!("Sent {:?}", command);
+            return Ok(());
         }
-        self.transport.write(&encode_command(command))?;
+
+        // SelectSurface: flush, write directly, then refresh queried state
+        if let Command::SelectSurface(_) = &command {
+            self.flush_commands()?;
+            self.transport.write(&encode_command(command))?;
+            self.apply_command_state_update(&command);
+            self.pending_mutation = pending_mutation;
+            self.state.last_message = format!("Sent {:?}", command);
+            self.refresh_queried_state()?;
+            return Ok(());
+        }
+
+        // All other commands: enqueue for coalescing
+        self.command_queue.enqueue(command.clone());
+        self.apply_command_state_update(&command);
+        self.pending_mutation = pending_mutation;
+        self.state.last_message = format!("Sent {:?}", command);
+        Ok(())
+    }
+
+    /// Applies immediate state updates for commands that affect visible state.
+    fn apply_command_state_update(&mut self, command: &Command) {
         match command {
             Command::SetClockSource(source) => {
-                self.state.device.clock_source = Some(source);
+                self.state.device.clock_source = Some(*source);
             }
             Command::SetSampleRate(rate) => {
-                self.state.device.sample_rate = Some(rate);
+                self.state.device.sample_rate = Some(*rate);
                 self.state.device.sample_rate_hz = rate.hz();
             }
             _ => {}
         }
-        if matches!(command, Command::SelectSurface(_)) {
-            self.refresh_queried_state()?;
-        }
-        self.pending_mutation = pending_mutation;
-        self.state.last_message = format!("Sent {:?}", command);
+    }
+
+    /// Flushes all pending commands from the queue to the transport.
+    pub fn flush_commands(&mut self) -> Result<()> {
+        self.command_queue.flush(self.transport.as_ref())?;
         Ok(())
     }
 
@@ -1369,6 +1409,7 @@ impl Controller {
                 left_muted: left.muted.unwrap_or(false),
                 right_muted: right.muted.unwrap_or(false),
             });
+            self.flush_commands()?;
             self.transport
                 .write(&encode_command(Command::SetMixerLevel {
                     mixer,
@@ -1425,6 +1466,7 @@ impl Controller {
                 right_channel: right_ch,
                 muted,
             });
+            self.flush_commands()?;
             self.transport
                 .write(&encode_command(Command::SetMixerMute {
                     mixer,
@@ -1478,6 +1520,7 @@ impl Controller {
                 right_channel: right_ch,
                 soloed,
             });
+            self.flush_commands()?;
             self.transport
                 .write(&encode_command(Command::SetMixerSolo {
                     mixer,
@@ -1526,6 +1569,7 @@ impl Controller {
             right_channel: target.right_channel,
             enabled,
         });
+        self.flush_commands()?;
         if let Some(bank) = target.companion_bank() {
             self.transport
                 .write(&encode_link_companion(bank, enabled))?;
@@ -1827,6 +1871,8 @@ impl Controller {
             Intent::SelectSurface(surface) => {
                 self.state.focus = FocusArea::Mixer;
                 self.send(Command::SelectSurface(surface))?;
+                self.flush_commands()?;
+                self.refresh_queried_state()?;
             }
             Intent::SelectMixerChannel(index) => {
                 self.state.focus = FocusArea::Mixer;
@@ -2317,6 +2363,9 @@ impl Controller {
     }
 
     pub fn poll_device(&mut self, timeout: Duration) -> Result<bool> {
+        // Flush pending commands before reading so device sees latest state
+        self.flush_commands()?;
+
         let mut next_timeout = timeout;
         let mut state_dirty = false;
 
@@ -3403,6 +3452,7 @@ mod tests {
         controller
             .send(Command::SetClockSource(ClockSource::Usb))
             .expect("write command");
+        controller.flush_commands().expect("flush");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 48);
@@ -3450,6 +3500,7 @@ mod tests {
         controller
             .send(Command::SelectSurface(Surface::Hp2))
             .expect("select surface");
+        controller.flush_commands().expect("flush");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 48);
@@ -3466,6 +3517,7 @@ mod tests {
         controller
             .send(Command::SetClockSource(ClockSource::Usb))
             .expect("set clock source");
+        controller.flush_commands().expect("flush");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -3480,6 +3532,7 @@ mod tests {
         controller
             .send(Command::SetSampleRate(SampleRate::Hz96000))
             .expect("set sample rate");
+        controller.flush_commands().expect("flush");
 
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
@@ -4111,6 +4164,7 @@ mod tests {
                 soloed: false,
             })
             .expect("send first adjustment");
+        controller.flush_commands().expect("flush");
 
         let writes = transport.take_writes();
         let mixer_write = writes.last().expect("mixer write");

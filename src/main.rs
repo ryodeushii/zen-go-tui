@@ -228,6 +228,7 @@ mod tests {
         .expect("up key");
 
         assert_eq!(action, KeyAction::Continue);
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x47, 0x00, 0x2f]);
@@ -250,6 +251,7 @@ mod tests {
         .expect("down key");
 
         assert_eq!(action, KeyAction::Continue);
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x50, 0x01, 0x0f]);
@@ -297,6 +299,7 @@ mod tests {
         .expect("toggle solo");
 
         assert_eq!(action, KeyAction::Continue);
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(
@@ -332,6 +335,7 @@ mod tests {
             )
             .expect("pick assignment");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 5);
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);
@@ -369,6 +373,7 @@ mod tests {
             )
             .expect("toggle output mute");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x48, 0x01, 0x01]);
@@ -389,6 +394,7 @@ mod tests {
             )
             .expect("set output level");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x47, 0x01, 0x12]);
@@ -409,6 +415,7 @@ mod tests {
             )
             .expect("set preamp gain");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x50, 0x01, 0x11]);
@@ -432,6 +439,7 @@ mod tests {
             )
             .expect("set mixer level");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(
@@ -457,6 +465,7 @@ mod tests {
             )
             .expect("set mixer pan");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(
@@ -484,6 +493,7 @@ mod tests {
             )
             .expect("adjust mixer level");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(
@@ -510,6 +520,7 @@ mod tests {
             )
             .expect("adjust mixer pan");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(
@@ -588,6 +599,7 @@ mod tests {
         )
         .expect("wheel output slider");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x47, 0x00, 0x2f]);
@@ -678,6 +690,7 @@ mod tests {
             .expect("pick sample rate");
         assert_eq!(controller.state.selector_popup, None);
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x12], &[0x03, 0x02]);
@@ -738,6 +751,7 @@ mod tests {
             .expect("pick preamp mode");
         assert_eq!(controller.state.selector_popup, None);
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 1);
         assert_eq!(&writes[0][0x10..0x13], &[0x4f, 0x01, 0x02]);
@@ -836,6 +850,7 @@ mod tests {
 
         activate_popup_selection(&mut controller).expect("activate popup selection");
 
+        controller.flush_commands().expect("flush");
         let writes = transport.take_writes();
         assert_eq!(writes.len(), 5);
         assert_eq!(&writes[0][0x10..0x13], &[0xd3, 0x41, 0x03]);

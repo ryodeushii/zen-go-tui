@@ -10,7 +10,7 @@ use ratatui::Terminal;
 
 use crate::app::{
     AppState, AssignmentPickerState, FocusArea, Intent, RawPacketTab, SelectorPopupKind,
-    SelectorPopupState, QUERY_REPLY_VISIBLE_COUNT,
+    SelectorPopupState,
 };
 use antelope_protocol::{
     ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
