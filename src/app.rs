@@ -1744,6 +1744,21 @@ impl Controller {
         if active.linked == Some(true) {
             let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
 
+            if let Some(slot) =
+                self.state.mixer.channels[mixer.index()].get_mut(left_ch.saturating_sub(1) as usize)
+            {
+                slot.level = Some(level);
+                slot.pan = left.pan;
+                slot.muted = left.muted;
+            }
+            if let Some(slot) = self.state.mixer.channels[mixer.index()]
+                .get_mut(right_ch.saturating_sub(1) as usize)
+            {
+                slot.level = Some(level);
+                slot.pan = right.pan;
+                slot.muted = right.muted;
+            }
+
             let pending_mutation = Some(PendingMutation::MixerLinkedLevel {
                 mixer,
                 left_channel: left_ch,
@@ -1781,6 +1796,12 @@ impl Controller {
             return Ok(());
         }
 
+        if let Some(slot) = self.state.mixer.channels[mixer.index()].get_mut(index) {
+            slot.level = Some(level);
+            slot.pan = active.pan;
+            slot.muted = active.muted;
+        }
+
         self.send(
             Command::SetMixerLevel {
                 mixer,
@@ -1814,6 +1835,17 @@ impl Controller {
         if active.linked == Some(true) {
             let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
 
+            if let Some(slot) =
+                self.state.mixer.channels[mixer.index()].get_mut(left_ch.saturating_sub(1) as usize)
+            {
+                slot.muted = Some(muted);
+            }
+            if let Some(slot) = self.state.mixer.channels[mixer.index()]
+                .get_mut(right_ch.saturating_sub(1) as usize)
+            {
+                slot.muted = Some(muted);
+            }
+
             let pending_mutation = Some(PendingMutation::MixerLinkedMute {
                 mixer,
                 left_channel: left_ch,
@@ -1843,6 +1875,10 @@ impl Controller {
                 mixer, left_ch, right_ch
             );
             return Ok(());
+        }
+
+        if let Some(slot) = self.state.mixer.channels[mixer.index()].get_mut(index) {
+            slot.muted = Some(muted);
         }
 
         self.send(
@@ -1875,6 +1911,17 @@ impl Controller {
         if active.linked == Some(true) {
             let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
 
+            if let Some(slot) =
+                self.state.mixer.channels[mixer.index()].get_mut(left_ch.saturating_sub(1) as usize)
+            {
+                slot.soloed = Some(soloed);
+            }
+            if let Some(slot) = self.state.mixer.channels[mixer.index()]
+                .get_mut(right_ch.saturating_sub(1) as usize)
+            {
+                slot.soloed = Some(soloed);
+            }
+
             let pending_mutation = Some(PendingMutation::MixerLinkedSolo {
                 mixer,
                 left_channel: left_ch,
@@ -1904,6 +1951,10 @@ impl Controller {
                 mixer, left_ch, right_ch
             );
             return Ok(());
+        }
+
+        if let Some(slot) = self.state.mixer.channels[mixer.index()].get_mut(index) {
+            slot.soloed = Some(soloed);
         }
 
         self.send(
@@ -2196,6 +2247,7 @@ impl Controller {
                 } else {
                     output.volume.saturating_add(1).min(0x60)
                 };
+                self.state.output.states[self.state.output.selected].volume = next;
                 self.send(
                     Command::SetOutputVolume {
                         target: output.target,
@@ -2208,6 +2260,7 @@ impl Controller {
                 self.state.ui.focus = FocusArea::Outputs;
                 self.state.output.selected = index.min(self.state.output.states.len() - 1);
                 let output = self.state.output.states[self.state.output.selected];
+                self.state.output.states[self.state.output.selected].volume = step.min(0x60);
                 self.send(
                     Command::SetOutputVolume {
                         target: output.target,
@@ -2220,6 +2273,12 @@ impl Controller {
                 self.state.ui.focus = FocusArea::Outputs;
                 self.state.output.selected = index.min(self.state.output.states.len() - 1);
                 let output = self.state.output.states[self.state.output.selected];
+                let new_mode = if output.mode != OutputMode::Dim {
+                    OutputMode::Dim
+                } else {
+                    OutputMode::Normal
+                };
+                self.state.output.states[self.state.output.selected].mode = new_mode;
                 self.send(
                     Command::SetOutputDim {
                         target: output.target,
@@ -2232,6 +2291,12 @@ impl Controller {
                 self.state.ui.focus = FocusArea::Outputs;
                 self.state.output.selected = index.min(self.state.output.states.len() - 1);
                 let output = self.state.output.states[self.state.output.selected];
+                let new_mode = if output.mode != OutputMode::Mute {
+                    OutputMode::Mute
+                } else {
+                    OutputMode::Normal
+                };
+                self.state.output.states[self.state.output.selected].mode = new_mode;
                 self.send(
                     Command::SetOutputMute {
                         target: output.target,
@@ -2313,9 +2378,15 @@ impl Controller {
                         .saturating_sub(1)
                         .max(PanState::MIN)
                 };
+                let surface = MixerSurface::from_surface(self.state.mixer.surface);
+                if let Some(slot) = self.state.mixer.channels[surface.index()]
+                    .get_mut(active_channel.channel.saturating_sub(1) as usize)
+                {
+                    slot.pan = PanState::from_raw(next);
+                }
                 self.send(
                     Command::SetMixerPan {
-                        mixer: MixerSurface::from_surface(self.state.mixer.surface),
+                        mixer: surface,
                         channel: active_channel.channel,
                         pan: PanState::from_raw(next),
                         muted: active_channel.muted.unwrap_or(false),
@@ -2330,9 +2401,15 @@ impl Controller {
                     index.min(self.state.active_mixer_channels().len() - 1);
                 let active_channel =
                     self.state.active_mixer_channels()[self.state.mixer.selected_channel];
+                let surface = MixerSurface::from_surface(self.state.mixer.surface);
+                if let Some(slot) = self.state.mixer.channels[surface.index()]
+                    .get_mut(active_channel.channel.saturating_sub(1) as usize)
+                {
+                    slot.pan = pan;
+                }
                 self.send(
                     Command::SetMixerPan {
-                        mixer: MixerSurface::from_surface(self.state.mixer.surface),
+                        mixer: surface,
                         channel: active_channel.channel,
                         pan,
                         muted: active_channel.muted.unwrap_or(false),
@@ -2426,17 +2503,18 @@ impl Controller {
                 } else {
                     self.state.preamp.state.input2.gain_raw
                 };
-                self.send(
-                    Command::SetPreampGain {
-                        input,
-                        raw: next_preamp_gain_raw(current, increase),
-                    },
-                    pending.clone(),
-                )?;
+                let next = next_preamp_gain_raw(current, increase);
+                self.state.device.dsp_cluster[input.min(1) as usize] = next;
+                self.state
+                    .refresh_preamp_from_cluster_preserving_observed_meter();
+                self.send(Command::SetPreampGain { input, raw: next }, pending.clone())?;
             }
             Intent::SetPreampGain { input, raw } => {
                 self.state.ui.focus = FocusArea::Preamp;
                 self.state.preamp.selected_input = input.min(1) as usize;
+                self.state.device.dsp_cluster[input.min(1) as usize] = raw;
+                self.state
+                    .refresh_preamp_from_cluster_preserving_observed_meter();
                 self.send(
                     Command::SetPreampGain {
                         input: input.min(1),
