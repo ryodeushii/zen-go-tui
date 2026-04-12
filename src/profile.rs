@@ -125,6 +125,11 @@ impl DeviceProfile {
         )?;
         validate_strip_profiles(&self.mixers.mix1, "mix1")?;
         validate_strip_profiles(&self.mixers.mix2, "mix2")?;
+        validate_output_profile(&self.outputs.monitor, "monitor")?;
+        validate_output_profile(&self.outputs.hp1, "hp1")?;
+        validate_output_profile(&self.outputs.hp2, "hp2")?;
+        validate_preamp_profile(&self.preamps.input1, "input1")?;
+        validate_preamp_profile(&self.preamps.input2, "input2")?;
         Ok(())
     }
 
@@ -470,10 +475,55 @@ fn validate_channel_sequence(mut channels: Vec<u8>, label: &str) -> Result<()> {
 
 fn validate_strip_profiles(strips: &[MixerStripProfile], label: &str) -> Result<()> {
     validate_channel_sequence(strips.iter().map(|strip| strip.channel).collect(), label)?;
+    for strip in strips {
+        if strip.level_raw > 0x60 {
+            bail!(
+                "{label} CH {:02} level 0x{:02x} exceeds maximum 0x60",
+                strip.channel,
+                strip.level_raw
+            )
+        }
+        if strip.pan_raw < PanState::MIN || strip.pan_raw > PanState::MAX {
+            bail!(
+                "{label} CH {:02} pan 0x{:02x} out of range 0x{:02x}–0x{:02x}",
+                strip.channel,
+                strip.pan_raw,
+                PanState::MIN,
+                PanState::MAX
+            )
+        }
+    }
     for pair in strips.chunks(2) {
         if pair.len() == 2 && pair[0].linked != pair[1].linked {
             bail!("{label} linked state must match within each stereo pair")
         }
+    }
+    Ok(())
+}
+
+fn validate_output_profile(output: &OutputProfile, label: &str) -> Result<()> {
+    if output.volume_step > 0x60 {
+        bail!(
+            "{label} volume 0x{:02x} exceeds maximum 0x60",
+            output.volume_step
+        )
+    }
+    Ok(())
+}
+
+fn validate_preamp_profile(input: &PreampInputProfile, label: &str) -> Result<()> {
+    let max_gain = match input.mode {
+        PreampModeProfile::Mic => 0x41,
+        PreampModeProfile::Line => 0x2d,
+        PreampModeProfile::HiZ => 0x2d,
+    };
+    if input.gain_raw > max_gain {
+        bail!(
+            "{label} gain 0x{:02x} exceeds maximum 0x{:02x} for {:?} mode",
+            input.gain_raw,
+            max_gain,
+            input.mode
+        )
     }
     Ok(())
 }
@@ -603,5 +653,160 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("zen-go-tui-profile-tests-{unique}"))
+    }
+
+    #[test]
+    fn validate_rejects_output_volume_above_max() {
+        let profile = minimal_valid_profile();
+        let mut bad = profile.clone();
+        bad.outputs.monitor.volume_step = 0x61;
+        assert!(bad.validate().is_err());
+
+        bad.outputs.monitor.volume_step = 0x00;
+        bad.outputs.hp1.volume_step = 0xff;
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_output_volume_at_max() {
+        let profile = minimal_valid_profile();
+        let mut ok = profile.clone();
+        ok.outputs.monitor.volume_step = 0x60;
+        ok.outputs.hp1.volume_step = 0x60;
+        ok.outputs.hp2.volume_step = 0x60;
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_mixer_level_above_max() {
+        let profile = minimal_valid_profile();
+        let mut bad = profile.clone();
+        bad.mixers.mix1[0].level_raw = 0x61;
+        assert!(bad.validate().is_err());
+
+        bad.mixers.mix1[0].level_raw = 0x30;
+        bad.mixers.mix2[7].level_raw = 0xff;
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_mixer_level_at_max() {
+        let profile = minimal_valid_profile();
+        let mut ok = profile;
+        for strip in ok.mixers.mix1.iter_mut().chain(ok.mixers.mix2.iter_mut()) {
+            strip.level_raw = 0x60;
+        }
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_pan_out_of_range() {
+        let profile = minimal_valid_profile();
+        let mut bad = profile.clone();
+        bad.mixers.mix1[0].pan_raw = 0x01;
+        assert!(bad.validate().is_err());
+
+        bad.mixers.mix1[0].pan_raw = 0x3f;
+        assert!(bad.validate().is_err());
+
+        bad.mixers.mix1[0].pan_raw = 0x00;
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_pan_at_bounds() {
+        let profile = minimal_valid_profile();
+        let mut ok = profile;
+        ok.mixers.mix1[0].pan_raw = PanState::MIN;
+        ok.mixers.mix1[1].pan_raw = PanState::MAX;
+        ok.mixers.mix1[2].pan_raw = PanState::CENTER;
+        assert!(ok.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_preamp_gain_above_mode_max() {
+        let profile = minimal_valid_profile();
+        let mut bad = profile.clone();
+        bad.preamps.input1.mode = PreampModeProfile::Mic;
+        bad.preamps.input1.gain_raw = 0x42;
+        assert!(bad.validate().is_err());
+
+        bad.preamps.input1.mode = PreampModeProfile::Line;
+        bad.preamps.input1.gain_raw = 0x2e;
+        assert!(bad.validate().is_err());
+
+        bad.preamps.input1.mode = PreampModeProfile::HiZ;
+        bad.preamps.input1.gain_raw = 0x2e;
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_preamp_gain_at_mode_max() {
+        let profile = minimal_valid_profile();
+        let mut ok = profile.clone();
+        ok.preamps.input1.mode = PreampModeProfile::Mic;
+        ok.preamps.input1.gain_raw = 0x41;
+        assert!(ok.validate().is_ok());
+
+        ok.preamps.input2.mode = PreampModeProfile::Line;
+        ok.preamps.input2.gain_raw = 0x2d;
+        assert!(ok.validate().is_ok());
+
+        ok.preamps.input2.mode = PreampModeProfile::HiZ;
+        ok.preamps.input2.gain_raw = 0x2d;
+        assert!(ok.validate().is_ok());
+    }
+
+    fn minimal_valid_profile() -> DeviceProfile {
+        let mut assignments = Vec::new();
+        for ch in 1..=16 {
+            assignments.push(MixerAssignmentEntry {
+                channel: ch,
+                source: MixerAssignmentProfile::Mute,
+            });
+        }
+        let mix1: Vec<MixerStripProfile> = (1..=16)
+            .map(|ch| MixerStripProfile {
+                channel: ch,
+                level_raw: 0x30,
+                pan_raw: PanState::CENTER,
+                muted: false,
+                soloed: false,
+                linked: (ch - 1) / 2 % 2 == 0,
+            })
+            .collect();
+        let mix2 = mix1.clone();
+        DeviceProfile {
+            outputs: OutputProfiles {
+                monitor: OutputProfile {
+                    volume_step: 0x20,
+                    mode: OutputModeProfile::Normal,
+                },
+                hp1: OutputProfile {
+                    volume_step: 0x20,
+                    mode: OutputModeProfile::Normal,
+                },
+                hp2: OutputProfile {
+                    volume_step: 0x20,
+                    mode: OutputModeProfile::Normal,
+                },
+            },
+            preamps: PreampProfiles {
+                input1: PreampInputProfile {
+                    gain_raw: 0x20,
+                    mode: PreampModeProfile::Mic,
+                    phantom_on: false,
+                    phase_inverted: false,
+                },
+                input2: PreampInputProfile {
+                    gain_raw: 0x10,
+                    mode: PreampModeProfile::Line,
+                    phantom_on: false,
+                    phase_inverted: false,
+                },
+            },
+            assignments,
+            mixers: MixerProfiles { mix1, mix2 },
+        }
     }
 }
