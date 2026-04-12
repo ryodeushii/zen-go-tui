@@ -442,13 +442,16 @@ pub fn handle_key_press(
                     .raw()
                     .saturating_sub(1)
                     .max(PanState::MIN);
-                controller.send(Command::SetMixerPan {
-                    mixer: MixerSurface::from_surface(controller.state.mixer.surface),
-                    channel: active_channel.channel,
-                    pan: PanState::from_raw(next),
-                    muted: active_channel.muted.unwrap_or(false),
-                    soloed: active_channel.soloed.unwrap_or(false),
-                })?;
+                controller.send(
+                    Command::SetMixerPan {
+                        mixer: MixerSurface::from_surface(controller.state.mixer.surface),
+                        channel: active_channel.channel,
+                        pan: PanState::from_raw(next),
+                        muted: active_channel.muted.unwrap_or(false),
+                        soloed: active_channel.soloed.unwrap_or(false),
+                    },
+                    None,
+                )?;
             }
             Ok(())
         }
@@ -463,13 +466,16 @@ pub fn handle_key_press(
                     .raw()
                     .saturating_add(1)
                     .min(PanState::MAX);
-                controller.send(Command::SetMixerPan {
-                    mixer: MixerSurface::from_surface(controller.state.mixer.surface),
-                    channel: active_channel.channel,
-                    pan: PanState::from_raw(next),
-                    muted: active_channel.muted.unwrap_or(false),
-                    soloed: active_channel.soloed.unwrap_or(false),
-                })?;
+                controller.send(
+                    Command::SetMixerPan {
+                        mixer: MixerSurface::from_surface(controller.state.mixer.surface),
+                        channel: active_channel.channel,
+                        pan: PanState::from_raw(next),
+                        muted: active_channel.muted.unwrap_or(false),
+                        soloed: active_channel.soloed.unwrap_or(false),
+                    },
+                    None,
+                )?;
             }
             Ok(())
         }
@@ -507,7 +513,7 @@ pub fn handle_key_press(
                 let all = SampleRate::all_confirmed();
                 let position = all.iter().position(|rate| *rate == current).unwrap_or(2);
                 let next = all[(position + 1) % all.len()];
-                controller.send(Command::SetSampleRate(next))?;
+                controller.send(Command::SetSampleRate(next), None)?;
             }
             Ok(())
         }
@@ -524,11 +530,11 @@ pub fn handle_key_press(
                 .position(|source| *source == current)
                 .unwrap_or(0);
             let next = all[(position + 1) % all.len()];
-            controller.send(Command::SetClockSource(next))?;
+            controller.send(Command::SetClockSource(next), None)?;
             Ok(())
         }
-        AppKeyCode::Char('1') => controller.send(Command::SelectSurface(Surface::MonitorHp1)),
-        AppKeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2)),
+        AppKeyCode::Char('1') => controller.send(Command::SelectSurface(Surface::MonitorHp1), None),
+        AppKeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2), None),
         AppKeyCode::Char('b') if controller.state.popup.raw_view_open => {
             controller.apply_intent(Intent::CaptureRawBaseline, area)?;
             Ok(())
