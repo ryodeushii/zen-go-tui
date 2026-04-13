@@ -153,10 +153,7 @@ fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     .render(rows[8], frame.buffer_mut());
     Paragraph::new(Line::from(vec![
         Span::styled("STATUS ", subdued_style()),
-        Span::styled(
-            state.ui.last_message.clone(),
-            strong_style(Color::LightCyan),
-        ),
+        Span::styled(&state.ui.last_message, strong_style(Color::LightCyan)),
     ]))
     .wrap(Wrap { trim: false })
     .render(rows[9], frame.buffer_mut());
@@ -183,7 +180,7 @@ fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .popup
             .profile_names
             .iter()
-            .map(|name| ListItem::new(name.clone()))
+            .map(|name| ListItem::new(name.as_str()))
             .collect::<Vec<_>>();
         let mut list_state = ListState::default();
         list_state.select(Some(
@@ -591,11 +588,8 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let mut refresh_spans = vec![Span::styled("Refresh: ", subdued_style())];
     for r in refresh_rates {
         if *r == current_refresh {
-            refresh_spans.push(chip(
-                format!("* {}", r.label()),
-                Color::Black,
-                Color::LightCyan,
-            ));
+            let text = format!("* {}", r.label());
+            refresh_spans.push(chip(&text, Color::Black, Color::LightCyan));
         } else {
             refresh_spans.push(chip(r.label(), Color::Black, Color::Gray));
         }
@@ -646,11 +640,8 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let mut hold_spans = vec![Span::styled("Hold:   ", subdued_style())];
     for h in hold_durations {
         if *h == current_hold {
-            hold_spans.push(chip(
-                format!("* {}", h.label()),
-                Color::Black,
-                Color::LightCyan,
-            ));
+            let text = format!("* {}", h.label());
+            hold_spans.push(chip(&text, Color::Black, Color::LightCyan));
         } else {
             hold_spans.push(chip(h.label(), Color::Black, Color::Gray));
         }
@@ -877,19 +868,19 @@ fn render_afx_routing_row(area: Rect, buffer: &mut Buffer, state: &AppState, pai
     }
 
     Paragraph::new(Line::from(vec![chip(
-        labels[0].clone(),
+        &labels[0],
         Color::Black,
         Color::LightMagenta,
     )]))
     .render(columns[0], buffer);
     Paragraph::new(Line::from(vec![chip(
-        labels[1].clone(),
+        &labels[1],
         Color::Black,
         Color::Gray,
     )]))
     .render(columns[1], buffer);
     Paragraph::new(Line::from(vec![chip(
-        labels[2].clone(),
+        &labels[2],
         Color::Black,
         if selected_left {
             Color::Yellow
@@ -899,13 +890,13 @@ fn render_afx_routing_row(area: Rect, buffer: &mut Buffer, state: &AppState, pai
     )]))
     .render(columns[2], buffer);
     Paragraph::new(Line::from(vec![chip(
-        labels[3].clone(),
+        &labels[3],
         Color::Black,
         Color::Gray,
     )]))
     .render(columns[3], buffer);
     Paragraph::new(Line::from(vec![chip(
-        labels[4].clone(),
+        &labels[4],
         Color::Black,
         if selected_right {
             Color::Yellow
@@ -1194,16 +1185,16 @@ pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {
         Span::styled(product, strong_style(Color::LightGreen)),
         Span::raw("  "),
         chip(
-            connection.to_uppercase(),
+            &connection.to_uppercase(),
             Color::Black,
             connection_badge_color(state),
         ),
         Span::raw(" "),
-        chip(sample, Color::Black, Color::Yellow),
+        chip(&sample, Color::Black, Color::Yellow),
         Span::raw(" "),
-        chip(clock, Color::Black, Color::LightBlue),
+        chip(&clock, Color::Black, Color::LightBlue),
         Span::raw(" "),
-        chip(lock.to_uppercase(), Color::Black, Color::Magenta),
+        chip(&lock.to_uppercase(), Color::Black, Color::Magenta),
     ])
 }
 

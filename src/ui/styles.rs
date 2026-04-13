@@ -52,9 +52,9 @@ pub(crate) fn chip_width(label: &str) -> u16 {
     chip_text(label).chars().count() as u16
 }
 
-pub(crate) fn chip<T: Into<String>>(label: T, fg: Color, bg: Color) -> Span<'static> {
+pub(crate) fn chip(label: &str, fg: Color, bg: Color) -> Span<'static> {
     Span::styled(
-        chip_text(&label.into()),
+        chip_text(label),
         terminal::adapt_style(Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)),
     )
 }
@@ -66,15 +66,12 @@ pub(crate) fn labeled_value_chip(
     fg: Color,
     bg: Color,
 ) -> Span<'static> {
-    chip(
-        format!(
-            "{label} {:>width$}",
-            value,
-            width = value.chars().count().max(min_value_width)
-        ),
-        fg,
-        bg,
-    )
+    let text = format!(
+        "{label} {:>width$}",
+        value,
+        width = value.chars().count().max(min_value_width)
+    );
+    chip(&text, fg, bg)
 }
 
 pub(crate) fn tab_chip(label: &str, active: bool, accent: Color) -> Span<'static> {

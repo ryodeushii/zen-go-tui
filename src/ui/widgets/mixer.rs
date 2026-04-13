@@ -287,8 +287,9 @@ pub(crate) fn render_mixer_strip_widget(
         .split(inner);
 
     let (channel_rect, source_rect) = mixer_header_chip_rects(area, &source);
+    let ch_label = format!("CH {:02}", channel.channel);
     Paragraph::new(Line::from(vec![chip(
-        format!("CH {:02}", channel.channel),
+        &ch_label,
         Color::Black,
         if selected {
             Color::LightGreen
@@ -298,7 +299,7 @@ pub(crate) fn render_mixer_strip_widget(
     )]))
     .render(channel_rect, buffer);
     Paragraph::new(Line::from(vec![chip(
-        source.clone(),
+        &source,
         Color::Black,
         Color::LightCyan,
     )]))
