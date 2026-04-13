@@ -148,30 +148,74 @@ pub fn encode_query(query: QueryRequest) -> [u8; 320] {
     frame
 }
 
-/// Encodes a [`Command`] into a 320-byte HID report frame ready for transmission.
-pub fn encode_command(command: Command) -> [u8; 320] {
-    match command {
-        Command::SetSampleRate(rate) => host_frame(0x12, &[0x03, rate.code()]),
-        Command::SetClockSource(source) => host_frame(0x12, &[0x04, source.code()]),
-        Command::SelectSurface(surface) => host_frame(0x13, &[0x49, 0x00, surface.code()]),
-        Command::SetPreampMode { input, mode } => {
-            host_frame(0x13, &[0x4f, input.min(1), mode.code()])
+/// Dispatch strategy for sending a command to the device.
+///
+/// Returned by [`encode_command`] to tell the caller how to transmit the frame(s).
+pub enum EncodeResult {
+    /// Single frame, enqueue for coalescing.
+    Single([u8; 320]),
+    /// Multiple frames that must be written directly (bypass queue).
+    Multi(Vec<[u8; 320]>),
+    /// Requires a companion frame written before the main frame, both bypassing the queue.
+    WithCompanion {
+        companion: [u8; 320],
+        main: [u8; 320],
+    },
+    /// Single frame that requires a state refresh after writing.
+    WithRefresh([u8; 320]),
+    /// Mixer assignment that requires a full assignment table to be encoded.
+    /// Carries strip and assignment; caller must provide the table.
+    MixerAssignment {
+        strip: u8,
+        assignment: crate::mixer::MixerAssignment,
+    },
+}
+
+impl EncodeResult {
+    /// Extracts the single frame, panicking if this is not a `Single` result.
+    ///
+    /// Use when you know the command always produces a single frame
+    /// (e.g., `SetMixerLevel`, `SetMixerMute`, `SetMixerSolo`).
+    pub fn unwrap_single(self) -> [u8; 320] {
+        match self {
+            EncodeResult::Single(frame) => frame,
+            _ => panic!("encode_command: expected Single result"),
         }
-        Command::SetPreampGain { input, raw } => host_frame(0x13, &[0x50, input.min(1), raw]),
+    }
+}
+
+/// Encodes a [`Command`] into an [`EncodeResult`] describing how to transmit it.
+pub fn encode_command(command: Command) -> EncodeResult {
+    match command {
+        Command::SetSampleRate(rate) => {
+            EncodeResult::Single(host_frame(0x12, &[0x03, rate.code()]))
+        }
+        Command::SetClockSource(source) => {
+            EncodeResult::Single(host_frame(0x12, &[0x04, source.code()]))
+        }
+        Command::SelectSurface(surface) => {
+            EncodeResult::WithRefresh(host_frame(0x13, &[0x49, 0x00, surface.code()]))
+        }
+        Command::SetPreampMode { input, mode } => {
+            EncodeResult::Single(host_frame(0x13, &[0x4f, input.min(1), mode.code()]))
+        }
+        Command::SetPreampGain { input, raw } => {
+            EncodeResult::Single(host_frame(0x13, &[0x50, input.min(1), raw]))
+        }
         Command::SetPreampPhantom { input, enabled } => {
-            host_frame(0x13, &[0x51, input.min(1), u8::from(enabled)])
+            EncodeResult::Single(host_frame(0x13, &[0x51, input.min(1), u8::from(enabled)]))
         }
         Command::SetPreampPhase { input, enabled } => {
-            host_frame(0x13, &[0x52, input.min(1), u8::from(enabled)])
+            EncodeResult::Single(host_frame(0x13, &[0x52, input.min(1), u8::from(enabled)]))
         }
         Command::SetOutputVolume { target, step } => {
-            host_frame(0x13, &[0x47, target.index(), step])
+            EncodeResult::Single(host_frame(0x13, &[0x47, target.index(), step]))
         }
         Command::SetOutputMute { target, enabled } => {
-            host_frame(0x13, &[0x48, target.index(), u8::from(enabled)])
+            EncodeResult::Single(host_frame(0x13, &[0x48, target.index(), u8::from(enabled)]))
         }
         Command::SetOutputDim { target, enabled } => {
-            host_frame(0x13, &[0x66, target.index(), u8::from(enabled)])
+            EncodeResult::Single(host_frame(0x13, &[0x66, target.index(), u8::from(enabled)]))
         }
         Command::SetMixerLevel {
             mixer,
@@ -180,7 +224,7 @@ pub fn encode_command(command: Command) -> [u8; 320] {
             pan_state,
             muted,
             soloed,
-        } => host_frame(
+        } => EncodeResult::Single(host_frame(
             0x16,
             &[
                 0xd4,
@@ -190,14 +234,14 @@ pub fn encode_command(command: Command) -> [u8; 320] {
                 level,
                 pan_state.state_code(muted, soloed),
             ],
-        ),
+        )),
         Command::SetMixerMute {
             mixer,
             channel,
             muted,
             pan_state,
             soloed,
-        } => host_frame(
+        } => EncodeResult::Single(host_frame(
             0x16,
             &[
                 0xd4,
@@ -207,14 +251,14 @@ pub fn encode_command(command: Command) -> [u8; 320] {
                 0x00,
                 pan_state.state_code(muted, soloed),
             ],
-        ),
+        )),
         Command::SetMixerSolo {
             mixer,
             channel,
             soloed,
             muted,
             pan_state,
-        } => host_frame(
+        } => EncodeResult::Single(host_frame(
             0x16,
             &[
                 0xd4,
@@ -224,14 +268,14 @@ pub fn encode_command(command: Command) -> [u8; 320] {
                 0x00,
                 pan_state.state_code(muted, soloed),
             ],
-        ),
+        )),
         Command::SetMixerPan {
             mixer,
             channel,
             pan,
             muted,
             soloed,
-        } => host_frame(
+        } => EncodeResult::Single(host_frame(
             0x16,
             &[
                 0xd4,
@@ -241,15 +285,23 @@ pub fn encode_command(command: Command) -> [u8; 320] {
                 0x00,
                 pan.state_code(muted, soloed),
             ],
-        ),
+        )),
         Command::SetMixerAssignment { strip, assignment } => {
-            encode_mixer_assignment(strip, assignment)
+            EncodeResult::MixerAssignment { strip, assignment }
         }
         Command::SetLinkState {
             selector,
             enabled,
-            companion_bank: _,
-        } => host_frame(0x14, &[0xa2, 0x03, selector, u8::from(enabled)]),
+            companion_bank,
+        } => match companion_bank {
+            Some(bank) => EncodeResult::WithCompanion {
+                companion: encode_link_companion(bank, enabled),
+                main: host_frame(0x14, &[0xa2, 0x03, selector, u8::from(enabled)]),
+            },
+            None => {
+                EncodeResult::Single(host_frame(0x14, &[0xa2, 0x03, selector, u8::from(enabled)]))
+            }
+        },
     }
 }
 
@@ -259,33 +311,6 @@ pub fn encode_command(command: Command) -> [u8; 320] {
 /// a secondary bank update.
 pub fn encode_link_companion(bank: u8, enabled: bool) -> [u8; 320] {
     host_frame(0x14, &[0xa2, 0x04, bank, u8::from(enabled)])
-}
-
-fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> [u8; 320] {
-    encode_mixer_assignment_frames(strip, assignment)
-        .into_iter()
-        .next()
-        .expect("assignment write must emit at least one frame")
-}
-
-/// Encodes a mixer strip assignment into one or more HID frames.
-///
-/// Different strips require writes to different banks (see [`MixerStrip::assignment_write_banks`]).
-pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) -> Vec<[u8; 320]> {
-    let strip = MixerStrip::new(strip).expect("assignment write requires grounded strip mapping");
-    let entry_index = strip.assignment_entry_index();
-    let assignment_bytes = assignment.ordinary_strip_bytes();
-
-    strip
-        .assignment_write_banks()
-        .iter()
-        .copied()
-        .map(|bank| {
-            let mut frame = assignment_frame(bank);
-            write_assignment_entry(&mut frame, entry_index, assignment_bytes);
-            frame
-        })
-        .collect()
 }
 
 /// Encodes a mixer strip assignment along with a full assignment table.
@@ -409,15 +434,18 @@ mod tests {
 
     #[test]
     fn encodes_grounded_link_selector_write() {
-        let frame = encode_command(Command::SetLinkState {
+        let result = encode_command(Command::SetLinkState {
             selector: 0x00,
             enabled: true,
             companion_bank: Some(0x00),
         });
-
-        assert_eq!(&frame[0..4], &0x70_u32.to_le_bytes());
-        assert_eq!(&frame[4..8], &0x14_u32.to_le_bytes());
-        assert_eq!(&frame[0x10..0x14], &[0xa2, 0x03, 0x00, 0x01]);
+        let EncodeResult::WithCompanion { companion, main } = result else {
+            panic!("expected WithCompanion");
+        };
+        assert_eq!(&main[0..4], &0x70_u32.to_le_bytes());
+        assert_eq!(&main[4..8], &0x14_u32.to_le_bytes());
+        assert_eq!(&main[0x10..0x14], &[0xa2, 0x03, 0x00, 0x01]);
+        assert_eq!(&companion[0x10..0x14], &[0xa2, 0x04, 0x00, 0x01]);
     }
 
     #[test]
@@ -431,54 +459,70 @@ mod tests {
 
     #[test]
     fn encodes_confirmed_commands() {
-        let sample = encode_command(Command::SetSampleRate(SampleRate::Hz44100));
+        let EncodeResult::Single(sample) =
+            encode_command(Command::SetSampleRate(SampleRate::Hz44100))
+        else {
+            panic!("expected Single");
+        };
         assert_eq!(&sample[0..4], &0x70_u32.to_le_bytes());
         assert_eq!(sample[4], 0x12);
         assert_eq!(&sample[0x10..0x12], &[0x03, 0x01]);
 
-        let output = encode_command(Command::SetOutputVolume {
+        let EncodeResult::Single(output) = encode_command(Command::SetOutputVolume {
             target: OutputTarget::Hp2,
             step: 0x33,
-        });
+        }) else {
+            panic!("expected Single");
+        };
         assert_eq!(output[4], 0x13);
         assert_eq!(&output[0x10..0x13], &[0x47, 0x02, 0x33]);
 
-        let mixer = encode_command(Command::SetMixerLevel {
+        let EncodeResult::Single(mixer) = encode_command(Command::SetMixerLevel {
             mixer: crate::mixer::MixerSurface::Mix2,
             channel: 4,
             level: 0x28,
             pan_state: PanState::right(),
             muted: false,
             soloed: false,
-        });
+        }) else {
+            panic!("expected Single");
+        };
         assert_eq!(mixer[4], 0x16);
         assert_eq!(&mixer[0x10..0x16], &[0xd4, 0x04, 0x01, 0x04, 0x28, 0x3e]);
 
-        let preamp_mode = encode_command(Command::SetPreampMode {
+        let EncodeResult::Single(preamp_mode) = encode_command(Command::SetPreampMode {
             input: 1,
             mode: PreampMode::HiZ,
-        });
+        }) else {
+            panic!("expected Single");
+        };
         assert_eq!(preamp_mode[4], 0x13);
         assert_eq!(&preamp_mode[0x10..0x13], &[0x4f, 0x01, 0x02]);
 
-        let preamp_gain = encode_command(Command::SetPreampGain {
+        let EncodeResult::Single(preamp_gain) = encode_command(Command::SetPreampGain {
             input: 0,
             raw: 0x2d,
-        });
+        }) else {
+            panic!("expected Single");
+        };
         assert_eq!(preamp_gain[4], 0x13);
         assert_eq!(&preamp_gain[0x10..0x13], &[0x50, 0x00, 0x2d]);
 
-        let preamp_phantom = encode_command(Command::SetPreampPhantom {
+        let EncodeResult::Single(preamp_phantom) = encode_command(Command::SetPreampPhantom {
             input: 1,
             enabled: true,
-        });
+        }) else {
+            panic!("expected Single");
+        };
         assert_eq!(preamp_phantom[4], 0x13);
         assert_eq!(&preamp_phantom[0x10..0x13], &[0x51, 0x01, 0x01]);
 
-        let preamp_phase = encode_command(Command::SetPreampPhase {
+        let EncodeResult::Single(preamp_phase) = encode_command(Command::SetPreampPhase {
             input: 0,
             enabled: false,
-        });
+        }) else {
+            panic!("expected Single");
+        };
         assert_eq!(preamp_phase[4], 0x13);
         assert_eq!(&preamp_phase[0x10..0x13], &[0x52, 0x00, 0x00]);
     }

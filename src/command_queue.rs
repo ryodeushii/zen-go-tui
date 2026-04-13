@@ -143,7 +143,8 @@ impl CommandQueue {
     pub fn flush(&mut self, transport: &dyn Transport) -> Result<usize> {
         let count = self.entries.len();
         for entry in self.entries.drain(..) {
-            transport.write(&encode_command(entry.command))?;
+            let frame = encode_command(entry.command).unwrap_single();
+            transport.write(&frame)?;
         }
         Ok(count)
     }

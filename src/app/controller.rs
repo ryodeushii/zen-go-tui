@@ -9,8 +9,8 @@ use crate::transport::Transport;
 use antelope_protocol::{
     control_panel_startup_queries, encode_command, encode_link_companion,
     encode_mixer_assignment_frames_with_table, encode_query, ClockSource, Command, DeviceSnapshot,
-    Frame, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
-    OutputTarget, PanState, PreampMode, SampleRate,
+    EncodeResult, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface,
+    OutputMode, OutputTarget, PanState, PreampMode, SampleRate,
 };
 
 use super::picker::{AssignmentPickerState, SelectorPopupKind, SelectorPopupState};
@@ -210,48 +210,41 @@ impl Controller {
     }
 
     pub fn send(&mut self, command: Command, pending: Option<PendingMutation>) -> Result<()> {
-        // Multi-frame assignment: always write directly
-        if let Command::SetMixerAssignment { strip, assignment } = command {
-            let assignments = self.shared_assignment_table()?;
-            for frame in encode_mixer_assignment_frames_with_table(strip, assignment, &assignments)
-            {
-                self.transport.write(&frame)?;
+        let result = encode_command(command.clone());
+        match result {
+            EncodeResult::Single(_) => {
+                self.command_queue.enqueue(command);
             }
-            self.pending_mutation = pending;
-            self.state.ui.last_message = format!("Sent {:?}", command);
-            return Ok(());
+            EncodeResult::Multi(frames) => {
+                self.flush_commands()?;
+                for frame in frames {
+                    self.transport.write(&frame)?;
+                }
+            }
+            EncodeResult::WithCompanion { companion, main } => {
+                self.flush_commands()?;
+                self.transport.write(&companion)?;
+                self.transport.write(&main)?;
+            }
+            EncodeResult::WithRefresh(frame) => {
+                self.flush_commands()?;
+                self.transport.write(&frame)?;
+                self.apply_command_state_update(&command);
+                self.pending_mutation = pending;
+                self.state.ui.last_message = format!("Sent {:?}", command);
+                self.refresh_queried_state()?;
+                return Ok(());
+            }
+            EncodeResult::MixerAssignment { strip, assignment } => {
+                let assignments = self.shared_assignment_table()?;
+                let frames =
+                    encode_mixer_assignment_frames_with_table(strip, assignment, &assignments);
+                self.flush_commands()?;
+                for frame in frames {
+                    self.transport.write(&frame)?;
+                }
+            }
         }
-
-        // Link state with companion bank: flush queue first, then write directly
-        if let Command::SetLinkState {
-            enabled,
-            companion_bank: Some(bank),
-            ..
-        } = command
-        {
-            self.flush_commands()?;
-            self.transport
-                .write(&encode_link_companion(bank, enabled))?;
-            self.transport.write(&encode_command(command))?;
-            self.apply_command_state_update(&command);
-            self.pending_mutation = pending;
-            self.state.ui.last_message = format!("Sent {:?}", command);
-            return Ok(());
-        }
-
-        // SelectSurface: flush, write directly, then refresh queried state
-        if let Command::SelectSurface(_) = &command {
-            self.flush_commands()?;
-            self.transport.write(&encode_command(command))?;
-            self.apply_command_state_update(&command);
-            self.pending_mutation = pending;
-            self.state.ui.last_message = format!("Sent {:?}", command);
-            self.refresh_queried_state()?;
-            return Ok(());
-        }
-
-        // All other commands: enqueue for coalescing
-        self.command_queue.enqueue(command);
         self.apply_command_state_update(&command);
         self.pending_mutation = pending;
         self.state.ui.last_message = format!("Sent {:?}", command);
@@ -345,24 +338,28 @@ impl Controller {
                 right_muted: right.muted.unwrap_or(false),
             });
             self.flush_commands()?;
-            self.transport
-                .write(&encode_command(Command::SetMixerLevel {
+            self.transport.write(
+                &encode_command(Command::SetMixerLevel {
                     mixer,
                     channel: left_ch,
                     level,
                     pan_state: left.pan,
                     muted: left.muted.unwrap_or(false),
                     soloed: left.soloed.unwrap_or(false),
-                }))?;
-            self.transport
-                .write(&encode_command(Command::SetMixerLevel {
+                })
+                .unwrap_single(),
+            )?;
+            self.transport.write(
+                &encode_command(Command::SetMixerLevel {
                     mixer,
                     channel: right_ch,
                     level,
                     pan_state: right.pan,
                     muted: right.muted.unwrap_or(false),
                     soloed: right.soloed.unwrap_or(false),
-                }))?;
+                })
+                .unwrap_single(),
+            )?;
             self.pending_mutation = pending_mutation;
             self.state.ui.last_message = format!(
                 "Sent linked mixer level {:?} ch {}-{}",
@@ -428,22 +425,26 @@ impl Controller {
                 muted,
             });
             self.flush_commands()?;
-            self.transport
-                .write(&encode_command(Command::SetMixerMute {
+            self.transport.write(
+                &encode_command(Command::SetMixerMute {
                     mixer,
                     channel: left_ch,
                     muted,
                     pan_state: left.pan,
                     soloed: left.soloed.unwrap_or(false),
-                }))?;
-            self.transport
-                .write(&encode_command(Command::SetMixerMute {
+                })
+                .unwrap_single(),
+            )?;
+            self.transport.write(
+                &encode_command(Command::SetMixerMute {
                     mixer,
                     channel: right_ch,
                     muted,
                     pan_state: right.pan,
                     soloed: right.soloed.unwrap_or(false),
-                }))?;
+                })
+                .unwrap_single(),
+            )?;
             self.pending_mutation = pending_mutation;
             self.state.ui.last_message = format!(
                 "Sent linked mixer mute {:?} ch {}-{}",
@@ -504,22 +505,26 @@ impl Controller {
                 soloed,
             });
             self.flush_commands()?;
-            self.transport
-                .write(&encode_command(Command::SetMixerSolo {
+            self.transport.write(
+                &encode_command(Command::SetMixerSolo {
                     mixer,
                     channel: left_ch,
                     soloed,
                     muted: left.muted.unwrap_or(false),
                     pan_state: left.pan,
-                }))?;
-            self.transport
-                .write(&encode_command(Command::SetMixerSolo {
+                })
+                .unwrap_single(),
+            )?;
+            self.transport.write(
+                &encode_command(Command::SetMixerSolo {
                     mixer,
                     channel: right_ch,
                     soloed,
                     muted: right.muted.unwrap_or(false),
                     pan_state: right.pan,
-                }))?;
+                })
+                .unwrap_single(),
+            )?;
             self.pending_mutation = pending_mutation;
             self.state.ui.last_message = format!(
                 "Sent linked mixer solo {:?} ch {}-{}",
@@ -568,12 +573,14 @@ impl Controller {
             self.transport
                 .write(&encode_link_companion(bank, enabled))?;
         }
-        self.transport
-            .write(&encode_command(Command::SetLinkState {
+        self.transport.write(
+            &encode_command(Command::SetLinkState {
                 selector: target.selector,
                 enabled,
                 companion_bank: None,
-            }))?;
+            })
+            .unwrap_single(),
+        )?;
         self.pending_mutation = pending_mutation;
         self.state.ui.last_message = format!(
             "Sent mixer link {:?} ch {}-{}",

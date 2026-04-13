@@ -33,7 +33,7 @@ mod types;
 // Explicit re-exports for API stability and discoverability
 pub use encoder::{
     encode_command, encode_link_companion, encode_mixer_assignment_frames_with_table, encode_query,
-    Command,
+    Command, EncodeResult,
 };
 pub use frame::{DeviceNotification, DeviceSnapshot, Frame};
 pub use mixer::{
