@@ -5,7 +5,9 @@ use std::thread;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use zen_go_tui::transport::{is_device_error, HidTransport, MockTransport, Transport};
+use zen_go_tui::transport::{
+    is_device_error, HidTransport, MockTransport, ThreadedTransport, Transport,
+};
 
 use crate::timing;
 
@@ -50,8 +52,8 @@ pub(crate) fn open_transport(mock: bool) -> Result<Box<dyn Transport>> {
     let transport: Box<dyn Transport> = if mock {
         Box::new(MockTransport::default())
     } else {
-        wait_for_transport(
-            || Ok(Box::new(HidTransport::open(ZEN_GO_VID, ZEN_GO_PID)?) as Box<dyn Transport>),
+        let hid = wait_for_transport(
+            || HidTransport::open(ZEN_GO_VID, ZEN_GO_PID),
             |attempt, error| {
                 if attempt == 1 {
                     eprintln!("Waiting for Zen Go device...\n{error:#}");
@@ -59,7 +61,8 @@ pub(crate) fn open_transport(mock: bool) -> Result<Box<dyn Transport>> {
                 thread::sleep(timing::device_retry_interval(attempt));
                 Ok(())
             },
-        )?
+        )?;
+        Box::new(ThreadedTransport::spawn(hid))
     };
 
     Ok(transport)

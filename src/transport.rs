@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::error::Error as StdError;
 use std::fmt;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
@@ -51,15 +53,18 @@ struct HidTransportState {
 pub struct HidTransport {
     vid: u16,
     pid: u16,
+    api: Arc<Mutex<HidApi>>,
     state: Mutex<HidTransportState>,
 }
 
 impl HidTransport {
     pub fn open(vid: u16, pid: u16) -> Result<Self> {
-        let device = open_hid_device(vid, pid)?;
+        let api = Arc::new(Mutex::new(HidApi::new()?));
+        let device = open_hid_device(&api, vid, pid)?;
         Ok(Self {
             vid,
             pid,
+            api,
             state: Mutex::new(HidTransportState {
                 device: Some(device),
                 last_open_attempt: None,
@@ -68,7 +73,12 @@ impl HidTransport {
         })
     }
 
-    fn ensure_device(state: &mut HidTransportState, vid: u16, pid: u16) -> Result<bool> {
+    fn ensure_device(
+        api: &Mutex<HidApi>,
+        state: &mut HidTransportState,
+        vid: u16,
+        pid: u16,
+    ) -> Result<bool> {
         if state.device.is_some() {
             return Ok(true);
         }
@@ -82,7 +92,7 @@ impl HidTransport {
 
         state.last_open_attempt = Some(Instant::now());
 
-        match open_hid_device(vid, pid) {
+        match open_hid_device(api, vid, pid) {
             Ok(device) => {
                 state.device = Some(device);
                 state.last_open_attempt = None;
@@ -101,7 +111,7 @@ impl Transport for HidTransport {
             .lock()
             .map_err(|_| anyhow!("hid device lock poisoned"))?;
 
-        if !Self::ensure_device(&mut state, self.vid, self.pid)? {
+        if !Self::ensure_device(&self.api, &mut state, self.vid, self.pid)? {
             return Err(TransportError::DeviceUnavailable.into());
         }
 
@@ -123,7 +133,7 @@ impl Transport for HidTransport {
             .lock()
             .map_err(|_| anyhow!("hid device lock poisoned"))?;
 
-        if !Self::ensure_device(&mut state, self.vid, self.pid)? {
+        if !Self::ensure_device(&self.api, &mut state, self.vid, self.pid)? {
             return Ok(None);
         }
 
@@ -159,12 +169,12 @@ impl Transport for HidTransport {
             .state
             .lock()
             .map_err(|_| anyhow!("hid device lock poisoned"))?;
-        Self::ensure_device(&mut state, self.vid, self.pid)
+        Self::ensure_device(&self.api, &mut state, self.vid, self.pid)
     }
 }
 
-fn open_hid_device(vid: u16, pid: u16) -> Result<HidDevice> {
-    let api = HidApi::new()?;
+fn open_hid_device(api: &Mutex<HidApi>, vid: u16, pid: u16) -> Result<HidDevice> {
+    let api = api.lock().map_err(|_| anyhow!("hidapi lock poisoned"))?;
     let candidates: Vec<_> = api
         .device_list()
         .filter(|device| device.vendor_id() == vid && device.product_id() == pid)
@@ -248,6 +258,132 @@ impl Transport for MockTransport {
 
     fn is_available(&self) -> Result<bool> {
         Ok(true)
+    }
+}
+
+enum TransportMessage {
+    Write {
+        data: Vec<u8>,
+        reply: Sender<Result<()>>,
+    },
+    IsAvailable {
+        reply: Sender<Result<bool>>,
+    },
+    Shutdown,
+}
+
+struct ThreadState {
+    available: bool,
+}
+
+pub struct ThreadedTransport {
+    msg_tx: Sender<TransportMessage>,
+    frame_rx: Receiver<Vec<u8>>,
+    #[allow(dead_code)]
+    state: Arc<Mutex<ThreadState>>,
+    _thread: JoinHandle<()>,
+}
+
+impl ThreadedTransport {
+    pub fn spawn(transport: HidTransport) -> Self {
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (frame_tx, frame_rx) = mpsc::channel();
+        let state = Arc::new(Mutex::new(ThreadState { available: true }));
+
+        let state_clone = Arc::clone(&state);
+
+        let thread = thread::Builder::new()
+            .name("hid-transport".into())
+            .spawn(move || {
+                let poll_timeout = 50;
+
+                loop {
+                    if state_clone.lock().is_ok_and(|s| s.available) {
+                        match transport.read(Duration::from_millis(poll_timeout)) {
+                            Ok(Some(frame)) => {
+                                let _ = frame_tx.send(frame);
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
+                                if let Ok(mut s) = state_clone.lock() {
+                                    s.available = false;
+                                }
+                                thread::sleep(HID_RECONNECT_INTERVAL);
+                                continue;
+                            }
+                        }
+                    }
+
+                    match msg_rx.try_recv() {
+                        Ok(TransportMessage::Write { data, reply }) => {
+                            let result = transport.write(&data);
+                            if result.is_ok() {
+                                if let Ok(mut s) = state_clone.lock() {
+                                    s.available = true;
+                                }
+                            }
+                            let _ = reply.send(result);
+                        }
+                        Ok(TransportMessage::IsAvailable { reply }) => {
+                            let avail = state_clone.lock().map(|s| s.available).unwrap_or(false);
+                            let _ = reply.send(Ok(avail));
+                        }
+                        Ok(TransportMessage::Shutdown) | Err(TryRecvError::Disconnected) => {
+                            break;
+                        }
+                        Err(TryRecvError::Empty) => {}
+                    }
+                }
+            })
+            .expect("failed to spawn hid-transport thread");
+
+        Self {
+            msg_tx,
+            frame_rx,
+            state,
+            _thread: thread,
+        }
+    }
+}
+
+impl Transport for ThreadedTransport {
+    fn write(&self, data: &[u8]) -> Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.msg_tx
+            .send(TransportMessage::Write {
+                data: data.to_vec(),
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow!("transport thread terminated"))?;
+        reply_rx
+            .recv()
+            .map_err(|_| anyhow!("transport thread terminated"))?
+    }
+
+    fn read(&self, timeout: Duration) -> Result<Option<Vec<u8>>> {
+        match self.frame_rx.recv_timeout(timeout) {
+            Ok(frame) => Ok(Some(frame)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(anyhow!("transport thread terminated"))
+            }
+        }
+    }
+
+    fn is_available(&self) -> Result<bool> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.msg_tx
+            .send(TransportMessage::IsAvailable { reply: reply_tx })
+            .map_err(|_| anyhow!("transport thread terminated"))?;
+        reply_rx
+            .recv()
+            .map_err(|_| anyhow!("transport thread terminated"))?
+    }
+}
+
+impl Drop for ThreadedTransport {
+    fn drop(&mut self) {
+        let _ = self.msg_tx.send(TransportMessage::Shutdown);
     }
 }
 

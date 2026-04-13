@@ -7,3 +7,4 @@ pub mod transport;
 pub mod ui;
 
 pub use app::QUERY_REPLY_VISIBLE_COUNT;
+pub use transport::ThreadedTransport;
