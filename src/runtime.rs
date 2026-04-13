@@ -148,6 +148,128 @@ pub enum KeyAction {
     Quit,
 }
 
+fn handle_options_popup(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    match key_code {
+        AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+        AppKeyCode::Esc => {
+            controller.apply_intent(Intent::CloseOptionsPopup, area)?;
+        }
+        AppKeyCode::Char('1') => {
+            controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps15), area)?;
+        }
+        AppKeyCode::Char('2') => {
+            controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps30), area)?;
+        }
+        AppKeyCode::Char('3') => {
+            controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps60), area)?;
+        }
+        AppKeyCode::Up => {
+            controller.apply_intent(Intent::CyclePeakThreshold(true), area)?;
+        }
+        AppKeyCode::Down => {
+            controller.apply_intent(Intent::CyclePeakThreshold(false), area)?;
+        }
+        AppKeyCode::Char('p') => {
+            controller.apply_intent(Intent::TogglePeakEnabled, area)?;
+        }
+        AppKeyCode::Char('h') | AppKeyCode::Char('H') => {
+            let all = PeakHoldDuration::all();
+            let current = controller.state.ui.settings.peak_hold_duration;
+            let pos = all.iter().position(|&v| v == current).unwrap_or(1);
+            let next = all[(pos + 1) % all.len()];
+            controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
+            if controller.state.ui.settings.auto_save {
+                let _ = settings::save_settings(&controller.state.ui.settings);
+            }
+        }
+        AppKeyCode::Char('l') | AppKeyCode::Char('L') => {
+            let all = PeakHoldDuration::all();
+            let current = controller.state.ui.settings.peak_hold_duration;
+            let pos = all.iter().position(|&v| v == current).unwrap_or(1);
+            let next = all[pos.checked_sub(1).unwrap_or(all.len() - 1)];
+            controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
+            if controller.state.ui.settings.auto_save {
+                let _ = settings::save_settings(&controller.state.ui.settings);
+            }
+        }
+        AppKeyCode::Char('a') => {
+            controller.apply_intent(Intent::ToggleAutoSave, area)?;
+        }
+        _ => {}
+    }
+    Ok(KeyAction::Continue)
+}
+
+fn handle_profile_editor(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    match key_code {
+        AppKeyCode::Char(ch) => {
+            let valid: String = ch
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if !valid.is_empty() {
+                controller.apply_intent(Intent::ProfileEditorChar(valid), area)?;
+            }
+        }
+        AppKeyCode::Backspace => {
+            controller.apply_intent(Intent::ProfileEditorBackspace, area)?;
+        }
+        AppKeyCode::Enter => {
+            controller.apply_intent(Intent::ProfileEditorCommit, area)?;
+        }
+        AppKeyCode::Esc => {
+            controller.apply_intent(Intent::ProfileEditorCancel, area)?;
+        }
+        _ => {}
+    }
+    Ok(KeyAction::Continue)
+}
+
+fn handle_profiles_popup(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    match key_code {
+        AppKeyCode::Up => {
+            controller.apply_intent(Intent::MovePopupSelection(false), area)?;
+        }
+        AppKeyCode::Down => {
+            controller.apply_intent(Intent::MovePopupSelection(true), area)?;
+        }
+        AppKeyCode::Enter => {
+            controller.apply_intent(Intent::LoadSelectedProfile, area)?;
+        }
+        AppKeyCode::Char('s') => {
+            controller.apply_intent(Intent::StartSaveProfile, area)?;
+        }
+        AppKeyCode::Char('r') => {
+            if controller.state.selected_profile_name().is_some() {
+                controller.apply_intent(Intent::StartRenameProfile, area)?;
+            } else {
+                controller.state.ui.last_message = "No profile selected to rename.".to_string();
+            }
+        }
+        AppKeyCode::Char('d') => {
+            controller.apply_intent(Intent::DeleteSelectedProfile, area)?;
+        }
+        AppKeyCode::Esc => {
+            controller.apply_intent(Intent::CloseProfilesPopup, area)?;
+        }
+        _ => {}
+    }
+    Ok(KeyAction::Continue)
+}
+
 pub fn handle_key_press(
     controller: &mut Controller,
     key: AppKeyEvent,
@@ -183,113 +305,15 @@ pub fn handle_key_press(
     }
 
     if controller.state.popup.options_open {
-        match key_code {
-            AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
-            AppKeyCode::Esc => {
-                controller.apply_intent(Intent::CloseOptionsPopup, area)?;
-            }
-            AppKeyCode::Char('1') => {
-                controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps15), area)?;
-            }
-            AppKeyCode::Char('2') => {
-                controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps30), area)?;
-            }
-            AppKeyCode::Char('3') => {
-                controller.apply_intent(Intent::SetRefreshRate(RefreshRate::Fps60), area)?;
-            }
-            AppKeyCode::Up => {
-                controller.apply_intent(Intent::CyclePeakThreshold(true), area)?;
-            }
-            AppKeyCode::Down => {
-                controller.apply_intent(Intent::CyclePeakThreshold(false), area)?;
-            }
-            AppKeyCode::Char('p') => {
-                controller.apply_intent(Intent::TogglePeakEnabled, area)?;
-            }
-            AppKeyCode::Char('h') | AppKeyCode::Char('H') => {
-                let all = PeakHoldDuration::all();
-                let current = controller.state.ui.settings.peak_hold_duration;
-                let pos = all.iter().position(|&v| v == current).unwrap_or(1);
-                let next = all[(pos + 1) % all.len()];
-                controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
-                if controller.state.ui.settings.auto_save {
-                    let _ = settings::save_settings(&controller.state.ui.settings);
-                }
-            }
-            AppKeyCode::Char('l') | AppKeyCode::Char('L') => {
-                let all = PeakHoldDuration::all();
-                let current = controller.state.ui.settings.peak_hold_duration;
-                let pos = all.iter().position(|&v| v == current).unwrap_or(1);
-                let next = all[pos.checked_sub(1).unwrap_or(all.len() - 1)];
-                controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
-                if controller.state.ui.settings.auto_save {
-                    let _ = settings::save_settings(&controller.state.ui.settings);
-                }
-            }
-            AppKeyCode::Char('a') => {
-                controller.apply_intent(Intent::ToggleAutoSave, area)?;
-            }
-            _ => {}
-        }
-        return Ok(KeyAction::Continue);
+        return handle_options_popup(controller, key_code, area);
     }
 
     if controller.state.popup.profile_editor.is_some() {
-        match key_code {
-            AppKeyCode::Char(ch) => {
-                let valid: String = ch
-                    .to_string()
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                    .collect();
-                if !valid.is_empty() {
-                    controller.apply_intent(Intent::ProfileEditorChar(valid), area)?;
-                }
-            }
-            AppKeyCode::Backspace => {
-                controller.apply_intent(Intent::ProfileEditorBackspace, area)?;
-            }
-            AppKeyCode::Enter => {
-                controller.apply_intent(Intent::ProfileEditorCommit, area)?;
-            }
-            AppKeyCode::Esc => {
-                controller.apply_intent(Intent::ProfileEditorCancel, area)?;
-            }
-            _ => {}
-        }
-        return Ok(KeyAction::Continue);
+        return handle_profile_editor(controller, key_code, area);
     }
 
     if controller.state.popup.profiles_open {
-        match key_code {
-            AppKeyCode::Up => {
-                controller.apply_intent(Intent::MovePopupSelection(false), area)?;
-            }
-            AppKeyCode::Down => {
-                controller.apply_intent(Intent::MovePopupSelection(true), area)?;
-            }
-            AppKeyCode::Enter => {
-                controller.apply_intent(Intent::LoadSelectedProfile, area)?;
-            }
-            AppKeyCode::Char('s') => {
-                controller.apply_intent(Intent::StartSaveProfile, area)?;
-            }
-            AppKeyCode::Char('r') => {
-                if controller.state.selected_profile_name().is_some() {
-                    controller.apply_intent(Intent::StartRenameProfile, area)?;
-                } else {
-                    controller.state.ui.last_message = "No profile selected to rename.".to_string();
-                }
-            }
-            AppKeyCode::Char('d') => {
-                controller.apply_intent(Intent::DeleteSelectedProfile, area)?;
-            }
-            AppKeyCode::Esc => {
-                controller.apply_intent(Intent::CloseProfilesPopup, area)?;
-            }
-            _ => {}
-        }
-        return Ok(KeyAction::Continue);
+        return handle_profiles_popup(controller, key_code, area);
     }
 
     let result = match key_code {
