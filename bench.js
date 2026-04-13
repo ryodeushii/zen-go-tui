@@ -1,6 +1,6 @@
 const fs = require('fs');
 const { spawn, execSync } = require('child_process');
-const cwd = '/home/ryodeushii/repos/antelope-analysis-gpt54';
+const cwd = process.cwd();
 const bin = `${cwd}/target/x86_64-unknown-linux-gnu/release/zen-go-tui`;
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
