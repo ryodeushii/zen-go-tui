@@ -761,7 +761,8 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state
                 .raw_view
                 .latest_raw_74
-                .as_deref()
+                .as_ref()
+                .map(|a| a.as_slice())
                 .map(|bytes| render_query_request_panel(bytes, state))
                 .unwrap_or_else(|| Text::from("Waiting for first 0x74 query request...")),
         ),
@@ -770,9 +771,17 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state
                 .raw_view
                 .latest_raw_73
-                .as_deref()
+                .as_ref()
+                .map(|a| a.as_slice())
                 .map(|bytes| {
-                    render_full_packet_dump(bytes, state.raw_view.baseline_raw_73.as_deref())
+                    render_full_packet_dump(
+                        bytes,
+                        state
+                            .raw_view
+                            .baseline_raw_73
+                            .as_ref()
+                            .map(|a| a.as_slice()),
+                    )
                 })
                 .unwrap_or_else(|| Text::from("Waiting for first 0x73 snapshot...")),
         ),
@@ -781,9 +790,17 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state
                 .raw_view
                 .latest_raw_83
-                .as_deref()
+                .as_ref()
+                .map(|a| a.as_slice())
                 .map(|bytes| {
-                    render_full_packet_dump(bytes, state.raw_view.baseline_raw_83.as_deref())
+                    render_full_packet_dump(
+                        bytes,
+                        state
+                            .raw_view
+                            .baseline_raw_83
+                            .as_ref()
+                            .map(|a| a.as_slice()),
+                    )
                 })
                 .unwrap_or_else(|| Text::from("Waiting for first 0x83 auxiliary packet...")),
         ),
@@ -792,7 +809,8 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state
                 .raw_view
                 .latest_raw_75
-                .as_deref()
+                .as_ref()
+                .map(|a| a.as_slice())
                 .map(|bytes| render_query_reply_panel(bytes, state))
                 .unwrap_or_else(|| Text::from("Waiting for first 0x75 query reply...")),
         ),
@@ -801,9 +819,17 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state
                 .raw_view
                 .latest_raw_81
-                .as_deref()
+                .as_ref()
+                .map(|a| a.as_slice())
                 .map(|bytes| {
-                    render_full_packet_dump(bytes, state.raw_view.baseline_raw_81.as_deref())
+                    render_full_packet_dump(
+                        bytes,
+                        state
+                            .raw_view
+                            .baseline_raw_81
+                            .as_ref()
+                            .map(|a| a.as_slice()),
+                    )
                 })
                 .unwrap_or_else(|| Text::from("Waiting for first 0x81 notification...")),
         ),
@@ -942,13 +968,29 @@ pub(crate) fn render_afx_routing_text(state: &AppState) -> Text<'static> {
 pub(crate) fn render_query_reply_panel(_state_bytes: &[u8], state: &AppState) -> Text<'static> {
     state
         .selected_query_reply_entry()
-        .map(|entry| render_full_packet_dump(&entry.raw, state.raw_view.baseline_raw_75.as_deref()))
+        .map(|entry| {
+            render_full_packet_dump(
+                &entry.raw,
+                state
+                    .raw_view
+                    .baseline_raw_75
+                    .as_ref()
+                    .map(|a| a.as_slice()),
+            )
+        })
         .unwrap_or_else(|| Text::from("No 0x75 reply selected yet."))
 }
 
 pub(crate) fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
-    let mut lines =
-        render_full_packet_dump(state_bytes, state.raw_view.baseline_raw_74.as_deref()).lines;
+    let mut lines = render_full_packet_dump(
+        state_bytes,
+        state
+            .raw_view
+            .baseline_raw_74
+            .as_ref()
+            .map(|a| a.as_slice()),
+    )
+    .lines;
     if !state.raw_view.recent_query_request_log.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from("Recent 0x74 requests:"));
@@ -1022,7 +1064,7 @@ pub(crate) fn render_mixer_strip_controls(
 }
 
 pub(crate) fn render_experimental_pair_state_line(state: &AppState) -> String {
-    let Some(bytes) = state.raw_view.latest_raw_73.as_deref() else {
+    let Some(bytes) = state.raw_view.latest_raw_73.as_ref().map(|a| a.as_slice()) else {
         return "exp pair pending: waiting for 0x73 snapshot".to_string();
     };
     let Some(payload) = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..) else {

@@ -956,7 +956,11 @@ fn slider_ratio_for_vertical_point(area: Rect, point: (u16, u16)) -> Option<f64>
 }
 
 pub(crate) fn mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
-    let bytes = state.raw_view.latest_raw_73.as_deref()?;
+    let bytes = state
+        .raw_view
+        .latest_raw_73
+        .as_ref()
+        .map(|a| a.as_slice())?;
     let payload = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..)?;
 
     match payload.get(OFFSET_SURFACE_SELECTOR).copied() {

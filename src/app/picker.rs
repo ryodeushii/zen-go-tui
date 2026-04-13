@@ -18,5 +18,5 @@ pub struct SelectorPopupState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryReplyLogEntry {
     pub summary: String,
-    pub raw: Vec<u8>,
+    pub raw: [u8; 320],
 }

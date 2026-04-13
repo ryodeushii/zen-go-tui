@@ -22,7 +22,6 @@ pub struct DeviceNotification {
 }
 
 /// A parsed HID report frame, classified by its type identifier.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Frame {
     /// Full device state snapshot (frame type 0x73).
@@ -30,21 +29,21 @@ pub enum Frame {
         /// Decoded snapshot data.
         snapshot: DeviceStateSnapshot,
         /// Raw frame bytes.
-        raw: Vec<u8>,
+        raw: [u8; 320],
     },
     /// Response to a query request (frame type 0x75).
     QueryReply {
         /// Decoded query response.
         reply: QueryResponse,
         /// Raw frame bytes.
-        raw: Vec<u8>,
+        raw: [u8; 320],
     },
     /// Auxiliary data frame (type 0x83), purpose not fully decoded.
     Auxiliary {
         /// Payload bytes after the header.
-        bytes: Vec<u8>,
+        bytes: [u8; 320],
         /// Raw frame bytes.
-        raw: Vec<u8>,
+        raw: [u8; 320],
     },
     /// Short-form device notification (6-byte frame).
     Notification {
@@ -88,23 +87,32 @@ impl Frame {
                 .try_into()
                 .map_err(|_| ProtocolError::InvalidField("type header"))?,
         );
+
+        let mut raw = [0_u8; 320];
+        raw[..bytes.len()].copy_from_slice(&bytes);
+
         match frame_type {
             FRAME_TYPE_SNAPSHOT => Ok(Self::Snapshot {
-                snapshot: parse_snapshot73(&bytes)?,
-                raw: bytes,
+                snapshot: parse_snapshot73(&raw)?,
+                raw,
             }),
             FRAME_TYPE_QUERY_REPLY => Ok(Self::QueryReply {
                 reply: QueryResponse {
-                    query_id: bytes[0x08],
-                    sub_id: bytes[0x0c],
-                    body: bytes[SNAPSHOT_PAYLOAD_OFFSET..].to_vec(),
+                    query_id: raw[0x08],
+                    sub_id: raw[0x0c],
+                    body: raw[SNAPSHOT_PAYLOAD_OFFSET..].to_vec(),
                 },
-                raw: bytes,
+                raw,
             }),
-            FRAME_TYPE_AUXILIARY => Ok(Self::Auxiliary {
-                bytes: bytes[SNAPSHOT_PAYLOAD_OFFSET..].to_vec(),
-                raw: bytes,
-            }),
+            FRAME_TYPE_AUXILIARY => {
+                let mut aux_bytes = [0_u8; 320];
+                aux_bytes[..bytes.len() - SNAPSHOT_PAYLOAD_OFFSET]
+                    .copy_from_slice(&bytes[SNAPSHOT_PAYLOAD_OFFSET..]);
+                Ok(Self::Auxiliary {
+                    bytes: aux_bytes,
+                    raw,
+                })
+            }
             other => Err(ProtocolError::UnsupportedFrame(other)),
         }
     }
@@ -136,13 +144,18 @@ impl Frame {
     }
 
     /// Consumes the frame and returns a [`DeviceSnapshot`] alongside the raw bytes.
-    pub fn into_snapshot_and_raw(self) -> (DeviceSnapshot, Vec<u8>) {
+    pub fn into_snapshot_and_raw(self) -> (DeviceSnapshot, [u8; 320]) {
         match self {
             Self::Snapshot { snapshot, raw } => (DeviceSnapshot::Snapshot(snapshot), raw),
             Self::QueryReply { reply, raw } => (DeviceSnapshot::QueryReply(reply), raw),
             Self::Auxiliary { bytes, raw } => (DeviceSnapshot::Auxiliary(bytes), raw),
-            Self::Notification { notification, raw } => {
-                (DeviceSnapshot::Notification(notification), raw)
+            Self::Notification {
+                notification,
+                raw: _raw,
+            } => {
+                let mut padded = [0_u8; 320];
+                padded[.._raw.len()].copy_from_slice(&_raw);
+                (DeviceSnapshot::Notification(notification), padded)
             }
         }
     }
@@ -152,13 +165,12 @@ impl Frame {
 ///
 /// This is the owned, non-raw counterpart of [`Frame`], suitable for
 /// storage and further processing.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceSnapshot {
     /// Full device state snapshot.
     Snapshot(DeviceStateSnapshot),
     /// Auxiliary data payload.
-    Auxiliary(Vec<u8>),
+    Auxiliary([u8; 320]),
     /// Response to a query request.
     QueryReply(QueryResponse),
     /// Short-form device notification.

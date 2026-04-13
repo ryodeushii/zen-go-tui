@@ -139,8 +139,8 @@ pub enum Command {
 }
 
 /// Encodes a [`QueryRequest`] into a 320-byte HID report frame (type 0x74).
-pub fn encode_query(query: QueryRequest) -> Vec<u8> {
-    let mut frame = vec![0_u8; HID_REPORT_SIZE];
+pub fn encode_query(query: QueryRequest) -> [u8; 320] {
+    let mut frame = [0_u8; HID_REPORT_SIZE];
     frame[0..4].copy_from_slice(&0x74_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x10_u32.to_le_bytes());
     frame[0x08] = query.query_id;
@@ -149,7 +149,7 @@ pub fn encode_query(query: QueryRequest) -> Vec<u8> {
 }
 
 /// Encodes a [`Command`] into a 320-byte HID report frame ready for transmission.
-pub fn encode_command(command: Command) -> Vec<u8> {
+pub fn encode_command(command: Command) -> [u8; 320] {
     match command {
         Command::SetSampleRate(rate) => host_frame(0x12, &[0x03, rate.code()]),
         Command::SetClockSource(source) => host_frame(0x12, &[0x04, source.code()]),
@@ -257,11 +257,11 @@ pub fn encode_command(command: Command) -> Vec<u8> {
 ///
 /// Used alongside [`Command::SetLinkState`] for stereo pairs that require
 /// a secondary bank update.
-pub fn encode_link_companion(bank: u8, enabled: bool) -> Vec<u8> {
+pub fn encode_link_companion(bank: u8, enabled: bool) -> [u8; 320] {
     host_frame(0x14, &[0xa2, 0x04, bank, u8::from(enabled)])
 }
 
-fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
+fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> [u8; 320] {
     encode_mixer_assignment_frames(strip, assignment)
         .into_iter()
         .next()
@@ -271,7 +271,7 @@ fn encode_mixer_assignment(strip: u8, assignment: MixerAssignment) -> Vec<u8> {
 /// Encodes a mixer strip assignment into one or more HID frames.
 ///
 /// Different strips require writes to different banks (see [`MixerStrip::assignment_write_banks`]).
-pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) -> Vec<Vec<u8>> {
+pub fn encode_mixer_assignment_frames(strip: u8, assignment: MixerAssignment) -> Vec<[u8; 320]> {
     let strip = MixerStrip::new(strip).expect("assignment write requires grounded strip mapping");
     let entry_index = strip.assignment_entry_index();
     let assignment_bytes = assignment.ordinary_strip_bytes();
@@ -296,7 +296,7 @@ pub fn encode_mixer_assignment_frames_with_table(
     strip: u8,
     assignment: MixerAssignment,
     assignments: &[MixerAssignment; 16],
-) -> Vec<Vec<u8>> {
+) -> Vec<[u8; 320]> {
     let strip = MixerStrip::new(strip).expect("assignment write requires grounded strip mapping");
     let mut full_assignments = *assignments;
     full_assignments[strip.assignment_entry_index()] = assignment;
@@ -321,8 +321,8 @@ pub fn encode_mixer_assignment_frames_with_table(
         .collect()
 }
 
-fn assignment_frame(bank: u8) -> Vec<u8> {
-    let mut frame = vec![0_u8; HID_REPORT_SIZE];
+fn assignment_frame(bank: u8) -> [u8; 320] {
+    let mut frame = [0_u8; HID_REPORT_SIZE];
     frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x53_u32.to_le_bytes());
     frame[0x10..0x13].copy_from_slice(&[0xd3, 0x41, bank]);
@@ -355,8 +355,8 @@ fn assignment_entry_bytes(
     }
 }
 
-fn host_frame(length: u32, payload: &[u8]) -> Vec<u8> {
-    let mut frame = vec![0_u8; HID_REPORT_SIZE];
+fn host_frame(length: u32, payload: &[u8]) -> [u8; 320] {
+    let mut frame = [0_u8; HID_REPORT_SIZE];
     frame[0..4].copy_from_slice(&0x70_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&length.to_le_bytes());
     frame[0x10..0x10 + payload.len()].copy_from_slice(payload);

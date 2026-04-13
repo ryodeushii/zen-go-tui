@@ -316,7 +316,7 @@ impl AppState {
         self.preamp.state.input2.observed_meter = observed_meter_input2;
     }
 
-    pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: Vec<u8>) -> bool {
+    pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: [u8; 320]) -> bool {
         let was_connected = self.device.connection.connected;
         self.device.connection.connected = true;
         self.device.connection.last_snapshot_at = Some(Instant::now());
@@ -377,7 +377,7 @@ impl AppState {
         }
     }
 
-    fn push_query_reply_log(&mut self, reply: &QueryResponse, raw: Vec<u8>) {
+    fn push_query_reply_log(&mut self, reply: &QueryResponse, raw: [u8; 320]) {
         let detail = if reply.selector_bitmap().is_some() || reply.selector_pair_bank().is_some() {
             reply.summary_label()
         } else {
@@ -574,7 +574,7 @@ impl AppState {
         self.raw_view.baseline_raw_81 = None;
     }
 
-    pub fn observe_query_request(&mut self, raw: Vec<u8>) {
+    pub fn observe_query_request(&mut self, raw: [u8; 320]) {
         self.raw_view.latest_raw_74 = Some(raw.clone());
         let query_id = raw.get(0x08).copied().unwrap_or(0);
         let sub_id = raw.get(0x0c).copied().unwrap_or(0);
@@ -615,6 +615,16 @@ mod tests {
 
     use super::controller::MAX_FRAMES_PER_POLL;
     use super::*;
+
+    fn raw_frame(bytes: &[u8]) -> [u8; 320] {
+        let mut raw = [0_u8; 320];
+        raw[..bytes.len()].copy_from_slice(bytes);
+        raw
+    }
+
+    fn aux_frame(bytes: &[u8]) -> [u8; 320] {
+        raw_frame(bytes)
+    }
 
     fn snapshot() -> DeviceStateSnapshot {
         DeviceStateSnapshot {
@@ -672,8 +682,8 @@ mod tests {
             .collect()
     }
 
-    fn snapshot_frame_bytes(meter: u8) -> Vec<u8> {
-        let mut frame = vec![0_u8; 320];
+    fn snapshot_frame_bytes(meter: u8) -> [u8; 320] {
+        let mut frame = [0_u8; 320];
         frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
         let payload = &mut frame[0x10..];
@@ -911,7 +921,7 @@ mod tests {
                 sub_id: 0x05,
                 body: vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01, 0x01],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
         state.observe_frame(
             DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
@@ -923,7 +933,7 @@ mod tests {
                     0x00, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
@@ -965,7 +975,7 @@ mod tests {
                     0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
@@ -993,7 +1003,7 @@ mod tests {
                     0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
@@ -1016,7 +1026,7 @@ mod tests {
                     0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
         state.observe_frame(
             DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
@@ -1028,7 +1038,7 @@ mod tests {
                     0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
@@ -1067,7 +1077,7 @@ mod tests {
                     0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
         state.observe_frame(
             DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
@@ -1079,7 +1089,7 @@ mod tests {
                     0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
@@ -1105,7 +1115,7 @@ mod tests {
                     0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02, 0x60, 0x3e, 0x60, 0x02,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
@@ -1137,7 +1147,7 @@ mod tests {
                     0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20, 0x60, 0x20,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         let mix1 = &state.mixer.channels[MixerSurface::Mix1.index()];
@@ -1662,7 +1672,7 @@ mod tests {
                 sub_id: 0x00,
                 body,
             }),
-            vec![0x75, 0x18, 0x00],
+            raw_frame(&[0x75, 0x18, 0x00]),
         );
 
         assert_eq!(
@@ -2224,7 +2234,10 @@ mod tests {
         state.mark_disconnected();
         assert!(!state.device.connection.connected);
 
-        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 0]);
+        state.observe_frame(
+            DeviceSnapshot::Snapshot(snapshot()),
+            raw_frame(&[0x73, 0, 0, 0]),
+        );
 
         assert!(state.device.connection.connected);
         assert!(state.device.connection.last_snapshot_at.is_some());
@@ -2233,7 +2246,7 @@ mod tests {
     #[test]
     fn identical_snapshot_does_not_report_visible_change_twice() {
         let mut state = AppState::default();
-        let raw = vec![0x73, 0, 0, 0];
+        let raw = raw_frame(&[0x73, 0, 0, 0]);
 
         assert!(state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw.clone()));
         assert!(!state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw));
@@ -2244,9 +2257,12 @@ mod tests {
         let mut state = AppState::default();
         state.device.connection.connected = true;
         state.latest_structural_snapshot = Some(StructuralSnapshot::from_snapshot(&snapshot()));
-        state.raw_view.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
+        state.raw_view.latest_raw_73 = Some(raw_frame(&[0x73, 0, 0, 0]));
 
-        assert!(!state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 1],));
+        assert!(!state.observe_frame(
+            DeviceSnapshot::Snapshot(snapshot()),
+            raw_frame(&[0x73, 0, 0, 1])
+        ));
     }
 
     #[test]
@@ -2255,9 +2271,12 @@ mod tests {
         state.device.connection.connected = true;
         state.popup.raw_view_open = true;
         state.latest_structural_snapshot = Some(StructuralSnapshot::from_snapshot(&snapshot()));
-        state.raw_view.latest_raw_73 = Some(vec![0x73, 0, 0, 0]);
+        state.raw_view.latest_raw_73 = Some(raw_frame(&[0x73, 0, 0, 0]));
 
-        assert!(state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 1],));
+        assert!(state.observe_frame(
+            DeviceSnapshot::Snapshot(snapshot()),
+            raw_frame(&[0x73, 0, 0, 1])
+        ));
     }
 
     #[test]
@@ -2266,8 +2285,8 @@ mod tests {
         state.device.connection.connected = true;
 
         assert!(!state.observe_frame(
-            DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
-            vec![0x83, 0, 0, 0],
+            DeviceSnapshot::Auxiliary(aux_frame(&[0x60, 0xc0, 0x60, 0x00])),
+            raw_frame(&[0x83, 0, 0, 0]),
         ));
     }
 
@@ -2278,8 +2297,8 @@ mod tests {
         state.popup.raw_view_open = true;
 
         assert!(state.observe_frame(
-            DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
-            vec![0x83, 0, 0, 0],
+            DeviceSnapshot::Auxiliary(aux_frame(&[0x60, 0xc0, 0x60, 0x00])),
+            raw_frame(&[0x83, 0, 0, 0]),
         ));
     }
 
@@ -2299,7 +2318,7 @@ mod tests {
         controller.state.raw_view.latest_raw_73 = Some(raw.clone());
         controller.state.apply_snapshot(&snapshot);
 
-        transport.push_read(raw);
+        transport.push_read(raw.to_vec());
 
         assert!(!controller.poll_device(Duration::ZERO).expect("poll"));
     }
@@ -2312,7 +2331,7 @@ mod tests {
 
         let transport = MockTransport::default();
         for meter in 0..FRAMES {
-            transport.push_read(snapshot_frame_bytes((meter % 0x3d) as u8));
+            transport.push_read(snapshot_frame_bytes((meter % 0x3d) as u8).to_vec());
         }
 
         let mut controller = Controller::new(Box::new(transport));
@@ -2335,7 +2354,7 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));
 
-        let mut first = vec![0_u8; 320];
+        let mut first = raw_frame(&[]);
         first[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
         first[4..8].copy_from_slice(&0x20_u32.to_le_bytes());
         let first_payload = &mut first[0x10..];
@@ -2343,7 +2362,7 @@ mod tests {
         first_payload[0x03] = ClockSource::Internal.code();
         first_payload[0x04..0x08].copy_from_slice(&44_100_u32.to_be_bytes());
 
-        let mut second = vec![0_u8; 320];
+        let mut second = raw_frame(&[]);
         second[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
         second[4..8].copy_from_slice(&0x20_u32.to_le_bytes());
         let second_payload = &mut second[0x10..];
@@ -2351,8 +2370,8 @@ mod tests {
         second_payload[0x03] = ClockSource::Usb.code();
         second_payload[0x04..0x08].copy_from_slice(&48_000_u32.to_be_bytes());
 
-        transport.push_read(first);
-        transport.push_read(second);
+        transport.push_read(first.to_vec());
+        transport.push_read(second.to_vec());
 
         let observed_frame = controller.poll_device(Duration::ZERO).expect("poll");
 
@@ -2380,16 +2399,13 @@ mod tests {
     #[test]
     fn raw_state_tracks_latest_snapshot_and_auxiliary_frames() {
         let mut state = AppState::default();
-        let mut raw73 = vec![0_u8; 320];
-        raw73[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+        let mut raw73 = raw_frame(&[0x73]);
         raw73[0x10 + 0xcf] = 0x4c;
         state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw73.clone());
 
-        let mut raw83 = vec![0_u8; 0x14];
-        raw83[0..4].copy_from_slice(&0x83_u32.to_le_bytes());
-        raw83[0x10..0x14].copy_from_slice(&[0x60, 0xc0, 0x60, 0x00]);
+        let raw83 = raw_frame(&[0x83, 0, 0, 0, 0x60, 0xc0, 0x60, 0x00]);
         state.observe_frame(
-            DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
+            DeviceSnapshot::Auxiliary(aux_frame(&[0x60, 0xc0, 0x60, 0x00])),
             raw83.clone(),
         );
 
@@ -2404,26 +2420,26 @@ mod tests {
             &raw83[0..4]
         );
 
-        let raw75 = vec![
+        let raw75 = raw_frame(&[
             0x75, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x01, 0, 0, 0, 0, 0, 0, 0, b'Z',
-        ];
-        let raw74 = vec![0x74, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x11, 0, 0, 0, 0x03];
-        state.observe_query_request(raw74.clone());
+        ]);
+        let raw74 = raw_frame(&[0x74, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0x11, 0, 0, 0, 0x03]);
+        state.observe_query_request(raw74);
         state.observe_frame(
             DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x01,
                 sub_id: 0x00,
                 body: vec![b'Z'],
             }),
-            raw75.clone(),
+            raw75,
         );
 
-        let raw81 = vec![0x81, 0x10, 0x20, 0x30, 0x40, 0x50];
+        let raw81 = raw_frame(&[0x81, 0x10, 0x20, 0x30, 0x40, 0x50]);
         state.observe_frame(
             DeviceSnapshot::Notification(antelope_protocol::DeviceNotification {
                 bytes: [0x81, 0x10, 0x20, 0x30, 0x40, 0x50],
             }),
-            raw81.clone(),
+            raw81,
         );
 
         assert_eq!(state.raw_view.latest_raw_75, Some(raw75));
@@ -2442,25 +2458,30 @@ mod tests {
     #[test]
     fn raw_baseline_captures_latest_packets() {
         let mut state = AppState::default();
-        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), vec![0x73, 0, 0, 0]);
         state.observe_frame(
-            DeviceSnapshot::Auxiliary(vec![0x60, 0xc0, 0x60, 0x00]),
-            vec![0x83, 0, 0, 0],
+            DeviceSnapshot::Snapshot(snapshot()),
+            raw_frame(&[0x73, 0, 0, 0]),
         );
-        state.observe_query_request(vec![0x74, 0, 0, 0]);
+        let mut aux_bytes = [0_u8; 320];
+        aux_bytes[..4].copy_from_slice(&[0x60, 0xc0, 0x60, 0x00]);
+        state.observe_frame(
+            DeviceSnapshot::Auxiliary(aux_bytes),
+            raw_frame(&[0x83, 0, 0, 0]),
+        );
+        state.observe_query_request(raw_frame(&[0x74, 0, 0, 0]));
         state.observe_frame(
             DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
                 query_id: 0x11,
                 sub_id: 0x00,
                 body: vec![0xaa, 0xbb],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
         state.observe_frame(
             DeviceSnapshot::Notification(antelope_protocol::DeviceNotification {
                 bytes: [1, 2, 3, 4, 5, 6],
             }),
-            vec![1, 2, 3, 4, 5, 6],
+            raw_frame(&[1, 2, 3, 4, 5, 6]),
         );
 
         state.capture_raw_baseline();
@@ -2488,7 +2509,7 @@ mod tests {
                 sub_id: 0x00,
                 body: vec![0xaa, 0xbb, 0xcc],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
         state.observe_frame(
             DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
@@ -2496,7 +2517,7 @@ mod tests {
                 sub_id: 0x00,
                 body: vec![0x12],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         assert_eq!(
@@ -2527,7 +2548,7 @@ mod tests {
                 ]
                 .concat(),
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         let metadata = state.device.status.metadata.expect("metadata");
@@ -2551,7 +2572,7 @@ mod tests {
                     sub_id,
                     body: vec![sub_id, 0xaa],
                 }),
-                vec![0x75, 0, 0, 0],
+                raw_frame(&[0x75, 0, 0, 0]),
             );
         }
 
@@ -2584,7 +2605,7 @@ mod tests {
                     0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
         state.observe_frame(
             DeviceSnapshot::QueryReply(antelope_protocol::QueryResponse {
@@ -2598,7 +2619,7 @@ mod tests {
                     0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02, 0x00, 0x3e, 0x00, 0x02,
                 ],
             }),
-            vec![0x75, 0, 0, 0],
+            raw_frame(&[0x75, 0, 0, 0]),
         );
 
         assert!(state.raw_view.recent_query_reply_log[0].contains("Selector bitmap"));
@@ -2615,7 +2636,7 @@ mod tests {
                     sub_id,
                     body: vec![sub_id],
                 }),
-                vec![0x75, sub_id],
+                raw_frame(&[0x75, sub_id]),
             );
         }
 
@@ -2624,7 +2645,7 @@ mod tests {
             state
                 .selected_query_reply_entry()
                 .map(|entry| entry.raw.clone()),
-            Some(vec![0x75, 0x02])
+            Some(raw_frame(&[0x75, 0x02]))
         );
 
         state.cycle_query_reply_entry(false);
@@ -2638,7 +2659,9 @@ mod tests {
         let mut state = AppState::default();
 
         for sub_id in 0..20_u8 {
-            state.observe_query_request(vec![0x74, 0, 0, 0, 0, 0, 0, 0, 0x03, 0, 0, 0, sub_id]);
+            state.observe_query_request(raw_frame(&[
+                0x74, 0, 0, 0, 0, 0, 0, 0, 0x03, 0, 0, 0, sub_id,
+            ]));
         }
 
         assert_eq!(state.raw_view.recent_query_request_log.len(), 16);

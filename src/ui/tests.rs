@@ -264,7 +264,7 @@ fn status_strip_surfaces_message_surface_and_output() {
 #[test]
 fn mix_meter_extracts_mix1_lane_pair() {
     let mut state = AppState::default();
-    let mut frame = vec![0_u8; 320];
+    let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
@@ -289,7 +289,7 @@ fn mixer_strip_panel_layout_reserves_two_rows_for_embedded_mix_meter() {
 #[test]
 fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
     let mut state = AppState::default();
-    let mut frame = vec![0_u8; 320];
+    let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
@@ -473,14 +473,18 @@ fn zero_bytes_are_dimmed_and_offsets_are_bold() {
 #[test]
 fn query_reply_panel_includes_recent_reply_log() {
     let mut state = AppState::default();
+    let mut raw1 = [0_u8; 320];
+    raw1[..2].copy_from_slice(&[0x75, 0x05]);
+    let mut raw2 = [0_u8; 320];
+    raw2[..2].copy_from_slice(&[0x75, 0x06]);
     state.raw_view.recent_query_reply_entries = vec![
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/05 [64 bytes] 05 00 00 00 01 01 00 01".to_string(),
-            raw: vec![0x75, 0x05],
+            raw: raw1,
         },
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/06 [64 bytes] 06 03 00 03 01 03 02 03".to_string(),
-            raw: vec![0x75, 0x06],
+            raw: raw2,
         },
     ];
     state.raw_view.selected_query_reply_entry = Some(1);
@@ -732,11 +736,19 @@ fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
     state.raw_view.recent_query_reply_entries = vec![
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/05".to_string(),
-            raw: vec![0x75, 0x05],
+            raw: {
+                let mut r = [0_u8; 320];
+                r[..2].copy_from_slice(&[0x75, 0x05]);
+                r
+            },
         },
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/06".to_string(),
-            raw: vec![0x75, 0x06],
+            raw: {
+                let mut r = [0_u8; 320];
+                r[..2].copy_from_slice(&[0x75, 0x06]);
+                r
+            },
         },
     ];
     let point = (inner.x + 1, inner.y + 1);
@@ -1290,7 +1302,7 @@ fn mixer_strip_line_renders_newly_grounded_pair_link() {
 #[test]
 fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
     let mut state = AppState::default();
-    let mut frame = vec![0_u8; 320];
+    let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
@@ -1312,7 +1324,7 @@ fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
 #[test]
 fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
     let mut state = AppState::default();
-    let mut frame = vec![0_u8; 320];
+    let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
@@ -1332,7 +1344,7 @@ fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
 #[test]
 fn experimental_pair_state_line_surfaces_no_signal_family_as_pending_meter() {
     let mut state = AppState::default();
-    let mut frame = vec![0_u8; 320];
+    let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
@@ -1353,7 +1365,7 @@ fn experimental_pair_state_line_surfaces_no_signal_family_as_pending_meter() {
 #[test]
 fn experimental_pair_state_line_keeps_unknown_meter_bytes_visible() {
     let mut state = AppState::default();
-    let mut frame = vec![0_u8; 320];
+    let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
     frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
