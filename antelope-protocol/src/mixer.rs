@@ -143,143 +143,58 @@ impl MixerLinkTarget {
     /// Looks up a link pair by its selector code on the given mixer surface.
     ///
     /// Mix1 uses selectors 0x00–0x07, Mix2 uses 0x10–0x17.
+    /// The lower 4 bits of the selector give the pair index (0–7),
+    /// which maps to channels `pair*2+1` and `pair*2+2`.
     pub fn from_selector(mixer: MixerSurface, selector: u8) -> Option<Self> {
-        match (mixer, selector) {
-            (MixerSurface::Mix1, 0x00) => Some(Self {
-                mixer,
-                left_channel: 1,
-                right_channel: 2,
-                selector,
-            }),
-            (MixerSurface::Mix1, 0x01) => Some(Self {
-                mixer,
-                left_channel: 3,
-                right_channel: 4,
-                selector,
-            }),
-            (MixerSurface::Mix1, 0x02) => Some(Self {
-                mixer,
-                left_channel: 5,
-                right_channel: 6,
-                selector,
-            }),
-            (MixerSurface::Mix1, 0x03) => Some(Self {
-                mixer,
-                left_channel: 7,
-                right_channel: 8,
-                selector,
-            }),
-            (MixerSurface::Mix1, 0x04) => Some(Self {
-                mixer,
-                left_channel: 9,
-                right_channel: 10,
-                selector,
-            }),
-            (MixerSurface::Mix1, 0x05) => Some(Self {
-                mixer,
-                left_channel: 11,
-                right_channel: 12,
-                selector,
-            }),
-            (MixerSurface::Mix1, 0x06) => Some(Self {
-                mixer,
-                left_channel: 13,
-                right_channel: 14,
-                selector,
-            }),
-            (MixerSurface::Mix1, 0x07) => Some(Self {
-                mixer,
-                left_channel: 15,
-                right_channel: 16,
-                selector,
-            }),
-            (MixerSurface::Mix2, 0x10) => Some(Self {
-                mixer,
-                left_channel: 1,
-                right_channel: 2,
-                selector,
-            }),
-            (MixerSurface::Mix2, 0x11) => Some(Self {
-                mixer,
-                left_channel: 3,
-                right_channel: 4,
-                selector,
-            }),
-            (MixerSurface::Mix2, 0x12) => Some(Self {
-                mixer,
-                left_channel: 5,
-                right_channel: 6,
-                selector,
-            }),
-            (MixerSurface::Mix2, 0x13) => Some(Self {
-                mixer,
-                left_channel: 7,
-                right_channel: 8,
-                selector,
-            }),
-            (MixerSurface::Mix2, 0x14) => Some(Self {
-                mixer,
-                left_channel: 9,
-                right_channel: 10,
-                selector,
-            }),
-            (MixerSurface::Mix2, 0x15) => Some(Self {
-                mixer,
-                left_channel: 11,
-                right_channel: 12,
-                selector,
-            }),
-            (MixerSurface::Mix2, 0x16) => Some(Self {
-                mixer,
-                left_channel: 13,
-                right_channel: 14,
-                selector,
-            }),
-            (MixerSurface::Mix2, 0x17) => Some(Self {
-                mixer,
-                left_channel: 15,
-                right_channel: 16,
-                selector,
-            }),
-            _ => None,
+        let (_mixer_base, selector_range) = match mixer {
+            MixerSurface::Mix1 => (0x00_u8, 0x00..=0x07),
+            MixerSurface::Mix2 => (0x10_u8, 0x10..=0x17),
+        };
+        if !selector_range.contains(&selector) {
+            return None;
         }
+        let pair_index = selector & 0x0F;
+        let left_channel = pair_index * 2 + 1;
+        let right_channel = left_channel + 1;
+        Some(Self {
+            mixer,
+            left_channel,
+            right_channel,
+            selector,
+        })
     }
 
     /// Looks up a link pair by channel number on the given mixer surface.
     ///
     /// Returns the pair that contains the given channel (as left or right).
     pub fn from_channel(mixer: MixerSurface, channel: u8) -> Option<Self> {
-        match (mixer, channel) {
-            (MixerSurface::Mix1, 1 | 2) => Self::from_selector(mixer, 0x00),
-            (MixerSurface::Mix1, 3 | 4) => Self::from_selector(mixer, 0x01),
-            (MixerSurface::Mix1, 5 | 6) => Self::from_selector(mixer, 0x02),
-            (MixerSurface::Mix1, 7 | 8) => Self::from_selector(mixer, 0x03),
-            (MixerSurface::Mix1, 9 | 10) => Self::from_selector(mixer, 0x04),
-            (MixerSurface::Mix1, 11 | 12) => Self::from_selector(mixer, 0x05),
-            (MixerSurface::Mix1, 13 | 14) => Self::from_selector(mixer, 0x06),
-            (MixerSurface::Mix1, 15 | 16) => Self::from_selector(mixer, 0x07),
-            (MixerSurface::Mix2, 1 | 2) => Self::from_selector(mixer, 0x10),
-            (MixerSurface::Mix2, 3 | 4) => Self::from_selector(mixer, 0x11),
-            (MixerSurface::Mix2, 5 | 6) => Self::from_selector(mixer, 0x12),
-            (MixerSurface::Mix2, 7 | 8) => Self::from_selector(mixer, 0x13),
-            (MixerSurface::Mix2, 9 | 10) => Self::from_selector(mixer, 0x14),
-            (MixerSurface::Mix2, 11 | 12) => Self::from_selector(mixer, 0x15),
-            (MixerSurface::Mix2, 13 | 14) => Self::from_selector(mixer, 0x16),
-            (MixerSurface::Mix2, 15 | 16) => Self::from_selector(mixer, 0x17),
-            _ => None,
+        if !(1..=16).contains(&channel) {
+            return None;
         }
+        let pair_index = (channel - 1) / 2;
+        let selector = match mixer {
+            MixerSurface::Mix1 => pair_index,
+            MixerSurface::Mix2 => 0x10 | pair_index,
+        };
+        let left_channel = pair_index * 2 + 1;
+        let right_channel = left_channel + 1;
+        Some(Self {
+            mixer,
+            left_channel,
+            right_channel,
+            selector,
+        })
     }
 
     /// Returns the companion bank ID for link pairs that require a secondary write.
     ///
     /// Only the first two pairs (channels 1/2 and 3/4) on each surface have a companion bank.
     pub fn companion_bank(self) -> Option<u8> {
-        match (self.mixer, self.selector) {
-            (MixerSurface::Mix1, 0x00) => Some(0x00),
-            (MixerSurface::Mix1, 0x01) => Some(0x01),
-            (MixerSurface::Mix2, 0x10) => Some(0x00),
-            (MixerSurface::Mix2, 0x11) => Some(0x01),
-            _ => None,
+        let pair_index = self.selector & 0x0F;
+        if pair_index < 2 {
+            Some(pair_index)
+        } else {
+            None
         }
     }
 }
