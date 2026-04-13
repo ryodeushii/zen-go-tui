@@ -80,7 +80,14 @@ impl Frame {
             return Err(ProtocolError::FrameTooShort(bytes.len()));
         }
 
-        let frame_type = u32::from_le_bytes(bytes[0..4].try_into().expect("type header"));
+        let type_bytes = bytes
+            .get(0..4)
+            .ok_or(ProtocolError::InvalidField("type header"))?;
+        let frame_type = u32::from_le_bytes(
+            type_bytes
+                .try_into()
+                .map_err(|_| ProtocolError::InvalidField("type header"))?,
+        );
         match frame_type {
             FRAME_TYPE_SNAPSHOT => Ok(Self::Snapshot {
                 snapshot: parse_snapshot73(&bytes)?,
@@ -175,57 +182,67 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<DeviceStateSnapshot, ProtocolError> 
     }
 
     let payload = &bytes[SNAPSHOT_PAYLOAD_OFFSET..];
+    let b = |offset: usize| -> Result<u8, ProtocolError> {
+        payload
+            .get(offset)
+            .copied()
+            .ok_or(ProtocolError::InvalidField("snapshot payload"))
+    };
+
     Ok(DeviceStateSnapshot {
-        sample_rate: SampleRate::from_code(payload[OFFSET_SAMPLE_RATE_CODE]),
-        clock_source: ClockSource::from_code(payload[OFFSET_CLOCK_SOURCE]),
+        sample_rate: SampleRate::from_code(b(OFFSET_SAMPLE_RATE_CODE)?),
+        clock_source: ClockSource::from_code(b(OFFSET_CLOCK_SOURCE)?),
         sample_rate_hz: u32::from_be_bytes(
-            payload[OFFSET_SAMPLE_RATE_HZ_START..OFFSET_SAMPLE_RATE_HZ_END]
-                .try_into()
-                .expect("sample rate"),
+            payload
+                .get(OFFSET_SAMPLE_RATE_HZ_START..OFFSET_SAMPLE_RATE_HZ_END)
+                .and_then(|slice| slice.try_into().ok())
+                .ok_or(ProtocolError::InvalidField("sample rate"))?,
         ),
-        status_flags: [
-            payload[OFFSET_STATUS_FLAGS_0],
-            payload[OFFSET_STATUS_FLAGS_1],
-        ],
+        status_flags: [b(OFFSET_STATUS_FLAGS_0)?, b(OFFSET_STATUS_FLAGS_1)?],
         front_panel_bytes: [
-            payload[OFFSET_FRONT_PANEL_BYTES_START],
-            payload[OFFSET_FRONT_PANEL_BYTES_START + 1],
-            payload[OFFSET_FRONT_PANEL_BYTES_START + 2],
+            b(OFFSET_FRONT_PANEL_BYTES_START)?,
+            b(OFFSET_FRONT_PANEL_BYTES_START + 1)?,
+            b(OFFSET_FRONT_PANEL_BYTES_START + 2)?,
         ],
         outputs: [
             OutputState::new(
                 OutputTarget::Monitor,
-                payload[OFFSET_MONITOR_VOLUME],
-                OutputMode::from_code(payload[OFFSET_MONITOR_MODE]),
+                b(OFFSET_MONITOR_VOLUME)?,
+                OutputMode::from_code(b(OFFSET_MONITOR_MODE)?),
             ),
             OutputState::new(
                 OutputTarget::Hp1,
-                payload[OFFSET_HP1_VOLUME],
-                OutputMode::from_code(payload[OFFSET_HP1_MODE]),
+                b(OFFSET_HP1_VOLUME)?,
+                OutputMode::from_code(b(OFFSET_HP1_MODE)?),
             ),
             OutputState::new(
                 OutputTarget::Hp2,
-                payload[OFFSET_HP2_VOLUME],
-                OutputMode::from_code(payload[OFFSET_HP2_MODE]),
+                b(OFFSET_HP2_VOLUME)?,
+                OutputMode::from_code(b(OFFSET_HP2_MODE)?),
             ),
         ],
         dsp_cluster: [
-            payload[OFFSET_PREAMP1_GAIN],
-            payload[OFFSET_PREAMP2_GAIN],
-            payload[OFFSET_PREAMP1_MODE],
-            payload[OFFSET_PREAMP2_MODE],
+            b(OFFSET_PREAMP1_GAIN)?,
+            b(OFFSET_PREAMP2_GAIN)?,
+            b(OFFSET_PREAMP1_MODE)?,
+            b(OFFSET_PREAMP2_MODE)?,
         ],
         preamp: PreampState::from_cluster([
-            payload[OFFSET_PREAMP1_GAIN],
-            payload[OFFSET_PREAMP2_GAIN],
-            payload[OFFSET_PREAMP1_MODE],
-            payload[OFFSET_PREAMP2_MODE],
+            b(OFFSET_PREAMP1_GAIN)?,
+            b(OFFSET_PREAMP2_GAIN)?,
+            b(OFFSET_PREAMP1_MODE)?,
+            b(OFFSET_PREAMP2_MODE)?,
         ]),
-        surface: Surface::from_code(payload[OFFSET_SURFACE_SELECTOR]),
+        surface: Surface::from_code(b(OFFSET_SURFACE_SELECTOR)?),
         mixer_decode: decode_passive_mixer_state(payload),
         late_shadow: {
+            let start = OFFSET_LATE_SHADOW_START;
+            let end = OFFSET_LATE_SHADOW_END;
+            let slice = payload
+                .get(start..=end)
+                .ok_or(ProtocolError::InvalidField("late shadow"))?;
             let mut shadow = [0u8; 12];
-            shadow.copy_from_slice(&payload[OFFSET_LATE_SHADOW_START..=OFFSET_LATE_SHADOW_END]);
+            shadow.copy_from_slice(slice);
             shadow
         },
     })

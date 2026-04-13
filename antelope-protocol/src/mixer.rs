@@ -5,7 +5,7 @@ use crate::types::{
     OFFSET_METER_LANES_END, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
     OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX1_PRIMARY, OFFSET_MIX2_LANE_A,
     OFFSET_MIX2_LANE_B, OFFSET_MIX2_PRIMARY, OFFSET_PREAMP1_METER, OFFSET_PREAMP2_METER,
-    OFFSET_SURFACE_SELECTOR,
+    OFFSET_SURFACE_SELECTOR, SURFACE_CODE_MONITOR_HP1,
 };
 
 /// Which mixer surface (mix bus) a strip belongs to.
@@ -646,8 +646,11 @@ pub fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
         OFFSET_MIX2_LANE_B,
     );
 
-    let active_mixer =
-        MixerSurface::from_surface(Surface::from_code(payload[OFFSET_SURFACE_SELECTOR]));
+    let active_mixer = MixerSurface::from_surface(Surface::from_code(
+        *payload
+            .get(OFFSET_SURFACE_SELECTOR)
+            .unwrap_or(&SURFACE_CODE_MONITOR_HP1),
+    ));
     decode.observed_preamp1_meter = decode_preamp_meter(payload, OFFSET_PREAMP1_METER);
     decode.observed_preamp2_meter = decode_preamp_meter(payload, OFFSET_PREAMP2_METER);
     for channel in 1..=16 {

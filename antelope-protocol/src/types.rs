@@ -101,6 +101,9 @@ pub enum ProtocolError {
     /// The frame type identifier is not recognized.
     #[error("unsupported frame type: 0x{0:02x}")]
     UnsupportedFrame(u32),
+    /// Failed to parse a fixed-size field from the frame payload.
+    #[error("invalid frame field: {0}")]
+    InvalidField(&'static str),
 }
 
 /// Supported sample rates for the device.
