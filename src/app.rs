@@ -223,9 +223,7 @@ impl Intent {
                 let channel = (*index + 1) as u8;
                 let mixer = state.active_mixer_surface();
                 let idx = *index;
-                let Some(active) = state.mixer.channels[mixer.index()].get(idx).copied() else {
-                    return None;
-                };
+                let active = state.mixer.channels[mixer.index()].get(idx).copied()?;
                 if active.linked == Some(true) {
                     let (left_ch, right_ch, left, right) =
                         resolve_linked_pair_from_state(state, mixer, channel)?;
@@ -261,9 +259,7 @@ impl Intent {
             Intent::ToggleMixerMute(channel) => {
                 let mixer = state.active_mixer_surface();
                 let idx = channel.saturating_sub(1) as usize;
-                let Some(active) = state.mixer.channels[mixer.index()].get(idx).copied() else {
-                    return None;
-                };
+                let active = state.mixer.channels[mixer.index()].get(idx).copied()?;
                 let muted = !active.muted.unwrap_or(false);
                 if active.linked == Some(true) {
                     let (left_ch, right_ch, _, _) =
@@ -285,9 +281,7 @@ impl Intent {
             Intent::ToggleMixerSolo(channel) => {
                 let mixer = state.active_mixer_surface();
                 let idx = channel.saturating_sub(1) as usize;
-                let Some(active) = state.mixer.channels[mixer.index()].get(idx).copied() else {
-                    return None;
-                };
+                let active = state.mixer.channels[mixer.index()].get(idx).copied()?;
                 let soloed = !active.soloed.unwrap_or(false);
                 if active.linked == Some(true) {
                     let (left_ch, right_ch, _, _) =
@@ -308,9 +302,7 @@ impl Intent {
             }
             Intent::ToggleMixerLink(channel) => {
                 let mixer = state.active_mixer_surface();
-                let Some(target) = MixerLinkTarget::from_channel(mixer, *channel) else {
-                    return None;
-                };
+                let target = MixerLinkTarget::from_channel(mixer, *channel)?;
                 let enabled = !state.mixer.channels[mixer.index()]
                     .get(channel.saturating_sub(1) as usize)
                     .and_then(|c| c.linked)
@@ -617,7 +609,7 @@ pub struct OutputData {
 }
 
 /// Preamp state — inputs, selection, and peak meters.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PreampData {
     pub state: PreampState,
     pub selected_input: usize,
@@ -635,7 +627,7 @@ pub struct UiState {
 }
 
 /// Popup and overlay state — mutually exclusive overlays.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PopupState {
     pub hotkeys_open: bool,
     pub options_open: bool,
@@ -671,7 +663,7 @@ pub struct RawViewState {
     pub last_auxiliary_len: Option<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AppState {
     pub device: DeviceState,
     pub mixer: MixerState,
@@ -711,16 +703,6 @@ impl Default for OutputData {
     }
 }
 
-impl Default for PreampData {
-    fn default() -> Self {
-        Self {
-            state: PreampState::default(),
-            selected_input: 0,
-            peaks: [None, None],
-        }
-    }
-}
-
 impl Default for UiState {
     fn default() -> Self {
         Self {
@@ -731,23 +713,6 @@ impl Default for UiState {
                     .to_string(),
             settings: AppSettings::default(),
             quit_requested: false,
-        }
-    }
-}
-
-impl Default for PopupState {
-    fn default() -> Self {
-        Self {
-            hotkeys_open: false,
-            options_open: false,
-            routing_open: false,
-            profiles_open: false,
-            raw_view_open: false,
-            assignment_picker: None,
-            selector_popup: None,
-            profile_names: Vec::new(),
-            profile_editor: None,
-            selected_index: 0,
         }
     }
 }
@@ -793,21 +758,6 @@ pub struct MeterPeak {
 impl MeterPeak {
     pub fn is_active(&self) -> bool {
         self.detected_at.elapsed() < PEAK_HOLD_DURATION
-    }
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            device: DeviceState::default(),
-            mixer: MixerState::default(),
-            output: OutputData::default(),
-            preamp: PreampData::default(),
-            ui: UiState::default(),
-            popup: PopupState::default(),
-            raw_view: RawViewState::default(),
-            latest_structural_snapshot: None,
-        }
     }
 }
 
@@ -1676,7 +1626,7 @@ impl Controller {
         }
 
         // All other commands: enqueue for coalescing
-        self.command_queue.enqueue(command.clone());
+        self.command_queue.enqueue(command);
         self.apply_command_state_update(&command);
         self.pending_mutation = pending;
         self.state.ui.last_message = format!("Sent {:?}", command);
@@ -2253,7 +2203,7 @@ impl Controller {
                         target: output.target,
                         step: next,
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::SetOutputLevel { index, step } => {
@@ -2266,7 +2216,7 @@ impl Controller {
                         target: output.target,
                         step: step.min(0x60),
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::ToggleOutputDim(index) => {
@@ -2284,7 +2234,7 @@ impl Controller {
                         target: output.target,
                         enabled: output.mode != OutputMode::Dim,
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::ToggleOutputMute(index) => {
@@ -2302,7 +2252,7 @@ impl Controller {
                         target: output.target,
                         enabled: output.mode != OutputMode::Mute,
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::SelectQueryReplyEntry(index) => {
@@ -2321,7 +2271,7 @@ impl Controller {
             }
             Intent::SelectSurface(surface) => {
                 self.state.ui.focus = FocusArea::Mixer;
-                self.send(Command::SelectSurface(surface), pending.clone())?;
+                self.send(Command::SelectSurface(surface), pending)?;
                 self.flush_commands()?;
                 self.refresh_queried_state()?;
             }
@@ -2392,7 +2342,7 @@ impl Controller {
                         muted: active_channel.muted.unwrap_or(false),
                         soloed: active_channel.soloed.unwrap_or(false),
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::SetMixerPan { index, pan } => {
@@ -2415,7 +2365,7 @@ impl Controller {
                         muted: active_channel.muted.unwrap_or(false),
                         soloed: active_channel.soloed.unwrap_or(false),
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::ToggleMixerMute(channel) => {
@@ -2476,10 +2426,7 @@ impl Controller {
             Intent::PickAssignment { strip, assignment } => {
                 self.state.popup.assignment_picker = None;
                 self.state.popup.selected_index = 0;
-                self.send(
-                    Command::SetMixerAssignment { strip, assignment },
-                    pending.clone(),
-                )?;
+                self.send(Command::SetMixerAssignment { strip, assignment }, pending)?;
             }
             Intent::CloseAssignmentPicker => {
                 self.state.popup.assignment_picker = None;
@@ -2507,7 +2454,7 @@ impl Controller {
                 self.state.device.dsp_cluster[input.min(1) as usize] = next;
                 self.state
                     .refresh_preamp_from_cluster_preserving_observed_meter();
-                self.send(Command::SetPreampGain { input, raw: next }, pending.clone())?;
+                self.send(Command::SetPreampGain { input, raw: next }, pending)?;
             }
             Intent::SetPreampGain { input, raw } => {
                 self.state.ui.focus = FocusArea::Preamp;
@@ -2520,7 +2467,7 @@ impl Controller {
                         input: input.min(1),
                         raw,
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::OpenPreampModeSelector(input) => {
@@ -2553,27 +2500,24 @@ impl Controller {
                     PreampMode::Line => PreampMode::HiZ,
                     PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
                 };
-                self.send(
-                    Command::SetPreampMode { input, mode: next },
-                    pending.clone(),
-                )?;
+                self.send(Command::SetPreampMode { input, mode: next }, pending)?;
             }
             Intent::PickSampleRate(rate) => {
                 self.state.popup.selector_popup = None;
                 self.state.popup.selected_index = 0;
-                self.send(Command::SetSampleRate(rate), pending.clone())?;
+                self.send(Command::SetSampleRate(rate), pending)?;
             }
             Intent::PickClockSource(source) => {
                 self.state.popup.selector_popup = None;
                 self.state.popup.selected_index = 0;
-                self.send(Command::SetClockSource(source), pending.clone())?;
+                self.send(Command::SetClockSource(source), pending)?;
             }
             Intent::PickPreampMode { input, mode } => {
                 self.state.popup.selector_popup = None;
                 self.state.popup.selected_index = 0;
                 self.state.ui.focus = FocusArea::Preamp;
                 self.state.preamp.selected_input = input.min(1) as usize;
-                self.send(Command::SetPreampMode { input, mode }, pending.clone())?;
+                self.send(Command::SetPreampMode { input, mode }, pending)?;
             }
             Intent::TogglePreampPhase(input) => {
                 self.state.ui.focus = FocusArea::Preamp;
@@ -2588,7 +2532,7 @@ impl Controller {
                         input,
                         enabled: mode_raw & 0x40 == 0,
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::TogglePreampPhantom(input) => {
@@ -2604,7 +2548,7 @@ impl Controller {
                         input,
                         enabled: !current.phantom_on,
                     },
-                    pending.clone(),
+                    pending,
                 )?;
             }
             Intent::AdjustFocused(increase) => match self.state.ui.focus {
@@ -2621,7 +2565,7 @@ impl Controller {
                             target: output.target,
                             step: next,
                         },
-                        pending.clone(),
+                        pending,
                     )?;
                 }
                 FocusArea::Mixer => {
@@ -2673,7 +2617,7 @@ impl Controller {
                         }
                         PreampMode::Unknown(_) => preamp_input.gain_raw,
                     };
-                    self.send(Command::SetPreampGain { input, raw: next }, pending.clone())?;
+                    self.send(Command::SetPreampGain { input, raw: next }, pending)?;
                 }
                 _ => {}
             },
@@ -2686,7 +2630,7 @@ impl Controller {
                             target: output.target,
                             enabled: output.mode != OutputMode::Mute,
                         },
-                        pending.clone(),
+                        pending,
                     )?;
                 }
                 FocusArea::Mixer => {
@@ -2712,7 +2656,7 @@ impl Controller {
                             input,
                             enabled: !current.phantom_on,
                         },
-                        pending.clone(),
+                        pending,
                     )?;
                 }
                 _ => {}
@@ -2726,7 +2670,7 @@ impl Controller {
                             target: output.target,
                             enabled: output.mode != OutputMode::Dim,
                         },
-                        pending.clone(),
+                        pending,
                     )?;
                 }
             }

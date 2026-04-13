@@ -147,7 +147,7 @@ pub(crate) fn mixer_strip_panel_layout(area: Rect, with_mix_meter: bool) -> [Rec
 }
 
 pub(crate) fn mixer_strip_card_width(area: Rect) -> u16 {
-    area.width.min(MIXER_STRIP_CARD_WIDTH).max(1)
+    area.width.min(MIXER_STRIP_CARD_WIDTH).clamp(1, u16::MAX)
 }
 
 pub(crate) fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
@@ -159,7 +159,7 @@ pub(crate) fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
     let stride = card_width + MIXER_STRIP_GAP;
     // How many full strips fit: each strip needs `stride` width except the last which needs `card_width`.
     // Formula: (area.width + GAP) / stride, clamped to at least 1.
-    ((area.width.saturating_add(MIXER_STRIP_GAP)) / stride).max(1) as usize
+    ((area.width.saturating_add(MIXER_STRIP_GAP)) / stride).clamp(1, u16::MAX) as usize
 }
 
 pub(crate) fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize, usize) {
@@ -276,8 +276,8 @@ pub(crate) fn inline_chip_rects(x: u16, y: u16, labels: &[&str]) -> Vec<Rect> {
 }
 
 pub(crate) fn assignment_picker_area(area: Rect) -> Rect {
-    let width = area.width.min(42).max(28);
-    let height = area.height.min(22).max(8);
+    let width = area.width.clamp(28, 42);
+    let height = area.height.clamp(8, 22);
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -291,8 +291,8 @@ pub(crate) fn popup_list_inner_area(popup: Rect, title: &str) -> Rect {
 }
 
 pub(crate) fn hotkeys_popup_area(area: Rect) -> Rect {
-    let width = area.width.min(86).max(54);
-    let height = area.height.min(16).max(10);
+    let width = area.width.clamp(54, 86);
+    let height = area.height.clamp(10, 16);
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -350,8 +350,8 @@ pub(crate) fn inner_area(area: Rect) -> Rect {
 }
 
 pub(crate) fn routing_popup_area(area: Rect) -> Rect {
-    let width = area.width.min(58).max(44);
-    let height = area.height.min(14).max(11);
+    let width = area.width.clamp(44, 58);
+    let height = area.height.clamp(11, 14);
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -361,8 +361,8 @@ pub(crate) fn routing_popup_area(area: Rect) -> Rect {
 }
 
 pub(crate) fn profiles_popup_area(area: Rect) -> Rect {
-    let width = area.width.min(64).max(44);
-    let height = area.height.min(16).max(12);
+    let width = area.width.clamp(44, 64);
+    let height = area.height.clamp(12, 16);
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -372,8 +372,8 @@ pub(crate) fn profiles_popup_area(area: Rect) -> Rect {
 }
 
 pub(crate) fn options_popup_area(area: Rect) -> Rect {
-    let width = area.width.min(52).max(38);
-    let height = area.height.min(18).max(14);
+    let width = area.width.clamp(38, 52);
+    let height = area.height.clamp(14, 18);
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -423,7 +423,7 @@ pub(crate) fn profiles_popup_button_rects(area: Rect) -> Vec<Rect> {
 
 pub(crate) fn profile_editor_area(area: Rect) -> Rect {
     let popup = profiles_popup_area(area);
-    let width = popup.width.saturating_sub(8).min(40).max(28);
+    let width = popup.width.saturating_sub(8).clamp(28, 40);
     let height = 5;
     Rect {
         x: popup.x + popup.width.saturating_sub(width) / 2,
