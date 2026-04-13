@@ -23,18 +23,8 @@ pub use state::*;
 mod picker;
 pub use picker::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProfileEditorMode {
-    Save,
-    Rename,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProfileEditorState {
-    pub mode: ProfileEditorMode,
-    pub original_name: Option<String>,
-    pub value: String,
-}
+mod profile_editor;
+pub use profile_editor::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StructuralSnapshot {
