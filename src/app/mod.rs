@@ -20,28 +20,8 @@ pub use types::*;
 mod state;
 pub use state::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AssignmentPickerState {
-    pub strip: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectorPopupKind {
-    SampleRate,
-    ClockSource,
-    PreampMode { input: u8 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SelectorPopupState {
-    pub kind: SelectorPopupKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueryReplyLogEntry {
-    pub summary: String,
-    pub raw: Vec<u8>,
-}
+mod picker;
+pub use picker::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileEditorMode {
