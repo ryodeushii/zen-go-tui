@@ -308,7 +308,7 @@ impl AppState {
         self.mixer.channels[mixer.index()].get_mut(channel.checked_sub(1)? as usize)
     }
 
-    fn refresh_preamp_from_cluster_preserving_observed_meter(&mut self) {
+    pub fn refresh_preamp_from_cluster_preserving_observed_meter(&mut self) {
         let observed_meter_input1 = self.preamp.state.input1.observed_meter;
         let observed_meter_input2 = self.preamp.state.input2.observed_meter;
         self.preamp.state = PreampState::from_cluster(self.device.dsp_cluster);
