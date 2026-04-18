@@ -2,7 +2,10 @@ use iced::color;
 use iced::theme::{Custom, Palette};
 use iced::Theme;
 
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ZenTheme;
+
+pub const ZEN_THEME: ZenTheme = ZenTheme;
 
 impl ZenTheme {
     pub fn dark_palette() -> Palette {
@@ -98,11 +101,5 @@ impl ZenTheme {
 
     pub fn selection_highlight(&self) -> iced::Color {
         color!(0x4a9eff)
-    }
-}
-
-impl Default for ZenTheme {
-    fn default() -> Self {
-        Self
     }
 }

@@ -2,16 +2,16 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use antelope_protocol::{
-    control_panel_startup_queries, encode_command, encode_link_companion,
-    encode_mixer_assignment_frames_with_table, encode_query, Command as DeviceCommand,
-    DeviceSnapshot, EncodeResult, Frame, MixerAssignment, MixerSurface, OutputTarget,
-};
 use zen_go_tui::app::AppState;
 use zen_go_tui::app::Intent;
 use zen_go_tui::command_queue::CommandQueue;
 use zen_go_tui::profile::DeviceProfile;
 use zen_go_tui::transport::Transport;
+use antelope_protocol::{
+    control_panel_startup_queries, encode_command, encode_link_companion,
+    encode_mixer_assignment_frames_with_table, encode_query, Command as DeviceCommand,
+    DeviceSnapshot, EncodeResult, Frame, MixerAssignment, MixerSurface, OutputTarget,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct GuiPopupState {

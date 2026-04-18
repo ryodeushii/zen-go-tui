@@ -1,21 +1,26 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use anyhow::Result;
 use clap::Parser;
-use iced::futures::StreamExt;
 use iced::widget::{column, container, scrollable, text};
 use iced::{Element, Subscription, Task, Theme};
+use crossbeam_channel::Receiver;
+use iced_runtime::window;
+use iced::window::Id as WindowId;
 
 use zen_go_tui::app::Intent;
 use zen_go_tui::transport::{is_device_error, HidTransport, MockTransport, ThreadedTransport, Transport};
 
 mod app;
 mod theme;
+mod tray;
 mod widgets;
 
 use app::GuiApp;
-use theme::ZenTheme;
+use theme::{ZenTheme, ZEN_THEME};
+use tray::{TrayEvent, TrayHandle};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Zen Go Synergy Core GUI control panel")]
@@ -30,12 +35,18 @@ enum Message {
     DeviceError(String),
     UserIntent(Intent),
     Tick,
+    Tray(TrayEvent),
+    WindowCloseRequested(WindowId),
+    WindowShowResolved(Option<WindowId>),
+    WindowHideResolved(Option<WindowId>),
 }
 
 struct State {
     gui: GuiApp,
     transport: Option<Arc<Mutex<Box<dyn Transport>>>>,
-    mock: bool,
+    tray: Option<TrayHandle>,
+    tray_rx: Receiver<TrayEvent>,
+    running: Arc<AtomicBool>,
 }
 
 fn main() -> Result<()> {
@@ -61,7 +72,16 @@ fn main() -> Result<()> {
         gui.set_error("Device not found. Check USB connection and HID permissions.");
     }
 
-    let state = State { gui, transport, mock };
+    let running = Arc::new(AtomicBool::new(true));
+    let (tray, tray_rx) = tray::spawn_tray(running.clone());
+
+    let state = State {
+        gui,
+        transport,
+        tray: Some(tray),
+        tray_rx,
+        running,
+    };
 
     iced::application("Zen Go Control Panel", update, view)
         .subscription(subscription)
@@ -101,13 +121,55 @@ fn update(state: &mut State, message: Message) -> Task<Message> {
                 let _ = state.gui.refresh_state(transport.clone());
             }
         }
+        Message::Tray(event) => match event {
+            TrayEvent::ShowWindow => {
+                return window::get_latest().map(Message::WindowShowResolved);
+            }
+            TrayEvent::ToggleMonitorMute => {
+                if let Some(transport) = &state.transport {
+                    let _ = state.gui.handle_intent(&Intent::ToggleOutputMute(0), transport.clone());
+                }
+            }
+            TrayEvent::ToggleHp1Mute => {
+                if let Some(transport) = &state.transport {
+                    let _ = state.gui.handle_intent(&Intent::ToggleOutputMute(1), transport.clone());
+                }
+            }
+            TrayEvent::ToggleHp2Mute => {
+                if let Some(transport) = &state.transport {
+                    let _ = state.gui.handle_intent(&Intent::ToggleOutputMute(2), transport.clone());
+                }
+            }
+            TrayEvent::Quit => {
+                state.running.store(false, Ordering::SeqCst);
+                return iced::exit();
+            }
+        },
+        Message::WindowCloseRequested(_id) => {
+            return window::get_latest().map(Message::WindowHideResolved);
+        }
+        Message::WindowShowResolved(Some(id)) => {
+            return Task::batch([
+                window::minimize::<Message>(id, false),
+                window::gain_focus::<Message>(id),
+            ]);
+        }
+        Message::WindowShowResolved(None) => {
+            return Task::none();
+        }
+        Message::WindowHideResolved(Some(id)) => {
+            return window::minimize::<Message>(id, true);
+        }
+        Message::WindowHideResolved(None) => {
+            return Task::none();
+        }
     }
+
+    sync_tray_state(state);
     Task::none()
 }
 
 fn view(state: &State) -> Element<'_, Message> {
-    let zen_theme = ZenTheme::default();
-
     if let Some(error) = state.gui.error_message() {
         return container(
             column![
@@ -121,10 +183,10 @@ fn view(state: &State) -> Element<'_, Message> {
     }
 
     let content = column![
-        widgets::titlebar::view(&state.gui.state, &zen_theme),
-        widgets::preamp_bar::view(&state.gui.state, &zen_theme),
-        widgets::mixer::view(&state.gui.state, &zen_theme),
-        widgets::outputs::view(&state.gui.state, &zen_theme),
+        widgets::titlebar::view(&state.gui.state, &ZEN_THEME),
+        widgets::preamp_bar::view(&state.gui.state, &ZEN_THEME),
+        widgets::mixer::view(&state.gui.state, &ZEN_THEME),
+        widgets::outputs::view(&state.gui.state, &ZEN_THEME),
     ]
     .spacing(2);
 
@@ -134,7 +196,7 @@ fn view(state: &State) -> Element<'_, Message> {
         container(
             column![
                 scrollable_content,
-                widgets::popup::view(&state.gui.state, &zen_theme),
+                widgets::popup::view(&state.gui.state, &ZEN_THEME),
             ]
             .spacing(0),
         )
@@ -147,40 +209,64 @@ fn view(state: &State) -> Element<'_, Message> {
 
 fn subscription(state: &State) -> Subscription<Message> {
     let transport = state.transport.clone();
-    
-    Subscription::run_with_id(
-        "device-poll",
-        iced::stream::channel(16, move |mut output| async move {
-            loop {
-                if let Some(transport) = &transport {
-                    match transport.lock() {
-                        Ok(t) => {
-                            let transport_ref: &dyn Transport = t.as_ref();
-                            match transport_ref.read(std::time::Duration::from_millis(100)) {
-                                Ok(Some(frame)) => {
-                                    let _ = output.try_send(Message::DeviceUpdate(frame));
-                                    continue;
-                                }
-                                Ok(None) => {}
-                                Err(e) => {
-                                    let _ = output.try_send(Message::DeviceError(e.to_string()));
-                                    continue;
+    let tray_rx = state.tray_rx.clone();
+
+    Subscription::batch([
+        window::close_requests().map(Message::WindowCloseRequested),
+        Subscription::run_with_id(
+            "gui-events",
+            iced::stream::channel(16, move |mut output| async move {
+                loop {
+                    while let Ok(event) = tray_rx.try_recv() {
+                        let _ = output.try_send(Message::Tray(event));
+                    }
+
+                    if let Some(transport) = &transport {
+                        match transport.lock() {
+                            Ok(t) => {
+                                let transport_ref: &dyn Transport = t.as_ref();
+                                match transport_ref.read(std::time::Duration::from_millis(100)) {
+                                    Ok(Some(frame)) => {
+                                        let _ = output.try_send(Message::DeviceUpdate(frame));
+                                        continue;
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        let _ = output.try_send(Message::DeviceError(e.to_string()));
+                                        continue;
+                                    }
                                 }
                             }
-                        }
-                        Err(_) => {
-                            let _ = output.try_send(Message::DeviceError("Transport lock poisoned".to_string()));
-                            continue;
+                            Err(_) => {
+                                let _ = output.try_send(Message::DeviceError("Transport lock poisoned".to_string()));
+                                continue;
+                            }
                         }
                     }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let _ = output.try_send(Message::Tick);
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                let _ = output.try_send(Message::Tick);
-            }
-        }),
-    )
+            }),
+        ),
+    ])
 }
 
 fn theme(_state: &State) -> Theme {
     Theme::custom("Zen Dark".to_string(), ZenTheme::dark_palette())
+}
+
+fn sync_tray_state(state: &State) {
+    let Some(tray) = &state.tray else {
+        return;
+    };
+
+    tray.set_monitor_muted(
+        state.gui.state.output.states[0].mode == antelope_protocol::OutputMode::Mute,
+    );
+    tray.set_hp1_muted(
+        state.gui.state.output.states[1].mode == antelope_protocol::OutputMode::Mute,
+    );
+    tray.set_hp2_muted(
+        state.gui.state.output.states[2].mode == antelope_protocol::OutputMode::Mute,
+    );
 }
