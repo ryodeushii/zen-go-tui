@@ -31,12 +31,12 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Inte
         return Some(action);
     }
 
-    if contains_point(titlebar_layout(chunks[0])[1], point) {
-        return system_panel_mouse_action(titlebar_layout(chunks[0])[1], state, point);
-    }
-
     if state.popup.raw_view_open {
         return raw_mouse_action(area, state, point);
+    }
+
+    if contains_point(titlebar_layout(chunks[0])[1], point) {
+        return system_panel_mouse_action(titlebar_layout(chunks[0])[1], state, point);
     }
 
     if state.popup.profile_editor.is_some() {
@@ -204,7 +204,7 @@ fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
         };
         let mut x = peak_threshold_row.x + prefix.chars().count() as u16;
         let status_w = crate::ui::styles::chip_width(&status_text);
-        x += status_w + 1;
+        x += status_w;
         x += 2;
         let down_w = crate::ui::styles::chip_width("↓");
         let down_rect = Rect::new(x, peak_threshold_row.y, down_w, 1);
@@ -306,7 +306,7 @@ fn profile_editor_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> 
 fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     let layout = raw_page_layout(area);
     let header = raw_header_layout(layout[0]);
-    if contains_point(header[1], point) {
+    if contains_point(raw_back_button_hit_area(header[1]), point) {
         return Some(Intent::ToggleRawView);
     }
     if contains_point(layout[1], point) {
@@ -435,9 +435,11 @@ fn system_panel_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) ->
     if !contains_point(area, point) {
         return None;
     }
-    let inner = crate::ui::layouts::inner_area(area);
+    // panel_block has 1-cell borders; chips render at x+1, y+1.
+    let x = area.x.saturating_add(1);
+    let y = area.y.saturating_add(1);
     let labels = ["RAW", "OPTNS", "X"];
-    let rects = inline_chip_rects(inner.x, inner.y, &labels);
+    let rects = inline_chip_rects(x, y, &labels);
     if contains_point(rects[0], point) {
         return Some(Intent::ToggleRawView);
     }

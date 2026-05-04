@@ -304,9 +304,20 @@ pub(crate) fn hotkeys_popup_area(area: Rect) -> Rect {
 pub(crate) fn raw_header_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(20), Constraint::Length(18)])
+        .constraints([Constraint::Min(20), Constraint::Length(raw_back_button_chip_width())])
         .split(area)
         .to_vec()
+}
+
+pub(crate) fn raw_back_button_chip_width() -> u16 {
+    chip_width("Back To Main")
+}
+
+pub(crate) fn raw_back_button_hit_area(header_right: Rect) -> Rect {
+    let text = "Back To Main";
+    let w = text.chars().count() as u16;
+    // Block has 1-cell borders on all sides; text is left-aligned in inner area.
+    Rect::new(header_right.x + 1, header_right.y + 1, w, 1)
 }
 
 pub(crate) fn raw_tab_hit_areas(area: Rect) -> Vec<Rect> {
