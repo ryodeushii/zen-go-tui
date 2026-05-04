@@ -44,6 +44,27 @@ Important current behavior boundary from captures and user confirmation:
 - link state is stored independently per surface
 - strip level is stored independently per surface
 
+## Frame Types and Dispatch
+
+The code recognizes four frame types from the device:
+
+| Type | Direction | Parsed as | Meaning |
+|---|---|---|---|
+| `0x73` | device -> host | `Frame::Snapshot` | Main dynamic state snapshot |
+| `0x75` | device -> host | `Frame::QueryReply` | Response to a query request |
+| `0x83` | device -> host | `Frame::Auxiliary` | Auxiliary data block |
+| 6-byte | device -> host | `Frame::Notification` | Short async notification (endpoint `0x81`) |
+
+Host commands are encoded as `0x70` frames. The `encode_command` function returns an `EncodeResult` that tells the caller how to transmit:
+
+| Variant | When used |
+|---|---|
+| `Single` | Most commands — enqueue for coalescing |
+| `WithRefresh` | `SelectSurface` — requires state refresh after write |
+| `WithCompanion` | `SetLinkState` with companion bank — companion frame written first |
+| `MixerAssignment` | `SetMixerAssignment` — caller must encode full assignment table |
+| `Multi` | Reserved for multi-frame commands |
+
 ## Confirmed Host Writes
 
 The current app implements two confirmed direct mixer write families via `0x70 / length 0x16`.
@@ -132,7 +153,37 @@ Important boundary:
 - current captures do **not** yet justify a passive per-strip pan-field decoder from one `0x73` frame
 - many anchor transitions, especially on the playback-pair capture, are obscured by the same late-row churn already seen in other mixer workflows
 
+### Pan
+
+Payload body:
+
+```text
+d4 04 <mixer> <channel> 00 <pan-with-flags>
+```
+
+Implemented in `src/protocol.rs` as `Command::SetMixerPan`.
+
+Grounded details:
+
+- pan is carried in the final byte of the same `d4 04` host family used for level and mute
+- the level byte is set to `0x00` for pan-only writes
+- mute and solo flags are preserved in the pan/state byte
+
 ### Solo
+
+Payload body:
+
+```text
+d4 04 <mixer> <channel> 00 <pan-with-flags>
+```
+
+Implemented in `src/protocol.rs` as `Command::SetMixerSolo`.
+
+Grounded details:
+
+- solo is carried by setting bit `0x80` in the final pan/state byte
+- the level byte is set to `0x00` for solo-only writes
+- mute and pan are preserved in the pan/state byte
 
 The dedicated solo captures confirm that solo does **not** use a separate host family.
 It rides on the same `d4 04 <mixer> <channel> <level> <pan/state>` write used for level,
@@ -167,9 +218,14 @@ Current evidence supports:
 - `a204<bank><x>` as a companion/helper write rather than the durable state carrier
 - companion bank `0x00` for the tested `MIX 1` pair `1-2`
 - companion bank `0x01` for the tested `MIX 2` pair `1-2`
-- selector `0x00` for the tested `MIX 1` pair `1-2`
-- selector `0x03` for the tested `MIX 1` pair `7-8`
-- selector `0x01` for the corresponding `MIX 2` link target observed after switching surface in `capture_mixer_18_surface_independence_link.pcapng`
+- selector mapping (fully implemented in code):
+  - `MIX 1`: selectors `0x00..0x07` map to pairs `1-2`, `3-4`, `5-6`, `7-8`, `9-10`, `11-12`, `13-14`, `15-16`
+  - `MIX 2`: selectors `0x10..0x17` map to the same pairs
+  - the lower 4 bits of the selector give the pair index (0–7), which maps to channels `pair*2+1` and `pair*2+2`
+- companion bank is only needed for the first two pairs (channels 1/2 and 3/4) on each surface:
+  - pair index 0 (channels 1-2): companion bank `0x00`
+  - pair index 1 (channels 3-4): companion bank `0x01`
+  - pairs 2–7: no companion bank needed
 - no companion `a204` write was needed in the tested `MIX 1` pair `7-8` capture
 
 Current boundary:

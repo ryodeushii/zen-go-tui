@@ -263,26 +263,50 @@ impl MixerAssignment {
     }
 
     /// Returns a human-readable label (e.g. `"Preamp 1"`, `"Computer Play 3"`).
-    pub fn label(self) -> String {
+    pub fn label(self) -> &'static str {
         match self {
-            Self::Preamp(index) => format!("Preamp {}", index),
-            Self::ComputerPlay(index) => format!("Computer Play {}", index),
-            Self::SpdifIn(index) => format!("SPDIF In {}", index),
-            Self::Mute => "Mute".to_string(),
-            Self::Oscillator(index) => format!("Oscillator {}", index),
-            Self::EmuMic(index) => format!("Emu Mic {}", index),
+            Self::Preamp(1) => "Preamp 1",
+            Self::Preamp(2) => "Preamp 2",
+            Self::ComputerPlay(1) => "Computer Play 1",
+            Self::ComputerPlay(2) => "Computer Play 2",
+            Self::ComputerPlay(3) => "Computer Play 3",
+            Self::ComputerPlay(4) => "Computer Play 4",
+            Self::ComputerPlay(5) => "Computer Play 5",
+            Self::ComputerPlay(6) => "Computer Play 6",
+            Self::ComputerPlay(7) => "Computer Play 7",
+            Self::ComputerPlay(8) => "Computer Play 8",
+            Self::SpdifIn(1) => "SPDIF In 1",
+            Self::SpdifIn(2) => "SPDIF In 2",
+            Self::Mute => "Mute",
+            Self::Oscillator(1) => "Oscillator 1",
+            Self::Oscillator(2) => "Oscillator 2",
+            Self::EmuMic(1) => "Emu Mic 1",
+            Self::EmuMic(2) => "Emu Mic 2",
+            _ => "Unknown",
         }
     }
 
     /// Returns a compact label for UI display (e.g. `"P1"`, `"C3"`, `"M"`).
-    pub fn short_label(self) -> String {
+    pub fn short_label(self) -> &'static str {
         match self {
-            Self::Preamp(index) => format!("P{}", index),
-            Self::ComputerPlay(index) => format!("C{}", index),
-            Self::SpdifIn(index) => format!("S{}", index),
-            Self::Mute => "M".to_string(),
-            Self::Oscillator(index) => format!("O{}", index),
-            Self::EmuMic(index) => format!("E{}", index),
+            Self::Preamp(1) => "P1",
+            Self::Preamp(2) => "P2",
+            Self::ComputerPlay(1) => "C1",
+            Self::ComputerPlay(2) => "C2",
+            Self::ComputerPlay(3) => "C3",
+            Self::ComputerPlay(4) => "C4",
+            Self::ComputerPlay(5) => "C5",
+            Self::ComputerPlay(6) => "C6",
+            Self::ComputerPlay(7) => "C7",
+            Self::ComputerPlay(8) => "C8",
+            Self::SpdifIn(1) => "S1",
+            Self::SpdifIn(2) => "S2",
+            Self::Mute => "M",
+            Self::Oscillator(1) => "O1",
+            Self::Oscillator(2) => "O2",
+            Self::EmuMic(1) => "E1",
+            Self::EmuMic(2) => "E2",
+            _ => "?",
         }
     }
 }

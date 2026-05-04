@@ -480,12 +480,12 @@ pub(crate) fn afx_routing_row_labels(state: &AppState, pair: usize) -> [String; 
         format!("USB {}/{}", left.channel, right.channel),
         format!("REC {}", left.channel),
         left.assignment
-            .map(|assignment| assignment.short_label())
+            .map(|assignment| assignment.short_label().to_string())
             .unwrap_or_else(|| "?".to_string()),
         format!("REC {}", right.channel),
         right
             .assignment
-            .map(|assignment| assignment.short_label())
+            .map(|assignment| assignment.short_label().to_string())
             .unwrap_or_else(|| "?".to_string()),
     ]
 }

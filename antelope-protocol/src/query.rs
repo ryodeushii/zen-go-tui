@@ -174,70 +174,79 @@ impl QueryResponse {
     /// (startup tables, pan categories, selector bitmaps, etc.) and
     /// falls back to a hex dump for unrecognized formats.
     pub fn summary_label(&self) -> String {
-        if let Some(entries) = self.startup_indexed_code_table() {
-            let preview = entries
-                .iter()
-                .take(10)
-                .map(|(index, code)| format!("{index:02x}:{code:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            return format!("Startup indexed code table [{}]", preview);
-        }
+        self.summary_indexed_code_table()
+            .or_else(|| self.summary_quad_state())
+            .or_else(|| self.summary_pan_categories())
+            .or_else(|| self.summary_selector_bitmap())
+            .or_else(|| self.summary_pair_bank())
+            .unwrap_or_else(|| self.summary_fallback())
+    }
 
-        if let Some(bytes) = self.startup_quad_state() {
-            return format!(
-                "Startup quad state [{:02x} {:02x} {:02x} {:02x}]",
-                bytes[0], bytes[1], bytes[2], bytes[3]
-            );
-        }
+    fn summary_indexed_code_table(&self) -> Option<String> {
+        let entries = self.startup_indexed_code_table()?;
+        let preview = entries
+            .iter()
+            .take(10)
+            .map(|(index, code)| format!("{index:02x}:{code:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(format!("Startup indexed code table [{preview}]"))
+    }
 
-        if let Some((surface, categories)) = self.startup_pan_category_readback() {
-            let preview = categories
-                .iter()
-                .map(|category| category.map(|value| value.short_label()).unwrap_or("?"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            return format!("Startup {:?} pan categories [{}]", surface, preview);
-        }
+    fn summary_quad_state(&self) -> Option<String> {
+        let bytes = self.startup_quad_state()?;
+        Some(format!(
+            "Startup quad state [{:02x} {:02x} {:02x} {:02x}]",
+            bytes[0], bytes[1], bytes[2], bytes[3]
+        ))
+    }
 
-        if let Some(bitmap) = self.selector_bitmap() {
-            let asserted = bitmap
-                .iter()
-                .enumerate()
-                .filter_map(|(index, enabled)| enabled.then_some(format!("{index:02x}")))
-                .collect::<Vec<_>>();
-            return format!(
-                "Selector bitmap: {} asserted [{}]",
-                asserted.len(),
-                asserted.join(" ")
-            );
-        }
+    fn summary_pan_categories(&self) -> Option<String> {
+        let (surface, categories) = self.startup_pan_category_readback()?;
+        let preview = categories
+            .iter()
+            .map(|c| c.map(|v| v.short_label()).unwrap_or("?"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(format!("Startup {surface:?} pan categories [{preview}]"))
+    }
 
-        if let Some(pairs) = self.selector_pair_bank() {
-            let preview = pairs
-                .iter()
-                .take(8)
-                .map(|(left, right)| format!("{left:02x}/{right:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            return format!(
-                "Selector pair bank 0x{:02x}: {} pairs [{}]",
-                self.sub_id,
-                pairs.len(),
-                preview
-            );
-        }
+    fn summary_selector_bitmap(&self) -> Option<String> {
+        let bitmap = self.selector_bitmap()?;
+        let asserted = bitmap
+            .iter()
+            .enumerate()
+            .filter_map(|(i, enabled)| enabled.then_some(format!("{i:02x}")))
+            .collect::<Vec<_>>();
+        Some(format!("Selector bitmap: {} asserted [{}]", asserted.len(), asserted.join(" ")))
+    }
 
+    fn summary_pair_bank(&self) -> Option<String> {
+        let pairs = self.selector_pair_bank()?;
+        let preview = pairs
+            .iter()
+            .take(8)
+            .map(|(left, right)| format!("{left:02x}/{right:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(format!(
+            "Selector pair bank 0x{:02x}: {} pairs [{preview}]",
+            self.sub_id,
+            pairs.len(),
+        ))
+    }
+
+    fn summary_fallback(&self) -> String {
         match self.kind() {
             StartupQueryKind::Metadata => self
                 .metadata()
-                .map(|metadata| {
+                .map(|m| {
                     format!(
                         "{}: {} (hw {}, serial {})",
                         self.kind().label(),
-                        metadata.product_name,
-                        metadata.hardware_version,
-                        metadata.serial
+                        m.product_name,
+                        m.hardware_version,
+                        m.serial
                     )
                 })
                 .unwrap_or_else(|| format!("{}: undecoded", self.kind().label())),
@@ -248,7 +257,7 @@ impl QueryResponse {
                 self.body
                     .iter()
                     .take(8)
-                    .map(|byte| format!("{:02x}", byte))
+                    .map(|b| format!("{b:02x}"))
                     .collect::<Vec<_>>()
                     .join(" ")
             ),

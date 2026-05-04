@@ -299,12 +299,13 @@ impl OutputTarget {
         }
     }
 
-    /// Creates an `OutputTarget` from a zero-based index.
-    pub fn from_index(index: usize) -> Self {
+    /// Creates an `OutputTarget` from a zero-based index, or `None` if out of range.
+    pub fn from_index(index: usize) -> Option<Self> {
         match index {
-            0 => Self::Monitor,
-            1 => Self::Hp1,
-            _ => Self::Hp2,
+            0 => Some(Self::Monitor),
+            1 => Some(Self::Hp1),
+            2 => Some(Self::Hp2),
+            _ => None,
         }
     }
 
@@ -537,11 +538,6 @@ impl PanState {
         Self(Self::MAX)
     }
 
-    /// Returns the masked pan code without mute/solo flags.
-    pub fn code(self) -> u8 {
-        self.0
-    }
-
     /// Returns the raw internal pan value.
     pub fn raw(self) -> u8 {
         self.0
@@ -549,7 +545,7 @@ impl PanState {
 
     /// Encodes the pan position with mute and solo flags into a state code.
     pub fn state_code(self, muted: bool, soloed: bool) -> u8 {
-        self.code()
+        self.raw()
             | if muted { Self::MUTE_FLAG } else { 0x00 }
             | if soloed { Self::SOLO_FLAG } else { 0x00 }
     }
@@ -688,7 +684,6 @@ mod tests {
     fn pan_supports_scalar_raw_values_and_ui_ratio() {
         let pan = PanState::from_raw(0x10);
 
-        assert_eq!(pan.code(), 0x10);
         assert_eq!(pan.raw(), 0x10);
         assert!((pan.ratio() - ((0x10 - 0x02) as f64 / (0x3e - 0x02) as f64)).abs() < 1e-9);
         assert_eq!(PanState::center().raw(), 0x20);

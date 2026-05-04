@@ -910,7 +910,7 @@ fn render_afx_routing_row(area: Rect, buffer: &mut Buffer, state: &AppState, pai
 #[cfg(test)]
 pub(crate) fn afx_routing_source_label(assignment: Option<MixerAssignment>) -> String {
     assignment
-        .map(|assignment| assignment.label())
+        .map(|a| a.label().to_string())
         .unwrap_or_else(|| "?".to_string())
 }
 
@@ -1036,7 +1036,7 @@ pub(crate) fn render_mixer_strip_controls(
         .unwrap_or("?");
     let src = channel
         .assignment
-        .map(|value| value.label())
+        .map(|value| value.label().to_string())
         .unwrap_or_else(|| "assignment?".to_string());
     let solo = channel
         .soloed
@@ -1100,7 +1100,7 @@ pub(crate) fn render_mixer_strip_line(
         .unwrap_or_else(|| "........".to_string());
     let assignment = channel
         .assignment
-        .map(|value| value.label())
+        .map(|value| value.label().to_string())
         .unwrap_or_else(|| "assignment?".to_string());
     let pan = channel.pan.display_percent();
     let pan_label = if pan < 0 {

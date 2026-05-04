@@ -151,6 +151,7 @@ pub fn encode_query(query: QueryRequest) -> [u8; 320] {
 /// Dispatch strategy for sending a command to the device.
 ///
 /// Returned by [`encode_command`] to tell the caller how to transmit the frame(s).
+#[derive(Debug)]
 pub enum EncodeResult {
     /// Single frame, enqueue for coalescing.
     Single([u8; 320]),
@@ -179,7 +180,7 @@ impl EncodeResult {
     pub fn unwrap_single(self) -> [u8; 320] {
         match self {
             EncodeResult::Single(frame) => frame,
-            _ => panic!("encode_command: expected Single result"),
+            other => panic!("encode_command: expected Single, got {other:?}"),
         }
     }
 }
@@ -241,16 +242,8 @@ pub fn encode_command(command: Command) -> EncodeResult {
             muted,
             pan_state,
             soloed,
-        } => EncodeResult::Single(host_frame(
-            0x16,
-            &[
-                0xd4,
-                0x04,
-                mixer.code(),
-                channel,
-                0x00,
-                pan_state.state_code(muted, soloed),
-            ],
+        } => EncodeResult::Single(encode_mixer_state_frame(
+            mixer, channel, 0x00, pan_state, muted, soloed,
         )),
         Command::SetMixerSolo {
             mixer,
@@ -258,16 +251,8 @@ pub fn encode_command(command: Command) -> EncodeResult {
             soloed,
             muted,
             pan_state,
-        } => EncodeResult::Single(host_frame(
-            0x16,
-            &[
-                0xd4,
-                0x04,
-                mixer.code(),
-                channel,
-                0x00,
-                pan_state.state_code(muted, soloed),
-            ],
+        } => EncodeResult::Single(encode_mixer_state_frame(
+            mixer, channel, 0x00, pan_state, muted, soloed,
         )),
         Command::SetMixerPan {
             mixer,
@@ -275,16 +260,8 @@ pub fn encode_command(command: Command) -> EncodeResult {
             pan,
             muted,
             soloed,
-        } => EncodeResult::Single(host_frame(
-            0x16,
-            &[
-                0xd4,
-                0x04,
-                mixer.code(),
-                channel,
-                0x00,
-                pan.state_code(muted, soloed),
-            ],
+        } => EncodeResult::Single(encode_mixer_state_frame(
+            mixer, channel, 0x00, pan, muted, soloed,
         )),
         Command::SetMixerAssignment { strip, assignment } => {
             EncodeResult::MixerAssignment { strip, assignment }
@@ -315,8 +292,8 @@ pub fn encode_link_companion(bank: u8, enabled: bool) -> [u8; 320] {
 
 /// Encodes a mixer strip assignment along with a full assignment table.
 ///
-/// Unlike [`encode_mixer_assignment_frames`], this writes the complete assignment
-/// state for all strips in each bank, not just the changed strip.
+/// Writes the complete assignment state for all strips in each bank,
+/// not just the changed strip.
 pub fn encode_mixer_assignment_frames_with_table(
     strip: u8,
     assignment: MixerAssignment,
@@ -388,6 +365,27 @@ fn host_frame(length: u32, payload: &[u8]) -> [u8; 320] {
     frame
 }
 
+fn encode_mixer_state_frame(
+    mixer: crate::mixer::MixerSurface,
+    channel: u8,
+    level: u8,
+    pan: PanState,
+    muted: bool,
+    soloed: bool,
+) -> [u8; 320] {
+    host_frame(
+        0x16,
+        &[
+            0xd4,
+            0x04,
+            mixer.code(),
+            channel,
+            level,
+            pan.state_code(muted, soloed),
+        ],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,7 +394,12 @@ mod tests {
 
     #[test]
     fn encodes_ordinary_strip_assignment_write_sequence_for_strip_11() {
-        let frames = encode_mixer_assignment_frames(11, MixerAssignment::EmuMic(2));
+        let assignments = [MixerAssignment::Mute; 16];
+        let frames = encode_mixer_assignment_frames_with_table(
+            11,
+            MixerAssignment::EmuMic(2),
+            &assignments,
+        );
 
         assert_eq!(frames.len(), 4);
         for (frame, bank) in frames.iter().zip([0x06_u8, 0x07, 0x08, 0x09]) {
@@ -409,7 +412,12 @@ mod tests {
 
     #[test]
     fn encodes_ordinary_assignment_write_sequence_for_strip_5_with_bank_03() {
-        let frames = encode_mixer_assignment_frames(5, MixerAssignment::Oscillator(1));
+        let assignments = [MixerAssignment::Mute; 16];
+        let frames = encode_mixer_assignment_frames_with_table(
+            5,
+            MixerAssignment::Oscillator(1),
+            &assignments,
+        );
 
         assert_eq!(frames.len(), 5);
         for (frame, bank) in frames.iter().zip([0x03_u8, 0x06, 0x07, 0x08, 0x09]) {
@@ -422,7 +430,12 @@ mod tests {
 
     #[test]
     fn encodes_early_assignment_write_sequence_for_strip_1_with_bank_05() {
-        let frames = encode_mixer_assignment_frames(1, MixerAssignment::Oscillator(1));
+        let assignments = [MixerAssignment::Mute; 16];
+        let frames = encode_mixer_assignment_frames_with_table(
+            1,
+            MixerAssignment::Oscillator(1),
+            &assignments,
+        );
 
         assert_eq!(frames.len(), 1);
         let frame = &frames[0];

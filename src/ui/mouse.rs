@@ -533,7 +533,7 @@ pub(crate) fn mixer_list_mouse_action(
 
         let source = channel
             .assignment
-            .map(|value| value.short_label())
+            .map(|value| value.short_label().to_string())
             .unwrap_or_else(|| "?".to_string());
         let (_, source_rect) = mixer_header_chip_rects(card, &source);
         if let Some(action) = mixer_strip_slider_mouse_action(card, index, channel, point) {

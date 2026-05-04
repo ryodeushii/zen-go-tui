@@ -257,7 +257,7 @@ pub(crate) fn render_mixer_strip_widget(
     let selected = state.ui.focus == FocusArea::Mixer && state.mixer.selected_channel == index;
     let source = channel
         .assignment
-        .map(|value| value.short_label())
+        .map(|value| value.short_label().to_string())
         .unwrap_or_else(|| "?".to_string());
     let block = Block::default()
         .borders(Borders::ALL)
