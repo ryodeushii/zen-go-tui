@@ -349,7 +349,7 @@ impl AppState {
             }
             DeviceSnapshot::QueryReply(reply) => {
                 self.device.connection.last_frame_type = Some("0x75 query reply");
-                self.raw_view.latest_raw_75 = Some(raw.clone());
+                self.raw_view.latest_raw_75 = Some(raw);
                 self.store_startup_query_summary(&reply);
                 self.apply_query_reply_readback(&reply);
                 self.push_query_reply_log(&reply, raw);
@@ -559,11 +559,11 @@ impl AppState {
     }
 
     pub fn capture_raw_baseline(&mut self) {
-        self.raw_view.baseline_raw_73 = self.raw_view.latest_raw_73.clone();
-        self.raw_view.baseline_raw_83 = self.raw_view.latest_raw_83.clone();
-        self.raw_view.baseline_raw_74 = self.raw_view.latest_raw_74.clone();
-        self.raw_view.baseline_raw_75 = self.raw_view.latest_raw_75.clone();
-        self.raw_view.baseline_raw_81 = self.raw_view.latest_raw_81.clone();
+        self.raw_view.baseline_raw_73 = self.raw_view.latest_raw_73;
+        self.raw_view.baseline_raw_83 = self.raw_view.latest_raw_83;
+        self.raw_view.baseline_raw_74 = self.raw_view.latest_raw_74;
+        self.raw_view.baseline_raw_75 = self.raw_view.latest_raw_75;
+        self.raw_view.baseline_raw_81 = self.raw_view.latest_raw_81;
     }
 
     pub fn clear_raw_baseline(&mut self) {
@@ -575,7 +575,7 @@ impl AppState {
     }
 
     pub fn observe_query_request(&mut self, raw: [u8; 320]) {
-        self.raw_view.latest_raw_74 = Some(raw.clone());
+        self.raw_view.latest_raw_74 = Some(raw);
         let query_id = raw.get(0x08).copied().unwrap_or(0);
         let sub_id = raw.get(0x0c).copied().unwrap_or(0);
         self.raw_view
@@ -1449,7 +1449,7 @@ mod tests {
         let writes = transport.take_writes();
         assert!(writes
             .iter()
-            .any(|frame| &frame[0x08..0x10] == [0x01, 0, 0, 0, 0, 0, 0, 0]));
+            .any(|frame| frame[0x08..0x10] == [0x01, 0, 0, 0, 0, 0, 0, 0]));
     }
 
     #[test]
@@ -2248,7 +2248,7 @@ mod tests {
         let mut state = AppState::default();
         let raw = raw_frame(&[0x73, 0, 0, 0]);
 
-        assert!(state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw.clone()));
+        assert!(state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw));
         assert!(!state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw));
     }
 
@@ -2315,7 +2315,7 @@ mod tests {
         controller.state.device.connection.connected = true;
         controller.state.latest_structural_snapshot =
             Some(StructuralSnapshot::from_snapshot(&snapshot));
-        controller.state.raw_view.latest_raw_73 = Some(raw.clone());
+        controller.state.raw_view.latest_raw_73 = Some(raw);
         controller.state.apply_snapshot(&snapshot);
 
         transport.push_read(raw.to_vec());
@@ -2401,12 +2401,12 @@ mod tests {
         let mut state = AppState::default();
         let mut raw73 = raw_frame(&[0x73]);
         raw73[0x10 + 0xcf] = 0x4c;
-        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw73.clone());
+        state.observe_frame(DeviceSnapshot::Snapshot(snapshot()), raw73);
 
         let raw83 = raw_frame(&[0x83, 0, 0, 0, 0x60, 0xc0, 0x60, 0x00]);
         state.observe_frame(
             DeviceSnapshot::Auxiliary(aux_frame(&[0x60, 0xc0, 0x60, 0x00])),
-            raw83.clone(),
+            raw83,
         );
 
         assert!(state.raw_view.latest_raw_73.is_some());
@@ -2644,7 +2644,7 @@ mod tests {
         assert_eq!(
             state
                 .selected_query_reply_entry()
-                .map(|entry| entry.raw.clone()),
+                .map(|entry| entry.raw),
             Some(raw_frame(&[0x75, 0x02]))
         );
 

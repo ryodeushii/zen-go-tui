@@ -15,7 +15,7 @@ use crate::app::{
 use antelope_protocol::{
     ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
     OutputState, OutputTarget, PanState, PreampInputState, PreampMode, SampleRate, Surface,
-    FRAME_TYPE_SNAPSHOT, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
+    OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
     OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
     OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2,
     OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
@@ -1215,7 +1215,7 @@ fn status_panel_surfaces_grounded_non_metadata_startup_queries() {
     state.device.status.startup_query_summaries[2] =
         Some("Status/capability value: 1 bytes [12]".to_string());
 
-    let lines = vec![
+    let lines = [
         Line::from(format!(
             "Startup: {}",
             state.startup_query_summary(0x00).unwrap_or_default()

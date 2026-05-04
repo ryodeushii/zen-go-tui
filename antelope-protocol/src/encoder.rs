@@ -155,11 +155,11 @@ pub enum EncodeResult {
     /// Single frame, enqueue for coalescing.
     Single([u8; 320]),
     /// Multiple frames that must be written directly (bypass queue).
-    Multi(Vec<[u8; 320]>),
+    Multi(Box<Vec<[u8; 320]>>),
     /// Requires a companion frame written before the main frame, both bypassing the queue.
     WithCompanion {
-        companion: [u8; 320],
-        main: [u8; 320],
+        companion: Box<[u8; 320]>,
+        main: Box<[u8; 320]>,
     },
     /// Single frame that requires a state refresh after writing.
     WithRefresh([u8; 320]),
@@ -295,8 +295,8 @@ pub fn encode_command(command: Command) -> EncodeResult {
             companion_bank,
         } => match companion_bank {
             Some(bank) => EncodeResult::WithCompanion {
-                companion: encode_link_companion(bank, enabled),
-                main: host_frame(0x14, &[0xa2, 0x03, selector, u8::from(enabled)]),
+                companion: Box::new(encode_link_companion(bank, enabled)),
+                main: Box::new(host_frame(0x14, &[0xa2, 0x03, selector, u8::from(enabled)])),
             },
             None => {
                 EncodeResult::Single(host_frame(0x14, &[0xa2, 0x03, selector, u8::from(enabled)]))

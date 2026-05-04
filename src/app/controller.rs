@@ -48,7 +48,7 @@ impl Controller {
     pub fn refresh_queried_state(&mut self) -> Result<()> {
         for query in control_panel_startup_queries() {
             let frame = encode_query(*query);
-            self.state.observe_query_request(frame.clone());
+            self.state.observe_query_request(frame);
             self.transport.write(&frame)?;
         }
         Ok(())
@@ -210,21 +210,21 @@ impl Controller {
     }
 
     pub fn send(&mut self, command: Command, pending: Option<PendingMutation>) -> Result<()> {
-        let result = encode_command(command.clone());
+        let result = encode_command(command);
         match result {
             EncodeResult::Single(_) => {
                 self.command_queue.enqueue(command);
             }
             EncodeResult::Multi(frames) => {
                 self.flush_commands()?;
-                for frame in frames {
-                    self.transport.write(&frame)?;
+                for frame in &*frames {
+                    self.transport.write(frame)?;
                 }
             }
             EncodeResult::WithCompanion { companion, main } => {
                 self.flush_commands()?;
-                self.transport.write(&companion)?;
-                self.transport.write(&main)?;
+                self.transport.write(companion.as_ref())?;
+                self.transport.write(main.as_ref())?;
             }
             EncodeResult::WithRefresh(frame) => {
                 self.flush_commands()?;

@@ -290,7 +290,7 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .output
         .states
         .iter()
-        .zip(output_card_areas(inner).into_iter())
+        .zip(output_card_areas(inner))
         .enumerate()
     {
         render_output_card_widget(
