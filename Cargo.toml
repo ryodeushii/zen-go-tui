@@ -2,7 +2,6 @@
 members = [
     "antelope-protocol",
     ".",
-    "gui",
 ]
 resolver = "2"
 
