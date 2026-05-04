@@ -2,8 +2,7 @@
 
 This document collects the mixer-side protocol findings that are grounded well enough to guide parser and UI work.
 
-It is intentionally narrower than `docs/protocol/pcap-analysis.md`.
-This file focuses on the mixer model currently supported by captures and the existing TUI: surfaces, level/mute writes, pan writes, link family, assignment writes, metering boundaries, and the current boundaries around passive `0x73` decoding.
+It focuses on the mixer model currently supported by captures and the existing TUI: surfaces, level/mute writes, pan writes, link family, assignment writes, metering boundaries, and the current boundaries around passive `0x73` decoding.
 
 ## Scope
 
@@ -396,10 +395,7 @@ Best next protocol-doc targets once the corresponding captures are analyzed:
 - `src/app.rs`: mixer pending-write overlay and per-surface state handling
 - `src/ui.rs`: mixer-surface tabs and strip rendering
 
-## Related Analysis
+## Related
 
-- canonical capture analysis: `docs/protocol/pcap-analysis.md`
 - preamp/front-end protocol: `docs/protocol/preamp-protocol.md`
-- capture planning and filenames: `docs/protocol/mixer-capture-plan.md`
-- remaining unresolved protocol gaps: `docs/protocol/open-questions.md`
 - control-panel feature map: `cpl.md`

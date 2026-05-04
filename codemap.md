@@ -22,7 +22,7 @@ Hosts a Rust-based terminal control panel and protocol-research workspace for th
 ## Root Assets
 - `docs/protocol/`: Reverse-engineering notes, capture plans, and open questions documenting discovered protocol behavior.
 - `antelope_pcap/`: Packet capture corpus used to derive mixer, preamp, metering, and output semantics.
-- `docs/zen-go-tui.md`, `docs/cpl.md`, `docs/wireshark-capture-plan.md`: Top-level product and capture-analysis notes complementing the executable Rust implementation.
+- `docs/zen-go-tui.md`, `docs/cpl.md`: Top-level product and protocol reference notes complementing the executable Rust implementation.
 - `PERFORMANCE_TUNING.md`: Performance optimization findings and tuning parameters.
 - `bench.js`: Benchmark wrapper for `cargo test --bench` output formatting.
 - `udev_rules/`: Linux udev rules for Zen Go HID device access.

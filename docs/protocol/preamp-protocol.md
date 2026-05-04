@@ -2,8 +2,7 @@
 
 This document collects the parts of the Zen Go preamp/front-end protocol that are grounded well enough to back the current TUI implementation.
 
-It is intentionally narrower than `docs/protocol/pcap-analysis.md`.
-This file focuses on the implemented preamp path: gain, source/type mode, phantom, phase, observed input metering, and the `0x73` decode that reflects those states.
+It focuses on the implemented preamp path: gain, source/type mode, phantom, phase, observed input metering, and the `0x73` decode that reflects those states.
 
 ## Scope
 
@@ -154,8 +153,6 @@ Deferred / intentionally not claimed here:
 - `src/app.rs`: pending mutation handling for gain, mode, phantom, phase, and observed-meter preservation
 - `src/ui.rs`: preamp gauges and observed meter rendering
 
-## Related Analysis
+## Related
 
-- canonical capture analysis: `docs/protocol/pcap-analysis.md`
-- remaining unresolved protocol gaps: `docs/protocol/open-questions.md`
 - control-panel feature map: `cpl.md`

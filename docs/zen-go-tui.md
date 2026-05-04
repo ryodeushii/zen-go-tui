@@ -7,10 +7,8 @@ It uses `ratatui` for the interface and a HID transport abstraction for device I
 
 The implementation follows the reverse-engineered USB HID protocol documented in:
 
-- `docs/protocol/pcap-analysis.md`
 - `docs/protocol/mixer-protocol.md`
 - `docs/protocol/preamp-protocol.md`
-- `docs/protocol/open-questions.md`
 - `cpl.md`
 
 ## Transport choice
