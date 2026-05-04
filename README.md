@@ -2,8 +2,30 @@
 
 Terminal UI for the Antelope Zen Go Synergy Core audio interface.
 
-> [!NOTE]
-> Screenshot coming soon.
+<p align="center">
+  <img src="assets/mixer-strips-9-16.png" alt="Mixer view" width="600">
+</p>
+
+<details>
+<summary>More screenshots</summary>
+
+**Options**
+
+![Options](assets/options.png)
+
+**Preamp / Source Type**
+
+![Preamp](assets/preamp-source-type.png)
+
+**Profiles**
+
+![Profiles](assets/profiles.png)
+
+**Routing**
+
+![Routing](assets/routing.png)
+
+</details>
 
 ## What it is
 
@@ -89,24 +111,78 @@ cargo run -- --mock
 
 ## Keyboard controls
 
+### Global
+
 | Key | Action |
 |-----|--------|
 | `Tab` | Cycle focus between panels |
 | `←` / `→` | Select output or mixer channel |
 | `↑` / `↓` | Adjust level / gain / fader |
 | `m` | Toggle mute |
-| `d` | Toggle dim (outputs) |
+| `d` | Toggle dim |
+| `q` | Quit |
+| `?` | Show quick help |
+| `p` | Open profiles panel |
+| `r` | Toggle routing panel |
+| `O` | Toggle options panel |
+| `R` | Refresh device state |
+| `Ctrl+D` | Toggle raw view |
+| `Ctrl+O` | Toggle options panel |
+| `Ctrl+C` | Quit |
+
+### Mixer (focus on mixer strips)
+
+| Key | Action |
+|-----|--------|
 | `[` / `]` | Adjust mixer pan |
-| `a` | Cycle mixer source assignment |
+| `a` | Open source assignment picker |
+| `o` | Toggle solo |
 | `l` | Toggle link on visible pairs |
-| `3` | Cycle preamp mode |
-| `p` | Toggle preamp phase |
-| `s` | Cycle sample rate |
+
+### Preamp (focus on preamp)
+
+| Key | Action |
+|-----|--------|
+| `3` | Cycle input mode (Mic / Line / Hi-Z) |
+
+### Global shortcuts
+
+| Key | Action |
+|-----|--------|
+| `s` | Cycle sample rate (when clock source is internal) |
 | `c` | Cycle clock source |
 | `1` | Switch to Monitor / HP1 surface |
 | `2` | Switch to HP2 surface |
-| `?` | Show quick help |
-| `q` | Quit |
+
+### Raw view
+
+| Key | Action |
+|-----|--------|
+| `b` | Capture baseline |
+| `x` | Clear baseline |
+| `←` / `→` | Cycle packets or scroll query replies |
+
+### Profiles popup
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate profiles |
+| `Enter` | Load selected profile |
+| `s` | Save profile |
+| `r` | Rename profile |
+| `d` | Delete profile |
+| `Esc` | Close |
+
+### Options popup
+
+| Key | Action |
+|-----|--------|
+| `1` / `2` / `3` | Set refresh rate (15 / 30 / 60 fps) |
+| `↑` / `↓` | Cycle peak threshold |
+| `p` | Toggle peak meters |
+| `h` / `H` | Cycle peak hold duration forward / back |
+| `a` | Toggle auto-save |
+| `Esc` | Close |
 
 On the raw packet view page, `b` captures a baseline and `x` clears it.
 
