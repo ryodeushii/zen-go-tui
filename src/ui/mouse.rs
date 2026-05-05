@@ -12,6 +12,15 @@ use antelope_protocol::{
 
 use super::layouts::*;
 
+fn any_modal_popup_open(state: &AppState) -> bool {
+    state.popup.hotkeys_open
+        || state.popup.profiles_open
+        || state.popup.selector_popup.is_some()
+        || state.popup.assignment_picker.is_some()
+        || state.popup.routing_open
+        || state.popup.options_open
+}
+
 pub(crate) fn contains_point(area: Rect, point: (u16, u16)) -> bool {
     point.0 >= area.x
         && point.0 < area.x.saturating_add(area.width)
@@ -88,14 +97,7 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Inte
 }
 
 pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Intent> {
-    if state.popup.hotkeys_open
-        || state.popup.raw_view_open
-        || state.popup.profiles_open
-        || state.popup.selector_popup.is_some()
-        || state.popup.assignment_picker.is_some()
-        || state.popup.routing_open
-        || state.popup.options_open
-    {
+    if any_modal_popup_open(state) || state.popup.raw_view_open {
         return None;
     }
 
@@ -117,13 +119,7 @@ pub fn slider_wheel_action(
     y: u16,
     increase: bool,
 ) -> Option<Intent> {
-    if state.popup.hotkeys_open
-        || state.popup.profiles_open
-        || state.popup.selector_popup.is_some()
-        || state.popup.assignment_picker.is_some()
-        || state.popup.routing_open
-        || state.popup.options_open
-    {
+    if any_modal_popup_open(state) {
         return None;
     }
 
@@ -179,57 +175,53 @@ fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     if contains_point(refresh_row, point) {
         let refresh_rates = crate::app::RefreshRate::all();
         let prefix = "Refresh: ";
-        let mut x = refresh_row.x + prefix.chars().count() as u16;
-        for r in refresh_rates {
-            let label = if *r == state.ui.settings.refresh_rate {
-                format!("* {}", r.label())
-            } else {
-                r.label().to_string()
-            };
-            let w = crate::ui::styles::chip_width(&label);
-            let rect = Rect::new(x, refresh_row.y, w, 1);
+        let start_x = refresh_row.x + prefix.chars().count() as u16;
+        let labels: Vec<String> = refresh_rates
+            .iter()
+            .map(|r| {
+                if *r == state.ui.settings.refresh_rate {
+                    format!("* {}", r.label())
+                } else {
+                    r.label().to_string()
+                }
+            })
+            .collect();
+        let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let rects = inline_chip_rects(start_x, refresh_row.y, &label_refs);
+        for (i, rect) in rects.into_iter().enumerate() {
             if contains_point(rect, point) {
-                return Some(Intent::SetRefreshRate(*r));
+                return Some(Intent::SetRefreshRate(refresh_rates[i]));
             }
-            x += w + 1;
         }
     }
 
     if contains_point(peak_threshold_row, point) {
-        let prefix = "Peaks:  ";
         let status_text = if state.ui.settings.peak_enabled {
             format!("ON ({} dB)", state.ui.settings.peak_threshold_db())
         } else {
             "OFF".to_string()
         };
-        let mut x = peak_threshold_row.x + prefix.chars().count() as u16;
-        let status_w = crate::ui::styles::chip_width(&status_text);
-        x += status_w;
-        x += 2;
-        let down_w = crate::ui::styles::chip_width("↓");
-        let down_rect = Rect::new(x, peak_threshold_row.y, down_w, 1);
-        if contains_point(down_rect, point) {
+        let prefix = "Peaks:  ";
+        let start_x = peak_threshold_row.x + prefix.chars().count() as u16;
+        let rects = inline_chip_rects(start_x, peak_threshold_row.y, &[&status_text, "↓", "↑"]);
+        if contains_point(rects[1], point) {
             return Some(Intent::CyclePeakThreshold(false));
         }
-        x += down_w + 1;
-        let up_w = crate::ui::styles::chip_width("↑");
-        let up_rect = Rect::new(x, peak_threshold_row.y, up_w, 1);
-        if contains_point(up_rect, point) {
+        if contains_point(rects[2], point) {
             return Some(Intent::CyclePeakThreshold(true));
         }
     }
 
     if contains_point(peak_toggle_row, point) {
-        let prefix = "Toggle: ";
         let label = if state.ui.settings.peak_enabled {
             "Disable"
         } else {
             "Enable"
         };
-        let x = peak_toggle_row.x + prefix.chars().count() as u16;
-        let w = crate::ui::styles::chip_width(label);
-        let rect = Rect::new(x, peak_toggle_row.y, w, 1);
-        if contains_point(rect, point) {
+        let prefix = "Toggle: ";
+        let start_x = peak_toggle_row.x + prefix.chars().count() as u16;
+        let rects = inline_chip_rects(start_x, peak_toggle_row.y, &[label]);
+        if contains_point(rects[0], point) {
             return Some(Intent::TogglePeakEnabled);
         }
     }
@@ -237,19 +229,23 @@ fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     if contains_point(peak_hold_row, point) {
         let hold_durations = crate::app::PeakHoldDuration::all();
         let prefix = "Hold:   ";
-        let mut x = peak_hold_row.x + prefix.chars().count() as u16;
-        for h in hold_durations {
-            let label = if *h == state.ui.settings.peak_hold_duration {
-                format!("* {}", h.label())
-            } else {
-                h.label().to_string()
-            };
-            let w = crate::ui::styles::chip_width(&label);
-            let rect = Rect::new(x, peak_hold_row.y, w, 1);
+        let start_x = peak_hold_row.x + prefix.chars().count() as u16;
+        let labels: Vec<String> = hold_durations
+            .iter()
+            .map(|h| {
+                if *h == state.ui.settings.peak_hold_duration {
+                    format!("* {}", h.label())
+                } else {
+                    h.label().to_string()
+                }
+            })
+            .collect();
+        let label_refs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        let rects = inline_chip_rects(start_x, peak_hold_row.y, &label_refs);
+        for (i, rect) in rects.into_iter().enumerate() {
             if contains_point(rect, point) {
-                return Some(Intent::CyclePeakHoldDuration(*h));
+                return Some(Intent::CyclePeakHoldDuration(hold_durations[i]));
             }
-            x += w + 1;
         }
     }
 

@@ -4,7 +4,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Widget;
 use ratatui::Terminal;
 
@@ -22,6 +22,146 @@ use antelope_protocol::{
 };
 
 use super::*;
+
+fn afx_routing_source_label(assignment: Option<MixerAssignment>) -> String {
+    assignment
+        .map(|a| a.label().to_string())
+        .unwrap_or_else(|| "?".to_string())
+}
+
+fn render_afx_routing_text(state: &AppState) -> Text<'static> {
+    let assignments = &state.mixer.channels[MixerSurface::Mix1.index()];
+    let mut lines = vec![
+        Line::from(vec![styles::chip("ROUTING", Color::Black, Color::LightMagenta)]),
+        Line::from(""),
+        Line::from("Zen Go USB recordings mirror mixer strip assignments instead of using a separate routing matrix."),
+        Line::from("This view reformats shared CH 01-08 assignments into the 4 stereo recording pairs exposed to the host."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("PAIR    ", styles::subdued_style()),
+            Span::styled("LEFT", styles::strong_style(Color::LightCyan)),
+            Span::styled("                           ", styles::subdued_style()),
+            Span::styled("RIGHT", styles::strong_style(Color::LightCyan)),
+        ]),
+    ];
+
+    for pair in 0..4 {
+        let left = &assignments[pair * 2];
+        let right = &assignments[pair * 2 + 1];
+        lines.push(Line::from(format!(
+            "USB {:>1}/{:>1}  Zen Go Recording {:>1} <- {:<18}  Zen Go Recording {:>1} <- {}",
+            left.channel,
+            right.channel,
+            left.channel,
+            afx_routing_source_label(left.assignment),
+            right.channel,
+            afx_routing_source_label(right.assignment),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("STATUS ", styles::subdued_style()),
+        Span::styled(
+            state.ui.last_message.clone(),
+            styles::strong_style(Color::LightCyan),
+        ),
+    ]));
+    Text::from(lines)
+}
+
+fn render_mixer_strip_controls(
+    _state: &AppState,
+    _index: usize,
+    channel: &antelope_protocol::MixerChannelState,
+) -> String {
+    let mute = channel
+        .muted
+        .map(|value| if value { "on" } else { "off" })
+        .unwrap_or("?");
+    let src = channel
+        .assignment
+        .map(|value| value.label().to_string())
+        .unwrap_or_else(|| "assignment?".to_string());
+    let solo = channel
+        .soloed
+        .map(|value| if value { "on" } else { "off" })
+        .unwrap_or("?");
+    let link = if channel.channel % 2 == 1 {
+        let value = channel
+            .linked
+            .map(|flag| if flag { "on" } else { "off" })
+            .unwrap_or("?");
+        format!(" [Link {}]", value)
+    } else {
+        String::new()
+    };
+    format!("    [Mute {}] [Solo {}]{} [Src {}]", mute, solo, link, src)
+}
+
+fn observed_meter_label(input: PreampInputState) -> String {
+    match input.observed_meter {
+        Some(_) => input
+            .observed_meter_db()
+            .map(|value| format!("obs meter {} dB", value))
+            .unwrap_or_default(),
+        None => String::new(),
+    }
+}
+
+fn render_mixer_strip_line(
+    state: &AppState,
+    index: usize,
+    channel: &antelope_protocol::MixerChannelState,
+) -> String {
+    let selected = state.ui.focus == FocusArea::Mixer && state.mixer.selected_channel == index;
+    let bar = channel
+        .meter_ratio()
+        .or_else(|| channel.gain_ratio())
+        .map(|ratio| styles::render_symbol_bar(ratio, 8, '|', '.'))
+        .unwrap_or_else(|| "........".to_string());
+    let assignment = channel
+        .assignment
+        .map(|value| value.label().to_string())
+        .unwrap_or_else(|| "assignment?".to_string());
+    let pan = channel.pan.display_percent();
+    let pan_label = if pan < 0 {
+        format!("L{}", pan.unsigned_abs())
+    } else if pan > 0 {
+        format!("R{}", pan)
+    } else {
+        "C".to_string()
+    };
+    format!(
+        "CH {:02} {:<8} src={:<16} level={} meter={} mute={} solo={} pan={} link={} {}",
+        channel.channel,
+        bar,
+        assignment,
+        channel
+            .display_db()
+            .map(|value| format!("{} dB", value))
+            .unwrap_or_else(|| "undecoded".to_string()),
+        channel
+            .meter_db()
+            .map(|value| format!("{} dB", value))
+            .or_else(|| channel.meter.map(|_| String::new()))
+            .unwrap_or_else(|| "undecoded".to_string()),
+        channel
+            .muted
+            .map(|value| if value { "on" } else { "off" })
+            .unwrap_or("undecoded"),
+        channel
+            .soloed
+            .map(|value| if value { "on" } else { "off" })
+            .unwrap_or("undecoded"),
+        pan_label,
+        channel
+            .linked
+            .map(|value| if value { "on" } else { "off" })
+            .unwrap_or("unknown"),
+        if selected { "←" } else { "" }
+    )
+}
 
 fn render_buffer(area: Rect, render: impl FnOnce(Rect, &mut Buffer)) -> String {
     let mut buffer = Buffer::empty(area);
@@ -390,7 +530,7 @@ fn afx_page_renders_usb_recording_pairs_from_mixer_assignments() {
             Some(MixerAssignment::Mute);
     }
 
-    let rendered = render::render_afx_routing_text(&state).to_string();
+    let rendered = render_afx_routing_text(&state).to_string();
 
     assert!(rendered.contains("Zen Go USB recordings mirror mixer strip assignments"));
     assert!(rendered.contains("USB 1/2  Zen Go Recording 1 <- Preamp 1"));
@@ -433,12 +573,12 @@ fn mixer_strip_rendering_includes_solo_state() {
     state.mixer.selected_channel = 0;
     state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(true);
 
-    let line = render::render_mixer_strip_line(
+    let line = render_mixer_strip_line(
         &state,
         0,
         &state.mixer.channels[MixerSurface::Mix1.index()][0],
     );
-    let controls = render::render_mixer_strip_controls(
+    let controls = render_mixer_strip_controls(
         &state,
         0,
         &state.mixer.channels[MixerSurface::Mix1.index()][0],
@@ -1246,7 +1386,7 @@ fn mixer_strip_line_includes_assignment_pan_and_link() {
     state.mixer.channels[0][10].muted = Some(false);
 
     let channel = &state.mixer.channels[0][10];
-    let line = render::render_mixer_strip_line(&state, 10, channel);
+    let line = render_mixer_strip_line(&state, 10, channel);
 
     assert!(line.contains("Computer Play 8"));
     assert!(line.contains("pan=R30"));
@@ -1261,7 +1401,7 @@ fn mixer_strip_line_renders_meter_separately_from_level_value() {
     state.mixer.channels[0][0].meter = Some(0x30);
     state.mixer.channels[0][0].muted = Some(false);
 
-    let line = render::render_mixer_strip_line(&state, 0, &state.mixer.channels[0][0]);
+    let line = render_mixer_strip_line(&state, 0, &state.mixer.channels[0][0]);
 
     assert!(line.contains("level=0 dB"));
     assert!(line.contains("meter=-48 dB"));
@@ -1274,7 +1414,7 @@ fn mixer_strip_line_hides_meter_value_below_ui_floor() {
     state.mixer.channels[0][0].meter = Some(0x60);
     state.mixer.channels[0][0].muted = Some(false);
 
-    let line = render::render_mixer_strip_line(&state, 0, &state.mixer.channels[0][0]);
+    let line = render_mixer_strip_line(&state, 0, &state.mixer.channels[0][0]);
 
     assert!(line.contains("meter= mute=off"));
 }
@@ -1288,7 +1428,7 @@ fn mixer_strip_line_renders_newly_grounded_pair_link() {
     state.mixer.channels[target.mixer.index()][target.left_channel as usize - 1].assignment =
         Some(MixerAssignment::SpdifIn(1));
 
-    let line = render::render_mixer_strip_line(
+    let line = render_mixer_strip_line(
         &state,
         target.left_channel as usize - 1,
         &state.mixer.channels[target.mixer.index()][target.left_channel as usize - 1],
@@ -1384,13 +1524,13 @@ fn observed_meter_label_mentions_raw_value() {
     let mut input = PreampInputState::from_raw(0x2a, 0x00);
     input.observed_meter = Some(0x30);
 
-    assert_eq!(render::observed_meter_label(input), "obs meter -48 dB");
+    assert_eq!(observed_meter_label(input), "obs meter -48 dB");
 }
 
 #[test]
 fn observed_meter_label_mentions_pending_state() {
     assert_eq!(
-        render::observed_meter_label(PreampInputState::from_raw(0x2a, 0x00)),
+        observed_meter_label(PreampInputState::from_raw(0x2a, 0x00)),
         ""
     );
 }
@@ -1400,7 +1540,7 @@ fn observed_meter_label_hides_values_below_ui_floor() {
     let mut input = PreampInputState::from_raw(0x2a, 0x00);
     input.observed_meter = Some(0x60);
 
-    assert_eq!(render::observed_meter_label(input), "");
+    assert_eq!(observed_meter_label(input), "");
 }
 
 #[test]
