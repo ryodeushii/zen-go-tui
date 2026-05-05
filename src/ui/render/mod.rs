@@ -25,16 +25,20 @@ pub(crate) use mixer::*;
 
 // Re-export text rendering helpers
 pub(crate) use text::build_query_reply_list_items;
-pub(crate) use text::connection_badge_color;
 pub(crate) use text::render_device_header;
 pub(crate) use text::render_device_metadata;
 pub(crate) use text::render_full_packet_dump;
 pub(crate) use text::render_hotkeys_popup_text;
-pub(crate) use text::render_mix_meter_state_line;
 pub(crate) use text::render_query_reply_panel;
 pub(crate) use text::render_query_request_panel;
 pub(crate) use text::render_status_strip;
 pub(crate) use text::render_system_summary;
+
+// Re-exports for tests only
+#[cfg(test)]
+pub(crate) use text::connection_badge_color;
+#[cfg(test)]
+pub(crate) use text::render_mix_meter_state_line;
 
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     if state.popup.raw_view_open {

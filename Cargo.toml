@@ -18,6 +18,11 @@ path = "src/lib.rs"
 name = "zen-go-tui"
 path = "src/main.rs"
 
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "s"
+
 [dependencies]
 antelope-protocol = { path = "antelope-protocol" }
 anyhow = "1.0"
