@@ -193,7 +193,6 @@ The full reverse-engineered protocol reference lives in [docs/](docs/):
 - [Control Panel reference](docs/cpl.md)
 - [Mixer protocol](docs/protocol/mixer-protocol.md)
 - [Preamp protocol](docs/protocol/preamp-protocol.md)
-- [Performance tuning](PERFORMANCE_TUNING.md)
 
 ## Disclaimer
 

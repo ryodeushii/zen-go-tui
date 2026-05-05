@@ -640,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_pair_state_lanes_extract_mix1_mirrored_codebook() {
+    fn pair_state_lanes_extract_mix1_mirrored_codebook() {
         let mut frame = empty_snapshot_frame();
         let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
         payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
@@ -652,8 +652,8 @@ mod tests {
         payload[OFFSET_SHARED_SHADOW_1] = 0x60;
 
         assert_eq!(
-            experimental_surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
-            Some(ExperimentalSurfacePairLanes {
+            surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
+            Some(SurfacePairLanes {
                 mixer: MixerSurface::Mix1,
                 lane_a: 0x0a,
                 lane_b: 0x05,
@@ -663,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_pair_state_lanes_extract_mix2_compact_codebook() {
+    fn pair_state_lanes_extract_mix2_compact_codebook() {
         let mut frame = empty_snapshot_frame();
         let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
         payload[OFFSET_SURFACE_SELECTOR] = 0x0c;
@@ -673,8 +673,8 @@ mod tests {
         payload[OFFSET_SHARED_SHADOW_1] = 0x60;
 
         assert_eq!(
-            experimental_surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
-            Some(ExperimentalSurfacePairLanes {
+            surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
+            Some(SurfacePairLanes {
                 mixer: MixerSurface::Mix2,
                 lane_a: 0x00,
                 lane_b: 0x06,
@@ -684,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn experimental_pair_state_lanes_preserve_both_mute_idle_form() {
+    fn pair_state_lanes_preserve_both_mute_idle_form() {
         let mut frame = empty_snapshot_frame();
         let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
         payload[OFFSET_SURFACE_SELECTOR] = 0x0c;
@@ -692,8 +692,8 @@ mod tests {
         payload[OFFSET_MIX2_LANE_B] = 0x60;
 
         assert_eq!(
-            experimental_surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
-            Some(ExperimentalSurfacePairLanes {
+            surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
+            Some(SurfacePairLanes {
                 mixer: MixerSurface::Mix2,
                 lane_a: 0x60,
                 lane_b: 0x60,
@@ -703,21 +703,21 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct ExperimentalSurfacePairLanes {
+    struct SurfacePairLanes {
         mixer: MixerSurface,
         lane_a: u8,
         lane_b: u8,
         mirrored: bool,
     }
 
-    fn experimental_surface_pair_lanes(payload: &[u8]) -> Option<ExperimentalSurfacePairLanes> {
+    fn surface_pair_lanes(payload: &[u8]) -> Option<SurfacePairLanes> {
         let mixer =
             MixerSurface::from_surface(Surface::from_code(*payload.get(OFFSET_SURFACE_SELECTOR)?));
         match mixer {
             MixerSurface::Mix1 => {
                 let lane_a = *payload.get(OFFSET_MIX1_LANE_A)?;
                 let lane_b = *payload.get(OFFSET_MIX1_LANE_B)?;
-                Some(ExperimentalSurfacePairLanes {
+                Some(SurfacePairLanes {
                     mixer,
                     lane_a,
                     lane_b,
@@ -725,12 +725,75 @@ mod tests {
                         && payload.get(OFFSET_MIX1_MIRROR_B) == Some(&lane_b),
                 })
             }
-            MixerSurface::Mix2 => Some(ExperimentalSurfacePairLanes {
+            MixerSurface::Mix2 => Some(SurfacePairLanes {
                 mixer,
                 lane_a: *payload.get(OFFSET_MIX2_LANE_A)?,
                 lane_b: *payload.get(OFFSET_MIX2_LANE_B)?,
                 mirrored: false,
             }),
         }
+    }
+
+    #[test]
+    fn pair_state_lanes_extract_mix1_mirrored_codebook() {
+        let mut frame = empty_snapshot_frame();
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
+        payload[OFFSET_MIX1_LANE_A] = 0x0a;
+        payload[OFFSET_MIX1_LANE_B] = 0x05;
+        payload[OFFSET_MIX1_MIRROR_A] = 0x0a;
+        payload[OFFSET_MIX1_MIRROR_B] = 0x05;
+        payload[OFFSET_SHARED_SHADOW_0] = 0x60;
+        payload[OFFSET_SHARED_SHADOW_1] = 0x60;
+
+        assert_eq!(
+            surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
+            Some(SurfacePairLanes {
+                mixer: MixerSurface::Mix1,
+                lane_a: 0x0a,
+                lane_b: 0x05,
+                mirrored: true,
+            })
+        );
+    }
+
+    #[test]
+    fn pair_state_lanes_extract_mix2_compact_codebook() {
+        let mut frame = empty_snapshot_frame();
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0c;
+        payload[OFFSET_MIX2_LANE_A] = 0x00;
+        payload[OFFSET_MIX2_LANE_B] = 0x06;
+        payload[OFFSET_SHARED_SHADOW_0] = 0x60;
+        payload[OFFSET_SHARED_SHADOW_1] = 0x60;
+
+        assert_eq!(
+            surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
+            Some(SurfacePairLanes {
+                mixer: MixerSurface::Mix2,
+                lane_a: 0x00,
+                lane_b: 0x06,
+                mirrored: false,
+            })
+        );
+    }
+
+    #[test]
+    fn pair_state_lanes_preserve_both_mute_idle_form() {
+        let mut frame = empty_snapshot_frame();
+        let payload = &mut frame[SNAPSHOT_PAYLOAD_OFFSET..];
+        payload[OFFSET_SURFACE_SELECTOR] = 0x0c;
+        payload[OFFSET_MIX2_LANE_A] = 0x60;
+        payload[OFFSET_MIX2_LANE_B] = 0x60;
+
+        assert_eq!(
+            surface_pair_lanes(&frame[SNAPSHOT_PAYLOAD_OFFSET..]),
+            Some(SurfacePairLanes {
+                mixer: MixerSurface::Mix2,
+                lane_a: 0x60,
+                lane_b: 0x60,
+                mirrored: false,
+            })
+        );
     }
 }

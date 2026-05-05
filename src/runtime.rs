@@ -66,21 +66,22 @@ pub fn headless_loop(controller: &mut Controller) -> Result<()> {
     loop {
         let now = std::time::Instant::now();
         if reconnect_refresh_pending {
-            if should_probe_reconnect(last_reconnect_probe_at, reconnect_probe_attempts, now) {
-                refresh_after_reconnect_if_needed(controller, &mut reconnect_refresh_pending)?;
-                last_reconnect_probe_at = Some(now);
-                reconnect_probe_attempts += 1;
-                if !reconnect_refresh_pending {
-                    last_reconnect_probe_at = None;
-                    reconnect_probe_attempts = 0;
+            tick_reconnect_probe(
+                controller,
+                &mut reconnect_refresh_pending,
+                &mut last_reconnect_probe_at,
+                &mut reconnect_probe_attempts,
+                now,
+            )?;
+            if reconnect_refresh_pending {
+                if let Some(last_probe_at) = last_reconnect_probe_at {
+                    let wait = crate::timing::device_retry_interval(
+                        reconnect_probe_attempts.saturating_add(1),
+                    )
+                    .saturating_sub(now.duration_since(last_probe_at));
+                    std::thread::sleep(wait);
+                    continue;
                 }
-            } else if let Some(last_probe_at) = last_reconnect_probe_at {
-                let wait = crate::timing::device_retry_interval(
-                    reconnect_probe_attempts.saturating_add(1),
-                )
-                .saturating_sub(now.duration_since(last_probe_at));
-                std::thread::sleep(wait);
-                continue;
             }
         }
 
@@ -141,6 +142,48 @@ pub fn refresh_after_reconnect_if_needed(
     }
 }
 
+fn tick_reconnect_probe(
+    controller: &mut Controller,
+    reconnect_refresh_pending: &mut bool,
+    last_reconnect_probe_at: &mut Option<std::time::Instant>,
+    reconnect_probe_attempts: &mut usize,
+    now: std::time::Instant,
+) -> Result<()> {
+    if *reconnect_refresh_pending
+        && should_probe_reconnect(*last_reconnect_probe_at, *reconnect_probe_attempts, now)
+    {
+        refresh_after_reconnect_if_needed(controller, reconnect_refresh_pending)?;
+        *last_reconnect_probe_at = Some(now);
+        *reconnect_probe_attempts += 1;
+        if !*reconnect_refresh_pending {
+            *last_reconnect_probe_at = None;
+            *reconnect_probe_attempts = 0;
+        }
+    }
+    Ok(())
+}
+
+fn cycle_peak_hold_duration(
+    controller: &mut Controller,
+    area: ratatui::layout::Rect,
+    direction: i8,
+) -> Result<()> {
+    let all = PeakHoldDuration::all();
+    let current = controller.state.ui.settings.peak_hold_duration;
+    let pos = all.iter().position(|&v| v == current).unwrap_or(1);
+    let len = all.len();
+    let next = if direction > 0 {
+        all[(pos + 1) % len]
+    } else {
+        all[pos.checked_sub(1).unwrap_or(len - 1)]
+    };
+    controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
+    if controller.state.ui.settings.auto_save {
+        let _ = settings::save_settings(&controller.state.ui.settings);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAction {
     Continue,
@@ -177,24 +220,10 @@ fn handle_options_popup(
             controller.apply_intent(Intent::TogglePeakEnabled, area)?;
         }
         AppKeyCode::Char('h') | AppKeyCode::Char('H') => {
-            let all = PeakHoldDuration::all();
-            let current = controller.state.ui.settings.peak_hold_duration;
-            let pos = all.iter().position(|&v| v == current).unwrap_or(1);
-            let next = all[(pos + 1) % all.len()];
-            controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
-            if controller.state.ui.settings.auto_save {
-                let _ = settings::save_settings(&controller.state.ui.settings);
-            }
+            cycle_peak_hold_duration(controller, area, 1)?;
         }
         AppKeyCode::Char('l') | AppKeyCode::Char('L') => {
-            let all = PeakHoldDuration::all();
-            let current = controller.state.ui.settings.peak_hold_duration;
-            let pos = all.iter().position(|&v| v == current).unwrap_or(1);
-            let next = all[pos.checked_sub(1).unwrap_or(all.len() - 1)];
-            controller.apply_intent(Intent::CyclePeakHoldDuration(next), area)?;
-            if controller.state.ui.settings.auto_save {
-                let _ = settings::save_settings(&controller.state.ui.settings);
-            }
+            cycle_peak_hold_duration(controller, area, -1)?;
         }
         AppKeyCode::Char('a') => {
             controller.apply_intent(Intent::ToggleAutoSave, area)?;
@@ -598,16 +627,14 @@ pub fn app_loop(
 
     'app: loop {
         let now = std::time::Instant::now();
-        if reconnect_refresh_pending
-            && should_probe_reconnect(last_reconnect_probe_at, reconnect_probe_attempts, now)
-        {
-            refresh_after_reconnect_if_needed(controller, &mut reconnect_refresh_pending)?;
-            last_reconnect_probe_at = Some(now);
-            reconnect_probe_attempts += 1;
-            if !reconnect_refresh_pending {
-                last_reconnect_probe_at = None;
-                reconnect_probe_attempts = 0;
-            }
+        if reconnect_refresh_pending {
+            tick_reconnect_probe(
+                controller,
+                &mut reconnect_refresh_pending,
+                &mut last_reconnect_probe_at,
+                &mut reconnect_probe_attempts,
+                now,
+            )?;
         }
 
         let input_events = collect_pending_input(input_rx)?;

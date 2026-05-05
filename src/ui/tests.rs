@@ -1440,7 +1440,7 @@ fn mixer_strip_line_renders_newly_grounded_pair_link() {
 }
 
 #[test]
-fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
+fn pair_state_line_surfaces_mix1_mirrored_lanes() {
     let mut state = AppState::default();
     let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
@@ -1462,7 +1462,7 @@ fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
 }
 
 #[test]
-fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
+fn pair_state_line_surfaces_mix2_compact_lanes() {
     let mut state = AppState::default();
     let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
@@ -1482,7 +1482,7 @@ fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
 }
 
 #[test]
-fn experimental_pair_state_line_surfaces_no_signal_family_as_pending_meter() {
+fn pair_state_line_surfaces_no_signal_family_as_pending_meter() {
     let mut state = AppState::default();
     let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
@@ -1503,7 +1503,7 @@ fn experimental_pair_state_line_surfaces_no_signal_family_as_pending_meter() {
 }
 
 #[test]
-fn experimental_pair_state_line_keeps_unknown_meter_bytes_visible() {
+fn pair_state_line_keeps_unknown_meter_bytes_visible() {
     let mut state = AppState::default();
     let mut frame = [0_u8; 320];
     frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());

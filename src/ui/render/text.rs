@@ -86,10 +86,10 @@ pub(crate) fn build_query_reply_list_items(state: &AppState) -> Vec<ListItem<'st
 
 pub(crate) fn render_mix_meter_state_line(state: &AppState) -> String {
     let Some(bytes) = state.raw_view.latest_raw_73.as_ref().map(|a| a.as_slice()) else {
-        return "exp pair pending: waiting for 0x73 snapshot".to_string();
+        return "Mix meter: waiting for 0x73 snapshot".to_string();
     };
     let Some(payload) = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..) else {
-        return "exp pair pending: short 0x73 snapshot".to_string();
+        return "Mix meter: short 0x73 snapshot".to_string();
     };
 
     match payload.get(OFFSET_SURFACE_SELECTOR).copied() {
@@ -111,8 +111,8 @@ pub(crate) fn render_mix_meter_state_line(state: &AppState) -> String {
                 render_mix_meter(lane_b),
             )
         }
-        Some(surface) => format!("exp pair pending: unsupported surface {:02x}", surface),
-        None => "exp pair pending: missing surface byte".to_string(),
+        Some(surface) => format!("Mix meter: unsupported surface {:02x}", surface),
+        None => "Mix meter: missing surface byte".to_string(),
     }
 }
 

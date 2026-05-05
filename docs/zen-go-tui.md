@@ -53,8 +53,6 @@ rustup target add x86_64-pc-windows-gnu
 cargo build --target x86_64-pc-windows-gnu --release
 ```
 
-For performance verification and benchmark reporting, see `docs/performance.md`.
-
 Output:
 
 - `target/x86_64-pc-windows-gnu/release/zen-go-tui.exe`
