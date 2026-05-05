@@ -228,9 +228,9 @@ Mixer protocol notes:
 - surface switching still triggers a refresh sweep so the newly selected surface can be inspected in Raw view while the remaining `0x75` mixer-state families are being decoded
 - Raw `0x75` history now summarizes grounded selector-family replies instead of showing them only as opaque hex previews
 
-## Experimental / intentionally limited areas
+## Known limitations and out-of-scope areas
 
-- **lock indicator**: not safely decoded from current captures, so the UI marks it as experimental/unknown
+- **lock indicator**: not safely decoded from current captures, so the UI marks it as unknown
 - **mixer state decode from `0x73`**: full passive per-strip startup decode is still unresolved. The app now keeps assigned fader level separate from the narrow passive meter-related subset so live activity does not overwrite the stored level display.
 - **preamp / DSP editing**: preamp gains, modes, phantom, and phase are now exposed from the newly isolated captures; richer DSP/preamp page behavior around `51 01 01`, `a2`, `d5`, and `d7` remains intentionally out of scope
 - **link / unlink controls**: the `0x70 / 0x14` family is documented, but selector semantics are not resolved enough to expose as a normal interactive control yet

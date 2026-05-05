@@ -77,7 +77,7 @@ Payload body:
 d4 04 <mixer> <channel> <level> <pan>
 ```
 
-Implemented in `src/protocol.rs` as `Command::SetMixerLevel`.
+Implemented in `antelope-protocol/src/encoder.rs` as `Command::SetMixerLevel`.
 
 Grounded details:
 
@@ -89,7 +89,7 @@ Grounded details:
 Current TUI interpretation for level display:
 
 - raw `0x00` = `0 dB`
-- raw `0x60` = `-96 dB`
+- raw `0x5a` = `-90 dB` (mixer strip level scale; distinct from output volume which caps at `0x60`/`-96 dB`)
 
 ### Mute
 
@@ -99,7 +99,7 @@ Payload body:
 d4 04 <mixer> <channel> 00 <pan-with-mute>
 ```
 
-Implemented in `src/protocol.rs` as `Command::SetMixerMute`.
+Implemented in `antelope-protocol/src/encoder.rs` as `Command::SetMixerMute`.
 
 Grounded details:
 
@@ -134,8 +134,8 @@ Mono-strip vs playback-pair behavior that is now safe to state:
 
 Important boundary:
 
-- the existing `PanState` enum in `src/protocol.rs` is enough for hard-left / center / hard-right writes only
-- it is not a full representation of the grounded capture range, so it should be treated as a partial app-facing convenience model rather than a complete pan decoder
+- `PanState` (`antelope-protocol/src/types.rs`) is a full scalar type wrapping `u8`, not an enum
+- it encodes/decodes the full `0x02..0x3e` pan range with mute (`0x40`) and solo (`0x80`) flag support; passive pan decode from `0x73` is narrower — the code extracts centered/near-centered anchors from the late-row cluster
 
 ### Stable `0x73` Effects for Pan
 
@@ -161,7 +161,7 @@ Payload body:
 d4 04 <mixer> <channel> 00 <pan-with-flags>
 ```
 
-Implemented in `src/protocol.rs` as `Command::SetMixerPan`.
+Implemented in `antelope-protocol/src/encoder.rs` as `Command::SetMixerPan`.
 
 Grounded details:
 
@@ -177,7 +177,7 @@ Payload body:
 d4 04 <mixer> <channel> 00 <pan-with-flags>
 ```
 
-Implemented in `src/protocol.rs` as `Command::SetMixerSolo`.
+Implemented in `antelope-protocol/src/encoder.rs` as `Command::SetMixerSolo`.
 
 Grounded details:
 
@@ -232,7 +232,7 @@ Current boundary:
 
 - the command family is real and persistent
 - `a204` alone shows no stable `0x73` or `0x83` delta in the tested captures, which makes it look like a helper/master latch rather than the durable state carrier
-- exact semantics of `a203` vs `a204` are still not fully resolved
+- the relationship is resolved: `a203` is the durable link write, `a204` is a companion/helper write (bank latch) that must precede `a203` for pairs 1-2 and 3-4
 - link state is known to be surface-local
 
 ### Stable Link State in `0x73`
@@ -353,7 +353,7 @@ Grounded evidence pattern used by the passive decoder:
 - with signal present, those pair-local bytes separate the four tested `CH1/CH2` mute combinations strongly enough to show they carry pair state, but the values are mixed with meter/activity and are therefore not yet safe as a durable mute-only decoder:
   - `MIX 1`: `both mute = 60`, `ch1 mute/ch2 unmute = 01`, `ch1 unmute/ch2 mute = 00/06`, `both unmute = 0a/05` across `0xda..0xdd`
   - `MIX 2`: `both mute = 60`, `ch1 mute/ch2 unmute = 01`, `ch1 unmute/ch2 mute = 00/06`, `both unmute = 0a/05` across `0xde..0xdf`
-- the signal-present XOR view is consistent across surfaces and supports a test-only experimental model:
+- the signal-present XOR view is consistent across surfaces and supports a test-only model:
   - `MIX 1` duplicates the two-lane code across `0xda/0xdc` and `0xdb/0xdd`
   - `MIX 2` carries the same two-lane code once in `0xde/0xdf`
   - repeated lane XORs: `0x0b/0x04` (`both_unmute ^ ch1_mute`), `0x0a/0x03` (`both_unmute ^ ch2_mute`), `0x01/0x07` (`ch1_mute ^ ch2_mute`)
@@ -372,8 +372,8 @@ Important boundary of the implementation:
   - `A1` at `0xce`
   - `A2` at `0xcf`
 - full master/output separation is still not grounded enough for a parser-ready claim
-- passive pan remains intentionally narrow; the captures do not yet justify a continuous one-frame pan-value decoder over the full `0x02 .. 0x3e` command range
-- links are still only grounded for the tested `1-2` pair target on each surface; broader selector coverage remains deferred
+- passive pan decode extracts centered/near-centered anchors from the late-row cluster; a full continuous decoder across `0x02..0x3e` is not yet implemented
+- link selector mapping covers all 8 pairs per surface (`0x00..0x07` for MIX 1, `0x10..0x17` for MIX 2); the passive decoder is narrow but the type system is complete
 
 ## Metering Boundary
 
@@ -445,11 +445,37 @@ Best next protocol-doc targets once the corresponding captures are analyzed:
 3. surface-isolated master-meter capture if meter parsing becomes an implementation goal
 4. dedicated ordinary-strip vs early-strip assignment index map
 
+## Startup Query Protocol
+
+The app sends a 47-query startup sequence to seed state before showing the UI. Queries are `0x70` frames with `0x75` replies. Decoded query types (`antelope-protocol/src/query.rs`):
+
+| Query | Reply content |
+|---|---|
+| `0x01` | Device metadata: product name, serial, hardware version |
+| `0x03` | Assignment readbacks: banks `0x05` (strips 1-4), `0x06..0x09` (strips 5-16) |
+| `0x04` | Full mixer strip state: level, pan, mute, solo for all 16 strips per surface |
+| `0x0b/0x03` | 24-bit selector bitmap for stereo links |
+| `0x15/0x00` | Indexed code table (32 pairs) |
+| `0x17/0x00` | 4-byte quad state |
+| `0x18/0x00` | Full dual-surface mixer strip readback (32 strips, level+pan+mute+solo) |
+
+Many of the "not yet safe to claim" items from passive `0x73` decode are already resolved via active query-based retrieval.
+
 ## Code References
 
-- `src/protocol.rs`: `MixerSurface`, `PanState`, `Command::SetMixerLevel`, `Command::SetMixerMute`, `Command::SetLinkState`
-- `src/app.rs`: mixer pending-write overlay and per-surface state handling
-- `src/ui.rs`: mixer-surface tabs and strip rendering
+- `antelope-protocol/src/types.rs`: `PanState` (full scalar type), `OutputState`, `PreampState`, `SampleRate`, `ClockSource`, `Surface`
+- `antelope-protocol/src/frame.rs`: `Frame` parsing (`Snapshot`, `QueryReply`, `Auxiliary`, `Notification`)
+- `antelope-protocol/src/mixer.rs`: `MixerPassiveDecode`, `MixerChannelState`, `decode_mixer_passive()`, `decode_link_state()`, `decode_pan_from_group()`
+- `antelope-protocol/src/query.rs`: 47-query startup sequence, `decode_query_reply()`, `QueryReply`
+- `antelope-protocol/src/encoder.rs`: `encode_command()`, `EncodeResult`, all command encoders
+- `src/app/controller.rs`: `Controller` — state mutation boundary, `apply_intent()`, `poll_device()`
+- `src/app/state.rs`: `DeviceStatus`, `MixerState`, `OutputData`, `UiState`
+- `src/app/types.rs`: `Intent`, `PendingMutation`, `FocusArea`
+- `src/ui/render/`: frame drawing, widget rendering, text composition
+- `src/ui/mouse.rs`: mouse hit-testing, `MouseAction` → `Intent` translation
+- `src/ui/layouts.rs`: layout computation, viewport math, ratio-to-value conversions
+- `src/ui/styles.rs`: block builders, chip styling, color theming
+- `src/ui/widgets/mixer.rs`: output cards, mixer strips, pan sliders, mix meter widgets
 
 ## Related
 
