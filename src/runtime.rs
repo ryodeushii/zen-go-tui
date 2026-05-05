@@ -13,7 +13,7 @@ use antelope_protocol::{
     ClockSource, Command, MixerAssignment, MixerSurface, PanState, PreampMode, SampleRate, Surface,
 };
 use zen_go_tui::app::{
-    Controller, FocusArea, Intent, MainPage, PeakHoldDuration, RefreshRate, SelectorPopupKind,
+    Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind,
     SelectorPopupState,
 };
 use zen_go_tui::settings;
@@ -408,9 +408,7 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('o') => {
-            if controller.state.ui.page == MainPage::Mixer
-                && controller.state.ui.focus == FocusArea::Mixer
-            {
+            if controller.state.ui.focus == FocusArea::Mixer {
                 let active_channel = controller.state.active_mixer_channels()
                     [controller.state.mixer.selected_channel];
                 let mixer = MixerSurface::from_surface(controller.state.mixer.surface);
@@ -423,9 +421,7 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('a') => {
-            if controller.state.ui.page == MainPage::Mixer
-                && controller.state.ui.focus == FocusArea::Mixer
-            {
+            if controller.state.ui.focus == FocusArea::Mixer {
                 let active_channel = controller.state.active_mixer_channels()
                     [controller.state.mixer.selected_channel];
                 if !antelope_protocol::MixerStrip::assignment_write_is_grounded(
@@ -441,9 +437,7 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('l') => {
-            if controller.state.ui.page == MainPage::Mixer
-                && controller.state.ui.focus == FocusArea::Mixer
-            {
+            if controller.state.ui.focus == FocusArea::Mixer {
                 let active_channel = controller.state.active_mixer_channels()
                     [controller.state.mixer.selected_channel];
                 let mixer = MixerSurface::from_surface(controller.state.mixer.surface);
@@ -456,9 +450,7 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('[') => {
-            if controller.state.ui.page == MainPage::Mixer
-                && controller.state.ui.focus == FocusArea::Mixer
-            {
+            if controller.state.ui.focus == FocusArea::Mixer {
                 let active_channel = controller.state.active_mixer_channels()
                     [controller.state.mixer.selected_channel];
                 let next = active_channel
@@ -480,9 +472,7 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char(']') => {
-            if controller.state.ui.page == MainPage::Mixer
-                && controller.state.ui.focus == FocusArea::Mixer
-            {
+            if controller.state.ui.focus == FocusArea::Mixer {
                 let active_channel = controller.state.active_mixer_channels()
                     [controller.state.mixer.selected_channel];
                 let next = active_channel
@@ -504,9 +494,7 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('3') => {
-            if controller.state.ui.page == MainPage::Mixer
-                && controller.state.ui.focus == FocusArea::Preamp
-            {
+            if controller.state.ui.focus == FocusArea::Preamp {
                 let input = controller.state.preamp.selected_input as u8;
                 let current = if input == 0 {
                     controller.state.preamp.state.input1.mode
@@ -726,10 +714,6 @@ pub fn app_loop(
 }
 
 pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layout::Rect) {
-    if controller.state.ui.page != MainPage::Mixer {
-        return;
-    }
-
     match controller.state.ui.focus {
         FocusArea::Outputs => {
             controller.state.output.selected = if right {

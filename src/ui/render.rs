@@ -464,6 +464,31 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     }
 }
 
+fn render_popup_list(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    items: Vec<ListItem<'_>>,
+    selected_index: usize,
+    highlight_color: Color,
+) {
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected_index.min(items.len().saturating_sub(1))));
+    frame.render_widget(Clear, area);
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(panel_block(title, highlight_color, true))
+            .highlight_style(terminal::adapt_style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(highlight_color)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        area,
+        &mut list_state,
+    );
+}
+
 fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let Some(picker) = state.popup.assignment_picker else {
         return;
@@ -475,30 +500,14 @@ fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .iter()
         .map(|assignment| ListItem::new(assignment.label()))
         .collect::<Vec<_>>();
-    let mut list_state = ListState::default();
-    list_state.select(Some(
-        state
-            .popup
-            .selected_index
-            .min(items.len().saturating_sub(1)),
-    ));
 
-    frame.render_widget(Clear, popup);
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(panel_block(
-                &format!("Assign CH {:02}", picker.strip),
-                Color::Yellow,
-                true,
-            ))
-            .highlight_style(terminal::adapt_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
+    render_popup_list(
+        frame,
         popup,
-        &mut list_state,
+        &format!("Assign CH {:02}", picker.strip),
+        items,
+        state.popup.selected_index,
+        Color::Yellow,
     );
 }
 
@@ -508,8 +517,6 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     };
 
     let popup = assignment_picker_area(area);
-    frame.render_widget(Clear, popup);
-
     let (title, items) = match popup_state.kind {
         SelectorPopupKind::SampleRate => (
             "Sample Rate",
@@ -533,25 +540,14 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 .collect::<Vec<_>>(),
         ),
     };
-    let mut list_state = ListState::default();
-    list_state.select(Some(
-        state
-            .popup
-            .selected_index
-            .min(items.len().saturating_sub(1)),
-    ));
 
-    frame.render_stateful_widget(
-        List::new(items)
-            .block(panel_block(title, Color::Yellow, true))
-            .highlight_style(terminal::adapt_style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
+    render_popup_list(
+        frame,
         popup,
-        &mut list_state,
+        title,
+        items,
+        state.popup.selected_index,
+        Color::Yellow,
     );
 }
 
@@ -1054,7 +1050,7 @@ pub(crate) fn render_mixer_strip_controls(
     format!("    [Mute {}] [Solo {}]{} [Src {}]", mute, solo, link, src)
 }
 
-pub(crate) fn render_experimental_pair_state_line(state: &AppState) -> String {
+pub(crate) fn render_mix_meter_state_line(state: &AppState) -> String {
     let Some(bytes) = state.raw_view.latest_raw_73.as_ref().map(|a| a.as_slice()) else {
         return "exp pair pending: waiting for 0x73 snapshot".to_string();
     };
@@ -1261,7 +1257,7 @@ pub(crate) use super::layouts::current_sample_rate_label;
 
 pub(crate) fn render_status_strip(state: &AppState) -> Line<'static> {
     Line::from(Span::styled(
-        render_experimental_pair_state_line(state),
+        render_mix_meter_state_line(state),
         muted_style(),
     ))
 }

@@ -5,7 +5,7 @@ use antelope_protocol::{
     PreampState, SampleRate, Surface,
 };
 
-use super::types::{FocusArea, MainPage, PeakHoldDuration, RawPacketTab, RefreshRate};
+use super::types::{FocusArea, PeakHoldDuration, RawPacketTab, RefreshRate};
 use super::{AssignmentPickerState, ProfileEditorState, QueryReplyLogEntry, SelectorPopupState};
 
 /// Device connection and status tracking.
@@ -119,7 +119,6 @@ pub struct PreampData {
 #[derive(Debug, Clone)]
 pub struct UiState {
     pub focus: FocusArea,
-    pub page: MainPage,
     pub last_message: String,
     pub settings: AppSettings,
     pub quit_requested: bool,
@@ -214,7 +213,6 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             focus: FocusArea::Outputs,
-            page: MainPage::Mixer,
             last_message:
                 "Press ? for help. Device state is authoritative where decoding is confirmed."
                     .to_string(),

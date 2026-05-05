@@ -257,7 +257,7 @@ fn status_strip_surfaces_message_surface_and_output() {
     assert!(!rendered.contains("Applied dim change"));
     assert_eq!(
         rendered,
-        render::render_experimental_pair_state_line(&state)
+render::render_mix_meter_state_line(&state)
     );
 }
 
@@ -1314,7 +1314,7 @@ fn experimental_pair_state_line_surfaces_mix1_mirrored_lanes() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_1] = 0x60;
     state.raw_view.latest_raw_73 = Some(frame);
 
-    let line = render::render_experimental_pair_state_line(&state);
+    let line = render::render_mix_meter_state_line(&state);
 
     assert!(line.contains("MIX 1"));
     assert!(line.contains("L ███████░ -10 dB"));
@@ -1334,7 +1334,7 @@ fn experimental_pair_state_line_surfaces_mix2_compact_lanes() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_1] = 0x60;
     state.raw_view.latest_raw_73 = Some(frame);
 
-    let line = render::render_experimental_pair_state_line(&state);
+    let line = render::render_mix_meter_state_line(&state);
 
     assert!(line.contains("MIX 2"));
     assert!(line.contains("L ████████   0 dB"));
@@ -1355,7 +1355,7 @@ fn experimental_pair_state_line_surfaces_no_signal_family_as_pending_meter() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_2] = 0x60;
     state.raw_view.latest_raw_73 = Some(frame);
 
-    let line = render::render_experimental_pair_state_line(&state);
+    let line = render::render_mix_meter_state_line(&state);
 
     assert!(line.contains("MIX 2"));
     assert!(line.contains("L ░░░░░░░░  -∞ dB"));
@@ -1373,7 +1373,7 @@ fn experimental_pair_state_line_keeps_unknown_meter_bytes_visible() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x34;
     state.raw_view.latest_raw_73 = Some(frame);
 
-    let line = render::render_experimental_pair_state_line(&state);
+    let line = render::render_mix_meter_state_line(&state);
 
     assert!(line.contains("L ██████░░ -18 dB"));
     assert!(line.contains("R █░░░░░░░ -52 dB"));

@@ -15,7 +15,6 @@ pub enum Intent {
     // View navigation
     ToggleRawView,
     ToggleHotkeysPopup,
-    SelectPage(MainPage),
     SelectRawPacketTab(RawPacketTab),
 
     // Popup management
@@ -355,11 +354,6 @@ pub enum RawPacketTab {
     Auxiliary,
     Query75,
     DeviceNotification,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MainPage {
-    Mixer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

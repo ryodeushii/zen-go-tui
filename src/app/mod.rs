@@ -203,20 +203,19 @@ impl AppState {
         self.preamp.state.input2.observed_meter = snapshot.mixer_decode.observed_preamp2_meter;
     }
 
-    fn track_mixer_peak(&mut self, mix_idx: usize, channel_idx: usize, meter: u8) {
-        if !self.ui.settings.peak_enabled || meter > self.ui.settings.peak_threshold_raw {
+    fn track_peak(slot: &mut Option<MeterPeak>, meter: u8, threshold: u8, enabled: bool) {
+        if !enabled || meter > threshold {
             return;
         }
-        let existing = self.mixer.peaks[mix_idx][channel_idx];
-        match existing {
+        match slot {
             Some(peak) if meter < peak.raw => {
-                self.mixer.peaks[mix_idx][channel_idx] = Some(MeterPeak {
+                *slot = Some(MeterPeak {
                     raw: meter,
                     detected_at: Instant::now(),
                 });
             }
             None => {
-                self.mixer.peaks[mix_idx][channel_idx] = Some(MeterPeak {
+                *slot = Some(MeterPeak {
                     raw: meter,
                     detected_at: Instant::now(),
                 });
@@ -225,26 +224,22 @@ impl AppState {
         }
     }
 
+    fn track_mixer_peak(&mut self, mix_idx: usize, channel_idx: usize, meter: u8) {
+        Self::track_peak(
+            &mut self.mixer.peaks[mix_idx][channel_idx],
+            meter,
+            self.ui.settings.peak_threshold_raw,
+            self.ui.settings.peak_enabled,
+        );
+    }
+
     fn track_preamp_peak(&mut self, input_idx: usize, meter: u8) {
-        if !self.ui.settings.peak_enabled || meter > self.ui.settings.peak_threshold_raw {
-            return;
-        }
-        let existing = self.preamp.peaks[input_idx];
-        match existing {
-            Some(peak) if meter < peak.raw => {
-                self.preamp.peaks[input_idx] = Some(MeterPeak {
-                    raw: meter,
-                    detected_at: Instant::now(),
-                });
-            }
-            None => {
-                self.preamp.peaks[input_idx] = Some(MeterPeak {
-                    raw: meter,
-                    detected_at: Instant::now(),
-                });
-            }
-            _ => {}
-        }
+        Self::track_peak(
+            &mut self.preamp.peaks[input_idx],
+            meter,
+            self.ui.settings.peak_threshold_raw,
+            self.ui.settings.peak_enabled,
+        );
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &DeviceStateSnapshot) {
@@ -802,9 +797,6 @@ mod tests {
 
         let raw = Intent::ToggleRawView;
         assert!(matches!(raw, Intent::ToggleRawView));
-
-        let page = Intent::SelectPage(MainPage::Mixer);
-        assert!(matches!(page, Intent::SelectPage(_)));
 
         let surface = Intent::SelectSurface(Surface::MonitorHp1);
         assert!(matches!(surface, Intent::SelectSurface(_)));
