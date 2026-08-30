@@ -1695,6 +1695,25 @@ mod tests {
     }
 
     #[test]
+    fn mixer_link_change_updates_pair_before_device_confirmation() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(Box::new(transport));
+
+        controller
+            .send_mixer_link_change(MixerSurface::Mix1, 1, true)
+            .expect("send mixer link");
+
+        assert_eq!(
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][0].linked,
+            Some(true)
+        );
+        assert_eq!(
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][1].linked,
+            Some(true)
+        );
+    }
+
+    #[test]
     fn mixer_link_change_writes_selector_and_updates_pair() {
         let transport = MockTransport::default();
         let mut controller = Controller::new(Box::new(transport.clone()));

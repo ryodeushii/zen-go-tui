@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zen Go Slint Mockup - Dark Studio Rack</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07090b;
+      --panel: #11161a;
+      --panel-2: #171d22;
+      --panel-3: #20282e;
+      --line: #2d373d;
+      --line-hot: #57636b;
+      --text: #e7e0cf;
+      --muted: #9ba08f;
+      --amber: #f0a735;
+      --amber-soft: rgba(240, 167, 53, .18);
+      --green: #72d24e;
+      --red: #e25145;
+      --blue: #5eb2d8;
+      --slot: #0c1013;
+      --shadow: 0 28px 70px rgba(0, 0, 0, .55);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle at 22% 6%, rgba(240, 167, 53, .11), transparent 34rem),
+        radial-gradient(circle at 90% 70%, rgba(94, 178, 216, .08), transparent 30rem),
+        linear-gradient(145deg, #030405, var(--bg));
+      color: var(--text);
+      padding: 28px;
+    }
+
+    .app {
+      width: min(1440px, 100%);
+      min-height: 820px;
+      display: grid;
+      grid-template-rows: 64px 1fr 42px;
+      border: 1px solid #384247;
+      border-radius: 22px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #13191d, #0a0d10 52%, #080a0c);
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, .06);
+    }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 270px 1fr auto;
+      align-items: center;
+      gap: 18px;
+      padding: 0 22px;
+      background: linear-gradient(180deg, #20282e, #12171b);
+      border-bottom: 1px solid #3a454c;
+    }
+
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 11px;
+      background: radial-gradient(circle at 50% 20%, #f8c36b, var(--amber) 55%, #9c5f16);
+      color: #160e05;
+      font-weight: 900;
+      letter-spacing: -.05em;
+      box-shadow: 0 0 22px rgba(240, 167, 53, .28);
+    }
+    .brand h1 { margin: 0; font-size: 18px; letter-spacing: .08em; text-transform: uppercase; }
+    .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+    .chips { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 30px;
+      padding: 0 12px;
+      border: 1px solid #3a444a;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #171e23, #101519);
+      color: #d8d0bd;
+      font-size: 12px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 12px var(--green); }
+    .chip.warn .dot { background: var(--amber); box-shadow: 0 0 12px var(--amber); }
+
+    .master {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 300px;
+      justify-content: end;
+    }
+    .master-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
+    .master-value { color: var(--amber); font-variant-numeric: tabular-nums; font-size: 20px; font-weight: 800; }
+    .knob {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 50% 50%, #313b42 0 34%, #151a1e 36% 65%, #07090a 67%),
+        conic-gradient(from -130deg, var(--amber) 0 250deg, #31383d 250deg 360deg);
+      border: 1px solid #4a555c;
+      position: relative;
+    }
+    .knob::after {
+      content: "";
+      position: absolute;
+      width: 3px;
+      height: 14px;
+      left: 19px;
+      top: 6px;
+      border-radius: 2px;
+      background: var(--amber);
+      box-shadow: 0 0 9px var(--amber);
+    }
+
+    .workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr) 310px;
+    }
+
+    .rail {
+      padding: 18px 10px;
+      background: linear-gradient(180deg, #0d1114, #080a0c);
+      border-right: 1px solid #30393f;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+    .nav {
+      height: 64px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #2b343a;
+      border-radius: 14px;
+      background: #0f1418;
+      color: #8d958a;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    .nav.active {
+      color: #1a1005;
+      background: linear-gradient(180deg, #ffc46a, #e79d27);
+      border-color: #ffd188;
+      box-shadow: 0 0 20px rgba(240, 167, 53, .28);
+      font-weight: 900;
+    }
+
+    .main {
+      min-width: 0;
+      padding: 18px;
+      display: grid;
+      grid-template-rows: 104px minmax(0, 1fr) 126px;
+      gap: 14px;
+      background:
+        linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px),
+        #0a0d10;
+      background-size: 28px 28px;
+    }
+
+    .outputs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .output-card, .preamp-card, .inspector, .mixer, .surface-tabs {
+      border: 1px solid #313b42;
+      border-radius: 16px;
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+    }
+    .output-card {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 14px;
+      padding: 14px;
+    }
+    .output-card.selected { border-color: rgba(240, 167, 53, .7); box-shadow: 0 0 0 1px rgba(240, 167, 53, .18), inset 0 1px 0 rgba(255,255,255,.06); }
+    .meter-row { display: grid; gap: 7px; }
+    .h-meter { height: 9px; overflow: hidden; border-radius: 999px; background: #060809; border: 1px solid #263036; }
+    .h-fill { height: 100%; width: var(--w); background: linear-gradient(90deg, var(--green), var(--amber) 74%, var(--red)); box-shadow: 0 0 12px rgba(114, 210, 78, .25); }
+    .label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .14em; }
+    .big { font-size: 22px; font-weight: 900; color: #f1eadb; font-variant-numeric: tabular-nums; }
+    .mini-buttons { display: flex; gap: 6px; }
+    .btn { padding: 7px 9px; border-radius: 9px; border: 1px solid #354047; background: #0d1114; color: #cfc6b3; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+    .btn.on { color: #160e05; background: var(--amber); border-color: #ffc066; }
+
+    .mixer-shell { min-height: 0; display: grid; grid-template-rows: 46px minmax(0, 1fr); gap: 10px; }
+    .surface-tabs { display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
+    .tab { padding: 8px 18px; border: 1px solid #313b42; border-radius: 999px; color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: .12em; }
+    .tab.active { color: #160e05; background: var(--amber); border-color: #ffc066; font-weight: 900; }
+    .surface-tabs .spacer { flex: 1; }
+    .surface-tabs .hint { color: #828a7f; font-size: 12px; }
+
+    .mixer {
+      min-height: 0;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: repeat(8, minmax(86px, 1fr));
+      gap: 10px;
+      overflow: hidden;
+    }
+    .strip {
+      min-width: 0;
+      display: grid;
+      grid-template-rows: 42px 1fr 42px 74px;
+      gap: 8px;
+      padding: 10px 9px;
+      border: 1px solid #303a40;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #151b20, #0d1114 58%, #090c0f);
+      position: relative;
+    }
+    .strip.selected { border-color: rgba(240, 167, 53, .8); box-shadow: inset 0 0 0 1px rgba(240, 167, 53, .22), 0 0 20px rgba(240, 167, 53, .12); }
+    .strip-head { display: flex; justify-content: space-between; align-items: start; gap: 4px; }
+    .ch { color: var(--amber); font-size: 15px; font-weight: 900; }
+    .src { color: #9fa797; font-size: 10px; text-align: right; line-height: 1.2; }
+    .fader-zone { display: grid; grid-template-columns: 18px 1fr 18px; gap: 8px; align-items: end; min-height: 0; }
+    .v-meter, .fader-track { height: 100%; min-height: 250px; border-radius: 999px; background: #050607; border: 1px solid #2a3339; position: relative; overflow: hidden; }
+    .v-meter::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: var(--h); background: linear-gradient(0deg, var(--green), var(--amber) 78%, var(--red)); }
+    .fader-track { overflow: visible; background: linear-gradient(90deg, #060809, #12171b, #060809); }
+    .cap { position: absolute; left: 50%; bottom: var(--f); transform: translate(-50%, 50%); width: 48px; height: 24px; border-radius: 8px; background: linear-gradient(180deg, #ddd2ba, #8f866f); border: 1px solid #f8ead1; box-shadow: 0 6px 14px rgba(0,0,0,.45); }
+    .pan { display: grid; place-items: center; color: #c8c0af; font-size: 12px; border-top: 1px solid #252e33; padding-top: 8px; }
+    .strip-buttons { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
+
+    .preamp-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .preamp-card { padding: 13px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; }
+    .input-badge { width: 52px; height: 52px; display: grid; place-items: center; border-radius: 14px; background: #0b0f12; border: 1px solid #313b42; color: var(--amber); font-weight: 900; }
+    .toggles { display: flex; gap: 7px; justify-content: end; }
+
+    .inspector {
+      border-radius: 0;
+      border-top: 0;
+      border-bottom: 0;
+      border-right: 0;
+      padding: 18px;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      gap: 14px;
+      background: linear-gradient(180deg, #151b20, #0b0e11);
+    }
+    .panel-title { margin: 0; color: #f3ead8; font-size: 14px; text-transform: uppercase; letter-spacing: .16em; }
+    .selected-name { padding: 18px; border-radius: 16px; background: var(--amber-soft); border: 1px solid rgba(240, 167, 53, .42); }
+    .selected-name h2 { margin: 0 0 4px; font-size: 28px; color: var(--amber); }
+    .selected-name p { margin: 0; color: #d3c7ae; }
+    .control-list { display: grid; gap: 10px; align-content: start; }
+    .control { display: flex; justify-content: space-between; align-items: center; padding: 12px; border: 1px solid #2f3940; border-radius: 12px; background: #0d1114; }
+    .control strong { color: #e8dfce; font-size: 13px; }
+    .control span { color: var(--amber); font-size: 13px; font-weight: 800; }
+    .profile-box { padding: 12px; border: 1px solid #2f3940; border-radius: 14px; background: #0c1013; color: #aab09f; font-size: 12px; line-height: 1.55; }
+
+    .bottombar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-top: 1px solid #30393f;
+      background: #080b0d;
+      color: #989f92;
+      font-size: 12px;
+    }
+    .bottombar b { color: var(--green); }
+
+    @media (max-width: 1120px) {
+      body { padding: 12px; }
+      .app { min-height: 900px; }
+      .topbar { grid-template-columns: 1fr; height: auto; padding: 14px; }
+      .workspace { grid-template-columns: 68px minmax(0, 1fr); }
+      .inspector { display: none; }
+      .mixer { grid-template-columns: repeat(4, minmax(86px, 1fr)); }
+      .outputs { grid-template-columns: 1fr; }
+      .main { grid-template-rows: auto minmax(0, 1fr) auto; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app" aria-label="Zen Go Slint dark studio rack mockup">
+    <header class="topbar">
+      <section class="brand">
+        <div class="mark">ZG</div>
+        <div>
+          <h1>Zen Go Control</h1>
+          <p>Dark studio rack concept</p>
+        </div>
+      </section>
+      <section class="chips" aria-label="Device status">
+        <div class="chip"><span class="dot"></span>Connected</div>
+        <div class="chip">48 kHz</div>
+        <div class="chip">Internal Clock</div>
+        <div class="chip warn"><span class="dot"></span>Profile: Live Vocal</div>
+      </section>
+      <section class="master" aria-label="Master monitor control">
+        <div>
+          <div class="master-label">Monitor</div>
+          <div class="master-value">-18.0 dB</div>
+        </div>
+        <div class="knob" aria-hidden="true"></div>
+        <button class="btn">DIM</button>
+        <button class="btn on">MUTE</button>
+      </section>
+    </header>
+
+    <section class="workspace">
+      <nav class="rail" aria-label="Primary pages">
+        <div class="nav">Out</div>
+        <div class="nav active">Mixer</div>
+        <div class="nav">Pre</div>
+        <div class="nav">Route</div>
+        <div class="nav">Prof</div>
+        <div class="nav">Raw</div>
+      </nav>
+
+      <section class="main">
+        <section class="outputs" aria-label="Output controls">
+          <article class="output-card selected">
+            <div><div class="label">Output</div><div class="big">MON</div></div>
+            <div class="meter-row"><div class="h-meter"><div class="h-fill" style="--w:72%"></div></div><div class="h-meter"><div class="h-fill" style="--w:68%"></div></div></div>
+            <div class="mini-buttons"><button class="btn">DIM</button><button class="btn on">M</button></div>
+          </article>
+          <article class="output-card">
+            <div><div class="label">Output</div><div class="big">HP1</div></div>
+            <div class="meter-row"><div class="h-meter"><div class="h-fill" style="--w:44%"></div></div><div class="h-meter"><div class="h-fill" style="--w:48%"></div></div></div>
+            <div class="mini-buttons"><button class="btn">DIM</button><button class="btn">M</button></div>
+          </article>
+          <article class="output-card">
+            <div><div class="label">Output</div><div class="big">HP2</div></div>
+            <div class="meter-row"><div class="h-meter"><div class="h-fill" style="--w:35%"></div></div><div class="h-meter"><div class="h-fill" style="--w:38%"></div></div></div>
+            <div class="mini-buttons"><button class="btn">DIM</button><button class="btn">M</button></div>
+          </article>
+        </section>
+
+        <section class="mixer-shell">
+          <div class="surface-tabs">
+            <div class="tab active">Mix 1</div>
+            <div class="tab">Mix 2</div>
+            <div class="spacer"></div>
+            <div class="hint">Channels 1-8 of 16 · scroll or page</div>
+          </div>
+          <section class="mixer" aria-label="Mixer strips">
+            <article class="strip selected"><div class="strip-head"><span class="ch">CH 1</span><span class="src">PRE<br>A1</span></div><div class="fader-zone"><div class="v-meter" style="--h:76%"></div><div class="fader-track"><div class="cap" style="--f:58%"></div></div><div class="v-meter" style="--h:71%"></div></div><div class="pan">PAN C</div><div class="strip-buttons"><button class="btn on">M</button><button class="btn">S</button><button class="btn">L</button><button class="btn">A</button></div></article>
+            <article class="strip"><div class="strip-head"><span class="ch">CH 2</span><span class="src">PRE<br>A2</span></div><div class="fader-zone"><div class="v-meter" style="--h:66%"></div><div class="fader-track"><div class="cap" style="--f:52%"></div></div><div class="v-meter" style="--h:64%"></div></div><div class="pan">PAN C</div><div class="strip-buttons"><button class="btn">M</button><button class="btn">S</button><button class="btn on">L</button><button class="btn">A</button></div></article>
+            <article class="strip"><div class="strip-head"><span class="ch">CH 3</span><span class="src">USB<br>1</span></div><div class="fader-zone"><div class="v-meter" style="--h:40%"></div><div class="fader-track"><div class="cap" style="--f:47%"></div></div><div class="v-meter" style="--h:42%"></div></div><div class="pan">L 12</div><div class="strip-buttons"><button class="btn">M</button><button class="btn">S</button><button class="btn">L</button><button class="btn">A</button></div></article>
+            <article class="strip"><div class="strip-head"><span class="ch">CH 4</span><span class="src">USB<br>2</span></div><div class="fader-zone"><div class="v-meter" style="--h:44%"></div><div class="fader-track"><div class="cap" style="--f:47%"></div></div><div class="v-meter" style="--h:39%"></div></div><div class="pan">R 12</div><div class="strip-buttons"><button class="btn">M</button><button class="btn">S</button><button class="btn">L</button><button class="btn">A</button></div></article>
+            <article class="strip"><div class="strip-head"><span class="ch">CH 5</span><span class="src">USB<br>3</span></div><div class="fader-zone"><div class="v-meter" style="--h:28%"></div><div class="fader-track"><div class="cap" style="--f:36%"></div></div><div class="v-meter" style="--h:31%"></div></div><div class="pan">PAN C</div><div class="strip-buttons"><button class="btn">M</button><button class="btn">S</button><button class="btn">L</button><button class="btn">A</button></div></article>
+            <article class="strip"><div class="strip-head"><span class="ch">CH 6</span><span class="src">USB<br>4</span></div><div class="fader-zone"><div class="v-meter" style="--h:24%"></div><div class="fader-track"><div class="cap" style="--f:36%"></div></div><div class="v-meter" style="--h:22%"></div></div><div class="pan">PAN C</div><div class="strip-buttons"><button class="btn">M</button><button class="btn">S</button><button class="btn">L</button><button class="btn">A</button></div></article>
+            <article class="strip"><div class="strip-head"><span class="ch">CH 7</span><span class="src">AFX<br>L</span></div><div class="fader-zone"><div class="v-meter" style="--h:58%"></div><div class="fader-track"><div class="cap" style="--f:50%"></div></div><div class="v-meter" style="--h:56%"></div></div><div class="pan">PAN C</div><div class="strip-buttons"><button class="btn">M</button><button class="btn on">S</button><button class="btn">L</button><button class="btn">A</button></div></article>
+            <article class="strip"><div class="strip-head"><span class="ch">CH 8</span><span class="src">AFX<br>R</span></div><div class="fader-zone"><div class="v-meter" style="--h:53%"></div><div class="fader-track"><div class="cap" style="--f:50%"></div></div><div class="v-meter" style="--h:55%"></div></div><div class="pan">PAN C</div><div class="strip-buttons"><button class="btn">M</button><button class="btn">S</button><button class="btn">L</button><button class="btn">A</button></div></article>
+          </section>
+        </section>
+
+        <section class="preamp-row" aria-label="Preamp controls">
+          <article class="preamp-card"><div class="input-badge">A1</div><div><div class="label">Mic · Phantom On</div><div class="big">+32 dB</div><div class="h-meter"><div class="h-fill" style="--w:69%"></div></div></div><div class="toggles"><button class="btn on">48V</button><button class="btn">Ø</button><button class="btn">HI-Z</button></div></article>
+          <article class="preamp-card"><div class="input-badge">A2</div><div><div class="label">Line · Pad</div><div class="big">+18 dB</div><div class="h-meter"><div class="h-fill" style="--w:45%"></div></div></div><div class="toggles"><button class="btn">48V</button><button class="btn on">Ø</button><button class="btn">HI-Z</button></div></article>
+        </section>
+      </section>
+
+      <aside class="inspector" aria-label="Selected control inspector">
+        <h2 class="panel-title">Selected Strip</h2>
+        <section class="selected-name">
+          <h2>CH 1</h2>
+          <p>Preamp A1 · Mix 1 · linked to CH 2</p>
+        </section>
+        <section class="control-list">
+          <div class="control"><strong>Fader</strong><span>-9.5 dB</span></div>
+          <div class="control"><strong>Pan</strong><span>Center</span></div>
+          <div class="control"><strong>Mute</strong><span>On</span></div>
+          <div class="control"><strong>Solo</strong><span>Off</span></div>
+          <div class="control"><strong>Assignment</strong><span>Preamp A1</span></div>
+          <div class="control"><strong>Peak</strong><span>-3.2 dBFS</span></div>
+        </section>
+        <section class="profile-box">
+          Keyboard model stays intact: arrows adjust focused control, M toggles mute, A opens assignment. Mouse adds direct knobs and faders.
+        </section>
+      </aside>
+    </section>
+
+    <footer class="bottombar">
+      <span><b>OK</b> Device poll 30 fps · last write 18 ms ago · no dropped frames</span>
+      <span>Ctrl+R refresh · Ctrl+O options · Ctrl+D raw</span>
+    </footer>
+  </main>
+</body>
+</html>

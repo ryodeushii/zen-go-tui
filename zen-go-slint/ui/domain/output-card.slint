@@ -1,0 +1,89 @@
+import { OutputView } from "../view-models.slint";
+import { ZenTheme } from "../theme.slint";
+import { ZenButton } from "../primitives/zen-button.slint";
+import { ZenPanel } from "../primitives/zen-panel.slint";
+import { ZenToggleChip } from "../primitives/zen-toggle-chip.slint";
+
+export component OutputCard inherits Rectangle {
+    in property <OutputView> output;
+    in property <bool> controls-enabled: false;
+    callback mute-requested(int);
+    callback dim-requested(int);
+    callback level-adjusted(int, int, int);
+
+    height: 124px;
+    horizontal-stretch: 1;
+    background: transparent;
+
+    ZenPanel {
+        width: parent.width;
+        height: parent.height;
+        title: root.output.name;
+    }
+
+    VerticalLayout {
+        x: 16px;
+        y: 40px;
+        width: parent.width - 32px;
+        height: 68px;
+        spacing: 5px;
+
+        Text {
+            text: "STEREO L / R";
+            color: ZenTheme.text-muted;
+            font-size: ZenTheme.text-size-small;
+            horizontal-alignment: left;
+        }
+
+        Rectangle {
+            width: parent.width;
+            height: 6px;
+            border-radius: 3px;
+            background: ZenTheme.surface-inset;
+
+            Rectangle {
+                width: (root.width - 32px) * max(0, min(100, root.output.level-percent)) / 100;
+                height: parent.height;
+                border-radius: 3px;
+                background: ZenTheme.accent-active;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: ZenTheme.spacing-small;
+
+            Text {
+                text: root.output.level-db + " dB";
+                color: ZenTheme.accent-active;
+                font-size: ZenTheme.text-size-body;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+
+            ZenButton {
+                label: "−";
+                min-width: 30px;
+                enabled: root.controls-enabled;
+                clicked => { root.level-adjusted(root.output.index, root.output.level-step, 4); }
+            }
+            ZenButton {
+                label: "+";
+                min-width: 30px;
+                enabled: root.controls-enabled;
+                clicked => { root.level-adjusted(root.output.index, root.output.level-step, -4); }
+            }
+            ZenToggleChip {
+                label: "MUTE";
+                active: root.output.muted;
+                enabled: root.controls-enabled;
+                clicked => { root.mute-requested(root.output.index); }
+            }
+            ZenToggleChip {
+                label: "DIM";
+                active: root.output.dimmed;
+                enabled: root.controls-enabled;
+                clicked => { root.dim-requested(root.output.index); }
+            }
+        }
+    }
+}

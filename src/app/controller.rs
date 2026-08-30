@@ -581,6 +581,13 @@ impl Controller {
             })
             .unwrap_single(),
         )?;
+        for channel in [target.left_channel, target.right_channel] {
+            if let Some(slot) = self.state.mixer.channels[mixer.index()]
+                .get_mut(usize::from(channel - 1))
+            {
+                slot.linked = Some(enabled);
+            }
+        }
         self.pending_mutation = pending_mutation;
         self.state.ui.last_message = format!(
             "Sent mixer link {:?} ch {}-{}",

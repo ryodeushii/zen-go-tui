@@ -1,0 +1,16 @@
+[package]
+name = "zen-go-slint"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+antelope-protocol = { path = "../antelope-protocol" }
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+ratatui = "0.30"
+slint = "1.16.0"
+zen-go-tui = { path = ".." }
+
+[build-dependencies]
+slint-build = "1.16.0"

@@ -1,0 +1,23 @@
+import { ZenTheme } from "../theme.slint";
+
+export component ZenMeter inherits Rectangle {
+    in property <int> percent;
+    in property <bool> peak: false;
+
+    width: 18px;
+    height: 120px;
+    border-width: ZenTheme.border-width;
+    border-radius: ZenTheme.control-radius;
+    border-color: ZenTheme.border;
+    background: ZenTheme.surface-inset;
+    clip: true;
+
+    Rectangle {
+        x: 0px;
+        y: root.height - root.height * max(0, min(100, root.percent)) / 100;
+        width: root.width;
+        height: root.height * max(0, min(100, root.percent)) / 100;
+        border-radius: ZenTheme.control-radius;
+        background: root.peak ? ZenTheme.state-error : ZenTheme.state-connected;
+    }
+}

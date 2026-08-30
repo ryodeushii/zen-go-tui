@@ -1,0 +1,67 @@
+import { ZenTheme } from "../theme.slint";
+
+export component ZenButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> destructive: false;
+    in property <bool> enabled: true;
+    callback clicked;
+
+    height: ZenTheme.control-height;
+    min-width: 72px;
+    border-width: ZenTheme.border-width;
+    border-radius: ZenTheme.control-radius;
+    border-color: !root.enabled ? ZenTheme.state-disabled
+        : focus-scope.has-focus ? ZenTheme.border-active
+        : root.active ? ZenTheme.accent-active
+        : root.destructive ? ZenTheme.state-error
+        : touch-area.has-hover ? ZenTheme.accent-primary
+        : ZenTheme.border;
+    background: !root.enabled ? ZenTheme.surface-inset
+        : touch-area.pressed ? (root.destructive ? ZenTheme.state-error : ZenTheme.accent-primary)
+        : root.active ? (root.destructive ? ZenTheme.state-error : ZenTheme.accent-active)
+        : root.destructive && touch-area.has-hover ? ZenTheme.state-error
+        : touch-area.has-hover ? ZenTheme.surface-raised
+        : ZenTheme.surface-panel;
+
+    touch-area := TouchArea {
+        enabled: root.enabled;
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                focus-scope.focus();
+            }
+        }
+    }
+
+    focus-scope := FocusScope {
+        width: 0px;
+        height: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == Key.Space) {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    forward-focus: focus-scope;
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.label;
+        color: !root.enabled ? ZenTheme.state-disabled
+            : touch-area.pressed || root.active ? ZenTheme.text-on-accent
+            : root.destructive && touch-area.has-hover ? ZenTheme.text-primary
+            : ZenTheme.text-primary;
+        font-size: ZenTheme.text-size-body;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

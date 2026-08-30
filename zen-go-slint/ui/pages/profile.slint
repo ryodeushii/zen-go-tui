@@ -1,0 +1,83 @@
+import { ScrollView } from "std-widgets.slint";
+import { ChoiceView } from "../view-models.slint";
+import { ZenTheme } from "../theme.slint";
+import { ZenButton } from "../primitives/zen-button.slint";
+import { ZenPanel } from "../primitives/zen-panel.slint";
+
+export component ProfilePage inherits Rectangle {
+    in property <bool> controls-enabled: false;
+    in property <[ChoiceView]> profiles;
+    callback profile-selected(int);
+    callback profile-load-requested();
+    callback profile-save-requested();
+    callback profile-rename-requested();
+    callback profile-delete-requested();
+
+    background: transparent;
+
+    ZenPanel {
+        width: parent.width;
+        height: parent.height;
+        title: "Profiles";
+
+        VerticalLayout {
+            x: ZenTheme.spacing-large;
+            y: 48px;
+            width: parent.width - 32px;
+            height: parent.height - 60px;
+            spacing: ZenTheme.spacing-medium;
+
+            HorizontalLayout {
+                spacing: ZenTheme.spacing-small;
+                ZenButton {
+                    label: "Load";
+                    enabled: root.controls-enabled;
+                    clicked => { root.profile-load-requested(); }
+                }
+                ZenButton {
+                    label: "Save";
+                    enabled: root.controls-enabled;
+                    clicked => { root.profile-save-requested(); }
+                }
+                ZenButton {
+                    label: "Rename";
+                    enabled: root.controls-enabled;
+                    clicked => { root.profile-rename-requested(); }
+                }
+                ZenButton {
+                    label: "Delete";
+                    destructive: true;
+                    enabled: root.controls-enabled;
+                    clicked => { root.profile-delete-requested(); }
+                }
+            }
+
+            Text {
+                text: "Saved profiles";
+                color: ZenTheme.accent-active;
+                font-size: ZenTheme.text-size-heading;
+                font-weight: 800;
+            }
+
+            ScrollView {
+                horizontal-scrollbar-policy: as-needed;
+                vertical-scrollbar-policy: as-needed;
+                VerticalLayout {
+                    spacing: ZenTheme.spacing-small;
+                    Text {
+                        text: root.profiles.length == 0 ? "No saved profiles found" : "";
+                        color: ZenTheme.text-muted;
+                        font-size: ZenTheme.text-size-body;
+                    }
+                    for profile in root.profiles: ZenButton {
+                        label: profile.label;
+                        enabled: root.controls-enabled;
+                        active: profile.selected;
+                        horizontal-stretch: 1;
+                        clicked => { root.profile-selected(profile.index); }
+                    }
+                }
+            }
+        }
+    }
+}
