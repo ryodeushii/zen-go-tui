@@ -30,6 +30,8 @@ pub enum AppKeyCode {
     Down,
     Left,
     Right,
+    PageUp,
+    PageDown,
     Enter,
     Esc,
     Unknown,
@@ -161,6 +163,8 @@ fn normalize_key(key: KeyEvent) -> AppKeyEvent {
         KeyCode::Down => AppKeyCode::Down,
         KeyCode::Left => AppKeyCode::Left,
         KeyCode::Right => AppKeyCode::Right,
+        KeyCode::PageUp => AppKeyCode::PageUp,
+        KeyCode::PageDown => AppKeyCode::PageDown,
         KeyCode::Enter => AppKeyCode::Enter,
         KeyCode::Esc => AppKeyCode::Esc,
         _ => AppKeyCode::Unknown,
@@ -383,6 +387,26 @@ mod tests {
                 modifiers: AppModifiers::default(),
                 kind: AppKeyEventKind::Press,
             }))
+        );
+    }
+
+    #[test]
+    fn normalize_key_maps_page_navigation_keys() {
+        assert_eq!(
+            normalize_key(terminput::KeyEvent::new(terminput::KeyCode::PageUp)),
+            AppKeyEvent {
+                code: AppKeyCode::PageUp,
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Press,
+            }
+        );
+        assert_eq!(
+            normalize_key(terminput::KeyEvent::new(terminput::KeyCode::PageDown)),
+            AppKeyEvent {
+                code: AppKeyCode::PageDown,
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Press,
+            }
         );
     }
 

@@ -1,6 +1,6 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-use crate::app::AppState;
+use crate::app::{AppState, RawMapScope, RawPacketTab};
 
 use super::styles::chip_width;
 
@@ -304,7 +304,10 @@ pub(crate) fn hotkeys_popup_area(area: Rect) -> Rect {
 pub(crate) fn raw_header_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(20), Constraint::Length(raw_back_button_chip_width())])
+        .constraints([
+            Constraint::Min(20),
+            Constraint::Length(raw_back_button_chip_width()),
+        ])
         .split(area)
         .to_vec()
 }
@@ -334,6 +337,7 @@ pub(crate) fn raw_page_layout(area: Rect) -> Vec<Rect> {
         .constraints([
             Constraint::Length(3),
             Constraint::Length(3),
+            Constraint::Length(3),
             Constraint::Min(10),
             Constraint::Length(2),
         ])
@@ -341,6 +345,138 @@ pub(crate) fn raw_page_layout(area: Rect) -> Vec<Rect> {
         .to_vec()
 }
 
+pub(crate) fn raw_scope_hit_areas(area: Rect, tab: RawPacketTab) -> Vec<Rect> {
+    let labels = RawMapScope::options_for(tab)
+        .iter()
+        .map(|scope| scope.label())
+        .collect::<Vec<_>>();
+    let inner = inner_area(area);
+    inline_chip_rects(inner.x, inner.y, &labels)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawContentLayout {
+    Wide {
+        map: Rect,
+        dump: Rect,
+    },
+    Narrow {
+        map: Rect,
+        dump: Rect,
+    },
+    WideQuery {
+        history: Rect,
+        map: Rect,
+        dump: Rect,
+    },
+    NarrowQuery {
+        history: Rect,
+        map: Rect,
+        dump: Rect,
+    },
+}
+
+impl RawContentLayout {
+    pub(crate) fn map(self) -> Rect {
+        match self {
+            Self::Wide { map, .. }
+            | Self::Narrow { map, .. }
+            | Self::WideQuery { map, .. }
+            | Self::NarrowQuery { map, .. } => map,
+        }
+    }
+
+    pub(crate) fn dump(self) -> Rect {
+        match self {
+            Self::Wide { dump, .. }
+            | Self::Narrow { dump, .. }
+            | Self::WideQuery { dump, .. }
+            | Self::NarrowQuery { dump, .. } => dump,
+        }
+    }
+
+    pub(crate) fn history(self) -> Option<Rect> {
+        match self {
+            Self::WideQuery { history, .. } | Self::NarrowQuery { history, .. } => Some(history),
+            Self::Wide { .. } | Self::Narrow { .. } => None,
+        }
+    }
+
+    pub(crate) fn compact_map(self) -> bool {
+        matches!(self, Self::Narrow { .. } | Self::NarrowQuery { .. })
+    }
+}
+
+pub(crate) fn raw_content_layout(area: Rect, query_replies: bool) -> RawContentLayout {
+    if area.width >= 120 {
+        if query_replies {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+                .split(area);
+            let panes = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(columns[1]);
+            RawContentLayout::WideQuery {
+                history: columns[0],
+                map: panes[0],
+                dump: panes[1],
+            }
+        } else {
+            let panes = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
+                .split(area);
+            RawContentLayout::Wide {
+                map: panes[0],
+                dump: panes[1],
+            }
+        }
+    } else if query_replies {
+        let (history, remaining) = stack_raw_history(area);
+        let (map, dump) = stack_raw_map_dump(remaining);
+        RawContentLayout::NarrowQuery { history, map, dump }
+    } else {
+        let (map, dump) = stack_raw_map_dump(area);
+        RawContentLayout::Narrow { map, dump }
+    }
+}
+
+fn stack_raw_history(area: Rect) -> (Rect, Rect) {
+    if area.height == 0 {
+        return (Rect::new(area.x, area.y, area.width, 0), area);
+    }
+    let history_height = area.height.min(4);
+    (
+        Rect::new(area.x, area.y, area.width, history_height),
+        Rect::new(
+            area.x,
+            area.y.saturating_add(history_height),
+            area.width,
+            area.height.saturating_sub(history_height),
+        ),
+    )
+}
+
+fn stack_raw_map_dump(area: Rect) -> (Rect, Rect) {
+    if area.height == 0 {
+        return (Rect::new(area.x, area.y, area.width, 0), area);
+    }
+    let map_height = area.height.saturating_sub(1).min(6);
+    (
+        Rect::new(area.x, area.y, area.width, map_height),
+        Rect::new(
+            area.x,
+            area.y.saturating_add(map_height),
+            area.width,
+            area.height.saturating_sub(map_height),
+        ),
+    )
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn query_reply_history_layout(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Vertical)

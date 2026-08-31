@@ -16,6 +16,14 @@ pub enum Intent {
     ToggleRawView,
     ToggleHotkeysPopup,
     SelectRawPacketTab(RawPacketTab),
+    SelectRawMapScope(RawMapScope),
+    CycleRawMapScope {
+        forward: bool,
+    },
+    ScrollRawDump {
+        increase: bool,
+        page: bool,
+    },
 
     // Popup management
     OpenProfilesPopup,
@@ -354,6 +362,114 @@ pub enum RawPacketTab {
     Auxiliary,
     Query75,
     DeviceNotification,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawMapScope {
+    All,
+    Base,
+    Outputs,
+    Preamps,
+    Mixer,
+    Query,
+    Metadata,
+    Status,
+    Parser,
+    Unmapped,
+}
+
+impl RawMapScope {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::All => "ALL",
+            Self::Base => "BASE",
+            Self::Outputs => "OUTPUTS",
+            Self::Preamps => "PREAMPS",
+            Self::Mixer => "MIXER",
+            Self::Query => "QUERY",
+            Self::Metadata => "METADATA",
+            Self::Status => "STATUS",
+            Self::Parser => "PARSER",
+            Self::Unmapped => "UNMAPPED",
+        }
+    }
+
+    pub fn options_for(tab: RawPacketTab) -> &'static [Self] {
+        const STATE73: &[RawMapScope] = &[
+            RawMapScope::All,
+            RawMapScope::Base,
+            RawMapScope::Outputs,
+            RawMapScope::Preamps,
+            RawMapScope::Mixer,
+            RawMapScope::Unmapped,
+        ];
+        const QUERY74: &[RawMapScope] = &[
+            RawMapScope::All,
+            RawMapScope::Query,
+            RawMapScope::Mixer,
+            RawMapScope::Unmapped,
+        ];
+        const QUERY75: &[RawMapScope] = &[
+            RawMapScope::All,
+            RawMapScope::Metadata,
+            RawMapScope::Mixer,
+            RawMapScope::Status,
+            RawMapScope::Unmapped,
+        ];
+        const PARSER_ONLY: &[RawMapScope] = &[
+            RawMapScope::All,
+            RawMapScope::Parser,
+            RawMapScope::Unmapped,
+        ];
+
+        match tab {
+            RawPacketTab::State73 => STATE73,
+            RawPacketTab::Query74 => QUERY74,
+            RawPacketTab::Query75 => QUERY75,
+            RawPacketTab::Auxiliary | RawPacketTab::DeviceNotification => PARSER_ONLY,
+        }
+    }
+
+    pub fn next_for(self, tab: RawPacketTab, forward: bool) -> Self {
+        let scopes = Self::options_for(tab);
+        let index = scopes.iter().position(|scope| *scope == self).unwrap_or(0);
+        let next = if forward {
+            (index + 1) % scopes.len()
+        } else {
+            index.checked_sub(1).unwrap_or(scopes.len() - 1)
+        };
+        scopes[next]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_scope_options_match_packet_kind() {
+        assert_eq!(
+            RawMapScope::options_for(RawPacketTab::State73),
+            &[
+                RawMapScope::All,
+                RawMapScope::Base,
+                RawMapScope::Outputs,
+                RawMapScope::Preamps,
+                RawMapScope::Mixer,
+                RawMapScope::Unmapped,
+            ]
+        );
+        assert_eq!(
+            RawMapScope::options_for(RawPacketTab::Query75),
+            &[
+                RawMapScope::All,
+                RawMapScope::Metadata,
+                RawMapScope::Mixer,
+                RawMapScope::Status,
+                RawMapScope::Unmapped,
+            ]
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

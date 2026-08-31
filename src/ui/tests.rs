@@ -3,23 +3,25 @@ use std::time::Instant;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::Widget;
+use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Terminal;
 
 use crate::app::{
-    AppState, AssignmentPickerState, FocusArea, Intent, RawPacketTab, SelectorPopupKind,
-    SelectorPopupState,
+    AppState, AssignmentPickerState, Controller, FocusArea, Intent, RawMapScope, RawPacketTab,
+    SelectorPopupKind, SelectorPopupState,
 };
 use antelope_protocol::{
     ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
     OutputState, OutputTarget, PanState, PreampInputState, PreampMode, SampleRate, Surface,
-    OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
-    OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
-    OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2,
-    OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
+    OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX1_MIRROR_A,
+    OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_SHARED_SHADOW_0,
+    OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2, OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E,
+    SNAPSHOT_PAYLOAD_OFFSET,
 };
+
+use crate::transport::MockTransport;
 
 use super::*;
 
@@ -395,10 +397,7 @@ fn status_strip_surfaces_message_surface_and_output() {
 
     assert!(!rendered.contains("STATUS"));
     assert!(!rendered.contains("Applied dim change"));
-    assert_eq!(
-        rendered,
-render::render_mix_meter_state_line(&state)
-    );
+    assert_eq!(rendered, render::render_mix_meter_state_line(&state));
 }
 
 #[test]
@@ -589,8 +588,117 @@ fn mixer_strip_rendering_includes_solo_state() {
 }
 
 #[test]
+fn semantic_dump_uses_coverage_color_and_composes_baseline_marker() {
+    let bytes = [0x42; 320];
+    let map = raw_map::build_raw_packet_map(RawPacketTab::State73, &bytes);
+    let mut baseline = bytes;
+    baseline[0x13] = 0x00;
+
+    let dump = render::render_full_packet_dump(&bytes, Some(&baseline), &map, RawMapScope::Base);
+    let clock_span = &dump.lines[1].spans[1 + (0x13 - 0x10)];
+
+    let expected_style = crate::terminal::adapt_style(
+        Style::default()
+            .fg(Color::Green)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    );
+    assert_eq!(clock_span.style, expected_style);
+}
+
+#[test]
+fn all_map_scope_emphasizes_mapped_entries_and_subdues_unknown_entries() {
+    let map = raw_map::build_raw_packet_map(RawPacketTab::State73, &[0x42; 320]);
+    let entry_for = |needle: &str| {
+        map.entries_for_scope(RawMapScope::All)
+            .into_iter()
+            .find(|entry| entry.label.contains(needle))
+            .unwrap_or_else(|| panic!("missing map entry {needle:?}"))
+    };
+
+    let mapped = render::raw_map_entry_style(entry_for("status flags 0-1"), RawMapScope::All);
+    assert_eq!(mapped.fg, Some(Color::Green));
+    assert!(!mapped.add_modifier.contains(Modifier::DIM));
+
+    let unmapped = render::raw_map_entry_style(entry_for("unmapped report"), RawMapScope::All);
+    assert_eq!(unmapped.fg, Some(Color::Red));
+    assert!(unmapped.add_modifier.contains(Modifier::DIM));
+    assert!(!unmapped.add_modifier.contains(Modifier::BOLD));
+
+    let padding =
+        render::raw_map_entry_style(entry_for("fixed snapshot padding"), RawMapScope::All);
+    assert_eq!(padding.fg, Some(Color::DarkGray));
+    assert!(padding.add_modifier.contains(Modifier::DIM));
+
+    let selected = render::raw_map_entry_style(entry_for("unmapped report"), RawMapScope::Unmapped);
+    assert_eq!(selected.fg, Some(Color::LightRed));
+    assert!(!selected.add_modifier.contains(Modifier::DIM));
+}
+
+#[test]
+fn all_and_unmapped_scopes_emphasize_only_their_selected_coverage() {
+    let bytes = [0x42; 320];
+    let map = raw_map::build_raw_packet_map(RawPacketTab::State73, &bytes);
+    let all_unmapped = map.classify(0x18, RawMapScope::All);
+    let all_padding = map.classify(0xf6, RawMapScope::All);
+    let selected_unmapped = map.classify(0x18, RawMapScope::Unmapped);
+    let excluded_output = map.classify(0x1c, RawMapScope::Base);
+
+    assert_eq!(all_unmapped.coverage, raw_map::Coverage::Unmapped);
+    assert!(!all_unmapped.selected);
+    assert_eq!(
+        styles::raw_coverage_color(all_unmapped.coverage, all_unmapped.selected),
+        Color::Red
+    );
+    assert_eq!(all_padding.coverage, raw_map::Coverage::Padding);
+    assert!(!all_padding.selected);
+    assert!(selected_unmapped.selected);
+    assert_eq!(
+        styles::raw_coverage_color(selected_unmapped.coverage, selected_unmapped.selected),
+        Color::LightRed
+    );
+    assert!(!excluded_output.selected);
+
+    let mut baseline = bytes;
+    baseline[0x18] = 0;
+    let all_dump = render::render_full_packet_dump(&bytes, Some(&baseline), &map, RawMapScope::All);
+    let all_unmapped_hex = &all_dump.lines[1].spans[1 + (0x18 - 0x10) + 1];
+    let all_unmapped_ascii = &all_dump.lines[1].spans[19 + (0x18 - 0x10)];
+    let expected_subdued = crate::terminal::adapt_style(
+        Style::default()
+            .fg(Color::Red)
+            .bg(Color::DarkGray)
+            .add_modifier(Modifier::DIM | Modifier::UNDERLINED),
+    );
+    assert_eq!(all_unmapped_hex.style, expected_subdued);
+    assert_eq!(all_unmapped_ascii.style, expected_subdued);
+
+    let unmapped_dump = render::render_full_packet_dump(&bytes, None, &map, RawMapScope::Unmapped);
+    let selected_ascii = &unmapped_dump.lines[1].spans[19 + (0x18 - 0x10)];
+    let expected_selected = crate::terminal::adapt_style(
+        Style::default()
+            .fg(Color::LightRed)
+            .add_modifier(Modifier::BOLD),
+    );
+    assert_eq!(selected_ascii.style, expected_selected);
+}
+
+#[test]
+fn map_text_contains_exact_offsets_labels_and_overlap_note() {
+    let map = raw_map::build_raw_packet_map(RawPacketTab::State73, &[0; 320]);
+    let text = render::render_raw_map_text(&map, RawMapScope::Mixer, false).to_string();
+
+    assert!(text.contains("report 0x9f"));
+    assert!(text.contains("payload 0x8f"));
+    assert!(text.contains("active mixer CH01/CH02 link correlation"));
+    assert!(text.contains("OVERLAP"));
+}
+
+#[test]
 fn hex_dump_renders_offset_and_ascii() {
-    let dump = render::render_full_packet_dump(&[0x83, 0x00, 0x41, 0x42, 0x0a], None);
+    let bytes = [0x83, 0x00, 0x41, 0x42, 0x0a];
+    let map = raw_map::build_raw_packet_map(RawPacketTab::Auxiliary, &bytes);
+    let dump = render::render_full_packet_dump(&bytes, None, &map, RawMapScope::All);
     let first = &dump.lines[0];
     let rendered: String = first
         .spans
@@ -604,10 +712,74 @@ fn hex_dump_renders_offset_and_ascii() {
 
 #[test]
 fn zero_bytes_are_dimmed_and_offsets_are_bold() {
-    let dump = render::render_full_packet_dump(&[0x00], None);
+    let bytes = [0x00];
+    let map = raw_map::build_raw_packet_map(RawPacketTab::State73, &bytes);
+    let dump = render::render_full_packet_dump(&bytes, None, &map, RawMapScope::All);
     let first = &dump.lines[0];
     assert!(first.spans[0].style.add_modifier.contains(Modifier::BOLD));
-    assert!(first.spans[1].style.add_modifier.contains(Modifier::DIM));
+    let expected_zero_style = crate::terminal::adapt_style(
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::DIM | Modifier::BOLD),
+    );
+    assert_eq!(first.spans[1].style, expected_zero_style);
+}
+
+#[test]
+fn compact_map_truncates_notes_without_truncating_offsets_or_labels() {
+    let map = raw_map::build_raw_packet_map(RawPacketTab::State73, &[0; 320]);
+    let text = render::render_raw_map_text(&map, RawMapScope::Mixer, true).to_string();
+    let line = text
+        .lines()
+        .find(|line| line.contains("active mixer CH01/CH02 link correlation"))
+        .expect("link-correlation map line");
+
+    assert!(line.starts_with("report 0x9f,0xdf,0xea..0xf0 / payload 0x8f,0xcf,0xda..0xe0"));
+    assert!(line.contains("active mixer CH01/CH02 link correlation"));
+    assert!(line.ends_with("OVERLAP"));
+}
+
+#[test]
+fn selected_query_reply_bytes_prefers_selected_history_entry() {
+    let fallback = [0x75; 320];
+    let selected = [0x42; 320];
+    let mut state = AppState::default();
+    state.raw_view.recent_query_reply_entries = vec![crate::app::QueryReplyLogEntry {
+        summary: "selected".to_string(),
+        raw: selected,
+    }];
+    state.raw_view.selected_query_reply_entry = Some(0);
+
+    assert_eq!(
+        render::selected_query_reply_bytes(&fallback, &state),
+        selected.as_slice()
+    );
+}
+
+#[test]
+fn raw_page_renders_selected_query_reply_when_latest_reply_is_absent() {
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    state.raw_view.selected_tab = RawPacketTab::Query75;
+    state.raw_view.recent_query_reply_entries = vec![crate::app::QueryReplyLogEntry {
+        summary: "selected reply".to_string(),
+        raw: [0x42; 320],
+    }];
+    state.raw_view.selected_query_reply_entry = Some(0);
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let mut rendered = String::new();
+    for y in 0..50 {
+        for x in 0..120 {
+            rendered.push_str(buffer[(x, y)].symbol());
+        }
+        rendered.push('\n');
+    }
+
+    assert!(rendered.contains("0000: 42"));
+    assert!(!rendered.contains("Waiting for first 0x75 query reply"));
 }
 
 #[test]
@@ -661,17 +833,326 @@ fn mouse_action_hits_status_raw_view_toggle() {
 }
 
 #[test]
+fn selecting_packet_resets_unsupported_scope_and_scroll() {
+    let mut state = AppState::default();
+    state.raw_view.raw_map_scope = RawMapScope::Mixer;
+    state.raw_view.raw_dump_scroll = 7;
+    state.raw_view.raw_map_scroll = 4;
+
+    state.raw_view.select_tab(RawPacketTab::DeviceNotification);
+
+    assert_eq!(state.raw_view.raw_map_scope, RawMapScope::All);
+    assert_eq!(state.raw_view.raw_dump_scroll, 0);
+    assert_eq!(state.raw_view.raw_map_scroll, 0);
+}
+
+#[test]
+fn raw_layout_has_packet_and_scope_rows() {
+    let rows = layouts::raw_page_layout(Rect::new(0, 0, 140, 40));
+    assert_eq!(rows.len(), 5);
+    assert!(rows[1].height >= 3);
+    assert!(rows[2].height >= 3);
+    assert!(rows[3].width >= 140);
+}
+
+#[test]
+fn raw_scope_mouse_action_selects_unmapped_scope() {
+    let area = Rect::new(0, 0, 140, 40);
+    let rows = layouts::raw_page_layout(area);
+    let scopes = layouts::raw_scope_hit_areas(rows[2], RawPacketTab::State73);
+    let point = (scopes[5].x + 1, scopes[5].y);
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    state.raw_view.selected_tab = RawPacketTab::State73;
+
+    assert_eq!(
+        mouse_action(area, &state, point.0, point.1),
+        Some(Intent::SelectRawMapScope(RawMapScope::Unmapped))
+    );
+}
+
+#[test]
+fn narrow_raw_content_reserves_dump_after_compact_map() {
+    let content = layouts::raw_content_layout(Rect::new(0, 0, 80, 13), false);
+    assert!(content.map().height > 0);
+    assert!(content.dump().height > 0);
+}
+
+#[test]
+fn raw_page_keeps_selected_query_map_and_dump_in_sync() {
+    fn query_reply(body_byte: u8, query_id: u8, sub_id: u8, body_len: usize) -> [u8; 320] {
+        let mut raw = [0_u8; 320];
+        raw[0..4].copy_from_slice(&0x75_u32.to_le_bytes());
+        raw[4..8].copy_from_slice(&(16_u32 + body_len as u32).to_le_bytes());
+        raw[8] = query_id;
+        raw[12] = sub_id;
+        raw[16..16 + body_len].fill(body_byte);
+        raw
+    }
+
+    let area = Rect::new(0, 0, 140, 40);
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    state.raw_view.selected_tab = RawPacketTab::Query75;
+    state.raw_view.recent_query_reply_entries = vec![
+        crate::app::QueryReplyLogEntry {
+            summary: "valid assignment".to_string(),
+            raw: query_reply(0x05, 0x03, 0x05, 9),
+        },
+        crate::app::QueryReplyLogEntry {
+            summary: "unresolved query".to_string(),
+            raw: query_reply(0x42, 0x99, 0x01, 1),
+        },
+    ];
+
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    state.raw_view.selected_query_reply_entry = Some(0);
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let first =
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .fold(String::new(), |mut output, cell| {
+                output.push_str(cell.symbol());
+                output
+            });
+    assert!(first.contains("CH01 assignment"));
+    assert!(first.contains("0010: 05"));
+
+    state.raw_view.selected_query_reply_entry = Some(1);
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let second =
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .fold(String::new(), |mut output, cell| {
+                output.push_str(cell.symbol());
+                output
+            });
+    assert!(second.contains("unresolved query body"));
+    assert!(second.contains("0010: 42"));
+}
+
+#[test]
+fn raw_content_layout_keeps_map_and_dump_visible_at_target_sizes() {
+    let wide =
+        layouts::raw_content_layout(layouts::raw_page_layout(Rect::new(0, 0, 140, 40))[3], false);
+    assert!(wide.map().width > 0);
+    assert!(wide.map().height > 0);
+    assert!(wide.dump().width > 0);
+    assert!(wide.dump().height > 0);
+    assert!(wide.history().is_none());
+    assert!(!wide.compact_map());
+
+    let narrow =
+        layouts::raw_content_layout(layouts::raw_page_layout(Rect::new(0, 0, 80, 24))[3], false);
+    assert!(narrow.map().width > 0);
+    assert!(narrow.map().height > 0);
+    assert!(narrow.dump().width > 0);
+    assert!(narrow.dump().height > 0);
+    assert!(narrow.map().y < narrow.dump().y);
+    assert!(narrow.compact_map());
+
+    let query =
+        layouts::raw_content_layout(layouts::raw_page_layout(Rect::new(0, 0, 140, 40))[3], true);
+    assert!(query.history().is_some());
+    assert!(query.map().width > 0);
+    assert!(query.dump().width > 0);
+}
+
+#[test]
+fn raw_scroll_intent_moves_map_and_dump_by_one_page() {
+    let mut controller = Controller::new(Box::new(MockTransport::default()));
+    controller.state.popup.raw_view_open = true;
+
+    controller
+        .apply_intent(
+            Intent::ScrollRawDump {
+                increase: true,
+                page: true,
+            },
+            Rect::new(0, 0, 80, 24),
+        )
+        .unwrap();
+
+    assert_eq!(controller.state.raw_view.raw_dump_scroll, 10);
+    assert_eq!(controller.state.raw_view.raw_map_scroll, 10);
+}
+
+#[test]
+fn raw_page_renders_borders_legend_and_footer_at_narrow_size() {
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    state.raw_view.latest_raw_73 = Some([0x73; 320]);
+
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let mut rendered = String::new();
+    for y in 0..24 {
+        for x in 0..80 {
+            rendered.push_str(buffer[(x, y)].symbol());
+        }
+        rendered.push('\n');
+    }
+
+    assert!(rendered.contains("Field Map"));
+    assert!(rendered.contains("0x73 State"));
+    assert!(rendered.contains("USED green"));
+    assert!(rendered.contains("PageUp/PageDown"));
+    assert!(rendered.contains("0000:"));
+}
+
+#[test]
+fn raw_scroll_clamp_matches_ratatui_wrapped_map_lines() {
+    let map = raw_map::build_raw_packet_map(RawPacketTab::State73, &[0; 320]);
+    let actual_max_scroll = |text: &Text<'_>, viewport: Rect| {
+        let mut expected = 0_u16;
+        loop {
+            let scroll = expected.saturating_add(1);
+            let mut buffer = Buffer::empty(viewport);
+            Paragraph::new(text.clone())
+                .wrap(Wrap { trim: false })
+                .scroll((scroll, 0))
+                .render(viewport, &mut buffer);
+            if !buffer.content().iter().any(|cell| cell.symbol() != " ") {
+                break expected;
+            }
+            expected = scroll;
+        }
+    };
+
+    let text = render::render_raw_map_text(&map, RawMapScope::All, false);
+    let map_viewport = Rect::new(0, 0, 20, 1);
+    let expected_map = actual_max_scroll(&text, map_viewport);
+    assert!(expected_map > 0);
+    assert_eq!(
+        render::raw_scroll_offset_for_test(usize::MAX, &text, map_viewport, true),
+        expected_map
+    );
+
+    let dump = render::render_full_packet_dump(&[0x42; 320], None, &map, RawMapScope::All);
+    let dump_viewport = Rect::new(0, 0, 80, 1);
+    assert_eq!(
+        render::raw_scroll_offset_for_test(usize::MAX, &dump, dump_viewport, true),
+        actual_max_scroll(&dump, dump_viewport)
+    );
+}
+
+#[test]
+fn narrow_raw_footer_shows_complete_legend_and_navigation_help() {
+    let area = Rect::new(0, 0, 80, 24);
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let footer_area = layouts::raw_page_layout(area)[4];
+    let buffer = terminal.backend().buffer();
+    let mut footer = String::new();
+    for y in footer_area.y..footer_area.y + footer_area.height {
+        for x in footer_area.x..footer_area.x + footer_area.width {
+            footer.push_str(buffer[(x, y)].symbol());
+        }
+        footer.push('\n');
+    }
+
+    for token in [
+        "USED green",
+        "READBACK blue",
+        "OBSERVED amber",
+        "PARSER cyan",
+        "UNMAPPED red",
+        "PADDING gray",
+    ] {
+        assert!(
+            footer.contains(token),
+            "missing footer token {token:?}: {footer:?}"
+        );
+    }
+    assert!(footer.contains("[/] scope"));
+    assert!(footer.contains("PageUp/PageDown scroll"));
+    assert!(footer.contains("map 0"));
+    assert!(footer.contains("dump 0"));
+}
+
+#[test]
+fn raw_scope_hit_areas_match_every_packet_scope_label() {
+    let area = Rect::new(0, 0, 140, 40);
+    let rows = layouts::raw_page_layout(area);
+    for tab in [
+        RawPacketTab::Query74,
+        RawPacketTab::State73,
+        RawPacketTab::Auxiliary,
+        RawPacketTab::Query75,
+        RawPacketTab::DeviceNotification,
+    ] {
+        let scopes = layouts::raw_scope_hit_areas(rows[2], tab);
+        assert_eq!(scopes.len(), RawMapScope::options_for(tab).len());
+        assert!(scopes
+            .iter()
+            .all(|scope| scope.width > 0 && scope.height > 0));
+    }
+}
+
+#[test]
+fn raw_wheel_scrolls_map_and_dump_but_not_query_history() {
+    let area = Rect::new(0, 0, 140, 40);
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+
+    let content = layouts::raw_content_layout(layouts::raw_page_layout(area)[3], false);
+    let point = (content.map().x, content.map().y);
+    assert_eq!(
+        mouse::raw_dump_wheel_action(area, &state, point, true),
+        Some(Intent::ScrollRawDump {
+            increase: true,
+            page: false,
+        })
+    );
+
+    state.raw_view.selected_tab = RawPacketTab::Query75;
+    state.raw_view.recent_query_reply_entries = (0..9)
+        .map(|index| crate::app::QueryReplyLogEntry {
+            summary: format!("reply {index}"),
+            raw: [index as u8; 320],
+        })
+        .collect();
+    let query = layouts::raw_content_layout(layouts::raw_page_layout(area)[3], true);
+    let history = query.history().expect("query history area");
+    assert_eq!(
+        slider_wheel_action(area, &state, history.x + 1, history.y + 1, true),
+        Some(Intent::ScrollQueryReplyList { increase: true })
+    );
+    assert_eq!(
+        slider_wheel_action(area, &state, query.dump().x, query.dump().y, true),
+        Some(Intent::ScrollRawDump {
+            increase: true,
+            page: false,
+        })
+    );
+}
+
+#[test]
+fn raw_scope_cycle_resets_both_scroll_offsets() {
+    let mut state = AppState::default();
+    state.raw_view.raw_dump_scroll = 9;
+    state.raw_view.raw_map_scroll = 4;
+
+    state.raw_view.cycle_scope(true);
+
+    assert_eq!(state.raw_view.raw_map_scope, RawMapScope::Base);
+    assert_eq!(state.raw_view.raw_dump_scroll, 0);
+    assert_eq!(state.raw_view.raw_map_scroll, 0);
+}
+
+#[test]
 fn mouse_action_selects_raw_packet_tab_when_raw_view_is_open() {
     let area = Rect::new(0, 0, 120, 50);
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(2),
-        ])
-        .split(area);
+    let layout = layouts::raw_page_layout(area);
     let tabs = layouts::raw_tab_hit_areas(layout[1]);
     let point = (tabs[3].x + tabs[3].width / 2, tabs[3].y);
     let mut state = AppState::default();
@@ -865,11 +1346,54 @@ fn mouse_action_hits_visible_output_mute_chip_position_on_hp1() {
 }
 
 #[test]
+fn narrow_query_history_mouse_rows_match_list_inner_bounds() {
+    let area = Rect::new(0, 0, 80, 24);
+    let layout = layouts::raw_page_layout(area);
+    let history = layouts::raw_content_layout(layout[3], true)
+        .history()
+        .expect("query history area");
+    let inner = styles::section_block("Recent 0x75 Replies", true).inner(history);
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    state.raw_view.selected_tab = RawPacketTab::Query75;
+    state.raw_view.recent_query_reply_entries = vec![
+        crate::app::QueryReplyLogEntry {
+            summary: "oldest".to_string(),
+            raw: [0x75; 320],
+        },
+        crate::app::QueryReplyLogEntry {
+            summary: "newest".to_string(),
+            raw: [0x75; 320],
+        },
+    ];
+
+    assert_eq!(
+        mouse_action(area, &state, inner.x + 1, inner.y),
+        Some(Intent::SelectQueryReplyEntry(1))
+    );
+    assert_eq!(
+        mouse_action(area, &state, inner.x + 1, inner.y + 1),
+        Some(Intent::SelectQueryReplyEntry(0))
+    );
+    assert_eq!(mouse_action(area, &state, inner.x + 1, history.y), None);
+    assert_eq!(
+        mouse_action(area, &state, inner.x + 1, history.y + history.height - 1),
+        None
+    );
+    assert_eq!(
+        mouse_action(area, &state, inner.x + 1, history.y + history.height),
+        None
+    );
+}
+
+#[test]
 fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
     let area = Rect::new(0, 0, 120, 50);
     let layout = layouts::raw_page_layout(area);
-    let sections = layouts::query_reply_history_layout(layout[2]);
-    let inner = layouts::inner_area(sections[0]);
+    let history = layouts::raw_content_layout(layout[3], true)
+        .history()
+        .expect("query history area");
+    let inner = styles::section_block("Recent 0x75 Replies", true).inner(history);
     let mut state = AppState::default();
     state.popup.raw_view_open = true;
     state.raw_view.selected_tab = RawPacketTab::Query75;
@@ -891,7 +1415,7 @@ fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
             },
         },
     ];
-    let point = (inner.x + 1, inner.y + 1);
+    let point = (inner.x + 1, inner.y);
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),

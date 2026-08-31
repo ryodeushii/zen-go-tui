@@ -2,37 +2,45 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::ListItem;
 
-use crate::app::{AppState, QUERY_REPLY_VISIBLE_COUNT};
+use crate::app::{AppState, RawMapScope, RawPacketTab, QUERY_REPLY_VISIBLE_COUNT};
 use antelope_protocol::{
     OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
     OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
 };
 
-use super::super::layouts::CONNECTION_STALE_AFTER;
 use super::super::layouts::current_sample_rate_label;
+use super::super::layouts::CONNECTION_STALE_AFTER;
+use super::super::raw_map::{build_raw_packet_map, Coverage, RawDomain, RawMapEntry, RawPacketMap};
 use super::super::styles::{
-    chip, labeled_value_chip, muted_style, strong_style, style_for_ascii_byte,
-    style_for_hex_byte,
+    chip, labeled_value_chip, muted_style, raw_coverage_color, strong_style,
+    style_for_raw_ascii_byte, style_for_raw_hex_byte,
 };
 use super::super::widgets::signals::render_mix_meter;
 
-pub(crate) fn render_query_reply_panel(_state_bytes: &[u8], state: &AppState) -> Text<'static> {
+pub(crate) fn selected_query_reply_bytes<'a>(fallback: &'a [u8], state: &'a AppState) -> &'a [u8] {
     state
         .selected_query_reply_entry()
-        .map(|entry| {
-            render_full_packet_dump(
-                &entry.raw,
-                state
-                    .raw_view
-                    .baseline_raw_75
-                    .as_ref()
-                    .map(|a| a.as_slice()),
-            )
-        })
-        .unwrap_or_else(|| Text::from("No 0x75 reply selected yet."))
+        .map(|entry| entry.raw.as_slice())
+        .unwrap_or(fallback)
+}
+
+pub(crate) fn render_query_reply_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
+    let bytes = selected_query_reply_bytes(state_bytes, state);
+    let map = build_raw_packet_map(RawPacketTab::Query75, bytes);
+    render_full_packet_dump(
+        bytes,
+        state
+            .raw_view
+            .baseline_raw_75
+            .as_ref()
+            .map(|a| a.as_slice()),
+        &map,
+        state.raw_view.raw_map_scope,
+    )
 }
 
 pub(crate) fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
+    let map = build_raw_packet_map(RawPacketTab::Query74, state_bytes);
     let mut lines = render_full_packet_dump(
         state_bytes,
         state
@@ -40,6 +48,8 @@ pub(crate) fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -
             .baseline_raw_74
             .as_ref()
             .map(|a| a.as_slice()),
+        &map,
+        state.raw_view.raw_map_scope,
     )
     .lines;
     if !state.raw_view.recent_query_request_log.is_empty() {
@@ -265,17 +275,17 @@ pub(crate) fn render_hotkeys_popup_text() -> Text<'static> {
     ])
 }
 
-pub(crate) fn render_full_packet_dump(bytes: &[u8], baseline: Option<&[u8]>) -> Text<'static> {
+pub(crate) fn render_full_packet_dump(
+    bytes: &[u8],
+    baseline: Option<&[u8]>,
+    map: &RawPacketMap,
+    scope: RawMapScope,
+) -> Text<'static> {
     Text::from(
         bytes
             .chunks(16)
             .enumerate()
-            .map(|(row, chunk)| {
-                let offset = row * 16;
-                let baseline_chunk =
-                    baseline.and_then(|all| all.get(offset..usize::min(offset + 16, all.len())));
-                render_dump_line(offset, chunk, baseline_chunk)
-            })
+            .map(|(row, chunk)| render_dump_line(row * 16, chunk, baseline, map, scope))
             .collect::<Vec<_>>(),
     )
 }
@@ -284,7 +294,14 @@ pub(crate) fn render_dump_line(
     offset: usize,
     chunk: &[u8],
     baseline: Option<&[u8]>,
+    map: &RawPacketMap,
+    scope: RawMapScope,
 ) -> Line<'static> {
+    let classifications = chunk
+        .iter()
+        .enumerate()
+        .map(|(index, _)| map.classify(offset + index, scope))
+        .collect::<Vec<_>>();
     let mut spans = vec![Span::styled(
         format!("{:04x}: ", offset),
         Style::default()
@@ -299,11 +316,15 @@ pub(crate) fn render_dump_line(
 
         if let Some(byte) = chunk.get(index) {
             let changed = baseline
-                .and_then(|base| base.get(index))
+                .and_then(|base| base.get(offset + index))
                 .is_some_and(|base_byte| *base_byte != *byte);
+            let classification = classifications
+                .get(index)
+                .copied()
+                .expect("classification exists for each chunk byte");
             spans.push(Span::styled(
                 format!("{:02x} ", byte),
-                style_for_hex_byte(*byte, index == 0, changed),
+                style_for_raw_hex_byte(*byte, index == 0, changed, classification),
             ));
         } else {
             spans.push(Span::raw("   "));
@@ -318,14 +339,138 @@ pub(crate) fn render_dump_line(
             '.'
         };
         let changed = baseline
-            .and_then(|base| base.get(index))
+            .and_then(|base| base.get(offset + index))
             .is_some_and(|base_byte| *base_byte != *byte);
+        let classification = classifications
+            .get(index)
+            .copied()
+            .expect("classification exists for each chunk byte");
         spans.push(Span::styled(
             ch.to_string(),
-            style_for_ascii_byte(*byte, changed),
+            style_for_raw_ascii_byte(*byte, changed, classification),
         ));
     }
     spans.push(Span::raw("|"));
 
     Line::from(spans)
+}
+
+pub(crate) fn render_raw_map_text(
+    map: &RawPacketMap,
+    scope: RawMapScope,
+    compact: bool,
+) -> Text<'static> {
+    let mut lines = Vec::new();
+    for entry in map.entries_for_scope(scope) {
+        let ranges = format_entry_ranges(entry);
+        let details = format!(
+            "{} {} {}",
+            coverage_label(entry.coverage),
+            domain_label(entry.domain),
+            entry.label
+        );
+        let style = crate::terminal::adapt_style(raw_map_entry_style(entry, scope));
+        if compact {
+            let note = compact_note(&entry.note);
+            let suffix = if note.is_empty() {
+                String::new()
+            } else {
+                format!(" {note}")
+            };
+            lines.push(Line::from(vec![
+                Span::raw(format!("{ranges} ")),
+                Span::styled(format!("{details}{suffix}"), style),
+            ]));
+        } else {
+            lines.push(Line::from(ranges));
+            let note = if entry.note.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", entry.note)
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!("{details}{note}"),
+                style,
+            )]));
+        }
+    }
+    Text::from(lines)
+}
+
+fn format_entry_ranges(entry: &RawMapEntry) -> String {
+    let report = entry
+        .ranges
+        .iter()
+        .map(|range| format_range(&range.report))
+        .collect::<Vec<_>>()
+        .join(",");
+    let payload = entry
+        .ranges
+        .iter()
+        .map(|range| {
+            range
+                .payload
+                .as_ref()
+                .map(format_range)
+                .unwrap_or_else(|| "n/a".to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("report {report} / payload {payload}")
+}
+
+fn format_range(range: &std::ops::Range<usize>) -> String {
+    if range.end == range.start.saturating_add(1) {
+        format!("0x{:02x}", range.start)
+    } else {
+        format!("0x{:02x}..0x{:02x}", range.start, range.end)
+    }
+}
+
+fn coverage_label(coverage: Coverage) -> &'static str {
+    match coverage {
+        Coverage::Used => "USED",
+        Coverage::Readback => "READBACK",
+        Coverage::Observed => "OBSERVED",
+        Coverage::Parser => "PARSER",
+        Coverage::Unmapped => "UNMAPPED",
+        Coverage::Padding => "PADDING",
+    }
+}
+
+fn domain_label(domain: RawDomain) -> &'static str {
+    match domain {
+        RawDomain::Base => "BASE",
+        RawDomain::Output => "OUTPUT",
+        RawDomain::Preamp => "PREAMP",
+        RawDomain::Mixer => "MIXER",
+        RawDomain::Query => "QUERY",
+        RawDomain::Status => "STATUS",
+        RawDomain::Parser => "PARSER",
+        RawDomain::Unknown => "UNKNOWN",
+    }
+}
+
+pub(crate) fn raw_map_entry_style(entry: &RawMapEntry, scope: RawMapScope) -> Style {
+    let selected = scope != RawMapScope::All
+        || !matches!(entry.coverage, Coverage::Unmapped | Coverage::Padding);
+    let mut style = Style::default().fg(raw_coverage_color(entry.coverage, selected));
+    if !selected {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    style
+}
+
+fn compact_note(note: &str) -> String {
+    const MAX_NOTE_CHARS: usize = 64;
+    if note.chars().count() <= MAX_NOTE_CHARS {
+        return note.to_string();
+    }
+
+    let overlap = note.contains("OVERLAP");
+    let suffix = if overlap { " OVERLAP" } else { "…" };
+    let keep = MAX_NOTE_CHARS.saturating_sub(suffix.chars().count());
+    let mut result = note.chars().take(keep).collect::<String>();
+    result.push_str(suffix);
+    result
 }

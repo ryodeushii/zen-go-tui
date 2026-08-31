@@ -6,15 +6,15 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 
 use crate::app::{
-    AppState, FocusArea, ProfileEditorMode, RawPacketTab, RefreshRate, SelectorPopupKind,
+    AppState, FocusArea, ProfileEditorMode, RawMapScope, RawPacketTab, RefreshRate,
+    SelectorPopupKind,
 };
 use crate::terminal;
-use antelope_protocol::{
-    ClockSource, MixerAssignment, MixerSurface, PreampMode, SampleRate,
-};
+use antelope_protocol::{ClockSource, MixerAssignment, MixerSurface, PreampMode, SampleRate};
 
 use super::layouts::*;
 use super::mouse::mix_meter;
+use super::raw_map::build_raw_packet_map;
 use super::styles::*;
 use super::widgets::mixer;
 
@@ -27,9 +27,12 @@ pub(crate) use mixer::*;
 pub(crate) use text::build_query_reply_list_items;
 pub(crate) use text::render_device_header;
 pub(crate) use text::render_device_metadata;
+#[cfg(test)]
 pub(crate) use text::render_full_packet_dump;
 pub(crate) use text::render_hotkeys_popup_text;
+#[cfg(test)]
 pub(crate) use text::render_query_reply_panel;
+#[cfg(test)]
 pub(crate) use text::render_query_request_panel;
 pub(crate) use text::render_status_strip;
 pub(crate) use text::render_system_summary;
@@ -38,8 +41,13 @@ pub(crate) use text::render_system_summary;
 #[cfg(test)]
 pub(crate) use text::connection_badge_color;
 #[cfg(test)]
+pub(crate) use text::raw_map_entry_style;
+#[cfg(test)]
 pub(crate) use text::render_mix_meter_state_line;
-
+#[cfg(test)]
+pub(crate) use text::render_raw_map_text;
+#[cfg(test)]
+pub(crate) use text::selected_query_reply_bytes;
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     if state.popup.raw_view_open {
         draw_raw_page(frame, frame.area(), state);
@@ -703,6 +711,188 @@ fn draw_options_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     .render(rows[7], frame.buffer_mut());
 }
 
+fn raw_packet_source(
+    tab: RawPacketTab,
+    state: &AppState,
+) -> (&'static str, Option<&[u8]>, Option<&[u8]>, &'static str) {
+    match tab {
+        RawPacketTab::Query74 => (
+            "0x74 Query Requests",
+            state
+                .raw_view
+                .latest_raw_74
+                .as_ref()
+                .map(|bytes| bytes.as_slice()),
+            state
+                .raw_view
+                .baseline_raw_74
+                .as_ref()
+                .map(|bytes| bytes.as_slice()),
+            "Waiting for first 0x74 query request...",
+        ),
+        RawPacketTab::State73 => (
+            "0x73 State",
+            state
+                .raw_view
+                .latest_raw_73
+                .as_ref()
+                .map(|bytes| bytes.as_slice()),
+            state
+                .raw_view
+                .baseline_raw_73
+                .as_ref()
+                .map(|bytes| bytes.as_slice()),
+            "Waiting for first 0x73 snapshot...",
+        ),
+        RawPacketTab::Auxiliary => (
+            "0x83 State",
+            state
+                .raw_view
+                .latest_raw_83
+                .as_ref()
+                .map(|bytes| bytes.as_slice()),
+            state
+                .raw_view
+                .baseline_raw_83
+                .as_ref()
+                .map(|bytes| bytes.as_slice()),
+            "Waiting for first 0x83 auxiliary packet...",
+        ),
+        RawPacketTab::Query75 => {
+            let latest = state
+                .raw_view
+                .latest_raw_75
+                .as_ref()
+                .map(|bytes| bytes.as_slice());
+            let bytes = if latest.is_some() || state.selected_query_reply_entry().is_some() {
+                Some(text::selected_query_reply_bytes(
+                    latest.unwrap_or(&[]),
+                    state,
+                ))
+            } else {
+                None
+            };
+            (
+                "0x75 Query Replies",
+                bytes,
+                state
+                    .raw_view
+                    .baseline_raw_75
+                    .as_ref()
+                    .map(|bytes| bytes.as_slice()),
+                "Waiting for first 0x75 query reply...",
+            )
+        }
+        RawPacketTab::DeviceNotification => (
+            "0x81 Notification",
+            state
+                .raw_view
+                .latest_raw_81
+                .as_ref()
+                .map(|bytes| bytes.as_slice()),
+            state
+                .raw_view
+                .baseline_raw_81
+                .as_ref()
+                .map(|bytes| bytes.as_slice()),
+            "Waiting for first 0x81 notification...",
+        ),
+    }
+}
+
+fn raw_scope_accent(scope: RawMapScope) -> Color {
+    match scope {
+        RawMapScope::All => Color::LightCyan,
+        RawMapScope::Base => Color::Green,
+        RawMapScope::Outputs => Color::LightGreen,
+        RawMapScope::Preamps => Color::LightMagenta,
+        RawMapScope::Mixer => Color::Yellow,
+        RawMapScope::Query => Color::LightYellow,
+        RawMapScope::Metadata => Color::LightBlue,
+        RawMapScope::Status => Color::LightGreen,
+        RawMapScope::Parser => Color::Cyan,
+        RawMapScope::Unmapped => Color::LightRed,
+    }
+}
+
+fn raw_text_height(text: &Text<'_>, width: u16, wrapped: bool) -> usize {
+    if width == 0 {
+        return 0;
+    }
+    if !wrapped {
+        return text.lines.len();
+    }
+
+    // Paragraph's wrapped line composer is not exposed without Ratatui's unstable feature.
+    // Render into a tall buffer instead, using the same Paragraph and Wrap configuration as
+    // the visible pane, so word boundaries, grapheme widths, and trim behavior stay identical.
+    let estimated_height = text
+        .lines
+        .iter()
+        .map(|line| line.width().saturating_add(1))
+        .sum::<usize>()
+        .max(1)
+        .min(usize::from(u16::MAX)) as u16;
+    let area = Rect::new(0, 0, width, estimated_height);
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(text.clone())
+        .wrap(Wrap { trim: false })
+        .render(area, &mut buffer);
+
+    buffer
+        .content()
+        .chunks(usize::from(width))
+        .enumerate()
+        .rev()
+        .find(|(_, row)| row.iter().any(|cell| cell.symbol() != " "))
+        .map_or(0, |(row, _)| row + 1)
+}
+
+fn raw_scroll_offset(scroll: usize, text: &Text<'_>, viewport: Rect, wrapped: bool) -> u16 {
+    let content_height = raw_text_height(text, viewport.width, wrapped);
+    let max_scroll = content_height.saturating_sub(usize::from(viewport.height));
+    scroll.min(max_scroll).min(usize::from(u16::MAX)) as u16
+}
+
+#[cfg(test)]
+pub(crate) fn raw_scroll_offset_for_test(
+    scroll: usize,
+    text: &Text<'_>,
+    viewport: Rect,
+    wrapped: bool,
+) -> u16 {
+    raw_scroll_offset(scroll, text, viewport, wrapped)
+}
+
+const RAW_COVERAGE_LEGEND: &str =
+    "USED green | READBACK blue | OBSERVED amber | PARSER cyan | UNMAPPED red | PADDING gray";
+
+fn raw_footer_lines(width: u16, map_scroll: u16, dump_scroll: u16) -> Vec<Line<'static>> {
+    let footer =
+        format!("[/] scope   PageUp/PageDown scroll   map {map_scroll}   dump {dump_scroll}");
+    let width = usize::from(width);
+    if RAW_COVERAGE_LEGEND.chars().count() <= width {
+        return vec![
+            Line::from(Span::styled(RAW_COVERAGE_LEGEND, muted_style())),
+            Line::from(Span::styled(footer, muted_style())),
+        ];
+    }
+
+    let split = RAW_COVERAGE_LEGEND
+        .get(..width)
+        .and_then(|prefix| prefix.rfind(" | "))
+        .unwrap_or(width.min(RAW_COVERAGE_LEGEND.len()));
+    let (first, second) = RAW_COVERAGE_LEGEND.split_at(split);
+    vec![
+        Line::from(Span::styled(first, muted_style())),
+        Line::from(vec![
+            Span::styled(second, muted_style()),
+            Span::raw("   "),
+            Span::styled(footer, muted_style()),
+        ]),
+    ]
+}
+
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let layout = raw_page_layout(area);
 
@@ -754,108 +944,93 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         layout[1],
     );
 
-    let (title, text) = match state.raw_view.selected_tab {
-        RawPacketTab::Query74 => (
-            "0x74 Query Requests",
-            state
-                .raw_view
-                .latest_raw_74
-                .as_ref()
-                .map(|a| a.as_slice())
-                .map(|bytes| render_query_request_panel(bytes, state))
-                .unwrap_or_else(|| Text::from("Waiting for first 0x74 query request...")),
-        ),
-        RawPacketTab::State73 => (
-            "0x73 State",
-            state
-                .raw_view
-                .latest_raw_73
-                .as_ref()
-                .map(|a| a.as_slice())
-                .map(|bytes| {
-                    render_full_packet_dump(
-                        bytes,
-                        state
-                            .raw_view
-                            .baseline_raw_73
-                            .as_ref()
-                            .map(|a| a.as_slice()),
-                    )
-                })
-                .unwrap_or_else(|| Text::from("Waiting for first 0x73 snapshot...")),
-        ),
-        RawPacketTab::Auxiliary => (
-            "0x83 State",
-            state
-                .raw_view
-                .latest_raw_83
-                .as_ref()
-                .map(|a| a.as_slice())
-                .map(|bytes| {
-                    render_full_packet_dump(
-                        bytes,
-                        state
-                            .raw_view
-                            .baseline_raw_83
-                            .as_ref()
-                            .map(|a| a.as_slice()),
-                    )
-                })
-                .unwrap_or_else(|| Text::from("Waiting for first 0x83 auxiliary packet...")),
-        ),
-        RawPacketTab::Query75 => (
-            "0x75 Query Replies",
-            state
-                .raw_view
-                .latest_raw_75
-                .as_ref()
-                .map(|a| a.as_slice())
-                .map(|bytes| render_query_reply_panel(bytes, state))
-                .unwrap_or_else(|| Text::from("Waiting for first 0x75 query reply...")),
-        ),
-        RawPacketTab::DeviceNotification => (
-            "0x81 Notification",
-            state
-                .raw_view
-                .latest_raw_81
-                .as_ref()
-                .map(|a| a.as_slice())
-                .map(|bytes| {
-                    render_full_packet_dump(
-                        bytes,
-                        state
-                            .raw_view
-                            .baseline_raw_81
-                            .as_ref()
-                            .map(|a| a.as_slice()),
-                    )
-                })
-                .unwrap_or_else(|| Text::from("Waiting for first 0x81 notification...")),
-        ),
+    let scopes = RawMapScope::options_for(selected);
+    let scope_line = scopes
+        .iter()
+        .enumerate()
+        .flat_map(|(index, scope)| {
+            let mut spans = Vec::with_capacity(2);
+            if index > 0 {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(tab_chip(
+                scope.label(),
+                *scope == state.raw_view.raw_map_scope,
+                raw_scope_accent(*scope),
+            ));
+            spans
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(Line::from(scope_line))
+            .block(section_block("Map Scope", true))
+            .wrap(Wrap { trim: false }),
+        layout[2],
+    );
+
+    let query_replies = selected == RawPacketTab::Query75;
+    let content = raw_content_layout(layout[3], query_replies);
+    let (title, bytes, baseline, waiting) = raw_packet_source(selected, state);
+    let (map_text, mut dump_text) = if let Some(bytes) = bytes {
+        let map = build_raw_packet_map(selected, bytes);
+        let map_text =
+            text::render_raw_map_text(&map, state.raw_view.raw_map_scope, content.compact_map());
+        let dump_text =
+            text::render_full_packet_dump(bytes, baseline, &map, state.raw_view.raw_map_scope);
+        (map_text, dump_text)
+    } else {
+        (Text::from(waiting), Text::from(waiting))
     };
-    if state.raw_view.selected_tab == RawPacketTab::Query75 {
-        let sections = query_reply_history_layout(layout[2]);
+
+    if selected == RawPacketTab::Query74 && !state.raw_view.recent_query_request_log.is_empty() {
+        let mut lines = dump_text.lines;
+        lines.push(Line::from(""));
+        lines.push(Line::from("Recent 0x74 requests:"));
+        for entry in state.raw_view.recent_query_request_log.iter().rev().take(8) {
+            lines.push(Line::from(entry.clone()));
+        }
+        dump_text = Text::from(lines);
+    }
+
+    if let Some(history) = content.history() {
         let list_items = build_query_reply_list_items(state);
         frame.render_widget(
             List::new(list_items)
                 .block(section_block("Recent 0x75 Replies", true))
                 .highlight_style(strong_style(Color::LightCyan)),
-            sections[0],
-        );
-        frame.render_widget(
-            Paragraph::new(text)
-                .block(section_block(title, true))
-                .wrap(Wrap { trim: false }),
-            sections[1],
-        );
-    } else {
-        frame.render_widget(
-            Paragraph::new(text)
-                .block(section_block(title, true))
-                .wrap(Wrap { trim: false }),
-            layout[2],
+            history,
         );
     }
+
+    let map_area = content.map();
+    let map_block = section_block("Field Map", true);
+    let map_inner = map_block.inner(map_area);
+    let map_scroll = raw_scroll_offset(state.raw_view.raw_map_scroll, &map_text, map_inner, true);
+    frame.render_widget(
+        Paragraph::new(map_text)
+            .block(map_block)
+            .wrap(Wrap { trim: false })
+            .scroll((map_scroll, 0)),
+        map_area,
+    );
+
+    let dump_area = content.dump();
+    let dump_block = section_block(title, true);
+    let dump_inner = dump_block.inner(dump_area);
+    let dump_scroll =
+        raw_scroll_offset(state.raw_view.raw_dump_scroll, &dump_text, dump_inner, true);
+    frame.render_widget(
+        Paragraph::new(dump_text)
+            .block(dump_block)
+            .wrap(Wrap { trim: false })
+            .scroll((dump_scroll, 0)),
+        dump_area,
+    );
+
+    frame.render_widget(
+        Paragraph::new(raw_footer_lines(layout[4].width, map_scroll, dump_scroll)),
+        layout[4],
+    );
 }
 
 fn render_afx_routing_row(area: Rect, buffer: &mut Buffer, state: &AppState, pair: usize) {
@@ -914,4 +1089,3 @@ fn render_afx_routing_row(area: Rect, buffer: &mut Buffer, state: &AppState, pai
     )]))
     .render(columns[4], buffer);
 }
-

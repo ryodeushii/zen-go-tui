@@ -513,16 +513,18 @@ impl AppState {
             .iter()
             .position(|tab| *tab == self.raw_view.selected_tab)
             .unwrap_or(0);
-        self.raw_view.selected_tab = if forward {
+        let tab = if forward {
             tabs[(index + 1) % tabs.len()]
         } else {
             tabs[index.checked_sub(1).unwrap_or(tabs.len() - 1)]
         };
+        self.raw_view.select_tab(tab);
     }
 
     pub fn cycle_query_reply_entry(&mut self, forward: bool) {
         if self.raw_view.recent_query_reply_entries.is_empty() {
             self.raw_view.selected_query_reply_entry = None;
+            self.raw_view.reset_raw_view_scroll();
             return;
         }
         let current = self
@@ -536,6 +538,7 @@ impl AppState {
                 .checked_sub(1)
                 .unwrap_or(self.raw_view.recent_query_reply_entries.len() - 1)
         });
+        self.raw_view.reset_raw_view_scroll();
         self.ensure_query_reply_visible();
     }
 

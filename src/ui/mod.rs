@@ -1,5 +1,6 @@
 mod layouts;
 mod mouse;
+mod raw_map;
 mod render;
 mod styles;
 #[cfg(test)]

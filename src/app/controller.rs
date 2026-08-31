@@ -15,7 +15,9 @@ use antelope_protocol::{
 
 use super::picker::{AssignmentPickerState, SelectorPopupKind, SelectorPopupState};
 use super::profile_editor::{ProfileEditorMode, ProfileEditorState};
-use super::types::{FocusArea, Intent, PeakHoldDuration, PendingMutation, RawPacketTab, RefreshRate};
+use super::types::{
+    FocusArea, Intent, PeakHoldDuration, PendingMutation, RawMapScope, RawPacketTab, RefreshRate,
+};
 use super::AppState;
 
 pub(crate) const MAX_FRAMES_PER_POLL: usize = 32;
@@ -625,6 +627,11 @@ impl Controller {
             Intent::OpenSampleRateSelector => self.handle_open_sample_rate_selector(),
             Intent::OpenClockSourceSelector => self.handle_open_clock_source_selector(),
             Intent::SelectRawPacketTab(tab) => self.handle_select_raw_packet_tab(tab),
+            Intent::SelectRawMapScope(scope) => self.handle_select_raw_map_scope(scope),
+            Intent::CycleRawMapScope { forward } => self.handle_cycle_raw_map_scope(forward),
+            Intent::ScrollRawDump { increase, page } => {
+                self.handle_scroll_raw_dump(increase, page)
+            }
             Intent::SelectOutput(index) => self.handle_output_select(index),
             Intent::AdjustOutputLevel { index, increase } => {
                 self.handle_output_adjust(index, increase, pending)?
@@ -1060,7 +1067,19 @@ impl Controller {
     }
 
     fn handle_select_raw_packet_tab(&mut self, tab: RawPacketTab) {
-        self.state.raw_view.selected_tab = tab;
+        self.state.raw_view.select_tab(tab);
+    }
+
+    fn handle_select_raw_map_scope(&mut self, scope: RawMapScope) {
+        self.state.raw_view.select_scope(scope);
+    }
+
+    fn handle_cycle_raw_map_scope(&mut self, forward: bool) {
+        self.state.raw_view.cycle_scope(forward);
+    }
+
+    fn handle_scroll_raw_dump(&mut self, increase: bool, page: bool) {
+        self.state.raw_view.scroll_raw_view(increase, page);
     }
 
     fn handle_select_query_reply_entry(&mut self, index: usize) {
@@ -1073,6 +1092,7 @@ impl Controller {
                     .saturating_sub(1),
             ),
         );
+        self.state.raw_view.reset_raw_view_scroll();
     }
 
     fn handle_scroll_query_reply_list(&mut self, increase: bool) {

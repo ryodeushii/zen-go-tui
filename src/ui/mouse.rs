@@ -1,8 +1,8 @@
 use ratatui::layout::Rect;
 
 use crate::app::{
-    AppState, AssignmentPickerState, Intent, RawPacketTab, SelectorPopupKind, SelectorPopupState,
-    QUERY_REPLY_VISIBLE_COUNT,
+    AppState, AssignmentPickerState, Intent, RawMapScope, RawPacketTab, SelectorPopupKind,
+    SelectorPopupState, QUERY_REPLY_VISIBLE_COUNT,
 };
 use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, SampleRate};
 use antelope_protocol::{
@@ -11,6 +11,7 @@ use antelope_protocol::{
 };
 
 use super::layouts::*;
+use super::styles::section_block;
 
 fn any_modal_popup_open(state: &AppState) -> bool {
     state.popup.hotkeys_open
@@ -125,15 +126,13 @@ pub fn slider_wheel_action(
 
     let point = (x, y);
 
-    if state.popup.raw_view_open && state.raw_view.selected_tab == RawPacketTab::Query75 {
-        if let Some(action) = query_reply_wheel_action(area, state, point, increase) {
-            return Some(action);
-        }
-        return None;
-    }
-
     if state.popup.raw_view_open {
-        return None;
+        if state.raw_view.selected_tab == RawPacketTab::Query75 {
+            if let Some(action) = query_reply_wheel_action(area, state, point, increase) {
+                return Some(action);
+            }
+        }
+        return raw_dump_wheel_action(area, state, point, increase);
     }
 
     let chunks = root_chunks(area);
@@ -319,22 +318,37 @@ fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<I
             return Some(Intent::SelectRawPacketTab(RawPacketTab::DeviceNotification));
         }
     }
+    let scopes = raw_scope_hit_areas(layout[2], state.raw_view.selected_tab);
+    for (scope, scope_area) in RawMapScope::options_for(state.raw_view.selected_tab)
+        .iter()
+        .zip(scopes)
+    {
+        if contains_point(scope_area, point) {
+            return Some(Intent::SelectRawMapScope(*scope));
+        }
+    }
+
     if state.raw_view.selected_tab == RawPacketTab::Query75 {
-        let sections = query_reply_history_layout(layout[2]);
-        if !contains_point(sections[0], point) {
+        let content = raw_content_layout(layout[3], true);
+        let history = content.history()?;
+        if !contains_point(history, point) {
             return None;
         }
-        let inner = inner_area(sections[0]);
-        if point.1 < inner.y + 1 {
+        let inner = section_block("Recent 0x75 Replies", true).inner(history);
+        if !contains_point(inner, point) {
             return None;
         }
         let total = state.raw_view.recent_query_reply_entries.len();
-        let visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
+        let list_visible = QUERY_REPLY_VISIBLE_COUNT.min(total);
         let start = state
             .raw_view
             .query_reply_scroll
-            .min(total.saturating_sub(visible));
-        let row = point.1.saturating_sub(inner.y + 1) as usize;
+            .min(total.saturating_sub(list_visible));
+        let visible = list_visible.min(usize::from(inner.height));
+        if visible == 0 {
+            return None;
+        }
+        let row = point.1.saturating_sub(inner.y) as usize;
         if row >= visible {
             return None;
         }
@@ -356,8 +370,9 @@ fn query_reply_wheel_action(
     if state.raw_view.selected_tab != RawPacketTab::Query75 {
         return None;
     }
-    let sections = query_reply_history_layout(layout[2]);
-    if !contains_point(sections[0], point) {
+    let content = raw_content_layout(layout[3], true);
+    let history = content.history()?;
+    if !contains_point(history, point) {
         return None;
     }
     let total = state.raw_view.recent_query_reply_entries.len();
@@ -365,6 +380,27 @@ fn query_reply_wheel_action(
         return None;
     }
     Some(Intent::ScrollQueryReplyList { increase })
+}
+
+pub(crate) fn raw_dump_wheel_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+    increase: bool,
+) -> Option<Intent> {
+    if !state.popup.raw_view_open {
+        return None;
+    }
+    let content = raw_content_layout(
+        raw_page_layout(area)[3],
+        state.raw_view.selected_tab == RawPacketTab::Query75,
+    );
+    (contains_point(content.map(), point) || contains_point(content.dump(), point)).then_some(
+        Intent::ScrollRawDump {
+            increase,
+            page: false,
+        },
+    )
 }
 
 fn assignment_picker_mouse_action(

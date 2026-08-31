@@ -5,6 +5,8 @@ use ratatui::widgets::{Block, Borders};
 use crate::terminal;
 use antelope_protocol::{PreampInputState, PreampMode};
 
+use super::raw_map::{Coverage, RawByteClassification};
+
 #[cfg(test)]
 use crate::ui::layouts::{ADJUST_DOWN_BUTTON_LABEL, ADJUST_UP_BUTTON_LABEL};
 #[cfg(test)]
@@ -237,4 +239,71 @@ pub(crate) fn style_for_ascii_byte(byte: u8, changed: bool) -> Style {
     } else {
         style
     }
+}
+
+pub(crate) fn raw_coverage_color(coverage: Coverage, selected: bool) -> Color {
+    match coverage {
+        Coverage::Used => Color::Green,
+        Coverage::Readback => Color::Blue,
+        Coverage::Observed => Color::Yellow,
+        Coverage::Parser => Color::Cyan,
+        Coverage::Unmapped => {
+            if selected {
+                Color::LightRed
+            } else {
+                Color::Red
+            }
+        }
+        Coverage::Padding => Color::DarkGray,
+    }
+}
+
+pub(crate) fn style_for_raw_hex_byte(
+    byte: u8,
+    first_in_row: bool,
+    changed: bool,
+    classification: RawByteClassification,
+) -> Style {
+    let mut style = Style::default().fg(raw_coverage_color(
+        classification.coverage,
+        classification.selected,
+    ));
+
+    if byte == 0 || !classification.selected || classification.coverage == Coverage::Padding {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if classification.coverage != Coverage::Padding && (first_in_row || classification.selected) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if changed {
+        style = style.bg(Color::DarkGray).add_modifier(Modifier::UNDERLINED);
+    }
+
+    terminal::adapt_style(style)
+}
+
+pub(crate) fn style_for_raw_ascii_byte(
+    byte: u8,
+    changed: bool,
+    classification: RawByteClassification,
+) -> Style {
+    let mut style = Style::default().fg(raw_coverage_color(
+        classification.coverage,
+        classification.selected,
+    ));
+
+    if byte == 0 || !classification.selected || classification.coverage == Coverage::Padding {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if classification.coverage != Coverage::Padding && classification.selected {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if !byte.is_ascii_graphic() && byte != b' ' {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if changed {
+        style = style.bg(Color::DarkGray).add_modifier(Modifier::UNDERLINED);
+    }
+
+    terminal::adapt_style(style)
 }

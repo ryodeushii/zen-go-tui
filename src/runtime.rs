@@ -396,6 +396,34 @@ pub fn handle_key_press(
         {
             activate_popup_selection(controller)
         }
+        AppKeyCode::Char('[') if controller.state.popup.raw_view_open => {
+            controller.apply_intent(Intent::CycleRawMapScope { forward: false }, area)?;
+            Ok(())
+        }
+        AppKeyCode::Char(']') if controller.state.popup.raw_view_open => {
+            controller.apply_intent(Intent::CycleRawMapScope { forward: true }, area)?;
+            Ok(())
+        }
+        AppKeyCode::PageUp if controller.state.popup.raw_view_open => {
+            controller.apply_intent(
+                Intent::ScrollRawDump {
+                    increase: false,
+                    page: true,
+                },
+                area,
+            )?;
+            Ok(())
+        }
+        AppKeyCode::PageDown if controller.state.popup.raw_view_open => {
+            controller.apply_intent(
+                Intent::ScrollRawDump {
+                    increase: true,
+                    page: true,
+                },
+                area,
+            )?;
+            Ok(())
+        }
         AppKeyCode::Left if controller.state.popup.raw_view_open => {
             if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
                 controller.apply_intent(Intent::ScrollQueryReplyList { increase: false }, area)?;

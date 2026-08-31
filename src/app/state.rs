@@ -5,7 +5,7 @@ use antelope_protocol::{
     PreampState, SampleRate, Surface,
 };
 
-use super::types::{FocusArea, PeakHoldDuration, RawPacketTab, RefreshRate};
+use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
 use super::{AssignmentPickerState, ProfileEditorState, QueryReplyLogEntry, SelectorPopupState};
 
 /// Device connection and status tracking.
@@ -143,6 +143,9 @@ pub struct PopupState {
 #[derive(Debug, Clone)]
 pub struct RawViewState {
     pub selected_tab: RawPacketTab,
+    pub raw_map_scope: RawMapScope,
+    pub raw_dump_scroll: usize,
+    pub raw_map_scroll: usize,
     pub latest_raw_73: Option<[u8; 320]>,
     pub latest_raw_83: Option<[u8; 320]>,
     pub latest_raw_74: Option<[u8; 320]>,
@@ -226,6 +229,9 @@ impl Default for RawViewState {
     fn default() -> Self {
         Self {
             selected_tab: RawPacketTab::State73,
+            raw_map_scope: RawMapScope::All,
+            raw_dump_scroll: 0,
+            raw_map_scroll: 0,
             latest_raw_73: None,
             latest_raw_83: None,
             latest_raw_74: None,
@@ -242,6 +248,44 @@ impl Default for RawViewState {
             selected_query_reply_entry: None,
             query_reply_scroll: 0,
             last_auxiliary_len: None,
+        }
+    }
+}
+
+impl RawViewState {
+    pub fn reset_raw_view_scroll(&mut self) {
+        self.raw_dump_scroll = 0;
+        self.raw_map_scroll = 0;
+    }
+
+    pub fn select_tab(&mut self, tab: RawPacketTab) {
+        self.selected_tab = tab;
+        if !RawMapScope::options_for(tab).contains(&self.raw_map_scope) {
+            self.raw_map_scope = RawMapScope::All;
+        }
+        self.reset_raw_view_scroll();
+    }
+
+    pub fn select_scope(&mut self, scope: RawMapScope) {
+        if RawMapScope::options_for(self.selected_tab).contains(&scope) {
+            self.raw_map_scope = scope;
+            self.reset_raw_view_scroll();
+        }
+    }
+
+    pub fn cycle_scope(&mut self, forward: bool) {
+        self.raw_map_scope = self.raw_map_scope.next_for(self.selected_tab, forward);
+        self.reset_raw_view_scroll();
+    }
+
+    pub fn scroll_raw_view(&mut self, increase: bool, page: bool) {
+        let amount = if page { 10 } else { 1 };
+        if increase {
+            self.raw_dump_scroll = self.raw_dump_scroll.saturating_add(amount);
+            self.raw_map_scroll = self.raw_map_scroll.saturating_add(amount);
+        } else {
+            self.raw_dump_scroll = self.raw_dump_scroll.saturating_sub(amount);
+            self.raw_map_scroll = self.raw_map_scroll.saturating_sub(amount);
         }
     }
 }

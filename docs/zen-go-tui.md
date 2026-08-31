@@ -104,7 +104,9 @@ The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device m
 - `Up` / `Down` — adjust the focused output level, mixer fader, or preamp gain
 - `m` — toggle output mute or mixer mute
 - `d` — toggle output dim
-- `[` / `]` — adjust mixer pan left/right for the selected strip
+- `[` / `]` on the mixer page — adjust mixer pan left/right for the selected strip
+- `[` / `]` on the raw page — select the semantic map scope
+- `PageUp` / `PageDown` on the raw page — scroll the field map and byte dump
 - `a` — cycle grounded mixer assignments on the selected strip
 - `l` — toggle currently grounded mixer link selectors only
 - `3` — cycle preamp mode for the selected preamp input
@@ -116,15 +118,24 @@ The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device m
 - `1` — switch to Monitor / HP1 surface
 - `2` — switch to HP2 surface
 - `?` — show quick help
+- `Ctrl+D` — open or close the raw page
 - `q` — quit
 
 ## Raw frame view
 
-The TUI now includes a raw-data page for live protocol inspection.
+The TUI includes a raw-data page for live protocol inspection.
 
-- keep pressing `Tab` until the raw page is focused
-- the page shows the latest live `0x73`, `0x83`, `0x75`, and `0x81` packets
-- each pane renders a full hex + ASCII dump of the current packet state
+- press `Ctrl+D` to open or close the raw page
+- use packet tabs for `0x74`, `0x73`, `0x83`, `0x75`, and `0x81`
+- use semantic subtabs for scopes supported by the selected packet
+- press `[` or `]` to move between semantic scopes
+- press `PageUp` or `PageDown` to scroll the field map and byte dump
+- use the raw-view mouse wheel to scroll the map and dump
+- use the Query75 history pane to select a reply. The map and dump follow that reply
+- each pane keeps offsets, hex bytes, and ASCII visible
+- the legend defines coverage as `USED green | READBACK blue | OBSERVED amber | PARSER cyan | UNMAPPED red | PADDING gray`
+- `UNMAPPED` keeps offsets visible and highlights bytes without a grounded decoder
+- mixed mixer bytes use correlation-group labels
 - press `b` on the raw page to capture a baseline
 - press `x` to clear the baseline
 - bytes that changed relative to the baseline are highlighted, which is useful when isolating mixer-strip-related changes in late `0x73`
