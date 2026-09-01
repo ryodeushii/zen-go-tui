@@ -24,11 +24,19 @@
 //! let encoded = encode_command(cmd);
 //! ```
 
+pub mod driver;
+pub use driver::{
+    Action, CommandBatch, DeviceDefinition, DeviceDriver, DeviceEvent, DriverError,
+    DynamicDeviceState, DynamicMixerSurface,
+};
 mod encoder;
 mod frame;
 mod mixer;
 mod query;
 mod types;
+pub mod zen_go;
+
+pub use zen_go::ZenGoDriver;
 
 // Explicit re-exports for API stability and discoverability
 pub use encoder::{

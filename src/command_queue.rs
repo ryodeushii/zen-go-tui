@@ -1,4 +1,4 @@
-use antelope_protocol::{encode_command, Command};
+use antelope_protocol::{Action, DeviceDriver};
 
 use crate::transport::Transport;
 use anyhow::Result;
@@ -29,55 +29,56 @@ enum CoalesceKey {
 }
 
 /// Returns the coalescing key for a command, or `None` if it should not be coalesced.
-fn coalesce_key_for_command(cmd: &Command) -> Option<CoalesceKey> {
+fn coalesce_key_for_command(cmd: &Action) -> Option<CoalesceKey> {
     match cmd {
-        Command::SetMixerLevel { mixer, channel, .. } => Some(CoalesceKey::MixerLevel {
+        Action::SetMixerLevel { mixer, channel, .. } => Some(CoalesceKey::MixerLevel {
             mixer_code: mixer.code(),
             channel: *channel,
         }),
-        Command::SetMixerPan { mixer, channel, .. } => Some(CoalesceKey::MixerPan {
+        Action::SetMixerPan { mixer, channel, .. } => Some(CoalesceKey::MixerPan {
             mixer_code: mixer.code(),
             channel: *channel,
         }),
-        Command::SetMixerMute { mixer, channel, .. } => Some(CoalesceKey::MixerMute {
+        Action::SetMixerMute { mixer, channel, .. } => Some(CoalesceKey::MixerMute {
             mixer_code: mixer.code(),
             channel: *channel,
         }),
-        Command::SetMixerSolo { mixer, channel, .. } => Some(CoalesceKey::MixerSolo {
+        Action::SetMixerSolo { mixer, channel, .. } => Some(CoalesceKey::MixerSolo {
             mixer_code: mixer.code(),
             channel: *channel,
         }),
-        Command::SetOutputVolume { target, .. } => Some(CoalesceKey::OutputVolume {
+        Action::SetOutputVolume { target, .. } => Some(CoalesceKey::OutputVolume {
             target_code: (*target).index(),
         }),
-        Command::SetOutputMute { target, .. } => Some(CoalesceKey::OutputMute {
+        Action::SetOutputMute { target, .. } => Some(CoalesceKey::OutputMute {
             target_code: (*target).index(),
         }),
-        Command::SetOutputDim { target, .. } => Some(CoalesceKey::OutputDim {
+        Action::SetOutputDim { target, .. } => Some(CoalesceKey::OutputDim {
             target_code: (*target).index(),
         }),
-        Command::SetPreampGain { input, .. } => Some(CoalesceKey::PreampGain { input: *input }),
-        Command::SetPreampMode { input, .. } => Some(CoalesceKey::PreampMode { input: *input }),
-        Command::SetPreampPhantom { input, .. } => {
+        Action::SetPreampGain { input, .. } => Some(CoalesceKey::PreampGain { input: *input }),
+        Action::SetPreampMode { input, .. } => Some(CoalesceKey::PreampMode { input: *input }),
+        Action::SetPreampPhantom { input, .. } => {
             Some(CoalesceKey::PreampPhantom { input: *input })
         }
-        Command::SetPreampPhase { input, .. } => Some(CoalesceKey::PreampPhase { input: *input }),
-        Command::SetMixerAssignment { strip, .. } => {
+        Action::SetPreampPhase { input, .. } => Some(CoalesceKey::PreampPhase { input: *input }),
+        Action::SetMixerAssignment { strip, .. } => {
             Some(CoalesceKey::MixerAssignment { strip: *strip })
         }
-        Command::SetLinkState { selector, .. } => Some(CoalesceKey::LinkState {
+        Action::SetLinkState { selector, .. } => Some(CoalesceKey::LinkState {
             selector: *selector,
         }),
-        Command::SelectSurface(_) => Some(CoalesceKey::SelectSurface),
-        Command::SetSampleRate(_) => Some(CoalesceKey::SampleRate),
-        Command::SetClockSource(_) => Some(CoalesceKey::ClockSource),
+        Action::SelectSurface(_) => Some(CoalesceKey::SelectSurface),
+        Action::SetSampleRate(_) => Some(CoalesceKey::SampleRate),
+        Action::SetClockSource(_) => Some(CoalesceKey::ClockSource),
+        Action::Query(_) => None,
     }
 }
 
 /// A queued command awaiting dispatch to the transport.
 #[derive(Debug, Clone)]
 pub struct QueuedCommand {
-    pub command: Command,
+    pub command: Action,
 }
 
 /// A bounded command queue that coalesces duplicate commands.
@@ -102,7 +103,7 @@ impl CommandQueue {
     ///
     /// If the queue is at capacity and no coalescing occurs, the command is dropped
     /// and `false` is returned. Otherwise returns `true`.
-    pub fn enqueue(&mut self, command: Command) -> bool {
+    pub fn enqueue(&mut self, command: Action) -> bool {
         if let Some(key) = coalesce_key_for_command(&command) {
             // Try to find and replace an existing command with the same key
             for entry in &mut self.entries {
@@ -140,11 +141,19 @@ impl CommandQueue {
     /// commands already replaced by their latest version.
     ///
     /// Returns the number of commands sent, or an error if a write fails.
-    pub fn flush(&mut self, transport: &dyn Transport) -> Result<usize> {
+    pub fn flush(&mut self, transport: &dyn Transport, driver: &dyn DeviceDriver) -> Result<usize> {
         let count = self.entries.len();
         for entry in self.entries.drain(..) {
-            let frame = encode_command(entry.command).unwrap_single();
-            transport.write(&frame)?;
+            let batch = driver.encode(entry.command)?;
+            for frame in batch.frames {
+                transport.write(&frame)?;
+            }
+            for request in batch.refresh_requests {
+                let refresh = driver.encode(Action::Query(request))?;
+                for frame in refresh.frames {
+                    transport.write(&frame)?;
+                }
+            }
         }
         Ok(count)
     }
@@ -153,8 +162,8 @@ impl CommandQueue {
 #[cfg(test)]
 mod tests {
     use antelope_protocol::{
-        ClockSource, Command, MixerAssignment, MixerSurface, OutputTarget, PanState, PreampMode,
-        SampleRate, Surface,
+        Action, ClockSource, MixerAssignment, MixerSurface, OutputTarget, PanState, PreampMode,
+        SampleRate, Surface, ZenGoDriver,
     };
 
     use crate::transport::MockTransport;
@@ -165,7 +174,7 @@ mod tests {
     fn enqueue_coalesces_mixer_level_changes() {
         let mut queue = CommandQueue::new();
 
-        queue.enqueue(Command::SetMixerLevel {
+        queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix1,
             channel: 1,
             level: 0x10,
@@ -176,7 +185,7 @@ mod tests {
         assert_eq!(queue.len(), 1);
 
         // Same mixer+channel — should coalesce
-        queue.enqueue(Command::SetMixerLevel {
+        queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix1,
             channel: 1,
             level: 0x20,
@@ -187,7 +196,7 @@ mod tests {
         assert_eq!(queue.len(), 1);
 
         // Different channel — should not coalesce
-        queue.enqueue(Command::SetMixerLevel {
+        queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix1,
             channel: 2,
             level: 0x30,
@@ -198,7 +207,7 @@ mod tests {
         assert_eq!(queue.len(), 2);
 
         // Different mixer — should not coalesce
-        queue.enqueue(Command::SetMixerLevel {
+        queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix2,
             channel: 1,
             level: 0x40,
@@ -216,7 +225,7 @@ mod tests {
 
         // Rapid level changes on same channel
         for level in 0x10..=0x15 {
-            queue.enqueue(Command::SetMixerLevel {
+            queue.enqueue(Action::SetMixerLevel {
                 mixer: MixerSurface::Mix1,
                 channel: 3,
                 level,
@@ -227,7 +236,7 @@ mod tests {
         }
         assert_eq!(queue.len(), 1);
 
-        let count = queue.flush(&transport).expect("flush");
+        let count = queue.flush(&transport, &ZenGoDriver::new()).expect("flush");
         assert_eq!(count, 1);
 
         let writes = transport.take_writes();
@@ -244,14 +253,14 @@ mod tests {
         let mut queue = CommandQueue::new();
 
         // MixerPan
-        queue.enqueue(Command::SetMixerPan {
+        queue.enqueue(Action::SetMixerPan {
             mixer: MixerSurface::Mix1,
             channel: 1,
             pan: PanState::left(),
             muted: false,
             soloed: false,
         });
-        queue.enqueue(Command::SetMixerPan {
+        queue.enqueue(Action::SetMixerPan {
             mixer: MixerSurface::Mix1,
             channel: 1,
             pan: PanState::right(),
@@ -261,14 +270,14 @@ mod tests {
         assert_eq!(queue.len(), 1);
 
         // MixerMute
-        queue.enqueue(Command::SetMixerMute {
+        queue.enqueue(Action::SetMixerMute {
             mixer: MixerSurface::Mix1,
             channel: 1,
             muted: false,
             pan_state: PanState::center(),
             soloed: false,
         });
-        queue.enqueue(Command::SetMixerMute {
+        queue.enqueue(Action::SetMixerMute {
             mixer: MixerSurface::Mix1,
             channel: 1,
             muted: true,
@@ -278,14 +287,14 @@ mod tests {
         assert_eq!(queue.len(), 2);
 
         // MixerSolo
-        queue.enqueue(Command::SetMixerSolo {
+        queue.enqueue(Action::SetMixerSolo {
             mixer: MixerSurface::Mix1,
             channel: 1,
             soloed: false,
             muted: false,
             pan_state: PanState::center(),
         });
-        queue.enqueue(Command::SetMixerSolo {
+        queue.enqueue(Action::SetMixerSolo {
             mixer: MixerSurface::Mix1,
             channel: 1,
             soloed: true,
@@ -295,100 +304,102 @@ mod tests {
         assert_eq!(queue.len(), 3);
 
         // OutputVolume
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Monitor,
             step: 0x10,
         });
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Monitor,
             step: 0x20,
         });
         assert_eq!(queue.len(), 4);
 
         // OutputMute
-        queue.enqueue(Command::SetOutputMute {
+        queue.enqueue(Action::SetOutputMute {
             target: OutputTarget::Hp1,
             enabled: false,
         });
-        queue.enqueue(Command::SetOutputMute {
+        queue.enqueue(Action::SetOutputMute {
             target: OutputTarget::Hp1,
             enabled: true,
         });
         assert_eq!(queue.len(), 5);
 
         // OutputDim
-        queue.enqueue(Command::SetOutputDim {
+        queue.enqueue(Action::SetOutputDim {
             target: OutputTarget::Hp2,
             enabled: false,
         });
-        queue.enqueue(Command::SetOutputDim {
+        queue.enqueue(Action::SetOutputDim {
             target: OutputTarget::Hp2,
             enabled: true,
         });
         assert_eq!(queue.len(), 6);
 
         // PreampGain
-        queue.enqueue(Command::SetPreampGain {
+        queue.enqueue(Action::SetPreampGain {
             input: 0,
             raw: 0x20,
         });
-        queue.enqueue(Command::SetPreampGain {
+        queue.enqueue(Action::SetPreampGain {
             input: 0,
             raw: 0x30,
         });
         assert_eq!(queue.len(), 7);
 
         // PreampMode
-        queue.enqueue(Command::SetPreampMode {
+        queue.enqueue(Action::SetPreampMode {
             input: 0,
             mode: PreampMode::Mic,
         });
-        queue.enqueue(Command::SetPreampMode {
+        queue.enqueue(Action::SetPreampMode {
             input: 0,
             mode: PreampMode::Line,
         });
         assert_eq!(queue.len(), 8);
 
         // PreampPhantom
-        queue.enqueue(Command::SetPreampPhantom {
+        queue.enqueue(Action::SetPreampPhantom {
             input: 0,
             enabled: false,
         });
-        queue.enqueue(Command::SetPreampPhantom {
+        queue.enqueue(Action::SetPreampPhantom {
             input: 0,
             enabled: true,
         });
         assert_eq!(queue.len(), 9);
 
         // PreampPhase
-        queue.enqueue(Command::SetPreampPhase {
+        queue.enqueue(Action::SetPreampPhase {
             input: 0,
             enabled: false,
         });
-        queue.enqueue(Command::SetPreampPhase {
+        queue.enqueue(Action::SetPreampPhase {
             input: 0,
             enabled: true,
         });
         assert_eq!(queue.len(), 10);
 
         // MixerAssignment
-        queue.enqueue(Command::SetMixerAssignment {
+        queue.enqueue(Action::SetMixerAssignment {
             strip: 1,
             assignment: MixerAssignment::Mute,
+            assignments: [MixerAssignment::Mute; 16],
         });
-        queue.enqueue(Command::SetMixerAssignment {
+        queue.enqueue(Action::SetMixerAssignment {
             strip: 1,
             assignment: MixerAssignment::Preamp(1),
+            assignments: [MixerAssignment::Mute; 16],
         });
         assert_eq!(queue.len(), 11);
 
         // SetLinkState
-        queue.enqueue(Command::SetLinkState {
+        queue.enqueue(Action::SetLinkState {
             selector: 0x00,
             enabled: false,
             companion_bank: None,
         });
-        queue.enqueue(Command::SetLinkState {
+        queue.enqueue(Action::SetLinkState {
             selector: 0x00,
             enabled: true,
             companion_bank: None,
@@ -396,18 +407,18 @@ mod tests {
         assert_eq!(queue.len(), 12);
 
         // SelectSurface
-        queue.enqueue(Command::SelectSurface(Surface::MonitorHp1));
-        queue.enqueue(Command::SelectSurface(Surface::Hp2));
+        queue.enqueue(Action::SelectSurface(Surface::MonitorHp1));
+        queue.enqueue(Action::SelectSurface(Surface::Hp2));
         assert_eq!(queue.len(), 13);
 
         // SetSampleRate
-        queue.enqueue(Command::SetSampleRate(SampleRate::Hz48000));
-        queue.enqueue(Command::SetSampleRate(SampleRate::Hz96000));
+        queue.enqueue(Action::SetSampleRate(SampleRate::Hz48000));
+        queue.enqueue(Action::SetSampleRate(SampleRate::Hz96000));
         assert_eq!(queue.len(), 14);
 
         // SetClockSource
-        queue.enqueue(Command::SetClockSource(ClockSource::Internal));
-        queue.enqueue(Command::SetClockSource(ClockSource::Usb));
+        queue.enqueue(Action::SetClockSource(ClockSource::Internal));
+        queue.enqueue(Action::SetClockSource(ClockSource::Usb));
         assert_eq!(queue.len(), 15);
     }
 
@@ -416,7 +427,7 @@ mod tests {
         let mut queue = CommandQueue::new();
 
         // These commands have different coalesce keys and should all be queued
-        queue.enqueue(Command::SetMixerLevel {
+        queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix1,
             channel: 1,
             level: 0x10,
@@ -424,18 +435,18 @@ mod tests {
             muted: false,
             soloed: false,
         });
-        queue.enqueue(Command::SetMixerMute {
+        queue.enqueue(Action::SetMixerMute {
             mixer: MixerSurface::Mix1,
             channel: 1,
             muted: true,
             pan_state: PanState::center(),
             soloed: false,
         });
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Monitor,
             step: 0x20,
         });
-        queue.enqueue(Command::SetOutputMute {
+        queue.enqueue(Action::SetOutputMute {
             target: OutputTarget::Monitor,
             enabled: true,
         });
@@ -450,7 +461,7 @@ mod tests {
 
         // Fill the queue with commands on different keys
         for channel in 1..=(MAX_QUEUE_SIZE as u8) {
-            let ok = queue.enqueue(Command::SetMixerLevel {
+            let ok = queue.enqueue(Action::SetMixerLevel {
                 mixer: MixerSurface::Mix1,
                 channel,
                 level: 0x20,
@@ -465,7 +476,7 @@ mod tests {
         assert_eq!(queue.len(), MAX_QUEUE_SIZE);
 
         // Next command with a new key should be rejected
-        let ok = queue.enqueue(Command::SetMixerLevel {
+        let ok = queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix2,
             channel: 1,
             level: 0x30,
@@ -483,7 +494,7 @@ mod tests {
 
         // Fill with unique keys
         for channel in 1..=(MAX_QUEUE_SIZE as u8) {
-            queue.enqueue(Command::SetMixerLevel {
+            queue.enqueue(Action::SetMixerLevel {
                 mixer: MixerSurface::Mix1,
                 channel,
                 level: 0x20,
@@ -495,7 +506,7 @@ mod tests {
         assert_eq!(queue.len(), MAX_QUEUE_SIZE);
 
         // Coalescing should still work even when full
-        let ok = queue.enqueue(Command::SetMixerLevel {
+        let ok = queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix1,
             channel: 1,
             level: 0x30,
@@ -513,28 +524,28 @@ mod tests {
         let mut queue = CommandQueue::new();
 
         // Add commands for different targets
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Monitor,
             step: 0x10,
         });
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Hp1,
             step: 0x20,
         });
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Hp2,
             step: 0x30,
         });
 
         // Update Monitor (should replace first entry, keeping position)
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Monitor,
             step: 0x15,
         });
 
         assert_eq!(queue.len(), 3);
 
-        let count = queue.flush(&transport).expect("flush");
+        let count = queue.flush(&transport, &ZenGoDriver::new()).expect("flush");
         assert_eq!(count, 3);
 
         let writes = transport.take_writes();
@@ -552,16 +563,16 @@ mod tests {
         let transport = MockTransport::default();
         let mut queue = CommandQueue::new();
 
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Monitor,
             step: 0x10,
         });
-        queue.enqueue(Command::SetOutputVolume {
+        queue.enqueue(Action::SetOutputVolume {
             target: OutputTarget::Hp1,
             step: 0x20,
         });
 
-        queue.flush(&transport).expect("flush");
+        queue.flush(&transport, &ZenGoDriver::new()).expect("flush");
         assert!(queue.is_empty());
         assert_eq!(queue.len(), 0);
     }
@@ -571,7 +582,7 @@ mod tests {
         let transport = MockTransport::default();
         let mut queue = CommandQueue::new();
 
-        let count = queue.flush(&transport).expect("flush");
+        let count = queue.flush(&transport, &ZenGoDriver::new()).expect("flush");
         assert_eq!(count, 0);
     }
 
@@ -582,7 +593,7 @@ mod tests {
         let mut queue = CommandQueue::new();
 
         for level in 0x00..=0x60 {
-            queue.enqueue(Command::SetMixerLevel {
+            queue.enqueue(Action::SetMixerLevel {
                 mixer: MixerSurface::Mix1,
                 channel: 5,
                 level,
@@ -595,7 +606,7 @@ mod tests {
         // All coalesced into one
         assert_eq!(queue.len(), 1);
 
-        let count = queue.flush(&transport).expect("flush");
+        let count = queue.flush(&transport, &ZenGoDriver::new()).expect("flush");
         assert_eq!(count, 1);
 
         let writes = transport.take_writes();
@@ -613,7 +624,7 @@ mod tests {
         let mut queue = CommandQueue::new();
 
         // Coalescable: multiple level changes on same channel
-        queue.enqueue(Command::SetMixerLevel {
+        queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix1,
             channel: 1,
             level: 0x10,
@@ -621,7 +632,7 @@ mod tests {
             muted: false,
             soloed: false,
         });
-        queue.enqueue(Command::SetMixerLevel {
+        queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix1,
             channel: 1,
             level: 0x20,
@@ -631,7 +642,7 @@ mod tests {
         });
 
         // Different key: different channel
-        queue.enqueue(Command::SetMixerLevel {
+        queue.enqueue(Action::SetMixerLevel {
             mixer: MixerSurface::Mix1,
             channel: 2,
             level: 0x30,
@@ -641,7 +652,7 @@ mod tests {
         });
 
         // Different command type on same channel
-        queue.enqueue(Command::SetMixerMute {
+        queue.enqueue(Action::SetMixerMute {
             mixer: MixerSurface::Mix1,
             channel: 1,
             muted: true,
@@ -651,7 +662,7 @@ mod tests {
 
         assert_eq!(queue.len(), 3);
 
-        let count = queue.flush(&transport).expect("flush");
+        let count = queue.flush(&transport, &ZenGoDriver::new()).expect("flush");
         assert_eq!(count, 3);
 
         let writes = transport.take_writes();

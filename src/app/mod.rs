@@ -1,8 +1,10 @@
 use std::time::Instant;
 
 use antelope_protocol::{
-    ClockSource, DeviceSnapshot, DeviceStateSnapshot, MixerChannelState, MixerPassiveStripState,
-    MixerSurface, OutputState, PreampState, QueryResponse, SampleRate, Surface,
+    ClockSource, DeviceEvent, DeviceNotification, DeviceSnapshot, DeviceStateSnapshot,
+    DynamicDeviceState, DynamicMixerSurface, MixerChannelState, MixerPassiveDecode,
+    MixerPassiveStripState, MixerSurface, OutputState, PreampState, QueryResponse, SampleRate,
+    Surface,
 };
 
 mod types;
@@ -172,7 +174,31 @@ impl AppState {
             || prev.outputs != snapshot.outputs
             || prev.dsp_cluster != snapshot.dsp_cluster
             || prev.surface != snapshot.surface
-            || prev.mixer_surfaces != snapshot.mixer_decode.surfaces
+            || Self::mixer_surfaces_structurally_differ(
+                &prev.mixer_surfaces,
+                &snapshot.mixer_decode.surfaces,
+            )
+    }
+
+    /// Compares passive mixer state after the dynamic driver model normalizes missing pan to center.
+    fn mixer_surfaces_structurally_differ(
+        previous: &[[MixerPassiveStripState; 16]; 2],
+        current: &[[MixerPassiveStripState; 16]; 2],
+    ) -> bool {
+        previous
+            .iter()
+            .zip(current.iter())
+            .any(|(previous_surface, current_surface)| {
+                previous_surface.iter().zip(current_surface.iter()).any(
+                    |(previous_strip, current_strip)| {
+                        previous_strip.meter != current_strip.meter
+                            || previous_strip.muted != current_strip.muted
+                            || previous_strip.pan.unwrap_or_default()
+                                != current_strip.pan.unwrap_or_default()
+                            || previous_strip.linked != current_strip.linked
+                    },
+                )
+            })
     }
 
     fn apply_meters_only(&mut self, snapshot: &DeviceStateSnapshot) {
@@ -311,7 +337,47 @@ impl AppState {
         self.preamp.state.input2.observed_meter = observed_meter_input2;
     }
 
-    pub fn observe_frame(&mut self, frame: DeviceSnapshot, raw: [u8; 320]) -> bool {
+    pub fn observe_event(&mut self, event: DeviceEvent) -> bool {
+        match event {
+            DeviceEvent::Snapshot { state, raw } => {
+                let Some(snapshot) = legacy_snapshot_from_dynamic(state) else {
+                    return false;
+                };
+                self.observe_frame(DeviceSnapshot::Snapshot(snapshot), raw)
+            }
+            DeviceEvent::QueryReply {
+                query_id,
+                sub_id,
+                body,
+                raw,
+            } => self.observe_frame(
+                DeviceSnapshot::QueryReply(QueryResponse {
+                    query_id,
+                    sub_id,
+                    body,
+                }),
+                raw,
+            ),
+            DeviceEvent::Auxiliary { bytes, raw } => {
+                let Ok(bytes) = bytes.try_into() else {
+                    return false;
+                };
+                self.observe_frame(DeviceSnapshot::Auxiliary(bytes), raw)
+            }
+            DeviceEvent::Notification { bytes, raw } => {
+                let Ok(bytes) = bytes.try_into() else {
+                    return false;
+                };
+                self.observe_frame(
+                    DeviceSnapshot::Notification(DeviceNotification { bytes }),
+                    raw,
+                )
+            }
+        }
+    }
+
+    pub fn observe_frame<R: AsRef<[u8]>>(&mut self, frame: DeviceSnapshot, raw: R) -> bool {
+        let raw = raw.as_ref().to_vec();
         let was_connected = self.device.connection.connected;
         self.device.connection.connected = true;
         self.device.connection.last_snapshot_at = Some(Instant::now());
@@ -344,7 +410,7 @@ impl AppState {
             }
             DeviceSnapshot::QueryReply(reply) => {
                 self.device.connection.last_frame_type = Some("0x75 query reply");
-                self.raw_view.latest_raw_75 = Some(raw);
+                self.raw_view.latest_raw_75 = Some(raw.clone());
                 self.store_startup_query_summary(&reply);
                 self.apply_query_reply_readback(&reply);
                 self.push_query_reply_log(&reply, raw);
@@ -372,7 +438,7 @@ impl AppState {
         }
     }
 
-    fn push_query_reply_log(&mut self, reply: &QueryResponse, raw: [u8; 320]) {
+    fn push_query_reply_log(&mut self, reply: &QueryResponse, raw: Vec<u8>) {
         let detail = if reply.selector_bitmap().is_some() || reply.selector_pair_bank().is_some() {
             reply.summary_label()
         } else {
@@ -557,11 +623,11 @@ impl AppState {
     }
 
     pub fn capture_raw_baseline(&mut self) {
-        self.raw_view.baseline_raw_73 = self.raw_view.latest_raw_73;
-        self.raw_view.baseline_raw_83 = self.raw_view.latest_raw_83;
-        self.raw_view.baseline_raw_74 = self.raw_view.latest_raw_74;
-        self.raw_view.baseline_raw_75 = self.raw_view.latest_raw_75;
-        self.raw_view.baseline_raw_81 = self.raw_view.latest_raw_81;
+        self.raw_view.baseline_raw_73 = self.raw_view.latest_raw_73.clone();
+        self.raw_view.baseline_raw_83 = self.raw_view.latest_raw_83.clone();
+        self.raw_view.baseline_raw_74 = self.raw_view.latest_raw_74.clone();
+        self.raw_view.baseline_raw_75 = self.raw_view.latest_raw_75.clone();
+        self.raw_view.baseline_raw_81 = self.raw_view.latest_raw_81.clone();
     }
 
     pub fn clear_raw_baseline(&mut self) {
@@ -572,10 +638,11 @@ impl AppState {
         self.raw_view.baseline_raw_81 = None;
     }
 
-    pub fn observe_query_request(&mut self, raw: [u8; 320]) {
-        self.raw_view.latest_raw_74 = Some(raw);
+    pub fn observe_query_request<R: AsRef<[u8]>>(&mut self, raw: R) {
+        let raw = raw.as_ref().to_vec();
         let query_id = raw.get(0x08).copied().unwrap_or(0);
         let sub_id = raw.get(0x0c).copied().unwrap_or(0);
+        self.raw_view.latest_raw_74 = Some(raw);
         self.raw_view
             .recent_query_request_log
             .push(format!("0x74 {:02x}/{:02x}", query_id, sub_id));
@@ -584,6 +651,71 @@ impl AppState {
             self.raw_view.recent_query_request_log.drain(0..drop_count);
         }
     }
+}
+
+fn legacy_snapshot_from_dynamic(state: DynamicDeviceState) -> Option<DeviceStateSnapshot> {
+    let DynamicDeviceState {
+        sample_rate,
+        clock_source,
+        sample_rate_hz,
+        status_flags,
+        front_panel_bytes,
+        outputs,
+        preamps,
+        dsp_cluster,
+        surface,
+        mixer_surfaces,
+        late_shadow,
+    } = state;
+
+    let status_flags: [u8; 2] = status_flags.try_into().ok()?;
+    let front_panel_bytes: [u8; 3] = front_panel_bytes.try_into().ok()?;
+    let outputs: [OutputState; 3] = outputs.try_into().ok()?;
+    let preamps: [antelope_protocol::PreampInputState; 2] = preamps.try_into().ok()?;
+    let dsp_cluster: [u8; 4] = dsp_cluster.try_into().ok()?;
+    let late_shadow: [u8; 12] = late_shadow.try_into().ok()?;
+
+    let mut mixer_decode = MixerPassiveDecode::default();
+    let mut seen_surfaces = [false; 2];
+    for DynamicMixerSurface { mixer, strips } in mixer_surfaces {
+        let mixer_index = mixer.index();
+        if seen_surfaces[mixer_index] {
+            return None;
+        }
+        let strips: [MixerChannelState; 16] = strips.try_into().ok()?;
+        for (index, strip) in strips.into_iter().enumerate() {
+            mixer_decode.surfaces[mixer_index][index] = MixerPassiveStripState {
+                meter: strip.meter,
+                muted: strip.muted,
+                pan: Some(strip.pan),
+                linked: strip.linked,
+            };
+        }
+        seen_surfaces[mixer_index] = true;
+    }
+    if seen_surfaces != [true; 2] {
+        return None;
+    }
+    mixer_decode.observed_preamp1_meter = preamps[0].observed_meter;
+    mixer_decode.observed_preamp2_meter = preamps[1].observed_meter;
+
+    Some(DeviceStateSnapshot {
+        sample_rate,
+        clock_source,
+        sample_rate_hz,
+        status_flags,
+        front_panel_bytes,
+        outputs,
+        dsp_cluster,
+        preamp: PreampState {
+            input1: preamps[0],
+            input2: preamps[1],
+            cluster: dsp_cluster,
+        },
+        surface,
+        mixer_decode,
+        late_shadow,
+    })
 }
 
 fn startup_query_slot(query_id: u8) -> Option<usize> {
@@ -604,11 +736,13 @@ mod tests {
         MixerStripProfile, OutputModeProfile, OutputProfile, OutputProfiles, PreampInputProfile,
         PreampModeProfile, PreampProfiles,
     };
-    use crate::transport::MockTransport;
+    use crate::transport::{MockTransport, Transport};
     use antelope_protocol::{
-        ClockSource, Command, DeviceSnapshot, DeviceStateSnapshot, Frame, MixerAssignment,
+        Action, ClockSource, Command, CommandBatch, DeviceDefinition, DeviceDriver, DeviceEvent,
+        DeviceSnapshot, DeviceStateSnapshot, DriverError, Frame, MixerAssignment,
         MixerChannelState, MixerLinkTarget, MixerStrip, MixerSurface, OutputMode, OutputState,
-        OutputTarget, PanState, PreampMode, PreampState, QueryResponse, SampleRate, Surface,
+        OutputTarget, PanState, PreampMode, PreampState, QueryRequest, QueryResponse, SampleRate,
+        Surface, ZenGoDriver,
     };
 
     use super::controller::MAX_FRAMES_PER_POLL;
@@ -618,6 +752,76 @@ mod tests {
         let mut raw = [0_u8; 320];
         raw[..bytes.len()].copy_from_slice(bytes);
         raw
+    }
+
+    fn zen_go_controller(transport: Box<dyn Transport>) -> Controller {
+        Controller::new(transport, Box::new(ZenGoDriver::new())).expect("Zen Go controller")
+    }
+
+    struct UnsupportedDriver {
+        definition: DeviceDefinition,
+    }
+
+    impl UnsupportedDriver {
+        fn new() -> Self {
+            Self {
+                definition: DeviceDefinition {
+                    id: "unsupported-test-driver",
+                    name: "Unsupported test driver",
+                    vid: 0x23e5,
+                    pid: 0xffff,
+                    supported: false,
+                },
+            }
+        }
+    }
+
+    impl DeviceDriver for UnsupportedDriver {
+        fn definition(&self) -> &DeviceDefinition {
+            &self.definition
+        }
+
+        fn startup_requests(&self) -> &[QueryRequest] {
+            &[]
+        }
+
+        fn encode(&self, _action: Action) -> Result<CommandBatch, DriverError> {
+            Err(DriverError::UnsupportedAction("test driver"))
+        }
+
+        fn decode(&self, _bytes: &[u8]) -> Result<Option<DeviceEvent>, DriverError> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn controller_rejects_unsupported_driver_before_writes() {
+        let transport = MockTransport::default();
+        let result = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(UnsupportedDriver::new()),
+        );
+        let error = match result {
+            Ok(_) => panic!("unsupported driver must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("Unsupported test driver"));
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn normalized_query_event_preserves_owned_raw_bytes() {
+        let mut state = AppState::default();
+        let raw = vec![0x75; 320];
+
+        assert!(state.observe_event(DeviceEvent::QueryReply {
+            query_id: 0x00,
+            sub_id: 0x00,
+            body: vec![0x01, 0x02],
+            raw: raw.clone(),
+        }));
+        assert_eq!(state.raw_view.latest_raw_75, Some(raw));
     }
 
     fn aux_frame(bytes: &[u8]) -> [u8; 320] {
@@ -644,7 +848,7 @@ mod tests {
         }
     }
 
-    fn seed_shared_assignments(state: &mut AppState) {
+    fn seed_shared_assignments(state: &mut AppState) -> [MixerAssignment; 16] {
         let assignments = [
             MixerAssignment::Preamp(1),
             MixerAssignment::Preamp(2),
@@ -669,6 +873,8 @@ mod tests {
                 channel.assignment = Some(assignment);
             }
         }
+
+        assignments
     }
 
     fn assignment_pairs(frame: &[u8], count: usize) -> Vec<[u8; 2]> {
@@ -1182,14 +1388,14 @@ mod tests {
     #[test]
     fn preamp_pending_gain_updates_authoritative_cluster() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
         controller.state.device.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
         controller.state.preamp.state =
             PreampState::from_cluster(controller.state.device.dsp_cluster);
 
         controller
             .send(
-                Command::SetPreampGain {
+                Action::SetPreampGain {
                     input: 1,
                     raw: 0x2d,
                 },
@@ -1208,7 +1414,7 @@ mod tests {
     #[test]
     fn preamp_pending_updates_preserve_observed_input_meters() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
         controller.state.device.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
         controller.state.preamp.state =
             PreampState::from_cluster(controller.state.device.dsp_cluster);
@@ -1216,7 +1422,7 @@ mod tests {
 
         controller
             .send(
-                Command::SetPreampGain {
+                Action::SetPreampGain {
                     input: 1,
                     raw: 0x2d,
                 },
@@ -1239,14 +1445,14 @@ mod tests {
     #[test]
     fn preamp_pending_mode_phantom_and_phase_update_state() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
         controller.state.device.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
         controller.state.preamp.state =
             PreampState::from_cluster(controller.state.device.dsp_cluster);
 
         controller
             .send(
-                Command::SetPreampMode {
+                Action::SetPreampMode {
                     input: 0,
                     mode: PreampMode::Line,
                 },
@@ -1264,7 +1470,7 @@ mod tests {
             PreampState::from_cluster(controller.state.device.dsp_cluster);
         controller
             .send(
-                Command::SetPreampPhantom {
+                Action::SetPreampPhantom {
                     input: 1,
                     enabled: true,
                 },
@@ -1282,7 +1488,7 @@ mod tests {
             PreampState::from_cluster(controller.state.device.dsp_cluster);
         controller
             .send(
-                Command::SetPreampPhase {
+                Action::SetPreampPhase {
                     input: 1,
                     enabled: true,
                 },
@@ -1299,7 +1505,7 @@ mod tests {
     #[test]
     fn apply_profile_updates_known_controls_and_writes_commands() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         let profile = DeviceProfile {
             outputs: OutputProfiles {
                 monitor: OutputProfile {
@@ -1401,11 +1607,11 @@ mod tests {
     #[test]
     fn bootstrap_sends_queries_and_mutations_use_transport() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller.bootstrap().expect("bootstrap");
         controller
-            .send(Command::SetClockSource(ClockSource::Usb), None)
+            .send(Action::SetClockSource(ClockSource::Usb), None)
             .expect("write command");
         controller.flush_commands().expect("flush");
 
@@ -1421,11 +1627,11 @@ mod tests {
     #[test]
     fn clock_source_command_updates_visible_state_immediately() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
         controller.state.device.status.clock_source = Some(ClockSource::Usb);
 
         controller
-            .send(Command::SetClockSource(ClockSource::Internal), None)
+            .send(Action::SetClockSource(ClockSource::Internal), None)
             .expect("set clock source");
 
         assert_eq!(
@@ -1437,7 +1643,7 @@ mod tests {
     #[test]
     fn bootstrap_queries_include_metadata_request() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller.bootstrap().expect("bootstrap");
 
@@ -1450,10 +1656,10 @@ mod tests {
     #[test]
     fn surface_select_refreshes_query_readback() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller
-            .send(Command::SelectSurface(Surface::Hp2), None)
+            .send(Action::SelectSurface(Surface::Hp2), None)
             .expect("select surface");
         controller.flush_commands().expect("flush");
 
@@ -1467,10 +1673,10 @@ mod tests {
     #[test]
     fn clock_source_change_does_not_force_refresh_query_readback() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller
-            .send(Command::SetClockSource(ClockSource::Usb), None)
+            .send(Action::SetClockSource(ClockSource::Usb), None)
             .expect("set clock source");
         controller.flush_commands().expect("flush");
 
@@ -1482,10 +1688,10 @@ mod tests {
     #[test]
     fn sample_rate_change_does_not_force_refresh_query_readback() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller
-            .send(Command::SetSampleRate(SampleRate::Hz96000), None)
+            .send(Action::SetSampleRate(SampleRate::Hz96000), None)
             .expect("set sample rate");
         controller.flush_commands().expect("flush");
 
@@ -1497,11 +1703,11 @@ mod tests {
     #[test]
     fn mixer_overlay_is_tracked_only_after_command_round_trip() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller
             .send(
-                Command::SetMixerLevel {
+                Action::SetMixerLevel {
                     mixer: antelope_protocol::MixerSurface::Mix1,
                     channel: 3,
                     level: 0x2c,
@@ -1536,7 +1742,7 @@ mod tests {
     #[test]
     fn linked_mixer_level_change_writes_and_updates_both_channels() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].linked = Some(true);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].linked = Some(true);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
@@ -1580,7 +1786,7 @@ mod tests {
     #[test]
     fn linked_mixer_mute_change_writes_and_updates_both_channels() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].linked = Some(true);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].linked = Some(true);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
@@ -1616,7 +1822,7 @@ mod tests {
     #[test]
     fn linked_mixer_solo_change_writes_and_updates_both_channels() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].linked = Some(true);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].linked = Some(true);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
@@ -1654,7 +1860,7 @@ mod tests {
     #[test]
     fn queried_mixer_strip_readback_updates_solo_state() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
         let mut body = [0x5a, 0x20].repeat(32);
         body[0] = 0x10;
         body[1] = 0xa0;
@@ -1700,7 +1906,7 @@ mod tests {
     #[test]
     fn mixer_link_change_updates_pair_before_device_confirmation() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
 
         controller
             .send_mixer_link_change(MixerSurface::Mix1, 1, true)
@@ -1719,7 +1925,7 @@ mod tests {
     #[test]
     fn mixer_link_change_writes_selector_and_updates_pair() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller
             .send_mixer_link_change(MixerSurface::Mix1, 11, true)
@@ -1769,7 +1975,7 @@ mod tests {
     #[test]
     fn mixer_assignment_is_shared_across_surfaces_but_link_is_not() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
 
         controller.pending_mutation = Some(PendingMutation::MixerAssignment {
             strip: 11,
@@ -1780,7 +1986,7 @@ mod tests {
         let target = MixerLinkTarget::from_channel(MixerSurface::Mix2, 1).expect("mix2 1-2");
         controller
             .send(
-                Command::SetLinkState {
+                Action::SetLinkState {
                     selector: target.selector,
                     enabled: true,
                     companion_bank: target.companion_bank(),
@@ -1823,7 +2029,7 @@ mod tests {
     #[test]
     fn mixer_assignment_overlay_updates_both_surfaces_for_strip_11() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
 
         controller.pending_mutation = Some(PendingMutation::MixerAssignment {
             strip: 11,
@@ -1844,14 +2050,15 @@ mod tests {
     #[test]
     fn mixer_assignment_write_sends_ordinary_strip_frames_and_updates_shared_state() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller.state);
 
         controller
             .send(
-                Command::SetMixerAssignment {
+                Action::SetMixerAssignment {
                     strip: 5,
                     assignment: MixerAssignment::Oscillator(1),
+                    assignments: [MixerAssignment::Mute; 16],
                 },
                 Some(PendingMutation::MixerAssignment {
                     strip: 5,
@@ -1879,14 +2086,15 @@ mod tests {
     #[test]
     fn mixer_assignment_write_sends_early_strip_frames_and_updates_shared_state() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller.state);
 
         controller
             .send(
-                Command::SetMixerAssignment {
+                Action::SetMixerAssignment {
                     strip: 1,
                     assignment: MixerAssignment::Oscillator(1),
+                    assignments: [MixerAssignment::Mute; 16],
                 },
                 Some(PendingMutation::MixerAssignment {
                     strip: 1,
@@ -1914,14 +2122,15 @@ mod tests {
     #[test]
     fn late_strip_assignment_write_preserves_existing_assignment_table_entries() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
-        seed_shared_assignments(&mut controller.state);
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
+        let assignments = seed_shared_assignments(&mut controller.state);
 
         controller
             .send(
-                Command::SetMixerAssignment {
+                Action::SetMixerAssignment {
                     strip: 11,
                     assignment: MixerAssignment::ComputerPlay(1),
+                    assignments,
                 },
                 None,
             )
@@ -1959,7 +2168,7 @@ mod tests {
     #[test]
     fn link_overlay_respects_full_visible_pair_mapping() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
 
         for target in [
             MixerLinkTarget::from_channel(MixerSurface::Mix1, 1).expect("mix1 1-2"),
@@ -1970,7 +2179,7 @@ mod tests {
         ] {
             controller
                 .send(
-                    Command::SetLinkState {
+                    Action::SetLinkState {
                         selector: target.selector,
                         enabled: true,
                         companion_bank: target.companion_bank(),
@@ -2003,12 +2212,12 @@ mod tests {
     #[test]
     fn grounded_link_with_companion_writes_helper_before_selector_write() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         let target = MixerLinkTarget::from_channel(MixerSurface::Mix1, 1).expect("mix1 1-2");
 
         controller
             .send(
-                Command::SetLinkState {
+                Action::SetLinkState {
                     selector: target.selector,
                     enabled: true,
                     companion_bank: target.companion_bank(),
@@ -2040,11 +2249,11 @@ mod tests {
     #[test]
     fn mixer_pan_updates_are_tracked_per_surface() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
 
         controller
             .send(
-                Command::SetMixerPan {
+                Action::SetMixerPan {
                     mixer: MixerSurface::Mix1,
                     channel: 4,
                     pan: PanState::from_raw(0x08),
@@ -2062,7 +2271,7 @@ mod tests {
 
         controller
             .send(
-                Command::SetMixerPan {
+                Action::SetMixerPan {
                     mixer: MixerSurface::Mix2,
                     channel: 4,
                     pan: PanState::from_raw(0x36),
@@ -2095,11 +2304,11 @@ mod tests {
     #[test]
     fn mixer_mute_does_not_invent_zero_level_for_undecoded_channel() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
 
         controller
             .send(
-                Command::SetMixerMute {
+                Action::SetMixerMute {
                     mixer: antelope_protocol::MixerSurface::Mix1,
                     channel: 7,
                     muted: true,
@@ -2127,7 +2336,7 @@ mod tests {
 
         controller
             .send(
-                Command::SetMixerMute {
+                Action::SetMixerMute {
                     mixer: antelope_protocol::MixerSurface::Mix1,
                     channel: 7,
                     muted: false,
@@ -2157,11 +2366,11 @@ mod tests {
     #[test]
     fn mixer_state_is_tracked_per_surface() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
 
         controller
             .send(
-                Command::SetMixerLevel {
+                Action::SetMixerLevel {
                     mixer: MixerSurface::Mix1,
                     channel: 3,
                     level: 0x2c,
@@ -2182,7 +2391,7 @@ mod tests {
 
         controller
             .send(
-                Command::SetMixerLevel {
+                Action::SetMixerLevel {
                     mixer: MixerSurface::Mix2,
                     channel: 3,
                     level: 0x10,
@@ -2214,14 +2423,14 @@ mod tests {
     #[test]
     fn mixer_first_adjustment_starts_from_safe_midpoint_not_minimum() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Mixer;
         controller.state.mixer.selected_channel = 0;
 
         let channel = controller.state.active_mixer_channels()[0].channel;
         controller
             .send(
-                Command::SetMixerLevel {
+                Action::SetMixerLevel {
                     mixer: MixerSurface::from_surface(controller.state.mixer.surface),
                     channel,
                     level: 0x1f,
@@ -2271,7 +2480,7 @@ mod tests {
         let mut state = AppState::default();
         state.device.connection.connected = true;
         state.latest_structural_snapshot = Some(StructuralSnapshot::from_snapshot(&snapshot()));
-        state.raw_view.latest_raw_73 = Some(raw_frame(&[0x73, 0, 0, 0]));
+        state.raw_view.latest_raw_73 = Some(raw_frame(&[0x73, 0, 0, 0]).to_vec());
 
         assert!(!state.observe_frame(
             DeviceSnapshot::Snapshot(snapshot()),
@@ -2285,7 +2494,7 @@ mod tests {
         state.device.connection.connected = true;
         state.popup.raw_view_open = true;
         state.latest_structural_snapshot = Some(StructuralSnapshot::from_snapshot(&snapshot()));
-        state.raw_view.latest_raw_73 = Some(raw_frame(&[0x73, 0, 0, 0]));
+        state.raw_view.latest_raw_73 = Some(raw_frame(&[0x73, 0, 0, 0]).to_vec());
 
         assert!(state.observe_frame(
             DeviceSnapshot::Snapshot(snapshot()),
@@ -2319,7 +2528,7 @@ mod tests {
     #[test]
     fn poll_device_does_not_mark_identical_snapshot_dirty_when_view_is_unchanged() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
         let raw = snapshot_frame_bytes(0x12);
         let snapshot = Frame::parse(&raw)
             .expect("snapshot frame")
@@ -2329,7 +2538,7 @@ mod tests {
         controller.state.device.connection.connected = true;
         controller.state.latest_structural_snapshot =
             Some(StructuralSnapshot::from_snapshot(&snapshot));
-        controller.state.raw_view.latest_raw_73 = Some(raw);
+        controller.state.raw_view.latest_raw_73 = Some(raw.to_vec());
         controller.state.apply_snapshot(&snapshot);
 
         transport.push_read(raw.to_vec());
@@ -2348,7 +2557,7 @@ mod tests {
             transport.push_read(snapshot_frame_bytes((meter % 0x3d) as u8).to_vec());
         }
 
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
         let started = Instant::now();
         let mut dirty_polls = 0_usize;
         for _ in 0..polls {
@@ -2366,7 +2575,7 @@ mod tests {
     #[test]
     fn poll_device_drains_backlog_to_latest_snapshot() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         let mut first = raw_frame(&[]);
         first[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
@@ -2403,7 +2612,7 @@ mod tests {
     #[test]
     fn poll_device_reports_idle_reads_without_marking_state_dirty() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = zen_go_controller(Box::new(transport));
 
         let observed_frame = controller.poll_device(Duration::ZERO).expect("idle poll");
 
@@ -2456,9 +2665,9 @@ mod tests {
             raw81,
         );
 
-        assert_eq!(state.raw_view.latest_raw_75, Some(raw75));
-        assert_eq!(state.raw_view.latest_raw_81, Some(raw81));
-        assert_eq!(state.raw_view.latest_raw_74, Some(raw74));
+        assert_eq!(state.raw_view.latest_raw_75, Some(raw75.to_vec()));
+        assert_eq!(state.raw_view.latest_raw_81, Some(raw81.to_vec()));
+        assert_eq!(state.raw_view.latest_raw_74, Some(raw74.to_vec()));
         assert_eq!(state.raw_view.recent_query_request_log.len(), 1);
         assert!(state.raw_view.recent_query_request_log[0].contains("0x74 11/03"));
         assert_eq!(state.raw_view.recent_query_reply_log.len(), 1);
@@ -2658,8 +2867,8 @@ mod tests {
         assert_eq!(
             state
                 .selected_query_reply_entry()
-                .map(|entry| entry.raw),
-            Some(raw_frame(&[0x75, 0x02]))
+                .map(|entry| entry.raw.clone()),
+            Some(raw_frame(&[0x75, 0x02]).to_vec())
         );
 
         state.cycle_query_reply_entry(false);

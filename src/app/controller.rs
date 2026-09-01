@@ -7,10 +7,9 @@ use crate::command_queue::CommandQueue;
 use crate::profile::{preamp_mode_raw, DeviceProfile};
 use crate::transport::Transport;
 use antelope_protocol::{
-    control_panel_startup_queries, encode_command, encode_link_companion,
-    encode_mixer_assignment_frames_with_table, encode_query, ClockSource, Command, DeviceSnapshot,
-    EncodeResult, Frame, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface,
-    OutputMode, OutputTarget, PanState, PreampMode, SampleRate, Surface,
+    Action, ClockSource, CommandBatch, DeviceDriver, DeviceEvent, MixerAssignment,
+    MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode, OutputTarget, PanState,
+    PreampMode, QueryRequest, SampleRate, Surface,
 };
 
 use super::picker::{AssignmentPickerState, SelectorPopupKind, SelectorPopupState};
@@ -24,19 +23,25 @@ pub(crate) const MAX_FRAMES_PER_POLL: usize = 32;
 
 pub struct Controller {
     transport: Box<dyn Transport>,
+    driver: Box<dyn DeviceDriver>,
     pub state: AppState,
     pub(crate) pending_mutation: Option<PendingMutation>,
     command_queue: CommandQueue,
 }
 
 impl Controller {
-    pub fn new(transport: Box<dyn Transport>) -> Self {
-        Self {
+    pub fn new(transport: Box<dyn Transport>, driver: Box<dyn DeviceDriver>) -> Result<Self> {
+        if !driver.definition().supported {
+            bail!("driver {} is unsupported", driver.definition().name);
+        }
+
+        Ok(Self {
             transport,
+            driver,
             state: AppState::default(),
             pending_mutation: None,
             command_queue: CommandQueue::new(),
-        }
+        })
     }
 
     pub fn bootstrap(&mut self) -> Result<()> {
@@ -48,12 +53,38 @@ impl Controller {
     }
 
     pub fn refresh_queried_state(&mut self) -> Result<()> {
-        for query in control_panel_startup_queries() {
-            let frame = encode_query(*query);
-            self.state.observe_query_request(frame);
-            self.transport.write(&frame)?;
+        let queries = self.driver.startup_requests().to_vec();
+        for query in queries {
+            self.write_query(query)?;
         }
         Ok(())
+    }
+
+    fn write_query(&mut self, query: QueryRequest) -> Result<()> {
+        let batch = self.driver.encode(Action::Query(query))?;
+        for frame in batch.frames {
+            self.state.observe_query_request(&frame);
+            self.transport.write(&frame)?;
+        }
+        for refresh_query in batch.refresh_requests {
+            self.write_query(refresh_query)?;
+        }
+        Ok(())
+    }
+
+    fn write_batch(&mut self, batch: CommandBatch) -> Result<()> {
+        for frame in batch.frames {
+            self.transport.write(&frame)?;
+        }
+        for query in batch.refresh_requests {
+            self.write_query(query)?;
+        }
+        Ok(())
+    }
+
+    fn write_action(&mut self, action: Action) -> Result<()> {
+        let batch = self.driver.encode(action)?;
+        self.write_batch(batch)
     }
 
     pub fn apply_profile(&mut self, profile: &DeviceProfile) -> Result<()> {
@@ -68,21 +99,21 @@ impl Controller {
             (OutputTarget::Hp2, &profile.outputs.hp2),
         ] {
             self.send(
-                Command::SetOutputVolume {
+                Action::SetOutputVolume {
                     target,
                     step: output.volume_step,
                 },
                 None,
             )?;
             self.send(
-                Command::SetOutputDim {
+                Action::SetOutputDim {
                     target,
                     enabled: false,
                 },
                 None,
             )?;
             self.send(
-                Command::SetOutputMute {
+                Action::SetOutputMute {
                     target,
                     enabled: false,
                 },
@@ -91,14 +122,14 @@ impl Controller {
             match output.mode.into_device() {
                 OutputMode::Normal => {}
                 OutputMode::Mute => self.send(
-                    Command::SetOutputMute {
+                    Action::SetOutputMute {
                         target,
                         enabled: true,
                     },
                     None,
                 )?,
                 OutputMode::Dim => self.send(
-                    Command::SetOutputDim {
+                    Action::SetOutputDim {
                         target,
                         enabled: true,
                     },
@@ -114,28 +145,28 @@ impl Controller {
             (1_u8, &profile.preamps.input2),
         ] {
             self.send(
-                Command::SetPreampMode {
+                Action::SetPreampMode {
                     input,
                     mode: preamp.mode.into_device(),
                 },
                 None,
             )?;
             self.send(
-                Command::SetPreampGain {
+                Action::SetPreampGain {
                     input,
                     raw: preamp.gain_raw,
                 },
                 None,
             )?;
             self.send(
-                Command::SetPreampPhantom {
+                Action::SetPreampPhantom {
                     input,
                     enabled: preamp.phantom_on,
                 },
                 None,
             )?;
             self.send(
-                Command::SetPreampPhase {
+                Action::SetPreampPhase {
                     input,
                     enabled: preamp.phase_inverted,
                 },
@@ -146,13 +177,14 @@ impl Controller {
 
         let assignments = profile.assignment_table()?;
         for entry in &profile.assignments {
-            for frame in encode_mixer_assignment_frames_with_table(
-                entry.channel,
-                entry.source.into_device(),
-                &assignments,
-            ) {
-                self.transport.write(&frame)?;
-            }
+            self.send(
+                Action::SetMixerAssignment {
+                    strip: entry.channel,
+                    assignment: entry.source.into_device(),
+                    assignments,
+                },
+                None,
+            )?;
         }
 
         for (mixer, strips) in [
@@ -164,7 +196,7 @@ impl Controller {
             }
             for strip in strips {
                 self.send(
-                    Command::SetMixerLevel {
+                    Action::SetMixerLevel {
                         mixer,
                         channel: strip.channel,
                         level: strip.level_raw,
@@ -211,55 +243,30 @@ impl Controller {
         Ok(assignments)
     }
 
-    pub fn send(&mut self, command: Command, pending: Option<PendingMutation>) -> Result<()> {
-        let result = encode_command(command);
-        match result {
-            EncodeResult::Single(_) => {
-                self.command_queue.enqueue(command);
-            }
-            EncodeResult::Multi(frames) => {
-                self.flush_commands()?;
-                for frame in &*frames {
-                    self.transport.write(frame)?;
-                }
-            }
-            EncodeResult::WithCompanion { companion, main } => {
-                self.flush_commands()?;
-                self.transport.write(companion.as_ref())?;
-                self.transport.write(main.as_ref())?;
-            }
-            EncodeResult::WithRefresh(frame) => {
-                self.flush_commands()?;
-                self.transport.write(&frame)?;
-                self.apply_command_state_update(&command);
-                self.pending_mutation = pending;
-                self.state.ui.last_message = format!("Sent {:?}", command);
-                self.refresh_queried_state()?;
-                return Ok(());
-            }
-            EncodeResult::MixerAssignment { strip, assignment } => {
-                let assignments = self.shared_assignment_table()?;
-                let frames =
-                    encode_mixer_assignment_frames_with_table(strip, assignment, &assignments);
-                self.flush_commands()?;
-                for frame in frames {
-                    self.transport.write(&frame)?;
-                }
-            }
+    pub fn send(&mut self, action: Action, pending: Option<PendingMutation>) -> Result<()> {
+        let batch = self.driver.encode(action.clone())?;
+        let queueable = !matches!(action, Action::SetMixerAssignment { .. })
+            && batch.frames.len() == 1
+            && batch.refresh_requests.is_empty();
+        if queueable {
+            self.command_queue.enqueue(action.clone());
+        } else {
+            self.flush_commands()?;
+            self.write_batch(batch)?;
         }
-        self.apply_command_state_update(&command);
+        self.apply_command_state_update(&action);
         self.pending_mutation = pending;
-        self.state.ui.last_message = format!("Sent {:?}", command);
+        self.state.ui.last_message = format!("Sent {:?}", action);
         Ok(())
     }
 
-    /// Applies immediate state updates for commands that affect visible state.
-    fn apply_command_state_update(&mut self, command: &Command) {
-        match command {
-            Command::SetClockSource(source) => {
+    /// Applies immediate state updates for actions that affect visible state.
+    fn apply_command_state_update(&mut self, action: &Action) {
+        match action {
+            Action::SetClockSource(source) => {
                 self.state.device.status.clock_source = Some(*source);
             }
-            Command::SetSampleRate(rate) => {
+            Action::SetSampleRate(rate) => {
                 self.state.device.status.sample_rate = Some(*rate);
                 self.state.device.status.sample_rate_hz = rate.hz();
             }
@@ -269,7 +276,8 @@ impl Controller {
 
     /// Flushes all pending commands from the queue to the transport.
     pub fn flush_commands(&mut self) -> Result<()> {
-        self.command_queue.flush(self.transport.as_ref())?;
+        self.command_queue
+            .flush(self.transport.as_ref(), self.driver.as_ref())?;
         Ok(())
     }
 
@@ -340,28 +348,22 @@ impl Controller {
                 right_muted: right.muted.unwrap_or(false),
             });
             self.flush_commands()?;
-            self.transport.write(
-                &encode_command(Command::SetMixerLevel {
-                    mixer,
-                    channel: left_ch,
-                    level,
-                    pan_state: left.pan,
-                    muted: left.muted.unwrap_or(false),
-                    soloed: left.soloed.unwrap_or(false),
-                })
-                .unwrap_single(),
-            )?;
-            self.transport.write(
-                &encode_command(Command::SetMixerLevel {
-                    mixer,
-                    channel: right_ch,
-                    level,
-                    pan_state: right.pan,
-                    muted: right.muted.unwrap_or(false),
-                    soloed: right.soloed.unwrap_or(false),
-                })
-                .unwrap_single(),
-            )?;
+            self.write_action(Action::SetMixerLevel {
+                mixer,
+                channel: left_ch,
+                level,
+                pan_state: left.pan,
+                muted: left.muted.unwrap_or(false),
+                soloed: left.soloed.unwrap_or(false),
+            })?;
+            self.write_action(Action::SetMixerLevel {
+                mixer,
+                channel: right_ch,
+                level,
+                pan_state: right.pan,
+                muted: right.muted.unwrap_or(false),
+                soloed: right.soloed.unwrap_or(false),
+            })?;
             self.pending_mutation = pending_mutation;
             self.state.ui.last_message = format!(
                 "Sent linked mixer level {:?} ch {}-{}",
@@ -377,7 +379,7 @@ impl Controller {
         }
 
         self.send(
-            Command::SetMixerLevel {
+            Action::SetMixerLevel {
                 mixer,
                 channel,
                 level,
@@ -427,26 +429,20 @@ impl Controller {
                 muted,
             });
             self.flush_commands()?;
-            self.transport.write(
-                &encode_command(Command::SetMixerMute {
-                    mixer,
-                    channel: left_ch,
-                    muted,
-                    pan_state: left.pan,
-                    soloed: left.soloed.unwrap_or(false),
-                })
-                .unwrap_single(),
-            )?;
-            self.transport.write(
-                &encode_command(Command::SetMixerMute {
-                    mixer,
-                    channel: right_ch,
-                    muted,
-                    pan_state: right.pan,
-                    soloed: right.soloed.unwrap_or(false),
-                })
-                .unwrap_single(),
-            )?;
+            self.write_action(Action::SetMixerMute {
+                mixer,
+                channel: left_ch,
+                muted,
+                pan_state: left.pan,
+                soloed: left.soloed.unwrap_or(false),
+            })?;
+            self.write_action(Action::SetMixerMute {
+                mixer,
+                channel: right_ch,
+                muted,
+                pan_state: right.pan,
+                soloed: right.soloed.unwrap_or(false),
+            })?;
             self.pending_mutation = pending_mutation;
             self.state.ui.last_message = format!(
                 "Sent linked mixer mute {:?} ch {}-{}",
@@ -460,7 +456,7 @@ impl Controller {
         }
 
         self.send(
-            Command::SetMixerMute {
+            Action::SetMixerMute {
                 mixer,
                 channel,
                 muted,
@@ -507,26 +503,20 @@ impl Controller {
                 soloed,
             });
             self.flush_commands()?;
-            self.transport.write(
-                &encode_command(Command::SetMixerSolo {
-                    mixer,
-                    channel: left_ch,
-                    soloed,
-                    muted: left.muted.unwrap_or(false),
-                    pan_state: left.pan,
-                })
-                .unwrap_single(),
-            )?;
-            self.transport.write(
-                &encode_command(Command::SetMixerSolo {
-                    mixer,
-                    channel: right_ch,
-                    soloed,
-                    muted: right.muted.unwrap_or(false),
-                    pan_state: right.pan,
-                })
-                .unwrap_single(),
-            )?;
+            self.write_action(Action::SetMixerSolo {
+                mixer,
+                channel: left_ch,
+                soloed,
+                muted: left.muted.unwrap_or(false),
+                pan_state: left.pan,
+            })?;
+            self.write_action(Action::SetMixerSolo {
+                mixer,
+                channel: right_ch,
+                soloed,
+                muted: right.muted.unwrap_or(false),
+                pan_state: right.pan,
+            })?;
             self.pending_mutation = pending_mutation;
             self.state.ui.last_message = format!(
                 "Sent linked mixer solo {:?} ch {}-{}",
@@ -540,7 +530,7 @@ impl Controller {
         }
 
         self.send(
-            Command::SetMixerSolo {
+            Action::SetMixerSolo {
                 mixer,
                 channel,
                 soloed,
@@ -571,21 +561,14 @@ impl Controller {
             enabled,
         });
         self.flush_commands()?;
-        if let Some(bank) = target.companion_bank() {
-            self.transport
-                .write(&encode_link_companion(bank, enabled))?;
-        }
-        self.transport.write(
-            &encode_command(Command::SetLinkState {
-                selector: target.selector,
-                enabled,
-                companion_bank: None,
-            })
-            .unwrap_single(),
-        )?;
+        self.write_action(Action::SetLinkState {
+            selector: target.selector,
+            enabled,
+            companion_bank: target.companion_bank(),
+        })?;
         for channel in [target.left_channel, target.right_channel] {
-            if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                .get_mut(usize::from(channel - 1))
+            if let Some(slot) =
+                self.state.mixer.channels[mixer.index()].get_mut(usize::from(channel - 1))
             {
                 slot.linked = Some(enabled);
             }
@@ -615,7 +598,9 @@ impl Controller {
             Intent::SetRefreshRate(rate) => self.handle_set_refresh_rate(rate),
             Intent::CyclePeakThreshold(increase) => self.handle_cycle_peak_threshold(increase),
             Intent::TogglePeakEnabled => self.handle_toggle_peak_enabled(),
-            Intent::CyclePeakHoldDuration(duration) => self.handle_cycle_peak_hold_duration(duration),
+            Intent::CyclePeakHoldDuration(duration) => {
+                self.handle_cycle_peak_hold_duration(duration)
+            }
             Intent::ToggleAutoSave => self.handle_toggle_auto_save(),
             Intent::SelectProfile(index) => self.handle_select_profile(index),
             Intent::LoadSelectedProfile => self.handle_load_selected_profile(),
@@ -629,9 +614,7 @@ impl Controller {
             Intent::SelectRawPacketTab(tab) => self.handle_select_raw_packet_tab(tab),
             Intent::SelectRawMapScope(scope) => self.handle_select_raw_map_scope(scope),
             Intent::CycleRawMapScope { forward } => self.handle_cycle_raw_map_scope(forward),
-            Intent::ScrollRawDump { increase, page } => {
-                self.handle_scroll_raw_dump(increase, page)
-            }
+            Intent::ScrollRawDump { increase, page } => self.handle_scroll_raw_dump(increase, page),
             Intent::SelectOutput(index) => self.handle_output_select(index),
             Intent::AdjustOutputLevel { index, increase } => {
                 self.handle_output_adjust(index, increase, pending)?
@@ -657,15 +640,9 @@ impl Controller {
                 self.handle_adjust_mixer_pan(index, right, pending)?
             }
             Intent::SetMixerPan { index, pan } => self.handle_set_mixer_pan(index, pan, pending)?,
-            Intent::ToggleMixerMute(channel) => {
-                self.handle_toggle_mixer_mute(channel, pending)?
-            }
-            Intent::ToggleMixerSolo(channel) => {
-                self.handle_toggle_mixer_solo(channel, pending)?
-            }
-            Intent::ToggleMixerLink(channel) => {
-                self.handle_toggle_mixer_link(channel, pending)?
-            }
+            Intent::ToggleMixerMute(channel) => self.handle_toggle_mixer_mute(channel, pending)?,
+            Intent::ToggleMixerSolo(channel) => self.handle_toggle_mixer_solo(channel, pending)?,
+            Intent::ToggleMixerLink(channel) => self.handle_toggle_mixer_link(channel, pending)?,
             Intent::OpenAssignmentPicker(strip) => self.handle_open_assignment_picker(strip),
             Intent::PickAssignment { strip, assignment } => {
                 self.handle_pick_assignment(strip, assignment, pending)?
@@ -679,28 +656,18 @@ impl Controller {
             Intent::SetPreampGain { input, raw } => {
                 self.handle_set_preamp_gain(input, raw, pending)?
             }
-            Intent::OpenPreampModeSelector(input) => {
-                self.handle_open_preamp_mode_selector(input)
-            }
-            Intent::CyclePreampMode(input) => {
-                self.handle_cycle_preamp_mode(input, pending)?
-            }
+            Intent::OpenPreampModeSelector(input) => self.handle_open_preamp_mode_selector(input),
+            Intent::CyclePreampMode(input) => self.handle_cycle_preamp_mode(input, pending)?,
             Intent::PickSampleRate(rate) => self.handle_pick_sample_rate(rate, pending)?,
-            Intent::PickClockSource(source) => {
-                self.handle_pick_clock_source(source, pending)?
-            }
+            Intent::PickClockSource(source) => self.handle_pick_clock_source(source, pending)?,
             Intent::PickPreampMode { input, mode } => {
                 self.handle_pick_preamp_mode(input, mode, pending)?
             }
-            Intent::TogglePreampPhase(input) => {
-                self.handle_toggle_preamp_phase(input, pending)?
-            }
+            Intent::TogglePreampPhase(input) => self.handle_toggle_preamp_phase(input, pending)?,
             Intent::TogglePreampPhantom(input) => {
                 self.handle_toggle_preamp_phantom(input, pending)?
             }
-            Intent::AdjustFocused(increase) => {
-                self.handle_adjust_focused(increase, pending)?
-            }
+            Intent::AdjustFocused(increase) => self.handle_adjust_focused(increase, pending)?,
             Intent::ToggleFocusedMute => self.handle_toggle_focused_mute(pending)?,
             Intent::ToggleFocusedDim => self.handle_toggle_focused_dim(pending)?,
             Intent::ToggleRoutingPopup => self.handle_toggle_routing_popup(),
@@ -732,12 +699,11 @@ impl Controller {
 
             next_timeout = Duration::ZERO;
 
-            if let Ok(frame) = Frame::parse_owned(bytes) {
-                let (snapshot, raw) = frame.into_snapshot_and_raw();
-                if matches!(&snapshot, DeviceSnapshot::Snapshot(_)) {
+            if let Ok(Some(event)) = self.driver.decode(&bytes) {
+                if matches!(event, DeviceEvent::Snapshot { .. }) {
                     state_dirty |= self.confirm_pending_write();
                 }
-                state_dirty |= self.state.observe_frame(snapshot, raw);
+                state_dirty |= self.state.observe_event(event);
             }
         }
 
@@ -941,7 +907,12 @@ impl Controller {
         self.state.output.selected = index.min(self.state.output.states.len() - 1);
     }
 
-    fn handle_output_adjust(&mut self, index: usize, increase: bool, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_output_adjust(
+        &mut self,
+        index: usize,
+        increase: bool,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Outputs;
         self.state.output.selected = index.min(self.state.output.states.len() - 1);
         let output = self.state.output.states[self.state.output.selected];
@@ -952,7 +923,7 @@ impl Controller {
         };
         self.state.output.states[self.state.output.selected].volume = next;
         self.send(
-            Command::SetOutputVolume {
+            Action::SetOutputVolume {
                 target: output.target,
                 step: next,
             },
@@ -961,13 +932,18 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_output_set_level(&mut self, index: usize, step: u8, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_output_set_level(
+        &mut self,
+        index: usize,
+        step: u8,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Outputs;
         self.state.output.selected = index.min(self.state.output.states.len() - 1);
         let output = self.state.output.states[self.state.output.selected];
         self.state.output.states[self.state.output.selected].volume = step.min(0x60);
         self.send(
-            Command::SetOutputVolume {
+            Action::SetOutputVolume {
                 target: output.target,
                 step: step.min(0x60),
             },
@@ -976,7 +952,11 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_output_toggle_dim(&mut self, index: usize, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_output_toggle_dim(
+        &mut self,
+        index: usize,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Outputs;
         self.state.output.selected = index.min(self.state.output.states.len() - 1);
         let output = self.state.output.states[self.state.output.selected];
@@ -987,7 +967,7 @@ impl Controller {
         };
         self.state.output.states[self.state.output.selected].mode = new_mode;
         self.send(
-            Command::SetOutputDim {
+            Action::SetOutputDim {
                 target: output.target,
                 enabled: output.mode != OutputMode::Dim,
             },
@@ -996,7 +976,11 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_output_toggle_mute(&mut self, index: usize, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_output_toggle_mute(
+        &mut self,
+        index: usize,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Outputs;
         self.state.output.selected = index.min(self.state.output.states.len() - 1);
         let output = self.state.output.states[self.state.output.selected];
@@ -1007,7 +991,7 @@ impl Controller {
         };
         self.state.output.states[self.state.output.selected].mode = new_mode;
         self.send(
-            Command::SetOutputMute {
+            Action::SetOutputMute {
                 target: output.target,
                 enabled: output.mode != OutputMode::Mute,
             },
@@ -1052,17 +1036,25 @@ impl Controller {
         });
     }
 
-    fn handle_pick_sample_rate(&mut self, rate: SampleRate, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_pick_sample_rate(
+        &mut self,
+        rate: SampleRate,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.popup.selector_popup = None;
         self.state.popup.selected_index = 0;
-        self.send(Command::SetSampleRate(rate), pending)?;
+        self.send(Action::SetSampleRate(rate), pending)?;
         Ok(())
     }
 
-    fn handle_pick_clock_source(&mut self, source: ClockSource, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_pick_clock_source(
+        &mut self,
+        source: ClockSource,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.popup.selector_popup = None;
         self.state.popup.selected_index = 0;
-        self.send(Command::SetClockSource(source), pending)?;
+        self.send(Action::SetClockSource(source), pending)?;
         Ok(())
     }
 
@@ -1101,8 +1093,7 @@ impl Controller {
 
     fn handle_capture_raw_baseline(&mut self) {
         self.state.capture_raw_baseline();
-        self.state.ui.last_message =
-            "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
+        self.state.ui.last_message = "Captured raw baseline for 0x73/0x83/0x75/0x81".to_string();
     }
 
     fn handle_clear_raw_baseline(&mut self) {
@@ -1117,8 +1108,7 @@ impl Controller {
         self.state.ui.focus = FocusArea::Mixer;
         self.state.mixer.selected_channel = self.state.mixer.selected_channel.min(7);
         self.state.ui.last_message =
-            "Routing popup mirrors mixer assignments for USB recording channels 1-8"
-                .to_string();
+            "Routing popup mirrors mixer assignments for USB recording channels 1-8".to_string();
     }
 
     fn handle_close_routing_popup(&mut self) {
@@ -1129,8 +1119,7 @@ impl Controller {
     fn handle_toggle_routing_popup(&mut self) {
         self.state.popup.routing_open = !self.state.popup.routing_open;
         self.state.ui.last_message = if self.state.popup.routing_open {
-            "Routing popup mirrors mixer assignments for USB recording channels 1-8"
-                .to_string()
+            "Routing popup mirrors mixer assignments for USB recording channels 1-8".to_string()
         } else {
             "Closed routing popup".to_string()
         };
@@ -1203,8 +1192,7 @@ impl Controller {
 
     fn handle_cycle_peak_hold_duration(&mut self, duration: PeakHoldDuration) {
         self.state.ui.settings.peak_hold_duration = duration;
-        self.state.ui.last_message =
-            format!("Peak hold duration set to {}", duration.label());
+        self.state.ui.last_message = format!("Peak hold duration set to {}", duration.label());
         if self.state.ui.settings.auto_save {
             let _ = crate::settings::save_settings(&self.state.ui.settings);
         }
@@ -1225,7 +1213,12 @@ impl Controller {
         self.state.preamp.selected_input = input.min(1);
     }
 
-    fn handle_adjust_preamp_gain(&mut self, input: u8, increase: bool, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_adjust_preamp_gain(
+        &mut self,
+        input: u8,
+        increase: bool,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
         self.state.preamp.selected_input = input.min(1) as usize;
         let current = if input == 0 {
@@ -1237,18 +1230,23 @@ impl Controller {
         self.state.device.dsp_cluster[input.min(1) as usize] = next;
         self.state
             .refresh_preamp_from_cluster_preserving_observed_meter();
-        self.send(Command::SetPreampGain { input, raw: next }, pending)?;
+        self.send(Action::SetPreampGain { input, raw: next }, pending)?;
         Ok(())
     }
 
-    fn handle_set_preamp_gain(&mut self, input: u8, raw: u8, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_set_preamp_gain(
+        &mut self,
+        input: u8,
+        raw: u8,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
         self.state.preamp.selected_input = input.min(1) as usize;
         self.state.device.dsp_cluster[input.min(1) as usize] = raw;
         self.state
             .refresh_preamp_from_cluster_preserving_observed_meter();
         self.send(
-            Command::SetPreampGain {
+            Action::SetPreampGain {
                 input: input.min(1),
                 raw,
             },
@@ -1265,17 +1263,20 @@ impl Controller {
         } else {
             self.state.preamp.state.input2.mode
         };
-        self.state.popup.selected_index =
-            [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
-                .iter()
-                .position(|mode| *mode == current)
-                .unwrap_or(0);
+        self.state.popup.selected_index = [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
+            .iter()
+            .position(|mode| *mode == current)
+            .unwrap_or(0);
         self.state.popup.selector_popup = Some(SelectorPopupState {
             kind: SelectorPopupKind::PreampMode { input },
         });
     }
 
-    fn handle_cycle_preamp_mode(&mut self, input: u8, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_cycle_preamp_mode(
+        &mut self,
+        input: u8,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
         self.state.preamp.selected_input = input.min(1) as usize;
         let current = if input == 0 {
@@ -1288,20 +1289,29 @@ impl Controller {
             PreampMode::Line => PreampMode::HiZ,
             PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
         };
-        self.send(Command::SetPreampMode { input, mode: next }, pending)?;
+        self.send(Action::SetPreampMode { input, mode: next }, pending)?;
         Ok(())
     }
 
-    fn handle_pick_preamp_mode(&mut self, input: u8, mode: PreampMode, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_pick_preamp_mode(
+        &mut self,
+        input: u8,
+        mode: PreampMode,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.popup.selector_popup = None;
         self.state.popup.selected_index = 0;
         self.state.ui.focus = FocusArea::Preamp;
         self.state.preamp.selected_input = input.min(1) as usize;
-        self.send(Command::SetPreampMode { input, mode }, pending)?;
+        self.send(Action::SetPreampMode { input, mode }, pending)?;
         Ok(())
     }
 
-    fn handle_toggle_preamp_phase(&mut self, input: u8, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_toggle_preamp_phase(
+        &mut self,
+        input: u8,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
         self.state.preamp.selected_input = input.min(1) as usize;
         let mode_raw = if input == 0 {
@@ -1310,7 +1320,7 @@ impl Controller {
             self.state.preamp.state.input2.mode_raw
         };
         self.send(
-            Command::SetPreampPhase {
+            Action::SetPreampPhase {
                 input,
                 enabled: mode_raw & 0x40 == 0,
             },
@@ -1319,7 +1329,11 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_toggle_preamp_phantom(&mut self, input: u8, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_toggle_preamp_phantom(
+        &mut self,
+        input: u8,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
         self.state.preamp.selected_input = input.min(1) as usize;
         let current = if input == 0 {
@@ -1328,7 +1342,7 @@ impl Controller {
             self.state.preamp.state.input2
         };
         self.send(
-            Command::SetPreampPhantom {
+            Action::SetPreampPhantom {
                 input,
                 enabled: !current.phantom_on,
             },
@@ -1348,12 +1362,15 @@ impl Controller {
         self.state.mixer.selected_channel = index;
     }
 
-    fn handle_adjust_mixer_level(&mut self, index: usize, increase: bool, _pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_adjust_mixer_level(
+        &mut self,
+        index: usize,
+        increase: bool,
+        _pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel =
-            index.min(self.state.active_mixer_channels().len() - 1);
-        let active_channel =
-            self.state.active_mixer_channels()[self.state.mixer.selected_channel];
+        self.state.mixer.selected_channel = index.min(self.state.active_mixer_channels().len() - 1);
+        let active_channel = self.state.active_mixer_channels()[self.state.mixer.selected_channel];
         let current = active_channel.level.unwrap_or(0x20);
         let next = if increase {
             current.saturating_sub(1)
@@ -1368,12 +1385,15 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_set_mixer_level(&mut self, index: usize, level: u8, _pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_set_mixer_level(
+        &mut self,
+        index: usize,
+        level: u8,
+        _pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel =
-            index.min(self.state.active_mixer_channels().len() - 1);
-        let active_channel =
-            self.state.active_mixer_channels()[self.state.mixer.selected_channel];
+        self.state.mixer.selected_channel = index.min(self.state.active_mixer_channels().len() - 1);
+        let active_channel = self.state.active_mixer_channels()[self.state.mixer.selected_channel];
         self.send_mixer_level_change(
             MixerSurface::from_surface(self.state.mixer.surface),
             active_channel.channel,
@@ -1382,12 +1402,15 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_adjust_mixer_pan(&mut self, index: usize, right: bool, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_adjust_mixer_pan(
+        &mut self,
+        index: usize,
+        right: bool,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel =
-            index.min(self.state.active_mixer_channels().len() - 1);
-        let active_channel =
-            self.state.active_mixer_channels()[self.state.mixer.selected_channel];
+        self.state.mixer.selected_channel = index.min(self.state.active_mixer_channels().len() - 1);
+        let active_channel = self.state.active_mixer_channels()[self.state.mixer.selected_channel];
         let next = if right {
             active_channel
                 .pan
@@ -1408,7 +1431,7 @@ impl Controller {
             slot.pan = PanState::from_raw(next);
         }
         self.send(
-            Command::SetMixerPan {
+            Action::SetMixerPan {
                 mixer: surface,
                 channel: active_channel.channel,
                 pan: PanState::from_raw(next),
@@ -1420,12 +1443,15 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_set_mixer_pan(&mut self, index: usize, pan: PanState, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_set_mixer_pan(
+        &mut self,
+        index: usize,
+        pan: PanState,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel =
-            index.min(self.state.active_mixer_channels().len() - 1);
-        let active_channel =
-            self.state.active_mixer_channels()[self.state.mixer.selected_channel];
+        self.state.mixer.selected_channel = index.min(self.state.active_mixer_channels().len() - 1);
+        let active_channel = self.state.active_mixer_channels()[self.state.mixer.selected_channel];
         let surface = MixerSurface::from_surface(self.state.mixer.surface);
         if let Some(slot) = self.state.mixer.channels[surface.index()]
             .get_mut(active_channel.channel.saturating_sub(1) as usize)
@@ -1433,7 +1459,7 @@ impl Controller {
             slot.pan = pan;
         }
         self.send(
-            Command::SetMixerPan {
+            Action::SetMixerPan {
                 mixer: surface,
                 channel: active_channel.channel,
                 pan,
@@ -1445,42 +1471,42 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_toggle_mixer_mute(&mut self, channel: u8, _pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_toggle_mixer_mute(
+        &mut self,
+        channel: u8,
+        _pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
         self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
         let mixer = MixerSurface::from_surface(self.state.mixer.surface);
         let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
-        self.send_mixer_mute_change(
-            mixer,
-            channel,
-            !active_channel.muted.unwrap_or(false),
-        )?;
+        self.send_mixer_mute_change(mixer, channel, !active_channel.muted.unwrap_or(false))?;
         Ok(())
     }
 
-    fn handle_toggle_mixer_solo(&mut self, channel: u8, _pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_toggle_mixer_solo(
+        &mut self,
+        channel: u8,
+        _pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
         self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
         let mixer = MixerSurface::from_surface(self.state.mixer.surface);
         let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
-        self.send_mixer_solo_change(
-            mixer,
-            channel,
-            !active_channel.soloed.unwrap_or(false),
-        )?;
+        self.send_mixer_solo_change(mixer, channel, !active_channel.soloed.unwrap_or(false))?;
         Ok(())
     }
 
-    fn handle_toggle_mixer_link(&mut self, channel: u8, _pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_toggle_mixer_link(
+        &mut self,
+        channel: u8,
+        _pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
         self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
         let mixer = MixerSurface::from_surface(self.state.mixer.surface);
         let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
-        self.send_mixer_link_change(
-            mixer,
-            channel,
-            !active_channel.linked.unwrap_or(false),
-        )?;
+        self.send_mixer_link_change(mixer, channel, !active_channel.linked.unwrap_or(false))?;
         Ok(())
     }
 
@@ -1502,15 +1528,27 @@ impl Controller {
                 })
                 .unwrap_or(0);
             self.state.popup.assignment_picker = Some(AssignmentPickerState { strip });
-            self.state.ui.last_message =
-                format!("Pick source assignment for CH {strip:02}");
+            self.state.ui.last_message = format!("Pick source assignment for CH {strip:02}");
         }
     }
 
-    fn handle_pick_assignment(&mut self, strip: u8, assignment: MixerAssignment, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_pick_assignment(
+        &mut self,
+        strip: u8,
+        assignment: MixerAssignment,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.popup.assignment_picker = None;
         self.state.popup.selected_index = 0;
-        self.send(Command::SetMixerAssignment { strip, assignment }, pending)?;
+        let assignments = self.shared_assignment_table()?;
+        self.send(
+            Action::SetMixerAssignment {
+                strip,
+                assignment,
+                assignments,
+            },
+            pending,
+        )?;
         Ok(())
     }
 
@@ -1525,8 +1563,7 @@ impl Controller {
         self.state.popup.selector_popup = None;
         self.state.popup.routing_open = false;
         self.state.popup.profile_editor = None;
-        self.state.popup.profile_names =
-            crate::profile::list_profile_names().unwrap_or_default();
+        self.state.popup.profile_names = crate::profile::list_profile_names().unwrap_or_default();
         self.state.clamp_profile_selection();
         self.state.popup.profiles_open = true;
         self.state.ui.last_message = if self.state.popup.profile_names.is_empty() {
@@ -1648,8 +1685,7 @@ impl Controller {
                                         format!("Saved profile to {}", path.display());
                                 }
                                 Err(e) => {
-                                    self.state.ui.last_message =
-                                        format!("Profile error: {e}");
+                                    self.state.ui.last_message = format!("Profile error: {e}");
                                 }
                             },
                             Err(e) => {
@@ -1670,13 +1706,11 @@ impl Controller {
                                             format!("Renamed {original} to {name}");
                                     }
                                     Err(e) => {
-                                        self.state.ui.last_message =
-                                            format!("Profile error: {e}");
+                                        self.state.ui.last_message = format!("Profile error: {e}");
                                     }
                                 }
                             } else {
-                                self.state.ui.last_message =
-                                    "Profile name unchanged".to_string();
+                                self.state.ui.last_message = "Profile name unchanged".to_string();
                             }
                         }
                     }
@@ -1690,9 +1724,13 @@ impl Controller {
         self.state.ui.last_message = "Cancelled profile edit".to_string();
     }
 
-    fn handle_select_surface(&mut self, surface: Surface, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_select_surface(
+        &mut self,
+        surface: Surface,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.send(Command::SelectSurface(surface), pending)?;
+        self.send(Action::SelectSurface(surface), pending)?;
         self.flush_commands()?;
         self.refresh_queried_state()?;
         Ok(())
@@ -1730,7 +1768,11 @@ impl Controller {
         };
     }
 
-    fn handle_adjust_focused(&mut self, increase: bool, pending: Option<PendingMutation>) -> Result<()> {
+    fn handle_adjust_focused(
+        &mut self,
+        increase: bool,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
         match self.state.ui.focus {
             FocusArea::Outputs => {
                 let index = self.state.output.selected;
@@ -1741,7 +1783,7 @@ impl Controller {
                     output.volume.saturating_add(1).min(0x60)
                 };
                 self.send(
-                    Command::SetOutputVolume {
+                    Action::SetOutputVolume {
                         target: output.target,
                         step: next,
                     },
@@ -1797,7 +1839,7 @@ impl Controller {
                     }
                     PreampMode::Unknown(_) => preamp_input.gain_raw,
                 };
-                self.send(Command::SetPreampGain { input, raw: next }, pending)?;
+                self.send(Action::SetPreampGain { input, raw: next }, pending)?;
             }
             _ => {}
         }
@@ -1810,7 +1852,7 @@ impl Controller {
                 let index = self.state.output.selected;
                 let output = self.state.output.states[index];
                 self.send(
-                    Command::SetOutputMute {
+                    Action::SetOutputMute {
                         target: output.target,
                         enabled: output.mode != OutputMode::Mute,
                     },
@@ -1836,7 +1878,7 @@ impl Controller {
                     self.state.preamp.state.input2
                 };
                 self.send(
-                    Command::SetPreampPhantom {
+                    Action::SetPreampPhantom {
                         input,
                         enabled: !current.phantom_on,
                     },
@@ -1853,7 +1895,7 @@ impl Controller {
             let index = self.state.output.selected;
             let output = self.state.output.states[index];
             self.send(
-                Command::SetOutputDim {
+                Action::SetOutputDim {
                     target: output.target,
                     enabled: output.mode != OutputMode::Dim,
                 },
@@ -1871,8 +1913,7 @@ impl Controller {
 
     fn handle_refresh_queried_state(&mut self) -> Result<()> {
         self.refresh_queried_state()?;
-        self.state.ui.last_message =
-            "Sent captured 0x74 startup/state refresh sweep".to_string();
+        self.state.ui.last_message = "Sent captured 0x74 startup/state refresh sweep".to_string();
         Ok(())
     }
 }

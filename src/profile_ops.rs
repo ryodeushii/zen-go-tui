@@ -1,5 +1,6 @@
 //! Profile management operations (popup, editor, save/load/delete).
 
+use antelope_protocol::ZenGoDriver;
 use anyhow::Result;
 
 use zen_go_tui::app::Controller;
@@ -12,7 +13,7 @@ pub(crate) fn run_profile_command(
 ) -> Result<()> {
     match command {
         crate::cli::ProfileCommand::Save { name } => {
-            let mut controller = Controller::new(transport);
+            let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
             collect_profile_state(&mut controller)?;
             let profile = DeviceProfile::capture(&controller.state)?;
             let path = profile.write_named(&name)?;
@@ -22,7 +23,7 @@ pub(crate) fn run_profile_command(
         crate::cli::ProfileCommand::Load { name } => {
             let profile = DeviceProfile::read_named(&name)?;
             let path = profile_path(&name)?;
-            let mut controller = Controller::new(transport);
+            let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
             controller.apply_profile(&profile)?;
             println!("Loaded profile from {}", path.display());
             Ok(())

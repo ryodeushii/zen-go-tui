@@ -29,7 +29,7 @@ mod tests {
 
     use antelope_protocol::{
         control_panel_startup_queries, ClockSource, MixerAssignment, MixerSurface, OutputMode,
-        OutputState, OutputTarget, PanState, PreampMode, SampleRate, Surface,
+        OutputState, OutputTarget, PanState, PreampMode, SampleRate, Surface, ZenGoDriver,
     };
     use zen_go_tui::app::{
         AssignmentPickerState, Controller, FocusArea, ProfileEditorMode, ProfileEditorState,
@@ -49,6 +49,10 @@ mod tests {
         refresh_after_reconnect_if_needed, KeyAction,
     };
     use crate::timing::{device_poll_interval, should_draw_frame, should_probe_reconnect};
+
+    fn test_controller(transport: Box<dyn Transport>) -> Controller {
+        Controller::new(transport, Box::new(ZenGoDriver::new())).expect("Zen Go controller")
+    }
 
     fn test_key(code: AppKeyCode) -> AppKeyEvent {
         AppKeyEvent {
@@ -140,7 +144,7 @@ mod tests {
     #[test]
     fn opening_assignment_picker_from_keyboard_does_not_send_assignment_change() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
         controller.state.ui.focus = FocusArea::Mixer;
         controller.state.mixer.selected_channel = 0;
@@ -165,7 +169,7 @@ mod tests {
     #[test]
     fn opening_assignment_picker_from_routing_popup_uses_selected_routing_channel() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
         controller.state.popup.routing_open = true;
         controller.state.ui.focus = FocusArea::Mixer;
@@ -189,7 +193,7 @@ mod tests {
     #[test]
     fn opening_preamp_mode_selector_from_keyboard_does_not_send_mode_change() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Preamp;
         controller.state.preamp.selected_input = 1;
         controller.state.preamp.state.input2.mode = PreampMode::Line;
@@ -215,7 +219,7 @@ mod tests {
     #[test]
     fn up_key_adjusts_focused_output_level() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Outputs;
         controller.state.output.states[0] =
             OutputState::new(OutputTarget::Monitor, 0x30, OutputMode::Normal);
@@ -237,7 +241,7 @@ mod tests {
     #[test]
     fn down_key_adjusts_focused_preamp_gain() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Preamp;
         controller.state.preamp.selected_input = 1;
         controller.state.preamp.state.input2.mode = PreampMode::Mic;
@@ -260,7 +264,7 @@ mod tests {
     #[test]
     fn up_key_moves_popup_selection_before_adjusting_controls() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Outputs;
         controller.state.output.selected = 1;
         controller.state.output.states[1] =
@@ -285,7 +289,7 @@ mod tests {
     #[test]
     fn toggle_mixer_solo_sends_selected_channel_state() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Mixer;
         controller.state.mixer.selected_channel = 0;
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
@@ -312,7 +316,7 @@ mod tests {
     #[test]
     fn mouse_assignment_picker_sends_selected_assignment_for_ordinary_strip() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
 
         controller
@@ -346,7 +350,7 @@ mod tests {
     #[test]
     fn opening_assignment_picker_preselects_current_assignment() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = test_controller(Box::new(transport));
         controller.state.mixer.surface = Surface::MonitorHp1;
         controller.state.mixer.channels[MixerSurface::Mix1.index()][4].assignment =
             Some(MixerAssignment::Oscillator(1));
@@ -364,7 +368,7 @@ mod tests {
     #[test]
     fn mouse_output_mute_uses_selected_output_target() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.output.states[1] =
             OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
 
@@ -384,7 +388,7 @@ mod tests {
     #[test]
     fn mouse_output_level_action_sends_exact_step() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
 
         controller
             .apply_intent(
@@ -405,7 +409,7 @@ mod tests {
     #[test]
     fn mouse_preamp_gain_action_sends_exact_raw_gain() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
 
         controller
             .apply_intent(
@@ -426,7 +430,7 @@ mod tests {
     #[test]
     fn mouse_mixer_level_action_sends_exact_level() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
@@ -453,7 +457,7 @@ mod tests {
     #[test]
     fn mouse_mixer_pan_action_sends_exact_pan() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
 
@@ -479,7 +483,7 @@ mod tests {
     #[test]
     fn mouse_adjust_mixer_level_action_sends_single_step_change() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].level = Some(0x20);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
@@ -507,7 +511,7 @@ mod tests {
     #[test]
     fn mouse_adjust_mixer_pan_action_sends_single_step_change() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
@@ -534,7 +538,7 @@ mod tests {
     #[test]
     fn handle_mouse_event_scroll_up_on_output_slider_sends_adjustment() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.output.states[0] =
             OutputState::new(OutputTarget::Monitor, 0x30, OutputMode::Normal);
         let area = ratatui::layout::Rect::new(0, 0, 120, 50);
@@ -610,7 +614,7 @@ mod tests {
     #[test]
     fn page_mixer_strips_right_moves_to_second_bank() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = test_controller(Box::new(transport));
         // Area width 155 gives inner_width=151, card_width=18, stride=19, capacity=8
         let area = ratatui::layout::Rect::new(0, 0, 155, 50);
 
@@ -624,7 +628,7 @@ mod tests {
     #[test]
     fn handle_mouse_event_scroll_in_strip_panel_does_not_scroll_viewport() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = test_controller(Box::new(transport));
         controller.state.mixer.strip_scroll = 8;
         let area = ratatui::layout::Rect::new(0, 0, 120, 50);
 
@@ -646,7 +650,7 @@ mod tests {
     #[test]
     fn mouse_hotkeys_toggle_flips_popup_state() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = test_controller(Box::new(transport));
 
         controller
             .apply_intent(
@@ -668,7 +672,7 @@ mod tests {
     #[test]
     fn mouse_sample_rate_selector_opens_and_pick_sends_exact_rate() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.device.status.clock_source = Some(ClockSource::Internal);
 
         controller
@@ -701,7 +705,7 @@ mod tests {
     #[test]
     fn sample_rate_controls_are_disabled_when_clock_source_is_not_internal() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.device.status.clock_source = Some(ClockSource::Usb);
         controller.state.device.status.sample_rate = Some(SampleRate::Hz192000);
 
@@ -727,7 +731,7 @@ mod tests {
     #[test]
     fn mouse_preamp_mode_selector_pick_sends_exact_mode() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
 
         controller
             .apply_intent(
@@ -762,7 +766,7 @@ mod tests {
     #[test]
     fn popup_selection_wraps_with_keyboard_navigation() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = test_controller(Box::new(transport));
         controller.state.popup.assignment_picker = Some(AssignmentPickerState { strip: 1 });
 
         handle_key_press(
@@ -788,7 +792,7 @@ mod tests {
     #[test]
     fn profile_popup_selection_uses_saved_profile_list() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = test_controller(Box::new(transport));
         controller.state.popup.profiles_open = true;
         controller.state.popup.profile_names = vec!["tracking".to_string(), "mixdown".to_string()];
 
@@ -812,7 +816,7 @@ mod tests {
     #[test]
     fn profile_editor_accepts_characters_and_backspace() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = test_controller(Box::new(transport));
         controller.state.popup.profile_editor = Some(ProfileEditorState {
             mode: ProfileEditorMode::Save,
             original_name: None,
@@ -846,7 +850,7 @@ mod tests {
     #[test]
     fn activating_popup_selection_submits_highlighted_assignment() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         seed_shared_assignments(&mut controller);
         controller.state.popup.assignment_picker = Some(AssignmentPickerState { strip: 5 });
         controller.state.popup.selected_index = 13;
@@ -898,7 +902,7 @@ mod tests {
     #[test]
     fn handle_runtime_error_marks_controller_disconnected_for_device_errors() {
         let transport = MockTransport::default();
-        let mut controller = Controller::new(Box::new(transport));
+        let mut controller = test_controller(Box::new(transport));
         controller.state.device.connection.connected = true;
 
         handle_runtime_error(&mut controller, TransportError::DeviceDisconnected.into())
@@ -914,7 +918,7 @@ mod tests {
     #[test]
     fn refresh_after_reconnect_runs_startup_query_sweep_once_device_returns() {
         let transport = AvailabilityTransport::default();
-        let mut controller = Controller::new(Box::new(transport.clone()));
+        let mut controller = test_controller(Box::new(transport.clone()));
         let mut pending = true;
 
         refresh_after_reconnect_if_needed(&mut controller, &mut pending)

@@ -416,11 +416,8 @@ impl RawMapScope {
             RawMapScope::Status,
             RawMapScope::Unmapped,
         ];
-        const PARSER_ONLY: &[RawMapScope] = &[
-            RawMapScope::All,
-            RawMapScope::Parser,
-            RawMapScope::Unmapped,
-        ];
+        const PARSER_ONLY: &[RawMapScope] =
+            &[RawMapScope::All, RawMapScope::Parser, RawMapScope::Unmapped];
 
         match tab {
             RawPacketTab::State73 => STATE73,

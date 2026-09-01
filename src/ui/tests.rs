@@ -15,10 +15,10 @@ use crate::app::{
 use antelope_protocol::{
     ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
     OutputState, OutputTarget, PanState, PreampInputState, PreampMode, SampleRate, Surface,
-    OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX1_MIRROR_A,
-    OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_SHARED_SHADOW_0,
-    OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2, OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E,
-    SNAPSHOT_PAYLOAD_OFFSET,
+    ZenGoDriver, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
+    OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
+    OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2,
+    OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
 };
 
 use crate::transport::MockTransport;
@@ -409,7 +409,7 @@ fn mix_meter_extracts_mix1_lane_pair() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
-    state.raw_view.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame.to_vec());
 
     assert_eq!(mouse::mix_meter(&state), Some(("MIX 1", 0x0a, 0x05)));
 }
@@ -434,7 +434,7 @@ fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
-    state.raw_view.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame.to_vec());
 
     let mixer = layouts::mixer_layout(Rect::new(0, 0, 100, 20));
     let meter_area = layouts::mixer_strip_panel_layout(mixer[1], true)[1];
@@ -746,7 +746,7 @@ fn selected_query_reply_bytes_prefers_selected_history_entry() {
     let mut state = AppState::default();
     state.raw_view.recent_query_reply_entries = vec![crate::app::QueryReplyLogEntry {
         summary: "selected".to_string(),
-        raw: selected,
+        raw: selected.to_vec(),
     }];
     state.raw_view.selected_query_reply_entry = Some(0);
 
@@ -763,7 +763,7 @@ fn raw_page_renders_selected_query_reply_when_latest_reply_is_absent() {
     state.raw_view.selected_tab = RawPacketTab::Query75;
     state.raw_view.recent_query_reply_entries = vec![crate::app::QueryReplyLogEntry {
         summary: "selected reply".to_string(),
-        raw: [0x42; 320],
+        raw: [0x42; 320].to_vec(),
     }];
     state.raw_view.selected_query_reply_entry = Some(0);
 
@@ -792,11 +792,11 @@ fn query_reply_panel_includes_recent_reply_log() {
     state.raw_view.recent_query_reply_entries = vec![
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/05 [64 bytes] 05 00 00 00 01 01 00 01".to_string(),
-            raw: raw1,
+            raw: raw1.to_vec(),
         },
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/06 [64 bytes] 06 03 00 03 01 03 02 03".to_string(),
-            raw: raw2,
+            raw: raw2.to_vec(),
         },
     ];
     state.raw_view.selected_query_reply_entry = Some(1);
@@ -897,11 +897,11 @@ fn raw_page_keeps_selected_query_map_and_dump_in_sync() {
     state.raw_view.recent_query_reply_entries = vec![
         crate::app::QueryReplyLogEntry {
             summary: "valid assignment".to_string(),
-            raw: query_reply(0x05, 0x03, 0x05, 9),
+            raw: query_reply(0x05, 0x03, 0x05, 9).to_vec(),
         },
         crate::app::QueryReplyLogEntry {
             summary: "unresolved query".to_string(),
-            raw: query_reply(0x42, 0x99, 0x01, 1),
+            raw: query_reply(0x42, 0x99, 0x01, 1).to_vec(),
         },
     ];
 
@@ -966,7 +966,11 @@ fn raw_content_layout_keeps_map_and_dump_visible_at_target_sizes() {
 
 #[test]
 fn raw_scroll_intent_moves_map_and_dump_by_one_page() {
-    let mut controller = Controller::new(Box::new(MockTransport::default()));
+    let mut controller = Controller::new(
+        Box::new(MockTransport::default()),
+        Box::new(ZenGoDriver::new()),
+    )
+    .expect("Zen Go controller");
     controller.state.popup.raw_view_open = true;
 
     controller
@@ -987,7 +991,7 @@ fn raw_scroll_intent_moves_map_and_dump_by_one_page() {
 fn raw_page_renders_borders_legend_and_footer_at_narrow_size() {
     let mut state = AppState::default();
     state.popup.raw_view_open = true;
-    state.raw_view.latest_raw_73 = Some([0x73; 320]);
+    state.raw_view.latest_raw_73 = Some([0x73; 320].to_vec());
 
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| render::draw(frame, &state)).unwrap();
@@ -1118,7 +1122,7 @@ fn raw_wheel_scrolls_map_and_dump_but_not_query_history() {
     state.raw_view.recent_query_reply_entries = (0..9)
         .map(|index| crate::app::QueryReplyLogEntry {
             summary: format!("reply {index}"),
-            raw: [index as u8; 320],
+            raw: [index as u8; 320].to_vec(),
         })
         .collect();
     let query = layouts::raw_content_layout(layouts::raw_page_layout(area)[3], true);
@@ -1359,11 +1363,11 @@ fn narrow_query_history_mouse_rows_match_list_inner_bounds() {
     state.raw_view.recent_query_reply_entries = vec![
         crate::app::QueryReplyLogEntry {
             summary: "oldest".to_string(),
-            raw: [0x75; 320],
+            raw: [0x75; 320].to_vec(),
         },
         crate::app::QueryReplyLogEntry {
             summary: "newest".to_string(),
-            raw: [0x75; 320],
+            raw: [0x75; 320].to_vec(),
         },
     ];
 
@@ -1404,7 +1408,8 @@ fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
                 let mut r = [0_u8; 320];
                 r[..2].copy_from_slice(&[0x75, 0x05]);
                 r
-            },
+            }
+            .to_vec(),
         },
         crate::app::QueryReplyLogEntry {
             summary: "0x75 03/06".to_string(),
@@ -1412,7 +1417,8 @@ fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
                 let mut r = [0_u8; 320];
                 r[..2].copy_from_slice(&[0x75, 0x06]);
                 r
-            },
+            }
+            .to_vec(),
         },
     ];
     let point = (inner.x + 1, inner.y);
@@ -1976,7 +1982,7 @@ fn pair_state_line_surfaces_mix1_mirrored_lanes() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_MIRROR_B] = 0x05;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_0] = 0x60;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_1] = 0x60;
-    state.raw_view.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame.to_vec());
 
     let line = render::render_mix_meter_state_line(&state);
 
@@ -1996,7 +2002,7 @@ fn pair_state_line_surfaces_mix2_compact_lanes() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x06;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_0] = 0x60;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_1] = 0x60;
-    state.raw_view.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame.to_vec());
 
     let line = render::render_mix_meter_state_line(&state);
 
@@ -2017,7 +2023,7 @@ fn pair_state_line_surfaces_no_signal_family_as_pending_meter() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_UNKNOWN_6E] = 0x60;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_METER_LANES_START] = 0x60;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_2] = 0x60;
-    state.raw_view.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame.to_vec());
 
     let line = render::render_mix_meter_state_line(&state);
 
@@ -2035,7 +2041,7 @@ fn pair_state_line_keeps_unknown_meter_bytes_visible() {
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x12;
     frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x34;
-    state.raw_view.latest_raw_73 = Some(frame);
+    state.raw_view.latest_raw_73 = Some(frame.to_vec());
 
     let line = render::render_mix_meter_state_line(&state);
 

@@ -395,11 +395,8 @@ mod tests {
     #[test]
     fn encodes_ordinary_strip_assignment_write_sequence_for_strip_11() {
         let assignments = [MixerAssignment::Mute; 16];
-        let frames = encode_mixer_assignment_frames_with_table(
-            11,
-            MixerAssignment::EmuMic(2),
-            &assignments,
-        );
+        let frames =
+            encode_mixer_assignment_frames_with_table(11, MixerAssignment::EmuMic(2), &assignments);
 
         assert_eq!(frames.len(), 4);
         for (frame, bank) in frames.iter().zip([0x06_u8, 0x07, 0x08, 0x09]) {

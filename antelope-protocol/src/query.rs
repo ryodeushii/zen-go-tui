@@ -218,7 +218,11 @@ impl QueryResponse {
             .enumerate()
             .filter_map(|(i, enabled)| enabled.then_some(format!("{i:02x}")))
             .collect::<Vec<_>>();
-        Some(format!("Selector bitmap: {} asserted [{}]", asserted.len(), asserted.join(" ")))
+        Some(format!(
+            "Selector bitmap: {} asserted [{}]",
+            asserted.len(),
+            asserted.join(" ")
+        ))
     }
 
     fn summary_pair_bank(&self) -> Option<String> {

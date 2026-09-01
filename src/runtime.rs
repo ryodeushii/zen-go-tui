@@ -10,7 +10,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use antelope_protocol::{
-    ClockSource, Command, MixerAssignment, MixerSurface, PanState, PreampMode, SampleRate, Surface,
+    Action, ClockSource, MixerAssignment, MixerSurface, PanState, PreampMode, SampleRate, Surface,
+    ZenGoDriver,
 };
 use zen_go_tui::app::{
     Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind,
@@ -36,7 +37,7 @@ pub fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
     let input_rx = spawn_input_reader();
-    let mut controller = Controller::new(transport);
+    let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
     if let Ok(saved) = settings::load_settings() {
         controller.state.ui.settings = saved;
     }
@@ -52,7 +53,7 @@ pub fn run_app(transport: Box<dyn Transport>) -> Result<()> {
 
 pub fn run_headless_app(transport: Box<dyn Transport>) -> Result<()> {
     eprintln!("Headless mode active. Press Ctrl+C to stop.");
-    let mut controller = Controller::new(transport);
+    let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
     controller.bootstrap()?;
     headless_loop(&mut controller)
 }
@@ -516,7 +517,7 @@ pub fn handle_key_press(
                     .saturating_sub(1)
                     .max(PanState::MIN);
                 controller.send(
-                    Command::SetMixerPan {
+                    Action::SetMixerPan {
                         mixer: MixerSurface::from_surface(controller.state.mixer.surface),
                         channel: active_channel.channel,
                         pan: PanState::from_raw(next),
@@ -538,7 +539,7 @@ pub fn handle_key_press(
                     .saturating_add(1)
                     .min(PanState::MAX);
                 controller.send(
-                    Command::SetMixerPan {
+                    Action::SetMixerPan {
                         mixer: MixerSurface::from_surface(controller.state.mixer.surface),
                         channel: active_channel.channel,
                         pan: PanState::from_raw(next),
@@ -582,7 +583,7 @@ pub fn handle_key_press(
                 let all = SampleRate::all_confirmed();
                 let position = all.iter().position(|rate| *rate == current).unwrap_or(2);
                 let next = all[(position + 1) % all.len()];
-                controller.send(Command::SetSampleRate(next), None)?;
+                controller.send(Action::SetSampleRate(next), None)?;
             }
             Ok(())
         }
@@ -599,11 +600,11 @@ pub fn handle_key_press(
                 .position(|source| *source == current)
                 .unwrap_or(0);
             let next = all[(position + 1) % all.len()];
-            controller.send(Command::SetClockSource(next), None)?;
+            controller.send(Action::SetClockSource(next), None)?;
             Ok(())
         }
-        AppKeyCode::Char('1') => controller.send(Command::SelectSurface(Surface::MonitorHp1), None),
-        AppKeyCode::Char('2') => controller.send(Command::SelectSurface(Surface::Hp2), None),
+        AppKeyCode::Char('1') => controller.send(Action::SelectSurface(Surface::MonitorHp1), None),
+        AppKeyCode::Char('2') => controller.send(Action::SelectSurface(Surface::Hp2), None),
         AppKeyCode::Char('b') if controller.state.popup.raw_view_open => {
             controller.apply_intent(Intent::CaptureRawBaseline, area)?;
             Ok(())

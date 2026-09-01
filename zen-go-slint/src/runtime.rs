@@ -1,3 +1,4 @@
+use antelope_protocol::ZenGoDriver;
 use anyhow::Result;
 use ratatui::layout::Rect;
 use slint::{ComponentHandle, Timer, TimerMode};
@@ -341,7 +342,7 @@ impl WorkerCore {
         no_bootstrap: bool,
         mock_mode: bool,
     ) -> Result<Self> {
-        let mut controller = Controller::new(transport);
+        let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
         if !no_bootstrap {
             controller.bootstrap()?;
         }
