@@ -80,6 +80,24 @@ The following captures were processed. Counts are data-bearing protocol packets 
 | `capture_11_output_controls_once_change_at_a_time.pcapng` | `0x227` report-`0x70` frames | `0x73` `0x282b`, `0x83` `0x282a` | Output volume, mute, and dim |
 | `channel links in mixes.pcapng` | `0x11` report-`0x70` frames | `0x73` `0x1d07`, `0x83` `0x1d06` | Standalone link-vector test |
 
+### Recursive coverage
+
+The root table above is only the root scope. The following table covers every PCAPNG under `antelope_pcap/`, including all subdirectories: `0x7f` files, `0x0a` directories, and `0x7251d3e8` captured bytes (`~1.79 GiB`). Counts are data-bearing protocol frames after USBPcap header parsing.
+
+| Scope | Files | PCAP bytes | Host `0x70` | Host `0x74` / device `0x75` | Device `0x73` / `0x83` | Scenario evidence |
+|---|---:|---:|---:|---:|---:|---|
+| root (`.`) | `0x0e` | `0x10b39338` | `0x741` | `0x38` / `0x38` | `0x12a50` / `0x12a4b` | enumeration, output, mixer, sample/clock, DSP |
+| `channel_assignments` | `0x14` | `0x14c91884` | `0xb7` | `—` / `—` | `0x10ca8` / `0x10cab` | assignment banks, source substitutions, surface propagation |
+| `metering` | `0x17` | `0x7727b6c` | `0x27c` | `—` / `—` | `0x8b5f` / `0x8b66` | isolated CH01..CH16, mix/output, preamp meters |
+| `mixer` | `0x17` | `0x171dabbc` | `0x2ac` | `—` / `—` | `0xc312` / `0xc315` | faders, pan, mute, solo, links, surfaces |
+| `mixer_levels` | `0x06` | `0x5e45db8` | `0x42` | `0x114` / `0x114` | `0x28a3` / `0x28a2` | max/min and isolated level readback |
+| `mixer_links` | `0x09` | `0x8f918e4` | `0x50` | `0x199` / `0x199` | `0x45fb` / `0x45f9` | isolated linked-pair bitmap scenarios |
+| `mixer_pans` | `0x07` | `0x6e00c94` | `0x4d` | `0x142` / `0x142` | `0x3044` / `0x3045` | isolated Mix 1/Mix 2 pan readback |
+| `mutes/no signal` | `0x07` | `0x66ca23c` | `—` | `—` / `—` | `0x1473` / `0x1473` | Mix 1/Mix 2 CH01/02 mute baselines |
+| `mutes/with signal` | `0x07` | `0x67670dc` | `—` | `—` / `—` | `0x15db` / `0x15db` | Mix 1/Mix 2 CH01/02 mute with signal |
+| `preamps` | `0x0b` | `0xba46abc` | `0x1c4` | `—` / `—` | `0x8b68` / `0x8b66` | A1/A2 mode, per-mode gain, phantom, phase |
+| **recursive total** | **`0x7f`** | **`0x7251d3e8`** | **—** | **—** | **—** | **all captures processed** |
+
 ## Confirmed frame and report grammar
 
 ### Enumeration
@@ -226,6 +244,86 @@ Link captures contain:
 
 The command family is proven. Passive link byte mapping is not; see [Link vector comparison](#link-vector-comparison).
 
+## Recursive scenario findings
+
+### Assignment tables
+
+All `channel_assignments` files were parsed as host writes plus device snapshots. They establish assignment-write coverage but mostly do not contain query replies.
+
+- Host assignment frames are report `0x70` with `d3 41 <bank>` at frame offset `0x10`; table entries begin at frame offset `0x13`.
+- Bank `0x05` carries `0x04` early-channel entries. Banks `0x06..0x09` carry `0x10` entries. The current encoder's hard-coded early entries `(0x03, entry_index)` for banks `0x03`, `0x06..0x09` match observed table structure.
+- Index-map scenarios change assignment indices `0x04`, `0x08`, and `0x0c`; early-channel scenarios change `0x00..0x03`; ordinary and source-substitution scenarios change `0x00..0x0f`. Observed pair transitions include `0001>0800`, `0100>0800`, `0200>0800`, `0300>0800`, `0900>0102`, `0900>0106`, and `0900>0800`.
+- `control panel open.pcapng` is the useful assignment readback capture: it contains q03 replies for sub `0x05..0x07` and decoded assignment pairs. Most assignment write scenarios, including the file named `assignment_write_readback_ordinary`, contain `q75=0x00`; they cannot validate readback.
+
+Capture conclusion: current assignment table write geometry is supported. `assignment_readback` coverage is limited to control-panel-open traffic. Do not generalize readback support from filenames that contain “readback”.
+
+### Meter lanes and preamp meter candidates
+
+The `metering` directory supplies isolated signal controls rather than only aggregate deltas.
+
+- `baseline - everything mute.pcapng` contains `0x37a` report-`0x73` snapshots and no mixer-lane values below the `0x60` no-signal baseline.
+- `ch1.pcapng` through `ch16.pcapng` each activate exactly one lane. `chN` maps to lane index `N-1`, confirming body offsets `0x8e..0x9d` for CH01..CH16. Other lanes have no `<0x60` hits in these isolated files.
+- `mix1-ch1+output.pcapng` and `mix-ch1+output.pcapng` activate lane `0x00`; `preamp1+ch1.pcapng` activates lane `0x00` with minimum `0x12`; `preamp2+ch2.pcapng` activates lane `0x01` with minimum `0x13`.
+- `preamp 1.pcapng` holds `0xce=0x15` across snapshots with no meaningful `0xcf`; `preamp 2.pcapng` holds `0xcf=0x0c` across most snapshots with no meaningful `0xce`. The all-mute baseline has `0xce=0x51` and `0xcf=0x4b`, which the current `<=0x49` meter filter rejects.
+
+Capture conclusion: lane index mapping is confirmed for all `0x10` mixer strips. `0xce` and `0xcf` are separate A1/A2 meter candidates with known baseline sentinels and mixed-signal caveats. They are not official cyclic `0x73` offsets.
+
+### Mixer command and readback scenarios
+
+The `mixer` directory contains `0x17` write-only scenario files. The `mixer_levels` and `mixer_pans` directories contain the query/readback evidence.
+
+- `d4 04` writes carry mixer/surface, channel, attenuation level, and pan/mute/solo state. Observed command state transitions include unlinked mute `0x20>0x60`, linked mute `0x02>0x42` and `0x3e>0x7e`, and solo `0x20>0xa0`. Pan command values span `0x02..0x3e`.
+- Unlinked fader scenarios use channel `0x01` levels through `0x5a`; linked CH03/04 fader scenarios use common level ranges with state codes `0x02`/`0x3e`. Surface-independence scenarios use distinct `d404 00 01` and `d404 01 01` sequences.
+- `mixer_levels` contains q04/`0x00` and q04/`0x01` replies with `0x10` two-byte lanes. q04/`0x00` varies Mix 1 scenarios; q04/`0x01` varies Mix 2. CH01/02 map to indices `0x00/0x01`; CH03/04 map to `0x02/0x03`. Scenario levels are captured as attenuation: max `0x00`, `-18` scenario `0x12`, `-30` scenario `0x1e`, and min `-90` scenario `0x5a`.
+- `mixer_pans` q04 replies independently vary the expected Mix 1 or Mix 2 lanes. Center is `0x20`; endpoint pan codes are `0x02` and `0x3e`; `0x5e` demonstrates a pan-like value with the mute flag preserved. The current q04 two-byte parser and pan-code mapping match these positions.
+- q18/`0x00` vectors are effectively identical across level and pan scenario files, with mostly `0x60` levels and a fixed state pattern. They are not primary evidence for these scenario controls.
+
+Capture conclusion: current `d4 04` command fields, q04 per-surface lanes, attenuation scale, and pan/state codes are supported. Current q18 and q04 meanings remain capture-dialect meanings, not official logical names.
+
+### Link bitmap scenarios
+
+The `mixer_links` directory contains `0x09` isolated linked-pair scenarios. Each file has an initial q0b/`0x03` bitmap, idempotent `a2 03 <selector> <enabled>` setup writes, and the same bitmap again. The writes are already reflected in each scenario baseline, so a naive command-to-next-query diff reports no transition.
+
+Scenario-specific bitmap flips establish direct selector-to-index mapping:
+
+| Surface/pair | Command selector | Bitmap index |
+|---|---:|---:|
+| Mix 1 CH01/02 | `0x00` | `0x00` |
+| Mix 1 CH11/12 | `0x05` | `0x05` |
+| Mix 1 CH13/14 | `0x06` | `0x06` |
+| Mix 1 CH15/16 | `0x07` | `0x07` |
+| Mix 2 CH01/02 | `0x10` | `0x10` |
+| Mix 2 CH11/12 | `0x15` | `0x15` |
+| Mix 2 CH13/14 | `0x16` | `0x16` |
+| Mix 2 CH15/16 | `0x17` | `0x17` |
+
+The q0b/`0x03` response is a full `0x18`-byte selector bitmap. This validates current bitmap shape and `startup_link_readback_from_bitmap` indexing. It does not validate passive late-byte link decoding: the standalone vectors at `0x8f`, `0xcf`, and `0xda..0xdf` remain outside current accepted patterns.
+
+### Mute-state vectors
+
+The `mutes/no signal` and `mutes/with signal` directories contain only filtered device snapshots, not host writes. Their filenames encode controlled Mix 1/Mix 2 CH01/02 mute states.
+
+With signal, modal late vectors are:
+
+| Surface | Both unmute | CH01 mute | CH02 mute | Both mute |
+|---|---|---|---|---|
+| Mix 1 `0xda..0xdd` | `0a/05/0a/05` | `01/01/01/01` | `00/06/00/06` | `60/60/60/60` |
+| Mix 2 `0xde..0xdf` | `0a/05` | `01/01` | `00/06` | `60/60` |
+
+No-signal baselines are different: Mix 1 `0xda..0xdd` is `5a/5a/5a/5a` for both-unmute and CH01 mute, but `60/60/60/60` for CH02 mute and both mute; Mix 2 `0xde..0xdf` is `5a/5a`, `01/01`, or `60/60` for the corresponding scenarios.
+
+These stable scenario differences are stronger evidence than generic delta counts, but they are not yet a boolean field definition. Current `decode_mute_from_group` returns `None` for these captures because none match its accepted `0x51`/active patterns. Treat current passive mute mapping as unvalidated, not as disproven.
+
+### Preamp mode and stored-gain scenarios
+
+The `preamps` directory contains `0x0b` files covering A1/A2 Mic, Line, Hi-Z, phantom, phase, and idle states. Mode-switch captures directly show separate stored gains:
+
+- A1 starts `0x0a/0x0a/0x00/0x00`; mode `0x01` settles `0x14/0x0a/0x01/0x00`; mode `0x02` settles `0x2d/0x0a/0x02/0x00`; Mic mode returns `0x0a/0x0a/0x00/0x00`.
+- A2 starts `0x0a/0x0a/0x00/0x00`; mode `0x01` settles A2 gain `0xfa` with mode `0x01`; mode `0x02` settles A2 gain `0x2d` with mode `0x02`; Mic mode returns A2 gain `0x0a` with mode `0x00`.
+- Phantom toggles bit `0x10`; phase toggles bit `0x40`. Mic gain sweeps cover `0x00..0x41`; Hi-Z covers `0x00..0x2d`; signed Line byte values include `0xfa`/`0xfb`.
+
+Capture conclusion: each input has a distinct stored gain for each preamp mode. Current `PreampInputState.gain_raw` stores only one gain per input, and `PreampState::from_cluster` maps only one gain plus one mode from `0x18..0x1b`; current state cannot retain alternate mode gains. A future state model must use per-input/per-mode gain storage and must not overwrite inactive mode gains on `0x4f` changes.
+
 ## Query-reply evidence
 
 `capture_02_volume_down.pcapng` contains `0x2e` host `0x74` requests and `0x2e` device `0x75` replies. Query ID/sub-ID pairs match one-for-one. `capture_07_dsp.pcapng` adds query families `0x15/0x00`, `0x0c/0x00`, `0x07/0x05`, and `0x07/0x06`.
@@ -255,6 +353,47 @@ Capture evidence establishes that current device traffic does not expose officia
 - every reply is padded into a fixed `0x140` transport frame.
 
 Therefore current query decoders must remain capture-dialect decoders. Do not rename `0x17/0x00` or `0x18/0x00` to official reverb queries without a transport/version discriminator. Do not use fixed frame declaration `0x140` as semantic body length.
+
+## Official schema cross-check
+
+The official `docs/zengosc_report_format_1.1.26` file is a logical report schema. Capture evidence identifies a current fixed-frame dialect. Shared report/query numbers are not sufficient to prove shared wire layout.
+
+### Cyclic report boundary
+
+- Official cyclic `0x73` payload length is `0x17a`. Current `0x73` frames are `0x140` bytes, with a `0x10`-byte frame header and a current snapshot payload of `0xe6` bytes. An official `0x73` payload plus the current header would require `0x18a` bytes, so official offsets cannot be overlaid on current snapshot offsets.
+- Official cyclic `0x83` is one `afx_meters.data` block spanning `0x00..0x12f`, total `0x130` bytes. That size matches the current post-header capacity, but captures only prove an unresolved `0x83` block; they do not prove official subfields.
+- Current capture-confirmed offsets remain: sample `0x02`, clock `0x03`, outputs `0x0c..0x11`, preamp cluster `0x18..0x1b`, and mixer lanes `0x8e..0x9d`. Official `0x73` places output records at `0x36..0x95`, preamps at `0x98..0xa7`, and peak groups at `0xfa..0x179`. These are different layouts.
+
+### Get-report shape comparison
+
+| Query | Official logical response | Capture evidence | Disposition |
+|---|---|---|---|
+| `0x74/0x04/0x00` | `0x21` records × `0x09` bytes = `0x129` (`level`, `pan[0x06]`, `mute`, `solo`) | q04/`0x00` and q04/`0x01` expose `0x10` two-byte level/state lanes; replies can contain nonzero bytes through `0x84` | Current q04 parser is capture-scoped; do not call it official mixer decoding |
+| `0x74/0x0b/0x03` | `0x40` one-byte `linked` records | Full `0x18`-byte selector bitmap; scenario flips map selectors directly to bitmap indices | Capture bitmap path is confirmed; official link shape is not this body |
+| `0x74/0x17/0x00` | `0x04` records × `0x08` bytes = `0x20` reverb returns | Four meaningful body bytes | Capture q17 is not official reverb-return decoding |
+| `0x74/0x18/0x00` | `0x21` records × `0x09` bytes = `0x129` reverb sends | About `0x42` meaningful bytes, effectively static across level/pan scenarios | Capture q18 is not official reverb-send decoding |
+| `0x74/0x03/0x00` | one routing record of width `0x81` | Assignment captures mostly have no `0x75`; control-panel-open q03 replies are sub-ID-prefixed assignment tables | Keep assignment readback separate from official routing |
+
+Other official get shapes, including feature mask `0x122` bytes and digital/reverb records, were not observed as matching bodies in these captures.
+
+### Set-report comparison
+
+Official logical set IDs include volume `0x07`, mute `0x08`, brightness `0x0e`, preamp type/gain/phantom/phase `0x0f..0x12`, routing `0x13`, mixer `0x14`, stereo link `0x22`, dim `0x26`, reverb `0x28..0x29`, and DAW mode `0x2a` under report `0x70`. Captures instead show current wire payload families:
+
+- output volume `0x47`, mute `0x48`, dim `0x66`;
+- preamp mode/gain/phantom/phase `0x4f..0x52`;
+- mixer state `d4 04`;
+- assignments `d3 41`;
+- links `a2 03`/`a2 04`;
+- surface `49 00`.
+
+The report type is shared, but payload IDs and body grammars differ. Current encoders must remain capture-dialect encoders until a translation layer is demonstrated.
+
+### Output and preamp implications
+
+Official `0x73` volume records at `0x36..0x95` contain independent volume, mute, dim, mono, and trim fields. Capture scenarios prove only isolated current mode bytes: volume offsets `0x0c/0x0e/0x10`, mode offsets `0x0d/0x0f/0x11`, mute code `0x01`, and dim code `0x02`. No capture enables mute and dim together, so composition remains unresolved.
+
+Official preamp records at `0x98..0xa7` contain type, phantom, HPF, phase, and zero-cross fields. Capture scenarios instead prove current cluster `0x18..0x1b`, including mode-scoped gains, phantom bit `0x10`, and phase bit `0x40`. The capture result is implementation evidence, not an official-offset mapping.
 
 ## Snapshot delta findings
 
