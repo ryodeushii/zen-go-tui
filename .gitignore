@@ -1,3 +1,4 @@
 target/
 antelope_pcap/
 .chrome-devtools-cache
+.worktrees/
