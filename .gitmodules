@@ -1,0 +1,3 @@
+[submodule "modules/Antelope-Ctl"]
+	path = modules/Antelope-Ctl
+	url = https://github.com/diafebus/Antelope-Ctl.git

@@ -7,14 +7,19 @@ pub mod definition;
 pub mod discovery;
 #[rustfmt::skip]
 pub mod generated;
+pub mod profile;
+pub mod session;
 
 pub use definition::{
     AddressSpaceDefinition, AddressSpaceKind, AddressingMode, ConstraintDefinition,
     DecoderDefinition, DefinitionStatus, DeviceDefinition, DeviceEntry, DeviceIdentity,
-    FrameDefinition, FrameFieldDefinition, FrameKind, HazardDefinition, InputDefinition,
-    MixerDefinition, OutputDefinition, ParamDefinition, ParamOffsetDefinition,
-    ParamRangeDefinition, ParamReference, ParamValueDefinition, ParamValueType, Provenance,
-    Readiness, Status, SupportLevel, TransportDefinition, TransportKind,
+    FrameDefinition, FrameEndianDefinition, FrameFieldDefinition, FrameKind,
+    FrameOperationDefinition, HazardDefinition, InputCapabilityDefinition, InputControlKind,
+    InputDefinition, LinkDomainDefinition, LinkDomainKind, MixerDefinition, OutputDefinition,
+    ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReference,
+    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition,
+    ReadbackDefinition, Readiness, RoutingGroupDefinition, RoutingSourceDomainDefinition,
+    StartupQueryDefinition, Status, SupportLevel, TransportDefinition, TransportKind,
 };
 pub use discovery::{
     classify_candidate, classify_candidate_details, classify_candidates,
@@ -22,6 +27,12 @@ pub use discovery::{
     DeviceCandidate, ANTELOPE_VID,
 };
 pub use generated::DEVICE_CATALOG;
+pub use profile::{catalog_readiness, ProfileCatalog};
+pub use session::{
+    classify_runtime_candidates, replace_session, select_candidate, select_reconnect_candidate,
+    DevicePickerState, DeviceSelection, DeviceSession, PickerEntry, RuntimeDeviceState,
+    SelectionMatch,
+};
 
 #[cfg(test)]
 mod tests {
@@ -79,13 +90,16 @@ mod tests {
                 "{name} control interface"
             );
         }
-        assert_eq!(
-            entry("Antelope Discrete 4 Synergy Core")
-                .definition
-                .transport
-                .expected_interface_number,
-            None
-        );
+        for name in [
+            "Antelope Discrete 4 Synergy Core",
+            "Antelope Discrete 4 Pro Synergy Core",
+        ] {
+            assert_eq!(
+                entry(name).definition.transport.expected_interface_number,
+                Some(3),
+                "{name} control interface from current canonical profile"
+            );
+        }
     }
 
     #[test]

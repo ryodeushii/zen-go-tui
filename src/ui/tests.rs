@@ -464,6 +464,21 @@ fn mix_meter_widget_renders_two_row_stereo_bar_and_fixed_db_labels() {
 }
 
 #[test]
+fn device_header_keeps_selected_runtime_profile_name_over_reported_product() {
+    let mut state = AppState::default();
+    state.ui_profile.device_name = "External Runtime Profile".to_string();
+    state.device.status.metadata = Some(antelope_protocol::DeviceMetadata {
+        product_name: "Reported HID Product".to_string(),
+        serial: "EXT-1".to_string(),
+        hardware_version: "1.0".to_string(),
+    });
+
+    let rendered = render::render_device_header(&state).to_string();
+
+    assert!(rendered.contains("External Runtime Profile"));
+}
+
+#[test]
 fn device_header_surfaces_serial_and_hw_without_duplicate_status_line() {
     let mut state = AppState::default();
     state.device.status.metadata = Some(antelope_protocol::DeviceMetadata {
@@ -1315,7 +1330,7 @@ fn mouse_action_hits_visible_surface_tab_position() {
 
     assert_eq!(
         mouse_action(area, &AppState::default(), tabs[1].x + 1, tabs[1].y),
-        Some(Intent::SelectSurface(Surface::Hp2))
+        Some(Intent::SelectMixerSurface { surface: 1 })
     );
 }
 

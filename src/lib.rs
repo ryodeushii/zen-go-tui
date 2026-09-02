@@ -8,5 +8,7 @@ pub mod transport;
 pub mod ui;
 
 pub use app::QUERY_REPLY_VISIBLE_COUNT;
-pub use device::{DeviceDefinition, DeviceEntry, Readiness, SupportLevel, DEVICE_CATALOG};
+pub use device::{
+    DeviceDefinition, DeviceEntry, ProfileCatalog, Readiness, SupportLevel, DEVICE_CATALOG,
+};
 pub use transport::ThreadedTransport;

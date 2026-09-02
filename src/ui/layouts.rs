@@ -1,6 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::widgets::{Block, Borders};
 
-use crate::app::{AppState, RawMapScope, RawPacketTab};
+use crate::app::{AppState, RawMapScope, RawPacketTab, MIXER_STRIP_PAGE_SIZE};
+use antelope_protocol::{
+    MixerAddress, MixerControl, OutputControl, RuntimeDriverKind, RuntimeInputControlKind,
+};
 
 use super::styles::chip_width;
 
@@ -114,6 +118,27 @@ pub(crate) fn mixer_main_layout(area: Rect) -> [Rect; 2] {
     [sections[0], sections[1]]
 }
 
+pub(crate) fn mixer_main_layout_for_state(area: Rect, state: &AppState) -> [Rect; 2] {
+    if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
+        return mixer_main_layout(area);
+    }
+    let input_rows = state
+        .input_spaces
+        .iter()
+        .map(|space| space.inputs.len())
+        .max()
+        .unwrap_or(0);
+    let input_height = u16::try_from(input_rows)
+        .unwrap_or(u16::MAX)
+        .saturating_add(3)
+        .min(area.height.saturating_sub(8));
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(input_height), Constraint::Min(8)])
+        .split(area);
+    [sections[0], sections[1]]
+}
+
 pub(crate) fn preamp_bar_layout(area: Rect) -> [Rect; 2] {
     let sections = Layout::default()
         .direction(Direction::Horizontal)
@@ -163,8 +188,15 @@ pub(crate) fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
 }
 
 pub(crate) fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize, usize) {
-    let visible = mixer_strip_viewport_capacity_for_inner(area);
-    let total = state.active_mixer_channels().len();
+    let visible = if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
+        mixer_strip_viewport_capacity_for_inner(area)
+    } else {
+        MIXER_STRIP_PAGE_SIZE.min(usize::from(area.width.max(1)))
+    };
+    let total = state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))
+        .map_or(0, |surface| surface.strips.len());
     let start = state.mixer.strip_scroll.min(total.saturating_sub(visible));
     let end = usize::min(start + visible, total);
     (start, end)
@@ -176,6 +208,50 @@ pub(crate) fn mixer_strip_card_area(area: Rect, slot: usize) -> Rect {
     let x = area.x + slot as u16 * stride;
     let width = card_width.min(area.width.saturating_sub(slot as u16 * stride));
     Rect::new(x, area.y, width, area.height)
+}
+
+pub(crate) fn mixer_input_strip_area(area: Rect, state: &AppState) -> Rect {
+    let master_width =
+        mixer_master_area(area, state).map_or(0, |master| master.width.saturating_add(1));
+    Rect::new(
+        area.x.saturating_add(master_width),
+        area.y,
+        area.width.saturating_sub(master_width),
+        area.height,
+    )
+}
+
+pub(crate) fn mixer_master_area(area: Rect, state: &AppState) -> Option<Rect> {
+    state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))
+        .and_then(|surface| surface.master.as_ref())
+        .map(|_| Rect::new(area.x, area.y, area.width.min(14), area.height))
+}
+
+pub(crate) fn dynamic_mixer_strip_card_area(
+    area: Rect,
+    state: &AppState,
+    slot: usize,
+    visible: usize,
+) -> Rect {
+    if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo || visible == 0 {
+        return mixer_strip_card_area(area, slot);
+    }
+    let visible = u16::try_from(visible).unwrap_or(u16::MAX).max(1);
+    let gap_total = visible.saturating_sub(1).min(area.width);
+    let available = area.width.saturating_sub(gap_total);
+    let width = (available / visible).max(1);
+    let stride = width.saturating_add(1);
+    let offset = u16::try_from(slot)
+        .unwrap_or(u16::MAX)
+        .saturating_mul(stride);
+    Rect::new(
+        area.x.saturating_add(offset),
+        area.y,
+        width.min(area.width.saturating_sub(offset)),
+        area.height,
+    )
 }
 
 pub(crate) fn mixer_strip_inner_area(area: Rect) -> Rect {
@@ -240,6 +316,16 @@ pub(crate) fn surface_tab_hit_areas(area: Rect) -> Vec<Rect> {
     inline_chip_rects(inner.x, inner.y, &["MIX 1 / Monitor-HP1", "MIX 2 / HP2"])
 }
 
+pub(crate) fn dynamic_surface_tab_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
+    let inner = inner_area(area);
+    let labels = state
+        .mixers()
+        .iter()
+        .map(|surface| surface.name.as_str())
+        .collect::<Vec<_>>();
+    inline_chip_rects(inner.x, inner.y, &labels)
+}
+
 pub(crate) fn mixer_header_button_rects(area: Rect) -> Vec<Rect> {
     let inner = inner_area(area);
     let labels = ["PROFILES", "ROUTING"];
@@ -272,6 +358,34 @@ pub(crate) fn inline_chip_rects(x: u16, y: u16, labels: &[&str]) -> Vec<Rect> {
             offset = offset.saturating_add(rect.width).saturating_add(1);
             rect
         })
+        .collect()
+}
+
+pub(crate) fn device_picker_area(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(4).min(100);
+    let height = area.height.saturating_sub(4).min(24);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+pub(crate) fn device_picker_block() -> Block<'static> {
+    Block::default()
+        .title(" Select Antelope device — Enter opens supported rows ")
+        .borders(Borders::ALL)
+}
+
+pub(crate) fn device_picker_content_area(area: Rect) -> Rect {
+    device_picker_block().inner(device_picker_area(area))
+}
+
+pub(crate) fn device_picker_row_areas(area: Rect, count: usize) -> Vec<Rect> {
+    let content = device_picker_content_area(area);
+    (0..count.min(usize::from(content.height)))
+        .map(|row| Rect::new(content.x, content.y + row as u16, content.width, 1))
         .collect()
 }
 
@@ -507,6 +621,23 @@ pub(crate) fn routing_popup_area(area: Rect) -> Rect {
     }
 }
 
+pub(crate) fn dynamic_routing_popup_area(area: Rect, state: &AppState) -> Rect {
+    if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
+        return routing_popup_area(area);
+    }
+    let width = area.width.clamp(44, 72);
+    let wanted = u16::try_from(state.routing_capabilities.len())
+        .unwrap_or(u16::MAX)
+        .saturating_add(4);
+    let height = wanted.clamp(6, area.height.max(1));
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
 pub(crate) fn profiles_popup_area(area: Rect) -> Rect {
     let width = area.width.clamp(44, 64);
     let height = area.height.clamp(12, 16);
@@ -691,6 +822,367 @@ pub(crate) fn output_card_areas(area: Rect) -> [Rect; 3] {
         ])
         .split(Rect::new(area.x, area.y, area.width, output_card_height()));
     [areas[0], areas[1], areas[2]]
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DynamicOutputControlRects {
+    pub row: Rect,
+    pub level: Option<Rect>,
+    pub dim: Option<Rect>,
+    pub mute: Option<Rect>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DynamicInputControlRects {
+    pub row: Rect,
+    pub gain: Option<Rect>,
+    pub mode: Option<Rect>,
+    pub phantom: Option<Rect>,
+    pub phase: Option<Rect>,
+    pub link: Option<Rect>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DynamicMixerControlRects {
+    pub card: Rect,
+    pub fader: Option<Rect>,
+    pub pan: Option<Rect>,
+    pub send: Option<Rect>,
+    pub mute: Option<Rect>,
+    pub solo: Option<Rect>,
+    pub link: Option<Rect>,
+}
+
+pub(crate) fn dynamic_output_row_areas(area: Rect, count: usize) -> Vec<Rect> {
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    (0..count.min(usize::from(inner.height)))
+        .map(|index| {
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(index as u16),
+                inner.width,
+                1,
+            )
+        })
+        .collect()
+}
+
+pub(crate) fn dynamic_output_control_rects(
+    row: Rect,
+    state: &AppState,
+    index: usize,
+) -> Option<DynamicOutputControlRects> {
+    let output = state.outputs().get(index)?;
+    let mut x = row.x.saturating_add(row.width.min(20));
+    let end = row.x.saturating_add(row.width);
+    let mut take = |width: u16| {
+        let width = width.min(end.saturating_sub(x));
+        let rect = Rect::new(x, row.y, width, row.height.min(1));
+        x = x.saturating_add(width).saturating_add(1);
+        (width > 0).then_some(rect)
+    };
+    let level = state
+        .ui_profile
+        .declares_output(output.address, OutputControl::Level)
+        .then(|| take(12))
+        .flatten();
+    let dim = state
+        .ui_profile
+        .declares_output(output.address, OutputControl::Dim)
+        .then(|| take(5))
+        .flatten();
+    let mute = state
+        .ui_profile
+        .declares_output(output.address, OutputControl::Mute)
+        .then(|| take(6))
+        .flatten();
+    Some(DynamicOutputControlRects {
+        row,
+        level,
+        dim,
+        mute,
+    })
+}
+
+pub(crate) fn dynamic_input_rows(area: Rect, state: &AppState) -> Vec<(usize, usize, Rect)> {
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let columns = state.input_spaces.len().max(1);
+    let column_width = inner.width / u16::try_from(columns).unwrap_or(u16::MAX).max(1);
+    let mut rows = Vec::new();
+    for (space_index, space) in state.input_spaces.iter().enumerate() {
+        let offset = u16::try_from(space_index)
+            .unwrap_or(u16::MAX)
+            .saturating_mul(column_width);
+        let width = if space_index + 1 == columns {
+            inner.width.saturating_sub(offset)
+        } else {
+            column_width
+        };
+        for input_index in 0..space
+            .inputs
+            .len()
+            .min(usize::from(inner.height.saturating_sub(1)))
+        {
+            rows.push((
+                space_index,
+                input_index,
+                Rect::new(
+                    inner.x.saturating_add(offset),
+                    inner.y.saturating_add(1).saturating_add(input_index as u16),
+                    width,
+                    1,
+                ),
+            ));
+        }
+    }
+    rows
+}
+
+pub(crate) fn dynamic_input_control_rects(
+    row: Rect,
+    state: &AppState,
+    space_index: usize,
+    input_index: usize,
+) -> Option<DynamicInputControlRects> {
+    let input = state
+        .input_spaces
+        .get(space_index)?
+        .inputs
+        .get(input_index)?;
+    let mut x = row.x.saturating_add(row.width.min(10));
+    let end = row.x.saturating_add(row.width);
+    let mut take = |width: u16| {
+        let width = width.min(end.saturating_sub(x));
+        let rect = Rect::new(x, row.y, width, row.height.min(1));
+        x = x.saturating_add(width).saturating_add(1);
+        (width > 0).then_some(rect)
+    };
+    let declared = |kind| {
+        state
+            .ui_profile
+            .input_capabilities(input.address)
+            .iter()
+            .any(|capability| capability.kind == kind)
+    };
+    let gain = declared(RuntimeInputControlKind::Gain)
+        .then(|| take(7))
+        .flatten();
+    let mode = declared(RuntimeInputControlKind::Mode)
+        .then(|| take(4))
+        .flatten();
+    let phantom = declared(RuntimeInputControlKind::Phantom)
+        .then(|| take(3))
+        .flatten();
+    let phase = declared(RuntimeInputControlKind::Phase)
+        .then(|| take(2))
+        .flatten();
+    let link = declared(RuntimeInputControlKind::Link)
+        .then(|| take(4))
+        .flatten();
+    Some(DynamicInputControlRects {
+        row,
+        gain,
+        mode,
+        phantom,
+        phase,
+        link,
+    })
+}
+
+pub(crate) fn dynamic_mixer_control_rects(
+    card: Rect,
+    state: &AppState,
+    address: MixerAddress,
+) -> Option<DynamicMixerControlRects> {
+    let surface = state
+        .mixers()
+        .iter()
+        .find(|surface| surface.surface == address.surface)?;
+    if address.strip == 0 {
+        surface.master.as_ref()?;
+    } else {
+        surface
+            .strips
+            .iter()
+            .find(|strip| strip.strip == address.strip)?;
+    }
+    let rows = mixer_strip_rows(card);
+    let fader = state
+        .ui_profile
+        .declares_mixer(address.surface, MixerControl::Fader)
+        .then(|| mixer_level_slider_rect(card));
+    let pan = state
+        .ui_profile
+        .declares_mixer(address.surface, MixerControl::Pan)
+        .then_some(rows[2]);
+    let send = state
+        .ui_profile
+        .declares_mixer(address.surface, MixerControl::Send)
+        .then_some(rows[4]);
+    let labels = [
+        state.ui_profile.declares_link(address.surface)
+            && address.strip != 0
+            && address.strip % 2 == 1,
+        state
+            .ui_profile
+            .declares_mixer(address.surface, MixerControl::Solo),
+        state
+            .ui_profile
+            .declares_mixer(address.surface, MixerControl::Mute),
+    ];
+    let names = labels
+        .iter()
+        .zip(["L", "S", "M"])
+        .filter_map(|(visible, name)| visible.then_some(name))
+        .collect::<Vec<_>>();
+    let rects = centered_inline_chip_rects(rows[7], &names);
+    let mut cursor = 0;
+    let link = labels[0].then(|| {
+        let rect = rects[cursor];
+        cursor += 1;
+        rect
+    });
+    let solo = labels[1].then(|| {
+        let rect = rects[cursor];
+        cursor += 1;
+        rect
+    });
+    let mute = labels[2].then(|| rects[cursor]);
+    Some(DynamicMixerControlRects {
+        card,
+        fader,
+        pan,
+        send,
+        mute,
+        solo,
+        link,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn dynamic_output_control_rects_for_test(
+    state: &AppState,
+    index: usize,
+) -> Option<DynamicOutputControlRects> {
+    let area = Rect::new(0, 0, 140, 48);
+    let page = mixer_page_layout(root_chunks(area)[1]);
+    let row = *dynamic_output_row_areas(page[1], state.outputs().len()).get(index)?;
+    dynamic_output_control_rects(row, state, index)
+}
+
+#[cfg(test)]
+pub(crate) fn dynamic_input_control_rects_for_test(
+    state: &AppState,
+    space_index: usize,
+    input_index: usize,
+) -> Option<DynamicInputControlRects> {
+    let area = Rect::new(0, 0, 140, 48);
+    let page = mixer_page_layout(root_chunks(area)[1]);
+    let main = mixer_main_layout_for_state(page[0], state);
+    let (_, _, row) = dynamic_input_rows(main[0], state)
+        .into_iter()
+        .find(|(space, input, _)| *space == space_index && *input == input_index)?;
+    dynamic_input_control_rects(row, state, space_index, input_index)
+}
+
+#[cfg(test)]
+pub(crate) fn dynamic_mixer_control_rects_for_test(
+    state: &AppState,
+    address: MixerAddress,
+) -> Option<DynamicMixerControlRects> {
+    let area = Rect::new(0, 0, 140, 48);
+    let page = mixer_page_layout(root_chunks(area)[1]);
+    let main = mixer_main_layout_for_state(page[0], state);
+    let mixer = mixer_layout(main[1]);
+    let inner = mixer_strip_panel_layout(mixer[1], false)[0];
+    let card = if address.strip == 0 {
+        mixer_master_area(inner, state)?
+    } else {
+        let surface = state
+            .mixers()
+            .iter()
+            .find(|surface| surface.surface == address.surface)?;
+        let index = surface
+            .strips
+            .iter()
+            .position(|strip| strip.strip == address.strip)?;
+        let (start, end) = mixer_strip_visible_bounds(inner, state);
+        if !(start..end).contains(&index) {
+            return None;
+        }
+        dynamic_mixer_strip_card_area(
+            mixer_input_strip_area(inner, state),
+            state,
+            index.saturating_sub(start),
+            end.saturating_sub(start),
+        )
+    };
+    dynamic_mixer_control_rects(card, state, address)
+}
+
+#[cfg(test)]
+pub(crate) fn dynamic_output_row_count_for_test(state: &AppState) -> usize {
+    state.outputs().len()
+}
+
+#[cfg(test)]
+pub(crate) fn dynamic_input_row_count_for_test(state: &AppState) -> usize {
+    state
+        .input_spaces
+        .iter()
+        .map(|space| space.inputs.len())
+        .sum()
+}
+
+pub(crate) fn dynamic_output_card_areas(area: Rect, count: usize) -> Vec<Rect> {
+    if count == 0 || area.width == 0 || area.height == 0 {
+        return Vec::new();
+    }
+    if count == 3 {
+        return output_card_areas(area).to_vec();
+    }
+    let columns = count.min(3);
+    let rows = count.saturating_add(columns - 1) / columns;
+    let row_height = area.height / u16::try_from(rows).unwrap_or(u16::MAX).max(1);
+    let column_width = area.width / u16::try_from(columns).unwrap_or(u16::MAX).max(1);
+    (0..count)
+        .map(|index| {
+            let row = index / columns;
+            let column = index % columns;
+            let x_offset = u16::try_from(column)
+                .unwrap_or(u16::MAX)
+                .saturating_mul(column_width);
+            let y_offset = u16::try_from(row)
+                .unwrap_or(u16::MAX)
+                .saturating_mul(row_height);
+            let width = if column + 1 == columns {
+                area.width.saturating_sub(x_offset)
+            } else {
+                column_width
+            };
+            let height = if row + 1 == rows {
+                area.height.saturating_sub(y_offset)
+            } else {
+                row_height
+            };
+            Rect::new(
+                area.x.saturating_add(x_offset),
+                area.y.saturating_add(y_offset),
+                width,
+                height,
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn output_control_rects(area: Rect) -> Vec<Rect> {

@@ -4,7 +4,11 @@ use crate::app::{
     AppState, AssignmentPickerState, Intent, RawMapScope, RawPacketTab, SelectorPopupKind,
     SelectorPopupState, QUERY_REPLY_VISIBLE_COUNT,
 };
-use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, SampleRate};
+use crate::device::DevicePickerState;
+use antelope_protocol::{
+    ClockSource, GlobalControl, InputControl, MixerAssignment, MixerControl, OutputControl,
+    PreampMode, SampleRate,
+};
 use antelope_protocol::{
     OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
     OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
@@ -22,14 +26,150 @@ fn any_modal_popup_open(state: &AppState) -> bool {
         || state.popup.options_open
 }
 
-pub(crate) fn contains_point(area: Rect, point: (u16, u16)) -> bool {
+pub fn device_picker_activation_row(
+    area: Rect,
+    picker: &DevicePickerState,
+    x: u16,
+    y: u16,
+) -> Option<usize> {
+    device_picker_row_areas(area, picker.entries().len())
+        .iter()
+        .position(|row| contains_point(*row, (x, y)))
+        .filter(|row| picker.entries()[*row].is_selectable())
+}
+
+fn contains_point(area: Rect, point: (u16, u16)) -> bool {
     point.0 >= area.x
         && point.0 < area.x.saturating_add(area.width)
         && point.1 >= area.y
         && point.1 < area.y.saturating_add(area.height)
 }
 
+fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
+    if !intent.writes_hardware() {
+        return true;
+    }
+    match intent {
+        Intent::AdjustOutputLevel { index, .. } | Intent::SetOutputLevel { index, .. } => {
+            state.outputs().get(*index).is_some_and(|output| {
+                state
+                    .ui_profile
+                    .supports_output(output.address, OutputControl::Level)
+            })
+        }
+        Intent::ToggleOutputMute(index) => state.outputs().get(*index).is_some_and(|output| {
+            state
+                .ui_profile
+                .supports_output(output.address, OutputControl::Mute)
+        }),
+        Intent::ToggleOutputDim(index) => state.outputs().get(*index).is_some_and(|output| {
+            state
+                .ui_profile
+                .supports_output(output.address, OutputControl::Dim)
+        }),
+        Intent::AdjustMixerLevel { .. } | Intent::SetMixerLevel { .. } => {
+            active_surface_supports(state, MixerControl::Fader)
+        }
+        Intent::AdjustMixerPan { .. } | Intent::SetMixerPan { .. } => {
+            active_surface_supports(state, MixerControl::Pan)
+        }
+        Intent::ToggleMixerMute(_) => active_surface_supports(state, MixerControl::Mute),
+        Intent::ToggleMixerSolo(_) => active_surface_supports(state, MixerControl::Solo),
+        Intent::ToggleMixerLink(_) | Intent::PickAssignment { .. } => state
+            .active_mixer_surface()
+            .and_then(|index| state.mixers().get(index))
+            .is_some_and(|surface| state.ui_profile.supports_link(surface.surface)),
+        Intent::AdjustMixerLevelAt { address, .. } | Intent::SetMixerLevelAt { address, .. } => {
+            state
+                .ui_profile
+                .supports_mixer(address.surface, MixerControl::Fader)
+        }
+        Intent::AdjustMixerPanAt { address, .. } | Intent::SetMixerPanAt { address, .. } => state
+            .ui_profile
+            .supports_mixer(address.surface, MixerControl::Pan),
+        Intent::SetMixerSendAt { address, .. } => state
+            .ui_profile
+            .supports_mixer(address.surface, MixerControl::Send),
+        Intent::ToggleMixerMuteAt { address } => state
+            .ui_profile
+            .supports_mixer(address.surface, MixerControl::Mute),
+        Intent::ToggleMixerSoloAt { address } => state
+            .ui_profile
+            .supports_mixer(address.surface, MixerControl::Solo),
+        Intent::ToggleMixerLinkAt { address } => state.ui_profile.supports_link(address.surface),
+        Intent::AdjustPreampGain { input, .. } | Intent::SetPreampGain { input, .. } => {
+            input_supports(state, *input, InputControl::Gain)
+        }
+        Intent::CyclePreampMode(input) | Intent::PickPreampMode { input, .. } => {
+            input_supports(state, *input, InputControl::Mode)
+        }
+        Intent::TogglePreampPhase(input) => input_supports(state, *input, InputControl::Phase),
+        Intent::TogglePreampPhantom(input) => input_supports(state, *input, InputControl::Phantom),
+        Intent::AdjustInputGainAt { address, .. } | Intent::SetInputGainAt { address, .. } => state
+            .ui_profile
+            .supports_input(*address, InputControl::Gain),
+        Intent::AdjustInputParameterAt {
+            address,
+            parameter_id,
+            ..
+        }
+        | Intent::SetInputParameterAt {
+            address,
+            parameter_id,
+            ..
+        } => state
+            .ui_profile
+            .supports_input(*address, InputControl::Parameter(*parameter_id)),
+        Intent::CycleInputModeAt { address } | Intent::SetInputModeAt { address, .. } => state
+            .ui_profile
+            .supports_input(*address, InputControl::Mode),
+        Intent::ToggleInputPhaseAt { address } => state
+            .ui_profile
+            .supports_input(*address, InputControl::Phase),
+        Intent::ToggleInputPhantomAt { address } => state
+            .ui_profile
+            .supports_input(*address, InputControl::Phantom),
+        Intent::PickSampleRate(_) => state.ui_profile.supports_global(GlobalControl::SampleRate),
+        Intent::PickClockSource(_) => state.ui_profile.supports_global(GlobalControl::ClockSource),
+        Intent::SelectSurface(_) => state.ui_profile.supports_global(GlobalControl::Surface),
+        Intent::AdjustFocused(_) | Intent::ToggleFocusedMute | Intent::ToggleFocusedDim => {
+            state.ui_profile.actionable
+        }
+        _ => state.ui_profile.actionable,
+    }
+}
+
+fn active_surface_supports(state: &AppState, control: MixerControl) -> bool {
+    state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))
+        .is_some_and(|surface| state.ui_profile.supports_mixer(surface.surface, control))
+}
+
+fn input_supports(state: &AppState, input: u8, control: InputControl) -> bool {
+    if state.input_spaces.is_empty()
+        && state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo
+    {
+        return state.ui_profile.supports_input(
+            antelope_protocol::InputAddress {
+                space: 0,
+                index: u16::from(input),
+            },
+            control,
+        );
+    }
+    state
+        .input_spaces
+        .first()
+        .and_then(|space| space.inputs.get(usize::from(input)))
+        .is_some_and(|input| state.ui_profile.supports_input(input.address, control))
+}
+
 pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Intent> {
+    mouse_action_unchecked(area, state, x, y).filter(|intent| intent_is_available(state, intent))
+}
+
+fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Intent> {
     let point = (x, y);
     let chunks = root_chunks(area);
 
@@ -74,14 +214,14 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Inte
     }
 
     let page = mixer_page_layout(chunks[1]);
-    let main = mixer_main_layout(page[0]);
+    let main = mixer_main_layout_for_state(page[0], state);
     let mixer_sections = mixer_layout(main[1]);
 
     if let Some(action) = output_list_mouse_action(page[1], state, point) {
         return Some(action);
     }
 
-    if let Some(action) = mixer_tab_mouse_action(mixer_sections[0], point) {
+    if let Some(action) = mixer_tab_mouse_action(mixer_sections[0], state, point) {
         return Some(action);
     }
     if let Some(action) = mixer_panel_mouse_action(mixer_sections[1], point) {
@@ -98,6 +238,11 @@ pub fn mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Inte
 }
 
 pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Intent> {
+    slider_mouse_action_unchecked(area, state, x, y)
+        .filter(|intent| intent_is_available(state, intent))
+}
+
+fn slider_mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Option<Intent> {
     if any_modal_popup_open(state) || state.popup.raw_view_open {
         return None;
     }
@@ -105,7 +250,7 @@ pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Opti
     let point = (x, y);
     let chunks = root_chunks(area);
     let page = mixer_page_layout(chunks[1]);
-    let main = mixer_main_layout(page[0]);
+    let main = mixer_main_layout_for_state(page[0], state);
     let mixer_sections = mixer_layout(main[1]);
 
     output_list_slider_mouse_action(page[1], state, point)
@@ -114,6 +259,17 @@ pub fn slider_mouse_action(area: Rect, state: &AppState, x: u16, y: u16) -> Opti
 }
 
 pub fn slider_wheel_action(
+    area: Rect,
+    state: &AppState,
+    x: u16,
+    y: u16,
+    increase: bool,
+) -> Option<Intent> {
+    slider_wheel_action_unchecked(area, state, x, y, increase)
+        .filter(|intent| intent_is_available(state, intent))
+}
+
+fn slider_wheel_action_unchecked(
     area: Rect,
     state: &AppState,
     x: u16,
@@ -137,7 +293,7 @@ pub fn slider_wheel_action(
 
     let chunks = root_chunks(area);
     let page = mixer_page_layout(chunks[1]);
-    let main = mixer_main_layout(page[0]);
+    let main = mixer_main_layout_for_state(page[0], state);
     let mixer_sections = mixer_layout(main[1]);
 
     output_list_slider_wheel_action(page[1], state, point, increase)
@@ -146,11 +302,15 @@ pub fn slider_wheel_action(
 }
 
 fn routing_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
-    let popup = routing_popup_area(area);
+    let popup = dynamic_routing_popup_area(area, state);
     if !contains_point(popup, point) {
         return Some(Intent::CloseRoutingPopup);
     }
-    afx_routing_mouse_action(popup, state, point)
+    if state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+        afx_routing_mouse_action(popup, state, point)
+    } else {
+        None
+    }
 }
 
 fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
@@ -506,7 +666,7 @@ fn device_header_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     }
 }
 
-fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> {
+fn mixer_tab_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
@@ -517,16 +677,19 @@ fn mixer_tab_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> {
     if contains_point(buttons[1], point) {
         return Some(Intent::OpenRoutingPopup);
     }
-    let tabs = surface_tab_hit_areas(area);
-    if contains_point(tabs[0], point) {
-        Some(Intent::SelectSurface(
-            antelope_protocol::Surface::MonitorHp1,
-        ))
-    } else if contains_point(tabs[1], point) {
-        Some(Intent::SelectSurface(antelope_protocol::Surface::Hp2))
+    let tabs = if state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+        surface_tab_hit_areas(area)
     } else {
-        None
-    }
+        dynamic_surface_tab_hit_areas(area, state)
+    };
+    state
+        .mixers()
+        .iter()
+        .zip(tabs)
+        .find(|(_, rect)| contains_point(*rect, point))
+        .map(|(surface, _)| Intent::SelectMixerSurface {
+            surface: surface.surface,
+        })
 }
 
 fn mixer_panel_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> {
@@ -543,6 +706,115 @@ fn mixer_panel_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> {
     }
 }
 
+fn dynamic_mixer_control_action(
+    controls: DynamicMixerControlRects,
+    address: antelope_protocol::MixerAddress,
+    point: (u16, u16),
+    wheel: Option<bool>,
+) -> Option<Intent> {
+    if let Some(increase) = wheel {
+        if controls
+            .pan
+            .is_some_and(|rect| contains_point(wheel_hitbox(rect), point))
+        {
+            return Some(Intent::AdjustMixerPanAt {
+                address,
+                right: increase,
+            });
+        }
+        if controls
+            .fader
+            .is_some_and(|rect| contains_point(wheel_hitbox(rect), point))
+        {
+            return Some(Intent::AdjustMixerLevelAt { address, increase });
+        }
+        return None;
+    }
+    if let Some(rect) = controls.pan {
+        if let Some(ratio) = slider_ratio_for_horizontal_point(rect, point) {
+            return Some(Intent::SetMixerPanAt {
+                address,
+                pan: pan_from_ratio(ratio),
+            });
+        }
+    }
+    if let Some(rect) = controls.fader {
+        if let Some(ratio) = slider_ratio_for_vertical_point(rect, point) {
+            return Some(Intent::SetMixerLevelAt {
+                address,
+                level: mixer_level_from_ratio(ratio).min(0x5a),
+            });
+        }
+    }
+    if let Some(rect) = controls.send {
+        if let Some(ratio) = slider_ratio_for_horizontal_point(rect, point) {
+            return Some(Intent::SetMixerSendAt {
+                address,
+                send: (ratio * 90.0).round() as i32,
+            });
+        }
+    }
+    if controls
+        .link
+        .is_some_and(|rect| contains_point(rect, point))
+    {
+        return Some(Intent::ToggleMixerLinkAt { address });
+    }
+    if controls
+        .solo
+        .is_some_and(|rect| contains_point(rect, point))
+    {
+        return Some(Intent::ToggleMixerSoloAt { address });
+    }
+    if controls
+        .mute
+        .is_some_and(|rect| contains_point(rect, point))
+    {
+        return Some(Intent::ToggleMixerMuteAt { address });
+    }
+    None
+}
+
+fn dynamic_mixer_mouse_action(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+    wheel: Option<bool>,
+) -> Option<Intent> {
+    let inner = mixer_strip_panel_layout(area, mix_meter(state).is_some())[0];
+    let surface = state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))?;
+    if let (Some(master), Some(card)) = (surface.master.as_ref(), mixer_master_area(inner, state)) {
+        let address = antelope_protocol::MixerAddress {
+            surface: surface.surface,
+            strip: master.strip,
+        };
+        let controls = dynamic_mixer_control_rects(card, state, address)?;
+        if contains_point(card, point) {
+            return dynamic_mixer_control_action(controls, address, point, wheel);
+        }
+    }
+    let strip_area = mixer_input_strip_area(inner, state);
+    let (start, end) = mixer_strip_visible_bounds(strip_area, state);
+    for (slot, index) in (start..end).enumerate() {
+        let strip = surface.strips.get(index)?;
+        let card =
+            dynamic_mixer_strip_card_area(strip_area, state, slot, end.saturating_sub(start));
+        if !contains_point(card, point) {
+            continue;
+        }
+        let address = antelope_protocol::MixerAddress {
+            surface: surface.surface,
+            strip: strip.strip,
+        };
+        let controls = dynamic_mixer_control_rects(card, state, address)?;
+        return dynamic_mixer_control_action(controls, address, point, wheel)
+            .or_else(|| wheel.is_none().then_some(Intent::SelectMixerChannel(index)));
+    }
+    None
+}
+
 pub(crate) fn mixer_list_mouse_action(
     area: Rect,
     state: &AppState,
@@ -551,16 +823,25 @@ pub(crate) fn mixer_list_mouse_action(
     if !contains_point(area, point) {
         return None;
     }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        return dynamic_mixer_mouse_action(area, state, point, None);
+    }
     let inner = mixer_strip_panel_layout(area, mix_meter(state).is_some())[0];
     if !contains_point(inner, point) {
         return None;
     }
-    let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
+    let strip_area = mixer_input_strip_area(inner, state);
+    let (visible_start, visible_end) = mixer_strip_visible_bounds(strip_area, state);
     for (slot, index) in (visible_start..visible_end).enumerate() {
         let Some(channel) = state.active_mixer_channels().get(index) else {
             continue;
         };
-        let card = mixer_strip_card_area(inner, slot);
+        let card = dynamic_mixer_strip_card_area(
+            strip_area,
+            state,
+            slot,
+            visible_end.saturating_sub(visible_start),
+        );
         if !contains_point(card, point) {
             continue;
         }
@@ -612,16 +893,32 @@ pub(crate) fn mixer_list_slider_mouse_action(
     if !contains_point(area, point) {
         return None;
     }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        return dynamic_mixer_mouse_action(area, state, point, None).filter(|intent| {
+            matches!(
+                intent,
+                Intent::SetMixerLevelAt { .. }
+                    | Intent::SetMixerPanAt { .. }
+                    | Intent::SetMixerSendAt { .. }
+            )
+        });
+    }
     let inner = mixer_strip_panel_layout(area, mix_meter(state).is_some())[0];
     if !contains_point(inner, point) {
         return None;
     }
-    let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
+    let strip_area = mixer_input_strip_area(inner, state);
+    let (visible_start, visible_end) = mixer_strip_visible_bounds(strip_area, state);
     for (slot, index) in (visible_start..visible_end).enumerate() {
         let Some(channel) = state.active_mixer_channels().get(index) else {
             continue;
         };
-        let card = mixer_strip_card_area(inner, slot);
+        let card = dynamic_mixer_strip_card_area(
+            strip_area,
+            state,
+            slot,
+            visible_end.saturating_sub(visible_start),
+        );
         if !contains_point(card, point) {
             continue;
         }
@@ -639,16 +936,25 @@ pub(crate) fn mixer_list_slider_wheel_action(
     if !contains_point(area, point) {
         return None;
     }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        return dynamic_mixer_mouse_action(area, state, point, Some(increase));
+    }
     let inner = mixer_strip_panel_layout(area, mix_meter(state).is_some())[0];
     if !contains_point(inner, point) {
         return None;
     }
-    let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
+    let strip_area = mixer_input_strip_area(inner, state);
+    let (visible_start, visible_end) = mixer_strip_visible_bounds(strip_area, state);
     for (slot, index) in (visible_start..visible_end).enumerate() {
         let Some(channel) = state.active_mixer_channels().get(index) else {
             continue;
         };
-        let card = mixer_strip_card_area(inner, slot);
+        let card = dynamic_mixer_strip_card_area(
+            strip_area,
+            state,
+            slot,
+            visible_end.saturating_sub(visible_start),
+        );
         if !contains_point(card, point) {
             continue;
         }
@@ -657,9 +963,73 @@ pub(crate) fn mixer_list_slider_wheel_action(
     None
 }
 
+fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
+    for (space_index, input_index, row) in dynamic_input_rows(area, state) {
+        let input = state
+            .input_spaces
+            .get(space_index)?
+            .inputs
+            .get(input_index)?;
+        let controls = dynamic_input_control_rects(row, state, space_index, input_index)?;
+        if let Some(gain) = controls.gain {
+            if let Some(ratio) = slider_ratio_for_horizontal_point(gain, point) {
+                let value = (ratio.clamp(0.0, 1.0) * 65.0).round() as i32;
+                let control = state
+                    .ui_profile
+                    .input_capabilities(input.address)
+                    .iter()
+                    .find(|capability| {
+                        capability.kind == antelope_protocol::RuntimeInputControlKind::Gain
+                    })
+                    .and_then(|capability| capability.control)?;
+                return Some(match control {
+                    InputControl::Gain => Intent::SetInputGainAt {
+                        address: input.address,
+                        raw: value as u8,
+                    },
+                    InputControl::Parameter(parameter_id) => Intent::SetInputParameterAt {
+                        address: input.address,
+                        parameter_id,
+                        value,
+                    },
+                    _ => return None,
+                });
+            }
+        }
+        if controls
+            .mode
+            .is_some_and(|rect| contains_point(rect, point))
+        {
+            return Some(Intent::CycleInputModeAt {
+                address: input.address,
+            });
+        }
+        if controls
+            .phantom
+            .is_some_and(|rect| contains_point(rect, point))
+        {
+            return Some(Intent::ToggleInputPhantomAt {
+                address: input.address,
+            });
+        }
+        if controls
+            .phase
+            .is_some_and(|rect| contains_point(rect, point))
+        {
+            return Some(Intent::ToggleInputPhaseAt {
+                address: input.address,
+            });
+        }
+    }
+    None
+}
+
 fn preamp_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
+    }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        return dynamic_input_mouse_action(area, state, point);
     }
     let layout = preamp_bar_layout(area);
     for (input, card) in layout.into_iter().enumerate() {
@@ -706,6 +1076,14 @@ fn preamp_slider_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     if !contains_point(area, point) {
         return None;
     }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        return dynamic_input_mouse_action(area, state, point).filter(|intent| {
+            matches!(
+                intent,
+                Intent::SetInputGainAt { .. } | Intent::SetInputParameterAt { .. }
+            )
+        });
+    }
     let layout = preamp_bar_layout(area);
     for (input, card) in layout.into_iter().enumerate() {
         if !contains_point(card, point) {
@@ -723,11 +1101,47 @@ fn preamp_slider_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
 
 fn preamp_slider_wheel_action(
     area: Rect,
-    _state: &AppState,
+    state: &AppState,
     point: (u16, u16),
     increase: bool,
 ) -> Option<Intent> {
     if !contains_point(area, point) {
+        return None;
+    }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        for (space_index, input_index, row) in dynamic_input_rows(area, state) {
+            let input = state
+                .input_spaces
+                .get(space_index)?
+                .inputs
+                .get(input_index)?;
+            let controls = dynamic_input_control_rects(row, state, space_index, input_index)?;
+            if controls
+                .gain
+                .is_some_and(|rect| contains_point(wheel_hitbox(rect), point))
+            {
+                let control = state
+                    .ui_profile
+                    .input_capabilities(input.address)
+                    .iter()
+                    .find(|capability| {
+                        capability.kind == antelope_protocol::RuntimeInputControlKind::Gain
+                    })
+                    .and_then(|capability| capability.control)?;
+                return Some(match control {
+                    InputControl::Gain => Intent::AdjustInputGainAt {
+                        address: input.address,
+                        increase,
+                    },
+                    InputControl::Parameter(parameter_id) => Intent::AdjustInputParameterAt {
+                        address: input.address,
+                        parameter_id,
+                        increase,
+                    },
+                    _ => return None,
+                });
+            }
+        }
         return None;
     }
     let layout = preamp_bar_layout(area);
@@ -755,17 +1169,46 @@ fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
     if contains_point(output_hotkeys_button_rect(area), point) {
         return Some(Intent::ToggleHotkeysPopup);
     }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        for (index, row) in dynamic_output_row_areas(area, state.outputs().len())
+            .into_iter()
+            .enumerate()
+        {
+            let controls = dynamic_output_control_rects(row, state, index)?;
+            if let Some(level) = controls.level {
+                if let Some(ratio) = slider_ratio_for_horizontal_point(level, point) {
+                    return Some(Intent::SetOutputLevel {
+                        index,
+                        step: output_step_from_ratio(ratio).min(0x60),
+                    });
+                }
+            }
+            if controls.dim.is_some_and(|rect| contains_point(rect, point)) {
+                return Some(Intent::ToggleOutputDim(index));
+            }
+            if controls
+                .mute
+                .is_some_and(|rect| contains_point(rect, point))
+            {
+                return Some(Intent::ToggleOutputMute(index));
+            }
+            if contains_point(row, point) {
+                return Some(Intent::SelectOutput(index));
+            }
+        }
+        return None;
+    }
 
     let inner = inner_area(area);
     if point.1 < inner.y {
         return None;
     }
 
-    let (index, card) = output_card_areas(inner)
+    let (index, card) = dynamic_output_card_areas(inner, state.outputs().len())
         .into_iter()
         .enumerate()
         .find(|(_, card)| contains_point(*card, point))?;
-    state.output.states.get(index)?;
+    state.outputs().get(index)?;
     let controls = output_control_rects(card);
 
     if let Some(action) = output_card_slider_mouse_action(card, index, point) {
@@ -796,11 +1239,15 @@ fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
 
 fn output_list_slider_mouse_action(
     area: Rect,
-    _state: &AppState,
+    state: &AppState,
     point: (u16, u16),
 ) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
+    }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        return output_list_mouse_action(area, state, point)
+            .filter(|intent| matches!(intent, Intent::SetOutputLevel { .. }));
     }
 
     let inner = inner_area(area);
@@ -808,32 +1255,49 @@ fn output_list_slider_mouse_action(
         return None;
     }
 
-    let (index, card) = output_card_areas(inner)
+    let (index, card) = dynamic_output_card_areas(inner, state.outputs().len())
         .into_iter()
         .enumerate()
         .find(|(_, card)| contains_point(*card, point))?;
+    state.outputs().get(index)?;
     output_card_slider_mouse_action(card, index, point)
 }
 
 fn output_list_slider_wheel_action(
     area: Rect,
-    _state: &AppState,
+    state: &AppState,
     point: (u16, u16),
     increase: bool,
 ) -> Option<Intent> {
     if !contains_point(area, point) {
         return None;
     }
+    if state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+        for (index, row) in dynamic_output_row_areas(area, state.outputs().len())
+            .into_iter()
+            .enumerate()
+        {
+            let controls = dynamic_output_control_rects(row, state, index)?;
+            if controls
+                .level
+                .is_some_and(|rect| contains_point(wheel_hitbox(rect), point))
+            {
+                return Some(Intent::AdjustOutputLevel { index, increase });
+            }
+        }
+        return None;
+    }
 
     let inner = inner_area(area);
     if point.1 < inner.y {
         return None;
     }
 
-    let (index, card) = output_card_areas(inner)
+    let (index, card) = dynamic_output_card_areas(inner, state.outputs().len())
         .into_iter()
         .enumerate()
         .find(|(_, card)| contains_point(*card, point))?;
+    state.outputs().get(index)?;
     let track = output_level_slider_rect(card);
     contains_point(wheel_hitbox(track), point)
         .then_some(Intent::AdjustOutputLevel { index, increase })
@@ -849,12 +1313,12 @@ pub(crate) fn mixer_control_button_rects(area: Rect, has_link: bool) -> Vec<Rect
     }
 }
 
-pub fn mixer_strip_viewport_capacity(area: Rect, _state: &AppState) -> usize {
+pub fn mixer_strip_viewport_capacity(area: Rect, state: &AppState) -> usize {
     // Replicate the layout chain to get the actual inner width of the mixer strip panel.
     // root_chunks -> mixer_page_layout -> mixer_main_layout -> mixer_layout -> mixer_strip_panel_layout
     let chunks = root_chunks(area);
     let page = mixer_page_layout(chunks[1]);
-    let main = mixer_main_layout(page[0]);
+    let main = mixer_main_layout_for_state(page[0], state);
     let mixer = mixer_layout(main[1]);
     let inner = mixer_strip_inner_area(mixer[1]);
     mixer_strip_viewport_capacity_for_inner(inner)
@@ -863,7 +1327,7 @@ pub fn mixer_strip_viewport_capacity(area: Rect, _state: &AppState) -> usize {
 pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) -> bool {
     let chunks = root_chunks(area);
     let page = mixer_page_layout(chunks[1]);
-    let main = mixer_main_layout(page[0]);
+    let main = mixer_main_layout_for_state(page[0], state);
     let mixer = mixer_layout(main[1]);
     let list = mixer_strip_panel_layout(mixer[1], mix_meter(state).is_some());
     contains_point(list[0], (x, y))

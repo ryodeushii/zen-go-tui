@@ -767,7 +767,7 @@ For every operation, keep the source status and evidence metadata. If the profil
 
 - [ ] **Step 4: Add exact fixture assertions**
 
-Populate the Orion fixture files from profile-derived operation values and captured report layouts. Tests must compare full frame bytes for startup queries, representative input/output/mixer/link/routing/global writes, and full decoded address/value sets for state and readback reports. Include a test that the meter discriminator does not enter the readback decoder.
+Populate the Orion fixture files from confirmed canonical profile operation values and report layouts. Label these fixtures as profile-derived; do not describe them as captured or as physical hardware validation. Tests must compare full frame bytes for startup queries, representative input/output/mixer/link/routing/global writes, and full decoded address/value sets for state and readback reports. Include a test that the meter discriminator does not enter the readback decoder.
 
 - [ ] **Step 5: Enable Orion readiness**
 

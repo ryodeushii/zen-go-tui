@@ -7,7 +7,9 @@ use tui_slider::{Slider, SliderOrientation};
 
 use crate::app::{AppState, FocusArea};
 use crate::terminal;
-use antelope_protocol::{meter_display_db, OutputMode, OutputState, PreampInputState, PreampMode};
+use antelope_protocol::{
+    meter_display_db, DynamicMixerStrip, OutputMode, OutputState, PreampInputState, PreampMode,
+};
 
 use super::super::layouts::*;
 use super::super::styles::*;
@@ -65,6 +67,84 @@ pub(crate) fn render_output_card_widget(
         chip("MUTE", Color::Black, mute_bg),
     ]))
     .render(rows[2], buffer);
+}
+
+pub(crate) fn render_dynamic_output_card_widget(
+    controls: DynamicOutputControlRects,
+    buffer: &mut Buffer,
+    state: &AppState,
+    index: usize,
+    active: bool,
+) {
+    let Some(output) = state.outputs().get(index) else {
+        return;
+    };
+    let accent = if active {
+        Color::LightGreen
+    } else {
+        Color::LightBlue
+    };
+    Paragraph::new(Line::from(chip(&output.name, Color::Black, accent))).render(
+        Rect::new(
+            controls.row.x,
+            controls.row.y,
+            controls.row.width.min(19),
+            1,
+        ),
+        buffer,
+    );
+    if let Some(rect) = controls.level {
+        let enabled = state
+            .ui_profile
+            .supports_output(output.address, antelope_protocol::OutputControl::Level);
+        let label = output
+            .level
+            .map_or_else(|| "LVL ?".into(), |value| format!("LVL {value}"));
+        Paragraph::new(Line::from(chip(
+            &label,
+            Color::Black,
+            if enabled {
+                Color::LightGreen
+            } else {
+                Color::DarkGray
+            },
+        )))
+        .render(rect, buffer);
+    }
+    if let Some(rect) = controls.dim {
+        let enabled = state
+            .ui_profile
+            .supports_output(output.address, antelope_protocol::OutputControl::Dim);
+        Paragraph::new(Line::from(chip(
+            "DIM",
+            Color::Black,
+            if enabled && output.dimmed == Some(true) {
+                Color::Yellow
+            } else if enabled {
+                Color::Gray
+            } else {
+                Color::DarkGray
+            },
+        )))
+        .render(rect, buffer);
+    }
+    if let Some(rect) = controls.mute {
+        let enabled = state
+            .ui_profile
+            .supports_output(output.address, antelope_protocol::OutputControl::Mute);
+        Paragraph::new(Line::from(chip(
+            "MUTE",
+            Color::Black,
+            if enabled && output.muted == Some(true) {
+                Color::LightRed
+            } else if enabled {
+                Color::Gray
+            } else {
+                Color::DarkGray
+            },
+        )))
+        .render(rect, buffer);
+    }
 }
 
 pub(crate) fn render_preamp_visual_widget(
@@ -323,7 +403,7 @@ pub(crate) fn render_mixer_strip_widget(
     let peak_raw = state
         .mixer
         .peaks
-        .get(state.active_mixer_surface().index())
+        .get(state.active_mixer_surface().unwrap_or(0))
         .and_then(|mix| mix.get(index))
         .and_then(|peak| peak.as_ref())
         .map(|p| p.raw);
@@ -380,6 +460,126 @@ pub(crate) fn render_mixer_strip_widget(
     Paragraph::new(Line::from(controls))
         .alignment(Alignment::Center)
         .render(rows[7], buffer);
+}
+
+pub(crate) fn render_dynamic_mixer_strip_widget(
+    controls: DynamicMixerControlRects,
+    buffer: &mut Buffer,
+    state: &AppState,
+    address: antelope_protocol::MixerAddress,
+    index: Option<usize>,
+    strip: &DynamicMixerStrip,
+) {
+    if controls.card.width == 0 || controls.card.height == 0 {
+        return;
+    }
+    let selected = index.is_some_and(|index| {
+        state.ui.focus == FocusArea::Mixer && state.mixer.selected_channel == index
+    });
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(terminal::adapt_style(Style::default().fg(if selected {
+            Color::LightGreen
+        } else {
+            Color::DarkGray
+        })));
+    block.render(controls.card, buffer);
+    let (label_rect, _) = mixer_header_chip_rects(controls.card, "");
+    Paragraph::new(Line::from(chip(
+        &strip.name,
+        Color::Black,
+        if selected {
+            Color::LightGreen
+        } else {
+            Color::Gray
+        },
+    )))
+    .render(label_rect, buffer);
+    let enabled = |control| state.ui_profile.supports_mixer(address.surface, control);
+    if let Some(rect) = controls.pan {
+        let ratio = strip
+            .pan
+            .map_or(0.5, |value| (value as f64 / 64.0).clamp(0.0, 1.0));
+        render_pan_slider(rect, buffer, ratio);
+        Paragraph::new(Line::from(Span::styled(
+            strip
+                .pan
+                .map_or_else(|| "PAN ?".into(), |value| format!("PAN {value}")),
+            strong_style(if enabled(antelope_protocol::MixerControl::Pan) {
+                Color::LightBlue
+            } else {
+                Color::DarkGray
+            }),
+        )))
+        .render(mixer_strip_rows(controls.card)[1], buffer);
+    }
+    if let Some(rect) = controls.fader {
+        let ratio = strip
+            .fader
+            .map(|value| 1.0 - (value as f64 / 90.0).clamp(0.0, 1.0));
+        render_level_slider(
+            rect,
+            buffer,
+            ratio,
+            if enabled(antelope_protocol::MixerControl::Fader) {
+                Color::Yellow
+            } else {
+                Color::DarkGray
+            },
+        );
+        Paragraph::new(Line::from(Span::styled(
+            strip
+                .fader
+                .map_or_else(|| "LVL ?".into(), |value| format!("LVL {value}")),
+            strong_style(Color::Yellow),
+        )))
+        .render(mixer_strip_rows(controls.card)[6], buffer);
+    }
+    if let Some(rect) = controls.send {
+        Paragraph::new(Line::from(chip(
+            &strip
+                .send
+                .map_or_else(|| "SEND ?".into(), |value| format!("SEND {value}")),
+            Color::Black,
+            if enabled(antelope_protocol::MixerControl::Send) {
+                Color::LightCyan
+            } else {
+                Color::DarkGray
+            },
+        )))
+        .render(rect, buffer);
+    }
+    for (rect, label, on, control) in [
+        (controls.link, "L", strip.linked, None),
+        (
+            controls.solo,
+            "S",
+            strip.soloed,
+            Some(antelope_protocol::MixerControl::Solo),
+        ),
+        (
+            controls.mute,
+            "M",
+            strip.muted,
+            Some(antelope_protocol::MixerControl::Mute),
+        ),
+    ] {
+        let Some(rect) = rect else { continue };
+        let actionable =
+            control.map_or_else(|| state.ui_profile.supports_link(address.surface), enabled);
+        Paragraph::new(Line::from(chip(
+            label,
+            Color::Black,
+            if !actionable {
+                Color::DarkGray
+            } else if on == Some(true) {
+                Color::LightRed
+            } else {
+                Color::Gray
+            },
+        )))
+        .render(rect, buffer);
+    }
 }
 
 pub(crate) fn level_slider(ratio: Option<f64>, color: Color) -> Slider<'static> {

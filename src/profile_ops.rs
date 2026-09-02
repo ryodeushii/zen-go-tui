@@ -1,20 +1,20 @@
 //! Profile management operations (popup, editor, save/load/delete).
 
-use antelope_protocol::ZenGoDriver;
 use anyhow::Result;
 
 use zen_go_tui::app::Controller;
+use zen_go_tui::device::DeviceSession;
 use zen_go_tui::profile::{profile_path, DeviceProfile};
 
 /// Execute a CLI profile command (save/load).
 pub(crate) fn run_profile_command(
-    transport: Box<dyn zen_go_tui::transport::Transport>,
+    mut session: DeviceSession,
     command: crate::cli::ProfileCommand,
 ) -> Result<()> {
     match command {
         crate::cli::ProfileCommand::Save { name } => {
-            let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
-            collect_profile_state(&mut controller)?;
+            let controller = session.controller_mut();
+            collect_profile_state(controller)?;
             let profile = DeviceProfile::capture(&controller.state)?;
             let path = profile.write_named(&name)?;
             println!("Saved profile to {}", path.display());
@@ -23,8 +23,7 @@ pub(crate) fn run_profile_command(
         crate::cli::ProfileCommand::Load { name } => {
             let profile = DeviceProfile::read_named(&name)?;
             let path = profile_path(&name)?;
-            let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
-            controller.apply_profile(&profile)?;
+            session.controller_mut().apply_profile(&profile)?;
             println!("Loaded profile from {}", path.display());
             Ok(())
         }

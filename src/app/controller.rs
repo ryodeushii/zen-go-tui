@@ -4,12 +4,13 @@ use anyhow::{bail, Result};
 use ratatui::layout::Rect;
 
 use crate::command_queue::CommandQueue;
-use crate::profile::{preamp_mode_raw, DeviceProfile};
+use crate::profile::DeviceProfile;
 use crate::transport::Transport;
 use antelope_protocol::{
-    Action, ClockSource, CommandBatch, DeviceDriver, DeviceEvent, MixerAssignment,
-    MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode, OutputTarget, PanState,
-    PreampMode, QueryRequest, SampleRate, Surface,
+    Action, ClockSource, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, GlobalControl,
+    InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl, MixerSurface,
+    OutputAddress, OutputControl, OutputMode, PanState, PreampMode, QueryRequest, RoutingSource,
+    RuntimeEntry, SampleRate, Surface,
 };
 
 use super::picker::{AssignmentPickerState, SelectorPopupKind, SelectorPopupState};
@@ -35,13 +36,48 @@ impl Controller {
             bail!("driver {} is unsupported", driver.definition().name);
         }
 
+        let catalog = crate::device::ProfileCatalog::builtin();
+        let state = catalog
+            .find(driver.definition().vid, driver.definition().pid)
+            .map(AppState::from_entry)
+            .unwrap_or_default();
         Ok(Self {
             transport,
             driver,
-            state: AppState::default(),
+            state,
             pending_mutation: None,
             command_queue: CommandQueue::new(),
         })
+    }
+
+    pub fn new_for_entry(
+        transport: Box<dyn Transport>,
+        driver: Box<dyn DeviceDriver>,
+        entry: &RuntimeEntry,
+    ) -> Result<Self> {
+        if !driver.definition().supported {
+            bail!("driver {} is unsupported", driver.definition().name);
+        }
+        if (driver.definition().vid, driver.definition().pid)
+            != (entry.profile.identity.vid, entry.profile.identity.pid)
+        {
+            bail!(
+                "driver {} identity does not match selected profile {}",
+                driver.definition().name,
+                entry.profile.identity.name
+            );
+        }
+        Ok(Self {
+            transport,
+            driver,
+            state: AppState::from_entry(entry),
+            pending_mutation: None,
+            command_queue: CommandQueue::new(),
+        })
+    }
+
+    pub fn driver_definition(&self) -> &antelope_protocol::DriverDefinition {
+        self.driver.definition()
     }
 
     pub fn bootstrap(&mut self) -> Result<()> {
@@ -82,192 +118,468 @@ impl Controller {
         Ok(())
     }
 
-    fn write_action(&mut self, action: Action) -> Result<()> {
-        let batch = self.driver.encode(action)?;
-        self.write_batch(batch)
-    }
-
     pub fn apply_profile(&mut self, profile: &DeviceProfile) -> Result<()> {
         profile.validate()?;
+        let mut actions = Vec::new();
 
-        // Flush any pending commands before applying profile
-        self.flush_commands()?;
-
-        for (target, output) in [
-            (OutputTarget::Monitor, &profile.outputs.monitor),
-            (OutputTarget::Hp1, &profile.outputs.hp1),
-            (OutputTarget::Hp2, &profile.outputs.hp2),
-        ] {
-            self.send(
-                Action::SetOutputVolume {
-                    target,
-                    step: output.volume_step,
-                },
-                None,
-            )?;
-            self.send(
-                Action::SetOutputDim {
-                    target,
-                    enabled: false,
-                },
-                None,
-            )?;
-            self.send(
-                Action::SetOutputMute {
-                    target,
-                    enabled: false,
-                },
-                None,
-            )?;
-            match output.mode.into_device() {
+        let saved_outputs = [
+            ("monitor", &profile.outputs.monitor),
+            ("hp1", &profile.outputs.hp1),
+            ("hp2", &profile.outputs.hp2),
+        ];
+        for (index, (name, saved)) in saved_outputs.into_iter().enumerate() {
+            let address = self
+                .state
+                .outputs()
+                .get(index)
+                .map(|output| output.address)
+                .ok_or_else(|| anyhow::anyhow!("saved control outputs.{name} is unavailable"))?;
+            actions.push(Action::SetOutput {
+                address,
+                control: OutputControl::Level,
+                value: ControlValue::Int(i32::from(saved.volume_step)),
+            });
+            actions.push(Action::SetOutput {
+                address,
+                control: OutputControl::Dim,
+                value: ControlValue::Bool(false),
+            });
+            actions.push(Action::SetOutput {
+                address,
+                control: OutputControl::Mute,
+                value: ControlValue::Bool(false),
+            });
+            match saved.mode.into_device() {
                 OutputMode::Normal => {}
-                OutputMode::Mute => self.send(
-                    Action::SetOutputMute {
-                        target,
-                        enabled: true,
-                    },
-                    None,
-                )?,
-                OutputMode::Dim => self.send(
-                    Action::SetOutputDim {
-                        target,
-                        enabled: true,
-                    },
-                    None,
-                )?,
+                OutputMode::Mute => actions.push(Action::SetOutput {
+                    address,
+                    control: OutputControl::Mute,
+                    value: ControlValue::Bool(true),
+                }),
+                OutputMode::Dim => actions.push(Action::SetOutput {
+                    address,
+                    control: OutputControl::Dim,
+                    value: ControlValue::Bool(true),
+                }),
                 OutputMode::Unknown(_) => unreachable!(),
             }
         }
-        self.flush_commands()?;
 
-        for (input, preamp) in [
-            (0_u8, &profile.preamps.input1),
-            (1_u8, &profile.preamps.input2),
-        ] {
-            self.send(
-                Action::SetPreampMode {
-                    input,
-                    mode: preamp.mode.into_device(),
+        let input_space = self
+            .state
+            .input_spaces
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("saved control preamps.input1 is unavailable"))?;
+        for (index, (name, saved)) in [
+            ("input1", &profile.preamps.input1),
+            ("input2", &profile.preamps.input2),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let address = input_space
+                .inputs
+                .get(index)
+                .map(|input| input.address)
+                .ok_or_else(|| anyhow::anyhow!("saved control preamps.{name} is unavailable"))?;
+            actions.extend([
+                Action::SetInput {
+                    address,
+                    control: InputControl::Mode,
+                    value: ControlValue::Enum(i32::from(saved.mode.into_device().code())),
                 },
-                None,
-            )?;
-            self.send(
-                Action::SetPreampGain {
-                    input,
-                    raw: preamp.gain_raw,
+                Action::SetInput {
+                    address,
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(i32::from(saved.gain_raw)),
                 },
-                None,
-            )?;
-            self.send(
-                Action::SetPreampPhantom {
-                    input,
-                    enabled: preamp.phantom_on,
+                Action::SetInput {
+                    address,
+                    control: InputControl::Phantom,
+                    value: ControlValue::Bool(saved.phantom_on),
                 },
-                None,
-            )?;
-            self.send(
-                Action::SetPreampPhase {
-                    input,
-                    enabled: preamp.phase_inverted,
+                Action::SetInput {
+                    address,
+                    control: InputControl::Phase,
+                    value: ControlValue::Bool(saved.phase_inverted),
                 },
-                None,
-            )?;
+            ]);
         }
-        self.flush_commands()?;
 
         let assignments = profile.assignment_table()?;
+        // Legacy Zen Go profiles address its fixed 16-channel assignment table
+        // as destination 0.  Raw profile evidence retains only partial logical
+        // routing groups, so destination 0 is intentionally absent from the
+        // normalized catalog; use driver's validated legacy shape in that path.
+        let routing_channel_count = self
+            .routing_channel_count(0)
+            .ok_or_else(|| anyhow::anyhow!("saved control assignments is unavailable"))?;
+        if routing_channel_count != assignments.len() {
+            bail!(
+                "saved control assignments requires {} channels, profile exposes {}",
+                assignments.len(),
+                routing_channel_count
+            );
+        }
+        let sources: Vec<_> = assignments
+            .into_iter()
+            .map(routing_source_from_assignment)
+            .collect();
         for entry in &profile.assignments {
-            self.send(
-                Action::SetMixerAssignment {
-                    strip: entry.channel,
-                    assignment: entry.source.into_device(),
-                    assignments,
-                },
-                None,
-            )?;
+            let changed_channel = u16::from(
+                entry
+                    .channel
+                    .checked_sub(1)
+                    .ok_or_else(|| anyhow::anyhow!("saved assignment channel is invalid"))?,
+            );
+            actions.push(Action::SetRoutingGroup {
+                destination: 0,
+                changed_channel: Some(changed_channel),
+                sources: sources.clone(),
+            });
         }
 
-        for (mixer, strips) in [
-            (MixerSurface::Mix1, &profile.mixers.mix1),
-            (MixerSurface::Mix2, &profile.mixers.mix2),
-        ] {
+        for (surface_index, strips) in [&profile.mixers.mix1, &profile.mixers.mix2]
+            .into_iter()
+            .enumerate()
+        {
+            let surface = self.state.mixers().get(surface_index).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "saved control mixers.mix{} is unavailable",
+                    surface_index + 1
+                )
+            })?;
             for strip in strips.iter().step_by(2) {
-                self.send_mixer_link_change(mixer, strip.channel, strip.linked)?;
+                let strip_index = usize::from(
+                    strip
+                        .channel
+                        .checked_sub(1)
+                        .ok_or_else(|| anyhow::anyhow!("saved mixer channel is invalid"))?,
+                );
+                if surface.strips.get(strip_index + 1).is_none() {
+                    bail!(
+                        "saved control mixers.mix{}.link{} is unavailable",
+                        surface_index + 1,
+                        strip.channel
+                    );
+                }
+                actions.push(Action::SetLink {
+                    surface: surface.surface,
+                    pair: u16::try_from(strip_index / 2)
+                        .map_err(|_| anyhow::anyhow!("saved mixer link index overflow"))?,
+                    enabled: strip.linked,
+                });
             }
             for strip in strips {
-                self.send(
-                    Action::SetMixerLevel {
-                        mixer,
-                        channel: strip.channel,
-                        level: strip.level_raw,
-                        pan_state: PanState::from_raw(strip.pan_raw),
-                        muted: strip.muted,
-                        soloed: strip.soloed,
+                let strip_index = usize::from(
+                    strip
+                        .channel
+                        .checked_sub(1)
+                        .ok_or_else(|| anyhow::anyhow!("saved mixer channel is invalid"))?,
+                );
+                let current = surface.strips.get(strip_index).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "saved control mixers.mix{}.strip{} is unavailable",
+                        surface_index + 1,
+                        strip.channel
+                    )
+                })?;
+                let send = if self.state.mixer_send_surfaces.contains(&surface.surface) {
+                    Some(current.send.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "saved control mixers.mix{}.strip{}.send state is unavailable",
+                            surface_index + 1,
+                            strip.channel
+                        )
+                    })?)
+                } else {
+                    None
+                };
+                actions.push(Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: surface.surface,
+                        strip: current.strip,
                     },
-                    None,
-                )?;
+                    fader: i32::from(strip.level_raw),
+                    pan: i32::from(PanState::from_raw(strip.pan_raw).raw()),
+                    muted: strip.muted,
+                    soloed: strip.soloed,
+                    send,
+                });
             }
         }
-        self.flush_commands()?;
 
+        let mut batches = Vec::with_capacity(actions.len());
+        for (index, action) in actions.iter().enumerate() {
+            batches.push(self.driver.encode(action.clone()).map_err(|error| {
+                anyhow::anyhow!("saved profile action {index} is unavailable: {error}")
+            })?);
+        }
+
+        self.flush_commands()?;
+        for batch in batches {
+            self.write_batch(batch)?;
+        }
         profile.apply_to_state(&mut self.state);
         self.pending_mutation = None;
-        self.state.preamp.state.cluster = [
-            self.state.preamp.state.input1.gain_raw,
-            self.state.preamp.state.input2.gain_raw,
-            preamp_mode_raw(
-                profile.preamps.input1.mode,
-                profile.preamps.input1.phantom_on,
-                profile.preamps.input1.phase_inverted,
-            ),
-            preamp_mode_raw(
-                profile.preamps.input2.mode,
-                profile.preamps.input2.phantom_on,
-                profile.preamps.input2.phase_inverted,
-            ),
-        ];
         self.state.ui.last_message = "Applied profile".to_string();
         Ok(())
     }
 
-    fn shared_assignment_table(&self) -> Result<[MixerAssignment; 16]> {
-        let mut assignments = [MixerAssignment::Mute; 16];
-        for (index, slot) in assignments.iter_mut().enumerate() {
-            *slot = self.state.mixer.channels[0][index]
-                .assignment
-                .or(self.state.mixer.channels[1][index].assignment)
+    fn routing_channel_count(&self, destination: u16) -> Option<usize> {
+        self.state
+            .routing_capabilities
+            .iter()
+            .find(|group| group.destination == destination)
+            .map(|group| usize::from(group.channel_count))
+            .or_else(|| {
+                (destination == 0 && self.driver.definition().id == "zen-go-synergy-core")
+                    .then_some(16)
+            })
+    }
+
+    fn shared_assignment_sources(&self) -> Result<Vec<RoutingSource>> {
+        let channel_count = self
+            .routing_channel_count(0)
+            .ok_or_else(|| anyhow::anyhow!("routing destination 0 unavailable"))?;
+        if let Some(group) = self.state.routing_group(0) {
+            if group.sources.len() == channel_count {
+                return Ok(group.sources.clone());
+            }
+        }
+        let mut sources = Vec::with_capacity(channel_count);
+        for index in 0..channel_count {
+            let assignment = self
+                .state
+                .mixer
+                .channels
+                .iter()
+                .find_map(|surface| surface.get(index).and_then(|slot| slot.assignment))
                 .ok_or_else(|| {
                     anyhow::anyhow!("assignment table is incomplete for CH {:02}", index + 1)
                 })?;
+            sources.push(routing_source_from_assignment(assignment));
         }
-        Ok(assignments)
+        Ok(sources)
     }
 
     pub fn send(&mut self, action: Action, pending: Option<PendingMutation>) -> Result<()> {
+        let project_completed_mixer = matches!(action, Action::SetMixer { .. });
+        let action = self.complete_dynamic_action(action)?;
         let batch = self.driver.encode(action.clone())?;
-        let queueable = !matches!(action, Action::SetMixerAssignment { .. })
+        let queueable = !matches!(action, Action::SetRoutingGroup { .. })
             && batch.frames.len() == 1
             && batch.refresh_requests.is_empty();
         if queueable {
-            self.command_queue.enqueue(action.clone());
+            if !self.command_queue.enqueue(action.clone()) {
+                bail!("command queue is full; action was not enqueued");
+            }
         } else {
             self.flush_commands()?;
             self.write_batch(batch)?;
         }
-        self.apply_command_state_update(&action);
+        if project_completed_mixer || !matches!(action, Action::SetMixerStripState { .. }) {
+            self.apply_command_state_update(&action);
+        }
         self.pending_mutation = pending;
         self.state.ui.last_message = format!("Sent {:?}", action);
         Ok(())
     }
 
+    fn complete_dynamic_action(&self, action: Action) -> Result<Action> {
+        match action {
+            Action::SetMixer {
+                address,
+                control,
+                value,
+            } => self
+                .state
+                .complete_mixer_action(address, |strip| match (control, value) {
+                    (MixerControl::Fader, ControlValue::Int(value)) => strip.fader = Some(value),
+                    (MixerControl::Pan, ControlValue::Int(value)) => strip.pan = Some(value),
+                    (MixerControl::Send, ControlValue::Int(value)) => strip.send = Some(value),
+                    (MixerControl::Mute, ControlValue::Bool(value)) => strip.muted = Some(value),
+                    (MixerControl::Solo, ControlValue::Bool(value)) => strip.soloed = Some(value),
+                    (MixerControl::Parameter(id), value) => {
+                        if let Some(parameter) = strip
+                            .parameters
+                            .iter_mut()
+                            .find(|parameter| parameter.0 == id)
+                        {
+                            parameter.1 = value;
+                        }
+                    }
+                    _ => {}
+                })
+                .ok_or_else(|| anyhow::anyhow!("mixer address is unavailable or incomplete")),
+            Action::SetRouting {
+                destination,
+                channel,
+                source,
+            } => {
+                let group = self
+                    .state
+                    .routing
+                    .iter()
+                    .find(|group| group.destination == destination)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("routing destination {destination} unavailable")
+                    })?;
+                let index = usize::from(channel);
+                let mut sources = group.sources.clone();
+                let slot = sources
+                    .get_mut(index)
+                    .ok_or_else(|| anyhow::anyhow!("routing channel {channel} unavailable"))?;
+                *slot = source;
+                Ok(Action::SetRoutingGroup {
+                    destination,
+                    changed_channel: Some(channel),
+                    sources,
+                })
+            }
+            action => Ok(action),
+        }
+    }
+
     /// Applies immediate state updates for actions that affect visible state.
     fn apply_command_state_update(&mut self, action: &Action) {
         match action {
-            Action::SetClockSource(source) => {
-                self.state.device.status.clock_source = Some(*source);
+            Action::SetOutput {
+                address,
+                control,
+                value,
+            } => {
+                let Some(mut output) = self
+                    .state
+                    .outputs()
+                    .iter()
+                    .find(|output| output.address == *address)
+                    .cloned()
+                else {
+                    return;
+                };
+                match (control, value) {
+                    (OutputControl::Level, ControlValue::Int(level)) => {
+                        output.level = Some(*level);
+                    }
+                    (OutputControl::Mute, ControlValue::Bool(muted)) => {
+                        output.muted = Some(*muted);
+                        if *muted {
+                            output.dimmed = Some(false);
+                        }
+                    }
+                    (OutputControl::Dim, ControlValue::Bool(dimmed)) => {
+                        output.dimmed = Some(*dimmed);
+                        if *dimmed {
+                            output.muted = Some(false);
+                        }
+                    }
+                    (OutputControl::Parameter(parameter), value) => {
+                        if let Some((_, current)) =
+                            output.parameters.iter_mut().find(|(id, _)| id == parameter)
+                        {
+                            *current = *value;
+                        } else {
+                            output.parameters.push((*parameter, *value));
+                        }
+                    }
+                    _ => return,
+                }
+                self.state.apply_output_patch(vec![output]);
             }
-            Action::SetSampleRate(rate) => {
-                self.state.device.status.sample_rate = Some(*rate);
+            Action::SetMixerStripState {
+                address,
+                fader,
+                pan,
+                muted,
+                soloed,
+                send,
+            } => {
+                let Some(surface) = self
+                    .state
+                    .mixers_mut()
+                    .iter_mut()
+                    .find(|surface| surface.surface == address.surface)
+                else {
+                    return;
+                };
+                let strip = if address.strip == 0 {
+                    surface.master.as_mut()
+                } else {
+                    surface
+                        .strips
+                        .iter_mut()
+                        .find(|strip| strip.strip == address.strip)
+                };
+                let Some(strip) = strip else {
+                    return;
+                };
+                strip.fader = Some(*fader);
+                strip.pan = Some(*pan);
+                strip.muted = Some(*muted);
+                strip.soloed = Some(*soloed);
+                strip.send = *send;
+                self.state.sync_compatibility_views();
+            }
+            Action::SetRoutingGroup {
+                destination,
+                sources,
+                ..
+            } => {
+                let Some(group) = self
+                    .state
+                    .routing
+                    .iter_mut()
+                    .find(|group| group.destination == *destination)
+                else {
+                    if *destination != 0
+                        || self.driver.definition().id != "zen-go-synergy-core"
+                        || sources.len() != 16
+                    {
+                        return;
+                    }
+                    let Some(assignments) = sources
+                        .iter()
+                        .map(|source| {
+                            let index = u8::try_from(source.index).ok()?;
+                            MixerAssignment::from_ordinary_strip_bytes([source.bank, index])
+                        })
+                        .collect::<Option<Vec<_>>>()
+                    else {
+                        return;
+                    };
+                    if self
+                        .state
+                        .mixer
+                        .channels
+                        .iter()
+                        .any(|channels| channels.len() < assignments.len())
+                    {
+                        return;
+                    }
+                    for channels in &mut self.state.mixer.channels {
+                        for (channel, assignment) in channels.iter_mut().zip(&assignments) {
+                            channel.assignment = Some(*assignment);
+                        }
+                    }
+                    return;
+                };
+                if group.sources.len() == sources.len() {
+                    group.sources.clone_from(sources);
+                }
+            }
+            Action::SetGlobal {
+                control: GlobalControl::ClockSource,
+                value: ControlValue::Enum(value),
+            } => {
+                self.state.device.status.clock_source = Some(ClockSource::from_code(*value as u8));
+            }
+            Action::SetGlobal {
+                control: GlobalControl::SampleRate,
+                value: ControlValue::Enum(value),
+            } => {
+                let rate = SampleRate::from_code(*value as u8);
+                self.state.device.status.sample_rate = Some(rate);
                 self.state.device.status.sample_rate_hz = rate.hz();
             }
             _ => {}
@@ -281,31 +593,121 @@ impl Controller {
         Ok(())
     }
 
-    fn resolve_linked_pair(
-        &self,
-        mixer: MixerSurface,
-        channel: u8,
-    ) -> Result<(u8, u8, MixerChannelState, MixerChannelState)> {
-        let (left_channel, right_channel) = if channel % 2 == 1 {
-            (channel, channel.saturating_add(1))
+    fn mixer_address_from_ui(&self, mixer: MixerSurface, channel: u8) -> Result<MixerAddress> {
+        let strip_index = usize::from(
+            channel
+                .checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("mixer channel must be one-based"))?,
+        );
+        self.state
+            .mixers()
+            .get(mixer.index())
+            .and_then(|surface| {
+                surface.strips.get(strip_index).map(|strip| MixerAddress {
+                    surface: surface.surface,
+                    strip: strip.strip,
+                })
+            })
+            .ok_or_else(|| anyhow::anyhow!("mixer channel {channel} is unavailable"))
+    }
+
+    fn send_complete_mixer_change<F>(&mut self, address: MixerAddress, mutate: F) -> Result<()>
+    where
+        F: Fn(&mut antelope_protocol::DynamicMixerStrip) + Copy,
+    {
+        let surface = self
+            .state
+            .mixers()
+            .iter()
+            .find(|surface| surface.surface == address.surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer address {address:?} unavailable"))?;
+        let addresses = if address.strip == 0 {
+            surface
+                .master
+                .as_ref()
+                .filter(|master| master.strip == 0)
+                .ok_or_else(|| anyhow::anyhow!("mixer address {address:?} unavailable"))?;
+            vec![address]
         } else {
-            (channel.saturating_sub(1), channel)
+            let strip_index = surface
+                .strips
+                .iter()
+                .position(|strip| strip.strip == address.strip)
+                .ok_or_else(|| anyhow::anyhow!("mixer address {address:?} unavailable"))?;
+            let indexes = if surface.strips[strip_index].linked == Some(true) {
+                let left = strip_index - (strip_index % 2);
+                vec![
+                    left,
+                    left.checked_add(1)
+                        .ok_or_else(|| anyhow::anyhow!("linked mixer pair overflow"))?,
+                ]
+            } else {
+                vec![strip_index]
+            };
+            indexes
+                .into_iter()
+                .map(|index| {
+                    surface
+                        .strips
+                        .get(index)
+                        .map(|strip| MixerAddress {
+                            surface: address.surface,
+                            strip: strip.strip,
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("linked mixer strip unavailable"))
+                })
+                .collect::<Result<Vec<_>>>()?
         };
-        let left_index = left_channel.saturating_sub(1) as usize;
-        let right_index = right_channel.saturating_sub(1) as usize;
-        let Some(left) = self.state.mixer.channels[mixer.index()]
-            .get(left_index)
-            .copied()
-        else {
-            bail!("invalid linked left channel {left_channel}");
-        };
-        let Some(right) = self.state.mixer.channels[mixer.index()]
-            .get(right_index)
-            .copied()
-        else {
-            bail!("invalid linked right channel {right_channel}");
-        };
-        Ok((left_channel, right_channel, left, right))
+
+        let mut actions = Vec::with_capacity(addresses.len());
+        for pair_address in addresses {
+            let action = self
+                .state
+                .complete_mixer_action(pair_address, mutate)
+                .ok_or_else(|| anyhow::anyhow!("mixer strip state is incomplete"))?;
+            actions.push(action);
+        }
+
+        let mut batches = Vec::with_capacity(actions.len());
+        for action in &actions {
+            batches.push(self.driver.encode(action.clone())?);
+        }
+        self.flush_commands()?;
+        for (action, batch) in actions.iter().zip(batches) {
+            self.write_batch(batch)?;
+            self.apply_command_state_update(action);
+        }
+        let pending = PendingMutation::Mixer(
+            actions
+                .iter()
+                .filter_map(|action| {
+                    let Action::SetMixerStripState { address, .. } = action else {
+                        return None;
+                    };
+                    self.state
+                        .mixers()
+                        .iter()
+                        .find(|surface| surface.surface == address.surface)
+                        .and_then(|surface| {
+                            if address.strip == 0 {
+                                surface.master.as_ref()
+                            } else {
+                                surface
+                                    .strips
+                                    .iter()
+                                    .find(|strip| strip.strip == address.strip)
+                            }
+                        })
+                        .cloned()
+                        .map(|strip| super::PendingMixerStrip {
+                            address: *address,
+                            strip,
+                        })
+                })
+                .collect(),
+        );
+        self.pending_mutation = Some(pending);
+        Ok(())
     }
 
     pub fn send_mixer_level_change(
@@ -314,87 +716,8 @@ impl Controller {
         channel: u8,
         level: u8,
     ) -> Result<()> {
-        let index = channel.saturating_sub(1) as usize;
-        let Some(active) = self.state.mixer.channels[mixer.index()].get(index).copied() else {
-            bail!("invalid mixer channel {channel}");
-        };
-
-        if active.linked == Some(true) {
-            let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
-
-            if let Some(slot) =
-                self.state.mixer.channels[mixer.index()].get_mut(left_ch.saturating_sub(1) as usize)
-            {
-                slot.level = Some(level);
-                slot.pan = left.pan;
-                slot.muted = left.muted;
-            }
-            if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                .get_mut(right_ch.saturating_sub(1) as usize)
-            {
-                slot.level = Some(level);
-                slot.pan = right.pan;
-                slot.muted = right.muted;
-            }
-
-            let pending_mutation = Some(PendingMutation::MixerLinkedLevel {
-                mixer,
-                left_channel: left_ch,
-                right_channel: right_ch,
-                level,
-                left_pan: left.pan,
-                right_pan: right.pan,
-                left_muted: left.muted.unwrap_or(false),
-                right_muted: right.muted.unwrap_or(false),
-            });
-            self.flush_commands()?;
-            self.write_action(Action::SetMixerLevel {
-                mixer,
-                channel: left_ch,
-                level,
-                pan_state: left.pan,
-                muted: left.muted.unwrap_or(false),
-                soloed: left.soloed.unwrap_or(false),
-            })?;
-            self.write_action(Action::SetMixerLevel {
-                mixer,
-                channel: right_ch,
-                level,
-                pan_state: right.pan,
-                muted: right.muted.unwrap_or(false),
-                soloed: right.soloed.unwrap_or(false),
-            })?;
-            self.pending_mutation = pending_mutation;
-            self.state.ui.last_message = format!(
-                "Sent linked mixer level {:?} ch {}-{}",
-                mixer, left_ch, right_ch
-            );
-            return Ok(());
-        }
-
-        if let Some(slot) = self.state.mixer.channels[mixer.index()].get_mut(index) {
-            slot.level = Some(level);
-            slot.pan = active.pan;
-            slot.muted = active.muted;
-        }
-
-        self.send(
-            Action::SetMixerLevel {
-                mixer,
-                channel,
-                level,
-                pan_state: active.pan,
-                muted: active.muted.unwrap_or(false),
-                soloed: active.soloed.unwrap_or(false),
-            },
-            Some(PendingMutation::MixerLevel {
-                mixer,
-                channel,
-                level,
-                pan: active.pan,
-                muted: active.muted.unwrap_or(false),
-            }),
-        )
+        let address = self.mixer_address_from_ui(mixer, channel)?;
+        self.send_complete_mixer_change(address, |strip| strip.fader = Some(i32::from(level)))
     }
 
     pub fn send_mixer_mute_change(
@@ -403,72 +726,8 @@ impl Controller {
         channel: u8,
         muted: bool,
     ) -> Result<()> {
-        let index = channel.saturating_sub(1) as usize;
-        let Some(active) = self.state.mixer.channels[mixer.index()].get(index).copied() else {
-            bail!("invalid mixer channel {channel}");
-        };
-
-        if active.linked == Some(true) {
-            let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
-
-            if let Some(slot) =
-                self.state.mixer.channels[mixer.index()].get_mut(left_ch.saturating_sub(1) as usize)
-            {
-                slot.muted = Some(muted);
-            }
-            if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                .get_mut(right_ch.saturating_sub(1) as usize)
-            {
-                slot.muted = Some(muted);
-            }
-
-            let pending_mutation = Some(PendingMutation::MixerLinkedMute {
-                mixer,
-                left_channel: left_ch,
-                right_channel: right_ch,
-                muted,
-            });
-            self.flush_commands()?;
-            self.write_action(Action::SetMixerMute {
-                mixer,
-                channel: left_ch,
-                muted,
-                pan_state: left.pan,
-                soloed: left.soloed.unwrap_or(false),
-            })?;
-            self.write_action(Action::SetMixerMute {
-                mixer,
-                channel: right_ch,
-                muted,
-                pan_state: right.pan,
-                soloed: right.soloed.unwrap_or(false),
-            })?;
-            self.pending_mutation = pending_mutation;
-            self.state.ui.last_message = format!(
-                "Sent linked mixer mute {:?} ch {}-{}",
-                mixer, left_ch, right_ch
-            );
-            return Ok(());
-        }
-
-        if let Some(slot) = self.state.mixer.channels[mixer.index()].get_mut(index) {
-            slot.muted = Some(muted);
-        }
-
-        self.send(
-            Action::SetMixerMute {
-                mixer,
-                channel,
-                muted,
-                pan_state: active.pan,
-                soloed: active.soloed.unwrap_or(false),
-            },
-            Some(PendingMutation::MixerMute {
-                mixer,
-                channel,
-                muted,
-            }),
-        )
+        let address = self.mixer_address_from_ui(mixer, channel)?;
+        self.send_complete_mixer_change(address, |strip| strip.muted = Some(muted))
     }
 
     pub fn send_mixer_solo_change(
@@ -477,72 +736,8 @@ impl Controller {
         channel: u8,
         soloed: bool,
     ) -> Result<()> {
-        let index = channel.saturating_sub(1) as usize;
-        let Some(active) = self.state.mixer.channels[mixer.index()].get(index).copied() else {
-            bail!("invalid mixer channel {channel}");
-        };
-
-        if active.linked == Some(true) {
-            let (left_ch, right_ch, left, right) = self.resolve_linked_pair(mixer, channel)?;
-
-            if let Some(slot) =
-                self.state.mixer.channels[mixer.index()].get_mut(left_ch.saturating_sub(1) as usize)
-            {
-                slot.soloed = Some(soloed);
-            }
-            if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                .get_mut(right_ch.saturating_sub(1) as usize)
-            {
-                slot.soloed = Some(soloed);
-            }
-
-            let pending_mutation = Some(PendingMutation::MixerLinkedSolo {
-                mixer,
-                left_channel: left_ch,
-                right_channel: right_ch,
-                soloed,
-            });
-            self.flush_commands()?;
-            self.write_action(Action::SetMixerSolo {
-                mixer,
-                channel: left_ch,
-                soloed,
-                muted: left.muted.unwrap_or(false),
-                pan_state: left.pan,
-            })?;
-            self.write_action(Action::SetMixerSolo {
-                mixer,
-                channel: right_ch,
-                soloed,
-                muted: right.muted.unwrap_or(false),
-                pan_state: right.pan,
-            })?;
-            self.pending_mutation = pending_mutation;
-            self.state.ui.last_message = format!(
-                "Sent linked mixer solo {:?} ch {}-{}",
-                mixer, left_ch, right_ch
-            );
-            return Ok(());
-        }
-
-        if let Some(slot) = self.state.mixer.channels[mixer.index()].get_mut(index) {
-            slot.soloed = Some(soloed);
-        }
-
-        self.send(
-            Action::SetMixerSolo {
-                mixer,
-                channel,
-                soloed,
-                muted: active.muted.unwrap_or(false),
-                pan_state: active.pan,
-            },
-            Some(PendingMutation::MixerSolo {
-                mixer,
-                channel,
-                soloed,
-            }),
-        )
+        let address = self.mixer_address_from_ui(mixer, channel)?;
+        self.send_complete_mixer_change(address, |strip| strip.soloed = Some(soloed))
     }
 
     pub fn send_mixer_link_change(
@@ -551,33 +746,59 @@ impl Controller {
         channel: u8,
         enabled: bool,
     ) -> Result<()> {
-        let Some(target) = MixerLinkTarget::from_channel(mixer, channel) else {
-            bail!("invalid mixer link channel {channel}");
-        };
-        let pending_mutation = Some(PendingMutation::MixerLinkExplicit {
-            mixer,
-            left_channel: target.left_channel,
-            right_channel: target.right_channel,
-            enabled,
-        });
-        self.flush_commands()?;
-        self.write_action(Action::SetLinkState {
-            selector: target.selector,
-            enabled,
-            companion_bank: target.companion_bank(),
-        })?;
-        for channel in [target.left_channel, target.right_channel] {
-            if let Some(slot) =
-                self.state.mixer.channels[mixer.index()].get_mut(usize::from(channel - 1))
-            {
-                slot.linked = Some(enabled);
-            }
+        let address = self.mixer_address_from_ui(mixer, channel)?;
+        self.send_mixer_link_address(address, enabled)
+    }
+
+    fn send_mixer_link_address(&mut self, address: MixerAddress, enabled: bool) -> Result<()> {
+        let surface = self
+            .state
+            .mixers()
+            .iter()
+            .find(|surface| surface.surface == address.surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer surface unavailable"))?;
+        let strip_index = surface
+            .strips
+            .iter()
+            .position(|strip| strip.strip == address.strip)
+            .ok_or_else(|| anyhow::anyhow!("mixer strip unavailable"))?;
+        let left_index = strip_index - (strip_index % 2);
+        let right_index = left_index
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("link pair overflow"))?;
+        if surface.strips.get(right_index).is_none() {
+            bail!("link pair is incomplete");
         }
-        self.pending_mutation = pending_mutation;
-        self.state.ui.last_message = format!(
-            "Sent mixer link {:?} ch {}-{}",
-            mixer, target.left_channel, target.right_channel
-        );
+        let pair =
+            u16::try_from(left_index).map_err(|_| anyhow::anyhow!("link pair index overflow"))? / 2;
+        let action = Action::SetLink {
+            surface: address.surface,
+            pair,
+            enabled,
+        };
+        let batch = self.driver.encode(action)?;
+        let mut pending = Vec::new();
+        for index in [left_index, right_index] {
+            let strip = self
+                .state
+                .mixers_mut()
+                .iter_mut()
+                .find(|surface| surface.surface == address.surface)
+                .and_then(|surface| surface.strips.get_mut(index))
+                .ok_or_else(|| anyhow::anyhow!("link strip unavailable"))?;
+            strip.linked = Some(enabled);
+            pending.push(super::PendingMixerStrip {
+                address: MixerAddress {
+                    surface: address.surface,
+                    strip: strip.strip,
+                },
+                strip: strip.clone(),
+            });
+        }
+        self.flush_commands()?;
+        self.write_batch(batch)?;
+        self.pending_mutation = Some(PendingMutation::Mixer(pending));
+        self.state.sync_compatibility_views();
         Ok(())
     }
 
@@ -628,6 +849,7 @@ impl Controller {
             Intent::ScrollQueryReplyList { increase } => {
                 self.handle_scroll_query_reply_list(increase)
             }
+            Intent::SelectMixerSurface { surface } => self.handle_select_mixer_surface(surface)?,
             Intent::SelectSurface(surface) => self.handle_select_surface(surface, pending)?,
             Intent::SelectMixerChannel(index) => self.handle_select_mixer_channel(index),
             Intent::AdjustMixerLevel { index, increase } => {
@@ -643,7 +865,23 @@ impl Controller {
             Intent::ToggleMixerMute(channel) => self.handle_toggle_mixer_mute(channel, pending)?,
             Intent::ToggleMixerSolo(channel) => self.handle_toggle_mixer_solo(channel, pending)?,
             Intent::ToggleMixerLink(channel) => self.handle_toggle_mixer_link(channel, pending)?,
-            Intent::OpenAssignmentPicker(strip) => self.handle_open_assignment_picker(strip),
+            Intent::AdjustMixerLevelAt { address, increase } => {
+                self.handle_adjust_mixer_level_at(address, increase)?
+            }
+            Intent::SetMixerLevelAt { address, level } => {
+                self.handle_set_mixer_level_at(address, level)?
+            }
+            Intent::AdjustMixerPanAt { address, right } => {
+                self.handle_adjust_mixer_pan_at(address, right)?
+            }
+            Intent::SetMixerPanAt { address, pan } => self.handle_set_mixer_pan_at(address, pan)?,
+            Intent::SetMixerSendAt { address, send } => {
+                self.handle_set_mixer_send_at(address, send)?
+            }
+            Intent::ToggleMixerMuteAt { address } => self.handle_toggle_mixer_mute_at(address)?,
+            Intent::ToggleMixerSoloAt { address } => self.handle_toggle_mixer_solo_at(address)?,
+            Intent::ToggleMixerLinkAt { address } => self.handle_toggle_mixer_link_at(address)?,
+            Intent::OpenAssignmentPicker(strip) => self.handle_open_assignment_picker(strip)?,
             Intent::PickAssignment { strip, assignment } => {
                 self.handle_pick_assignment(strip, assignment, pending)?
             }
@@ -666,6 +904,34 @@ impl Controller {
             Intent::TogglePreampPhase(input) => self.handle_toggle_preamp_phase(input, pending)?,
             Intent::TogglePreampPhantom(input) => {
                 self.handle_toggle_preamp_phantom(input, pending)?
+            }
+            Intent::AdjustInputGainAt { address, increase } => {
+                self.handle_adjust_input_gain_at(address, increase, pending)?
+            }
+            Intent::SetInputGainAt { address, raw } => {
+                self.handle_set_input_gain_at(address, raw, pending)?
+            }
+            Intent::AdjustInputParameterAt {
+                address,
+                parameter_id,
+                increase,
+            } => self.handle_adjust_input_parameter_at(address, parameter_id, increase, pending)?,
+            Intent::SetInputParameterAt {
+                address,
+                parameter_id,
+                value,
+            } => self.handle_set_input_parameter_at(address, parameter_id, value, pending)?,
+            Intent::CycleInputModeAt { address } => {
+                self.handle_cycle_input_mode_at(address, pending)?
+            }
+            Intent::SetInputModeAt { address, mode } => {
+                self.handle_set_input_mode_at(address, mode, pending)?
+            }
+            Intent::ToggleInputPhaseAt { address } => {
+                self.handle_toggle_input_phase_at(address, pending)?
+            }
+            Intent::ToggleInputPhantomAt { address } => {
+                self.handle_toggle_input_phantom_at(address, pending)?
             }
             Intent::AdjustFocused(increase) => self.handle_adjust_focused(increase, pending)?,
             Intent::ToggleFocusedMute => self.handle_toggle_focused_mute(pending)?,
@@ -699,7 +965,7 @@ impl Controller {
 
             next_timeout = Duration::ZERO;
 
-            if let Ok(Some(event)) = self.driver.decode(&bytes) {
+            if let Some(event) = self.driver.decode(&bytes)? {
                 if matches!(event, DeviceEvent::Snapshot { .. }) {
                     state_dirty |= self.confirm_pending_write();
                 }
@@ -711,200 +977,16 @@ impl Controller {
     }
 
     pub fn confirm_pending_write(&mut self) -> bool {
-        let Some(pending) = self.pending_mutation.take() else {
-            return false;
-        };
-        match pending {
-            PendingMutation::MixerLevel {
-                mixer,
-                channel,
-                level,
-                pan,
-                muted,
-            } => {
-                if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                    .get_mut(channel.saturating_sub(1) as usize)
-                {
-                    slot.level = Some(level);
-                    slot.muted = Some(muted);
-                    slot.pan = pan;
-                }
-                true
-            }
-            PendingMutation::MixerLinkedLevel {
-                mixer,
-                left_channel,
-                right_channel,
-                level,
-                left_pan,
-                right_pan,
-                left_muted,
-                right_muted,
-            } => {
-                for (channel, pan, muted) in [
-                    (left_channel, left_pan, left_muted),
-                    (right_channel, right_pan, right_muted),
-                ] {
-                    if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                        .get_mut(channel.saturating_sub(1) as usize)
-                    {
-                        slot.level = Some(level);
-                        slot.muted = Some(muted);
-                        slot.pan = pan;
-                    }
-                }
-                true
-            }
-            PendingMutation::MixerMute {
-                mixer,
-                channel,
-                muted,
-            } => {
-                if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                    .get_mut(channel.saturating_sub(1) as usize)
-                {
-                    slot.muted = Some(muted);
-                }
-                true
-            }
-            PendingMutation::MixerSolo {
-                mixer,
-                channel,
-                soloed,
-            } => {
-                if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                    .get_mut(channel.saturating_sub(1) as usize)
-                {
-                    slot.soloed = Some(soloed);
-                }
-                true
-            }
-            PendingMutation::MixerLinkedMute {
-                mixer,
-                left_channel,
-                right_channel,
-                muted,
-            } => {
-                for channel in [left_channel, right_channel] {
-                    if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                        .get_mut(channel.saturating_sub(1) as usize)
-                    {
-                        slot.muted = Some(muted);
-                    }
-                }
-                true
-            }
-            PendingMutation::MixerLinkedSolo {
-                mixer,
-                left_channel,
-                right_channel,
-                soloed,
-            } => {
-                for channel in [left_channel, right_channel] {
-                    if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                        .get_mut(channel.saturating_sub(1) as usize)
-                    {
-                        slot.soloed = Some(soloed);
-                    }
-                }
-                true
-            }
-            PendingMutation::MixerPan {
-                mixer,
-                channel,
-                pan,
-            } => {
-                if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                    .get_mut(channel.saturating_sub(1) as usize)
-                {
-                    slot.pan = pan;
-                }
-                true
-            }
-            PendingMutation::MixerAssignment { strip, assignment } => {
-                let index = strip.saturating_sub(1) as usize;
-                for channels in &mut self.state.mixer.channels {
-                    if let Some(slot) = channels.get_mut(index) {
-                        slot.assignment = Some(assignment);
-                    }
-                }
-                true
-            }
-            PendingMutation::MixerLink {
-                mixer,
-                selector,
-                enabled,
-            } => {
-                if let Some((left, right)) = link_pair_from_selector(mixer, selector) {
-                    for channel in [left, right] {
-                        if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                            .get_mut(channel.saturating_sub(1) as usize)
-                        {
-                            slot.linked = Some(enabled);
-                        }
-                    }
-                }
-                true
-            }
-            PendingMutation::MixerLinkExplicit {
-                mixer,
-                left_channel,
-                right_channel,
-                enabled,
-            } => {
-                for channel in [left_channel, right_channel] {
-                    if let Some(slot) = self.state.mixer.channels[mixer.index()]
-                        .get_mut(channel.saturating_sub(1) as usize)
-                    {
-                        slot.linked = Some(enabled);
-                    }
-                }
-                true
-            }
-            PendingMutation::OutputVolume { target, step } => {
-                self.state.output.states[target.index() as usize].volume = step;
-                true
-            }
-            PendingMutation::OutputMode { target, mode } => {
-                self.state.output.states[target.index() as usize].mode = mode;
-                true
-            }
-            PendingMutation::PreampGain { input, raw } => {
-                self.state.device.dsp_cluster[input.min(1) as usize] = raw;
-                self.state
-                    .refresh_preamp_from_cluster_preserving_observed_meter();
-                true
-            }
-            PendingMutation::PreampMode { input, mode } => {
-                let offset = 2 + input.min(1) as usize;
-                let preserved_bits = self.state.device.dsp_cluster[offset] & 0xf0;
-                self.state.device.dsp_cluster[offset] = preserved_bits | mode.code();
-                self.state
-                    .refresh_preamp_from_cluster_preserving_observed_meter();
-                true
-            }
-            PendingMutation::PreampPhantom { input, enabled } => {
-                let offset = 2 + input.min(1) as usize;
-                let low = self.state.device.dsp_cluster[offset] & 0x0f;
-                self.state.device.dsp_cluster[offset] = low | if enabled { 0x10 } else { 0x00 };
-                self.state
-                    .refresh_preamp_from_cluster_preserving_observed_meter();
-                true
-            }
-            PendingMutation::PreampPhase { input, enabled } => {
-                let offset = 2 + input.min(1) as usize;
-                let low = self.state.device.dsp_cluster[offset] & 0x1f;
-                self.state.device.dsp_cluster[offset] = low | if enabled { 0x40 } else { 0x00 };
-                self.state
-                    .refresh_preamp_from_cluster_preserving_observed_meter();
-                true
-            }
-        }
+        self.pending_mutation
+            .take()
+            .is_some_and(|pending| self.state.apply_pending_mutation(pending))
     }
 
     fn handle_output_select(&mut self, index: usize) {
         self.state.ui.focus = FocusArea::Outputs;
-        self.state.output.selected = index.min(self.state.output.states.len() - 1);
+        if index < self.state.outputs().len() {
+            self.state.output.selected = index;
+        }
     }
 
     fn handle_output_adjust(
@@ -914,18 +996,24 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Outputs;
-        self.state.output.selected = index.min(self.state.output.states.len() - 1);
-        let output = self.state.output.states[self.state.output.selected];
+        let output = self
+            .state
+            .outputs()
+            .get(index)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
+        self.state.output.selected = index;
+        let current = output.level.unwrap_or(0x30).clamp(0, 0x60);
         let next = if increase {
-            output.volume.saturating_sub(1)
+            current.saturating_sub(1)
         } else {
-            output.volume.saturating_add(1).min(0x60)
+            current.saturating_add(1).min(0x60)
         };
-        self.state.output.states[self.state.output.selected].volume = next;
         self.send(
-            Action::SetOutputVolume {
-                target: output.target,
-                step: next,
+            Action::SetOutput {
+                address: output.address,
+                control: OutputControl::Level,
+                value: ControlValue::Int(next),
             },
             pending,
         )?;
@@ -939,13 +1027,18 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Outputs;
-        self.state.output.selected = index.min(self.state.output.states.len() - 1);
-        let output = self.state.output.states[self.state.output.selected];
-        self.state.output.states[self.state.output.selected].volume = step.min(0x60);
+        let address = self
+            .state
+            .outputs()
+            .get(index)
+            .map(|output| output.address)
+            .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
+        self.state.output.selected = index;
         self.send(
-            Action::SetOutputVolume {
-                target: output.target,
-                step: step.min(0x60),
+            Action::SetOutput {
+                address,
+                control: OutputControl::Level,
+                value: ControlValue::Int(i32::from(step.min(0x60))),
             },
             pending,
         )?;
@@ -958,18 +1051,18 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Outputs;
-        self.state.output.selected = index.min(self.state.output.states.len() - 1);
-        let output = self.state.output.states[self.state.output.selected];
-        let new_mode = if output.mode != OutputMode::Dim {
-            OutputMode::Dim
-        } else {
-            OutputMode::Normal
-        };
-        self.state.output.states[self.state.output.selected].mode = new_mode;
+        let output = self
+            .state
+            .outputs()
+            .get(index)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
+        self.state.output.selected = index;
         self.send(
-            Action::SetOutputDim {
-                target: output.target,
-                enabled: output.mode != OutputMode::Dim,
+            Action::SetOutput {
+                address: output.address,
+                control: OutputControl::Dim,
+                value: ControlValue::Bool(!output.dimmed.unwrap_or(false)),
             },
             pending,
         )?;
@@ -982,18 +1075,18 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Outputs;
-        self.state.output.selected = index.min(self.state.output.states.len() - 1);
-        let output = self.state.output.states[self.state.output.selected];
-        let new_mode = if output.mode != OutputMode::Mute {
-            OutputMode::Mute
-        } else {
-            OutputMode::Normal
-        };
-        self.state.output.states[self.state.output.selected].mode = new_mode;
+        let output = self
+            .state
+            .outputs()
+            .get(index)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
+        self.state.output.selected = index;
         self.send(
-            Action::SetOutputMute {
-                target: output.target,
-                enabled: output.mode != OutputMode::Mute,
+            Action::SetOutput {
+                address: output.address,
+                control: OutputControl::Mute,
+                value: ControlValue::Bool(!output.muted.unwrap_or(false)),
             },
             pending,
         )?;
@@ -1043,7 +1136,13 @@ impl Controller {
     ) -> Result<()> {
         self.state.popup.selector_popup = None;
         self.state.popup.selected_index = 0;
-        self.send(Action::SetSampleRate(rate), pending)?;
+        self.send(
+            Action::SetGlobal {
+                control: GlobalControl::SampleRate,
+                value: ControlValue::Enum(i32::from(rate.code())),
+            },
+            pending,
+        )?;
         Ok(())
     }
 
@@ -1054,7 +1153,13 @@ impl Controller {
     ) -> Result<()> {
         self.state.popup.selector_popup = None;
         self.state.popup.selected_index = 0;
-        self.send(Action::SetClockSource(source), pending)?;
+        self.send(
+            Action::SetGlobal {
+                control: GlobalControl::ClockSource,
+                value: ControlValue::Enum(i32::from(source.code())),
+            },
+            pending,
+        )?;
         Ok(())
     }
 
@@ -1181,8 +1286,10 @@ impl Controller {
         if self.state.ui.settings.peak_enabled {
             self.state.ui.last_message = "Peak detection enabled".to_string();
         } else {
-            self.state.preamp.peaks = [None, None];
-            self.state.mixer.peaks = [[None; 16]; 2];
+            self.state.preamp.peaks.fill(None);
+            for peaks in &mut self.state.mixer.peaks {
+                peaks.fill(None);
+            }
             self.state.ui.last_message = "Peak detection disabled".to_string();
         }
         if self.state.ui.settings.auto_save {
@@ -1208,9 +1315,185 @@ impl Controller {
         }
     }
 
+    fn input_at_ui(&self, input: u8) -> Result<antelope_protocol::DynamicInputState> {
+        self.state
+            .input_spaces
+            .first()
+            .and_then(|space| space.inputs.get(usize::from(input)))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("input index {input} unavailable"))
+    }
+
+    fn input_at_address(
+        &self,
+        address: InputAddress,
+    ) -> Result<antelope_protocol::DynamicInputState> {
+        self.state
+            .input_spaces
+            .iter()
+            .find(|space| space.space_id == address.space)
+            .and_then(|space| space.inputs.iter().find(|input| input.address == address))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("input address {address:?} unavailable"))
+    }
+
+    fn ensure_input_control(&self, address: InputAddress, control: InputControl) -> Result<()> {
+        if !self.state.ui_profile.supports_input(address, control) {
+            bail!("input control {control:?} is unsupported for {address:?}");
+        }
+        Ok(())
+    }
+
+    fn handle_adjust_input_gain_at(
+        &mut self,
+        address: InputAddress,
+        increase: bool,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        self.ensure_input_control(address, InputControl::Gain)?;
+        let slot = self.input_at_address(address)?;
+        let current = slot
+            .gain
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(0);
+        let raw = next_preamp_gain_raw(current, increase);
+        self.handle_set_input_gain_at(address, raw, pending)
+    }
+
+    fn handle_set_input_gain_at(
+        &mut self,
+        address: InputAddress,
+        raw: u8,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        self.ensure_input_control(address, InputControl::Gain)?;
+        self.input_at_address(address)?;
+        self.send(
+            Action::SetInput {
+                address,
+                control: InputControl::Gain,
+                value: ControlValue::Int(i32::from(raw)),
+            },
+            pending,
+        )
+    }
+
+    fn handle_adjust_input_parameter_at(
+        &mut self,
+        address: InputAddress,
+        parameter_id: u16,
+        increase: bool,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        let control = InputControl::Parameter(parameter_id);
+        self.ensure_input_control(address, control)?;
+        let current = self.input_at_address(address)?.gain.unwrap_or(0);
+        let value = if increase {
+            current.saturating_add(1)
+        } else {
+            current.saturating_sub(1)
+        };
+        self.handle_set_input_parameter_at(address, parameter_id, value, pending)
+    }
+
+    fn handle_set_input_parameter_at(
+        &mut self,
+        address: InputAddress,
+        parameter_id: u16,
+        value: i32,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        let control = InputControl::Parameter(parameter_id);
+        self.ensure_input_control(address, control)?;
+        self.input_at_address(address)?;
+        self.send(
+            Action::SetInput {
+                address,
+                control,
+                value: ControlValue::Int(value),
+            },
+            pending,
+        )
+    }
+
+    fn handle_cycle_input_mode_at(
+        &mut self,
+        address: InputAddress,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        self.ensure_input_control(address, InputControl::Mode)?;
+        let slot = self.input_at_address(address)?;
+        let current = PreampMode::from_raw(slot.mode.unwrap_or_default() as u8);
+        let mode = match current {
+            PreampMode::Mic => PreampMode::Line,
+            PreampMode::Line => PreampMode::HiZ,
+            PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
+        };
+        self.handle_set_input_mode_at(address, mode, pending)
+    }
+
+    fn handle_set_input_mode_at(
+        &mut self,
+        address: InputAddress,
+        mode: PreampMode,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        self.ensure_input_control(address, InputControl::Mode)?;
+        self.input_at_address(address)?;
+        self.send(
+            Action::SetInput {
+                address,
+                control: InputControl::Mode,
+                value: ControlValue::Enum(i32::from(mode.code())),
+            },
+            pending,
+        )
+    }
+
+    fn handle_toggle_input_phase_at(
+        &mut self,
+        address: InputAddress,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        self.ensure_input_control(address, InputControl::Phase)?;
+        let slot = self.input_at_address(address)?;
+        self.send(
+            Action::SetInput {
+                address,
+                control: InputControl::Phase,
+                value: ControlValue::Bool(!slot.phase.unwrap_or(false)),
+            },
+            pending,
+        )
+    }
+
+    fn handle_toggle_input_phantom_at(
+        &mut self,
+        address: InputAddress,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        self.ensure_input_control(address, InputControl::Phantom)?;
+        let slot = self.input_at_address(address)?;
+        self.send(
+            Action::SetInput {
+                address,
+                control: InputControl::Phantom,
+                value: ControlValue::Bool(!slot.phantom.unwrap_or(false)),
+            },
+            pending,
+        )
+    }
+
     fn handle_select_preamp_input(&mut self, input: usize) {
         self.state.ui.focus = FocusArea::Preamp;
-        self.state.preamp.selected_input = input.min(1);
+        if self
+            .state
+            .input_spaces
+            .first()
+            .is_some_and(|space| input < space.inputs.len())
+        {
+            self.state.preamp.selected_input = input;
+        }
     }
 
     fn handle_adjust_preamp_gain(
@@ -1220,18 +1503,21 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
-        self.state.preamp.selected_input = input.min(1) as usize;
-        let current = if input == 0 {
-            self.state.preamp.state.input1.gain_raw
-        } else {
-            self.state.preamp.state.input2.gain_raw
-        };
+        let slot = self.input_at_ui(input)?;
+        self.state.preamp.selected_input = usize::from(input);
+        let current = slot
+            .gain
+            .and_then(|gain| u8::try_from(gain).ok())
+            .unwrap_or(0);
         let next = next_preamp_gain_raw(current, increase);
-        self.state.device.dsp_cluster[input.min(1) as usize] = next;
-        self.state
-            .refresh_preamp_from_cluster_preserving_observed_meter();
-        self.send(Action::SetPreampGain { input, raw: next }, pending)?;
-        Ok(())
+        self.send(
+            Action::SetInput {
+                address: slot.address,
+                control: InputControl::Gain,
+                value: ControlValue::Int(i32::from(next)),
+            },
+            pending,
+        )
     }
 
     fn handle_set_preamp_gain(
@@ -1241,28 +1527,25 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
-        self.state.preamp.selected_input = input.min(1) as usize;
-        self.state.device.dsp_cluster[input.min(1) as usize] = raw;
-        self.state
-            .refresh_preamp_from_cluster_preserving_observed_meter();
+        let slot = self.input_at_ui(input)?;
+        self.state.preamp.selected_input = usize::from(input);
         self.send(
-            Action::SetPreampGain {
-                input: input.min(1),
-                raw,
+            Action::SetInput {
+                address: slot.address,
+                control: InputControl::Gain,
+                value: ControlValue::Int(i32::from(raw)),
             },
             pending,
-        )?;
-        Ok(())
+        )
     }
 
     fn handle_open_preamp_mode_selector(&mut self, input: u8) {
         self.state.ui.focus = FocusArea::Preamp;
-        self.state.preamp.selected_input = input.min(1) as usize;
-        let current = if input == 0 {
-            self.state.preamp.state.input1.mode
-        } else {
-            self.state.preamp.state.input2.mode
+        let Ok(slot) = self.input_at_ui(input) else {
+            return;
         };
+        self.state.preamp.selected_input = usize::from(input);
+        let current = PreampMode::from_raw(slot.mode.unwrap_or_default() as u8);
         self.state.popup.selected_index = [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
             .iter()
             .position(|mode| *mode == current)
@@ -1278,19 +1561,22 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
-        self.state.preamp.selected_input = input.min(1) as usize;
-        let current = if input == 0 {
-            self.state.preamp.state.input1.mode
-        } else {
-            self.state.preamp.state.input2.mode
-        };
+        let slot = self.input_at_ui(input)?;
+        self.state.preamp.selected_input = usize::from(input);
+        let current = PreampMode::from_raw(slot.mode.unwrap_or_default() as u8);
         let next = match current {
             PreampMode::Mic => PreampMode::Line,
             PreampMode::Line => PreampMode::HiZ,
             PreampMode::HiZ | PreampMode::Unknown(_) => PreampMode::Mic,
         };
-        self.send(Action::SetPreampMode { input, mode: next }, pending)?;
-        Ok(())
+        self.send(
+            Action::SetInput {
+                address: slot.address,
+                control: InputControl::Mode,
+                value: ControlValue::Enum(i32::from(next.code())),
+            },
+            pending,
+        )
     }
 
     fn handle_pick_preamp_mode(
@@ -1302,9 +1588,16 @@ impl Controller {
         self.state.popup.selector_popup = None;
         self.state.popup.selected_index = 0;
         self.state.ui.focus = FocusArea::Preamp;
-        self.state.preamp.selected_input = input.min(1) as usize;
-        self.send(Action::SetPreampMode { input, mode }, pending)?;
-        Ok(())
+        let slot = self.input_at_ui(input)?;
+        self.state.preamp.selected_input = usize::from(input);
+        self.send(
+            Action::SetInput {
+                address: slot.address,
+                control: InputControl::Mode,
+                value: ControlValue::Enum(i32::from(mode.code())),
+            },
+            pending,
+        )
     }
 
     fn handle_toggle_preamp_phase(
@@ -1313,20 +1606,16 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
-        self.state.preamp.selected_input = input.min(1) as usize;
-        let mode_raw = if input == 0 {
-            self.state.preamp.state.input1.mode_raw
-        } else {
-            self.state.preamp.state.input2.mode_raw
-        };
+        let slot = self.input_at_ui(input)?;
+        self.state.preamp.selected_input = usize::from(input);
         self.send(
-            Action::SetPreampPhase {
-                input,
-                enabled: mode_raw & 0x40 == 0,
+            Action::SetInput {
+                address: slot.address,
+                control: InputControl::Phase,
+                value: ControlValue::Bool(!slot.phase.unwrap_or(false)),
             },
             pending,
-        )?;
-        Ok(())
+        )
     }
 
     fn handle_toggle_preamp_phantom(
@@ -1335,20 +1624,16 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Preamp;
-        self.state.preamp.selected_input = input.min(1) as usize;
-        let current = if input == 0 {
-            self.state.preamp.state.input1
-        } else {
-            self.state.preamp.state.input2
-        };
+        let slot = self.input_at_ui(input)?;
+        self.state.preamp.selected_input = usize::from(input);
         self.send(
-            Action::SetPreampPhantom {
-                input,
-                enabled: !current.phantom_on,
+            Action::SetInput {
+                address: slot.address,
+                control: InputControl::Phantom,
+                value: ControlValue::Bool(!slot.phantom.unwrap_or(false)),
             },
             pending,
-        )?;
-        Ok(())
+        )
     }
 
     fn handle_page_mixer_strips(&mut self, area: Rect, left: bool) {
@@ -1357,9 +1642,159 @@ impl Controller {
         self.state.page_mixer_strip_viewport(left, visible);
     }
 
+    fn mixer_strip_at_ui(
+        &self,
+        index: usize,
+    ) -> Result<(MixerAddress, antelope_protocol::DynamicMixerStrip)> {
+        let surface_index = self
+            .state
+            .active_mixer_surface()
+            .ok_or_else(|| anyhow::anyhow!("no active mixer surface"))?;
+        let surface = self
+            .state
+            .mixers()
+            .get(surface_index)
+            .ok_or_else(|| anyhow::anyhow!("active mixer surface unavailable"))?;
+        let strip = surface
+            .strips
+            .get(index)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("mixer strip index {index} unavailable"))?;
+        Ok((
+            MixerAddress {
+                surface: surface.surface,
+                strip: strip.strip,
+            },
+            strip,
+        ))
+    }
+
+    fn mixer_strip_at_address(
+        &self,
+        address: MixerAddress,
+    ) -> Result<antelope_protocol::DynamicMixerStrip> {
+        let surface = self
+            .state
+            .mixers()
+            .iter()
+            .find(|surface| surface.surface == address.surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer address {address:?} unavailable"))?;
+        if address.strip == 0 {
+            surface
+                .master
+                .as_ref()
+                .filter(|master| master.strip == 0)
+                .cloned()
+        } else {
+            surface
+                .strips
+                .iter()
+                .find(|strip| strip.strip == address.strip)
+                .cloned()
+        }
+        .ok_or_else(|| anyhow::anyhow!("mixer address {address:?} unavailable"))
+    }
+
+    fn ensure_mixer_control(&self, address: MixerAddress, control: MixerControl) -> Result<()> {
+        if !self
+            .state
+            .ui_profile
+            .supports_mixer(address.surface, control)
+        {
+            bail!("mixer control {control:?} is unsupported for {address:?}");
+        }
+        self.mixer_strip_at_address(address)?;
+        Ok(())
+    }
+
+    fn handle_adjust_mixer_level_at(
+        &mut self,
+        address: MixerAddress,
+        increase: bool,
+    ) -> Result<()> {
+        self.ensure_mixer_control(address, MixerControl::Fader)?;
+        let strip = self.mixer_strip_at_address(address)?;
+        let current = strip.fader.unwrap_or(0x20).clamp(0, 0x60);
+        let next = if increase {
+            current.saturating_sub(1)
+        } else {
+            current.saturating_add(1).min(0x60)
+        };
+        self.send_complete_mixer_change(address, |strip| strip.fader = Some(next))
+    }
+
+    fn handle_set_mixer_level_at(&mut self, address: MixerAddress, level: u8) -> Result<()> {
+        self.ensure_mixer_control(address, MixerControl::Fader)?;
+        self.send_complete_mixer_change(address, |strip| {
+            strip.fader = Some(i32::from(level.min(0x5a)))
+        })
+    }
+
+    fn handle_adjust_mixer_pan_at(&mut self, address: MixerAddress, right: bool) -> Result<()> {
+        self.ensure_mixer_control(address, MixerControl::Pan)?;
+        let strip = self.mixer_strip_at_address(address)?;
+        let current = strip.pan.unwrap_or(i32::from(PanState::center().raw()));
+        let next = if right {
+            current.saturating_add(1).min(i32::from(PanState::MAX))
+        } else {
+            current.saturating_sub(1).max(i32::from(PanState::MIN))
+        };
+        self.send_complete_mixer_change(address, |strip| strip.pan = Some(next))
+    }
+
+    fn handle_set_mixer_pan_at(&mut self, address: MixerAddress, pan: PanState) -> Result<()> {
+        self.ensure_mixer_control(address, MixerControl::Pan)?;
+        self.send_complete_mixer_change(address, |strip| strip.pan = Some(i32::from(pan.raw())))
+    }
+
+    fn handle_set_mixer_send_at(&mut self, address: MixerAddress, send: i32) -> Result<()> {
+        self.ensure_mixer_control(address, MixerControl::Send)?;
+        self.send_complete_mixer_change(address, |strip| strip.send = Some(send))
+    }
+
+    fn handle_toggle_mixer_mute_at(&mut self, address: MixerAddress) -> Result<()> {
+        self.ensure_mixer_control(address, MixerControl::Mute)?;
+        let strip = self.mixer_strip_at_address(address)?;
+        self.send_complete_mixer_change(address, |slot| {
+            slot.muted = Some(!strip.muted.unwrap_or(false))
+        })
+    }
+
+    fn handle_toggle_mixer_solo_at(&mut self, address: MixerAddress) -> Result<()> {
+        self.ensure_mixer_control(address, MixerControl::Solo)?;
+        let strip = self.mixer_strip_at_address(address)?;
+        self.send_complete_mixer_change(address, |slot| {
+            slot.soloed = Some(!strip.soloed.unwrap_or(false))
+        })
+    }
+
+    fn handle_toggle_mixer_link_at(&mut self, address: MixerAddress) -> Result<()> {
+        if address.strip == 0 || !self.state.ui_profile.supports_link(address.surface) {
+            bail!("mixer link is unsupported for {address:?}");
+        }
+        let strip = self.mixer_strip_at_address(address)?;
+        self.send_mixer_link_address(address, !strip.linked.unwrap_or(false))
+    }
+
+    fn handle_select_mixer_surface(&mut self, surface: u8) -> Result<()> {
+        let index = self
+            .state
+            .mixers()
+            .iter()
+            .position(|candidate| candidate.surface == surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer surface {surface} unavailable"))?;
+        self.state.ui.focus = FocusArea::Mixer;
+        self.state.mixer.surface_index = index;
+        self.state.mixer.selected_channel = 0;
+        self.state.mixer.strip_scroll = 0;
+        Ok(())
+    }
+
     fn handle_select_mixer_channel(&mut self, index: usize) {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = index;
+        if self.mixer_strip_at_ui(index).is_ok() {
+            self.state.mixer.selected_channel = index;
+        }
     }
 
     fn handle_adjust_mixer_level(
@@ -1369,20 +1804,15 @@ impl Controller {
         _pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = index.min(self.state.active_mixer_channels().len() - 1);
-        let active_channel = self.state.active_mixer_channels()[self.state.mixer.selected_channel];
-        let current = active_channel.level.unwrap_or(0x20);
+        let (address, strip) = self.mixer_strip_at_ui(index)?;
+        self.state.mixer.selected_channel = index;
+        let current = strip.fader.unwrap_or(0x20).clamp(0, 0x60);
         let next = if increase {
             current.saturating_sub(1)
         } else {
             current.saturating_add(1).min(0x60)
         };
-        self.send_mixer_level_change(
-            MixerSurface::from_surface(self.state.mixer.surface),
-            active_channel.channel,
-            next,
-        )?;
-        Ok(())
+        self.send_complete_mixer_change(address, |strip| strip.fader = Some(next))
     }
 
     fn handle_set_mixer_level(
@@ -1392,83 +1822,41 @@ impl Controller {
         _pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = index.min(self.state.active_mixer_channels().len() - 1);
-        let active_channel = self.state.active_mixer_channels()[self.state.mixer.selected_channel];
-        self.send_mixer_level_change(
-            MixerSurface::from_surface(self.state.mixer.surface),
-            active_channel.channel,
-            level.min(0x5a),
-        )?;
-        Ok(())
+        let (address, _) = self.mixer_strip_at_ui(index)?;
+        self.state.mixer.selected_channel = index;
+        self.send_complete_mixer_change(address, |strip| {
+            strip.fader = Some(i32::from(level.min(0x5a)))
+        })
     }
 
     fn handle_adjust_mixer_pan(
         &mut self,
         index: usize,
         right: bool,
-        pending: Option<PendingMutation>,
+        _pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = index.min(self.state.active_mixer_channels().len() - 1);
-        let active_channel = self.state.active_mixer_channels()[self.state.mixer.selected_channel];
+        let (address, strip) = self.mixer_strip_at_ui(index)?;
+        self.state.mixer.selected_channel = index;
+        let current = strip.pan.unwrap_or(i32::from(PanState::center().raw()));
         let next = if right {
-            active_channel
-                .pan
-                .raw()
-                .saturating_add(1)
-                .min(PanState::MAX)
+            current.saturating_add(1).min(i32::from(PanState::MAX))
         } else {
-            active_channel
-                .pan
-                .raw()
-                .saturating_sub(1)
-                .max(PanState::MIN)
+            current.saturating_sub(1).max(i32::from(PanState::MIN))
         };
-        let surface = MixerSurface::from_surface(self.state.mixer.surface);
-        if let Some(slot) = self.state.mixer.channels[surface.index()]
-            .get_mut(active_channel.channel.saturating_sub(1) as usize)
-        {
-            slot.pan = PanState::from_raw(next);
-        }
-        self.send(
-            Action::SetMixerPan {
-                mixer: surface,
-                channel: active_channel.channel,
-                pan: PanState::from_raw(next),
-                muted: active_channel.muted.unwrap_or(false),
-                soloed: active_channel.soloed.unwrap_or(false),
-            },
-            pending,
-        )?;
-        Ok(())
+        self.send_complete_mixer_change(address, |strip| strip.pan = Some(next))
     }
 
     fn handle_set_mixer_pan(
         &mut self,
         index: usize,
         pan: PanState,
-        pending: Option<PendingMutation>,
+        _pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = index.min(self.state.active_mixer_channels().len() - 1);
-        let active_channel = self.state.active_mixer_channels()[self.state.mixer.selected_channel];
-        let surface = MixerSurface::from_surface(self.state.mixer.surface);
-        if let Some(slot) = self.state.mixer.channels[surface.index()]
-            .get_mut(active_channel.channel.saturating_sub(1) as usize)
-        {
-            slot.pan = pan;
-        }
-        self.send(
-            Action::SetMixerPan {
-                mixer: surface,
-                channel: active_channel.channel,
-                pan,
-                muted: active_channel.muted.unwrap_or(false),
-                soloed: active_channel.soloed.unwrap_or(false),
-            },
-            pending,
-        )?;
-        Ok(())
+        let (address, _) = self.mixer_strip_at_ui(index)?;
+        self.state.mixer.selected_channel = index;
+        self.send_complete_mixer_change(address, |strip| strip.pan = Some(i32::from(pan.raw())))
     }
 
     fn handle_toggle_mixer_mute(
@@ -1477,11 +1865,16 @@ impl Controller {
         _pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
-        let mixer = MixerSurface::from_surface(self.state.mixer.surface);
-        let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
-        self.send_mixer_mute_change(mixer, channel, !active_channel.muted.unwrap_or(false))?;
-        Ok(())
+        let index = usize::from(
+            channel
+                .checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("mixer channel must be one-based"))?,
+        );
+        let (address, strip) = self.mixer_strip_at_ui(index)?;
+        self.state.mixer.selected_channel = index;
+        self.send_complete_mixer_change(address, |slot| {
+            slot.muted = Some(!strip.muted.unwrap_or(false))
+        })
     }
 
     fn handle_toggle_mixer_solo(
@@ -1490,11 +1883,16 @@ impl Controller {
         _pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
-        let mixer = MixerSurface::from_surface(self.state.mixer.surface);
-        let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
-        self.send_mixer_solo_change(mixer, channel, !active_channel.soloed.unwrap_or(false))?;
-        Ok(())
+        let index = usize::from(
+            channel
+                .checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("mixer channel must be one-based"))?,
+        );
+        let (address, strip) = self.mixer_strip_at_ui(index)?;
+        self.state.mixer.selected_channel = index;
+        self.send_complete_mixer_change(address, |slot| {
+            slot.soloed = Some(!strip.soloed.unwrap_or(false))
+        })
     }
 
     fn handle_toggle_mixer_link(
@@ -1503,33 +1901,55 @@ impl Controller {
         _pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = channel.saturating_sub(1) as usize;
-        let mixer = MixerSurface::from_surface(self.state.mixer.surface);
-        let active_channel = self.state.mixer.channels[mixer.index()][channel as usize - 1];
-        self.send_mixer_link_change(mixer, channel, !active_channel.linked.unwrap_or(false))?;
-        Ok(())
+        let index = usize::from(
+            channel
+                .checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("mixer channel must be one-based"))?,
+        );
+        let (address, strip) = self.mixer_strip_at_ui(index)?;
+        self.state.mixer.selected_channel = index;
+        self.send_mixer_link_address(address, !strip.linked.unwrap_or(false))
     }
 
-    fn handle_open_assignment_picker(&mut self, strip: u8) {
+    fn handle_open_assignment_picker(&mut self, strip: u8) -> Result<()> {
+        let strip_index = usize::from(
+            strip
+                .checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("mixer strip must be one-based"))?,
+        );
+        let (address, _) = self.mixer_strip_at_ui(strip_index)?;
+        let surface_index = self
+            .state
+            .mixers()
+            .iter()
+            .position(|surface| surface.surface == address.surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer surface {} is unavailable", address.surface))?;
+        let current_assignment = self
+            .state
+            .mixer
+            .channels
+            .get(surface_index)
+            .and_then(|surface| surface.get(strip_index))
+            .and_then(|channel| channel.assignment);
+
         self.state.ui.focus = FocusArea::Mixer;
-        self.state.mixer.selected_channel = strip.saturating_sub(1) as usize;
+        self.state.mixer.selected_channel = strip_index;
         if !antelope_protocol::MixerStrip::assignment_write_is_grounded(strip) {
             self.state.ui.last_message =
                 "Assignment picking is not grounded for the selected strip.".to_string();
-        } else {
-            self.state.popup.selected_index = self.state.mixer.channels
-                [MixerSurface::from_surface(self.state.mixer.surface).index()]
-                [self.state.mixer.selected_channel]
-                .assignment
-                .and_then(|current| {
-                    MixerAssignment::grounded_choices()
-                        .iter()
-                        .position(|assignment| *assignment == current)
-                })
-                .unwrap_or(0);
-            self.state.popup.assignment_picker = Some(AssignmentPickerState { strip });
-            self.state.ui.last_message = format!("Pick source assignment for CH {strip:02}");
+            return Ok(());
         }
+
+        self.state.popup.selected_index = current_assignment
+            .and_then(|current| {
+                MixerAssignment::grounded_choices()
+                    .iter()
+                    .position(|assignment| *assignment == current)
+            })
+            .unwrap_or(0);
+        self.state.popup.assignment_picker = Some(AssignmentPickerState { strip });
+        self.state.ui.last_message = format!("Pick source assignment for CH {strip:02}");
+        Ok(())
     }
 
     fn handle_pick_assignment(
@@ -1540,12 +1960,21 @@ impl Controller {
     ) -> Result<()> {
         self.state.popup.assignment_picker = None;
         self.state.popup.selected_index = 0;
-        let assignments = self.shared_assignment_table()?;
+        let changed_channel = u16::from(
+            strip
+                .checked_sub(1)
+                .ok_or_else(|| anyhow::anyhow!("routing strip must be one-based"))?,
+        );
+        let mut sources = self.shared_assignment_sources()?;
+        let slot = sources
+            .get_mut(usize::from(changed_channel))
+            .ok_or_else(|| anyhow::anyhow!("invalid routing strip {strip}"))?;
+        *slot = routing_source_from_assignment(assignment);
         self.send(
-            Action::SetMixerAssignment {
-                strip,
-                assignment,
-                assignments,
+            Action::SetRoutingGroup {
+                destination: 0,
+                changed_channel: Some(changed_channel),
+                sources,
             },
             pending,
         )?;
@@ -1730,7 +2159,13 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.state.ui.focus = FocusArea::Mixer;
-        self.send(Action::SelectSurface(surface), pending)?;
+        self.send(
+            Action::SetGlobal {
+                control: GlobalControl::Surface,
+                value: ControlValue::Enum(i32::from(surface.code())),
+            },
+            pending,
+        )?;
         self.flush_commands()?;
         self.refresh_queried_state()?;
         Ok(())
@@ -1783,9 +2218,12 @@ impl Controller {
                     output.volume.saturating_add(1).min(0x60)
                 };
                 self.send(
-                    Action::SetOutputVolume {
-                        target: output.target,
-                        step: next,
+                    Action::SetOutput {
+                        address: OutputAddress {
+                            id: u16::from(output.target.index()),
+                        },
+                        control: OutputControl::Level,
+                        value: ControlValue::Int(i32::from(next)),
                     },
                     pending,
                 )?;
@@ -1839,7 +2277,17 @@ impl Controller {
                     }
                     PreampMode::Unknown(_) => preamp_input.gain_raw,
                 };
-                self.send(Action::SetPreampGain { input, raw: next }, pending)?;
+                self.send(
+                    Action::SetInput {
+                        address: InputAddress {
+                            space: 0,
+                            index: u16::from(input),
+                        },
+                        control: InputControl::Gain,
+                        value: ControlValue::Int(i32::from(next)),
+                    },
+                    pending,
+                )?;
             }
             _ => {}
         }
@@ -1852,9 +2300,12 @@ impl Controller {
                 let index = self.state.output.selected;
                 let output = self.state.output.states[index];
                 self.send(
-                    Action::SetOutputMute {
-                        target: output.target,
-                        enabled: output.mode != OutputMode::Mute,
+                    Action::SetOutput {
+                        address: OutputAddress {
+                            id: u16::from(output.target.index()),
+                        },
+                        control: OutputControl::Mute,
+                        value: ControlValue::Bool(output.mode != OutputMode::Mute),
                     },
                     pending,
                 )?;
@@ -1878,9 +2329,13 @@ impl Controller {
                     self.state.preamp.state.input2
                 };
                 self.send(
-                    Action::SetPreampPhantom {
-                        input,
-                        enabled: !current.phantom_on,
+                    Action::SetInput {
+                        address: InputAddress {
+                            space: 0,
+                            index: u16::from(input),
+                        },
+                        control: InputControl::Phantom,
+                        value: ControlValue::Bool(!current.phantom_on),
                     },
                     pending,
                 )?;
@@ -1895,9 +2350,12 @@ impl Controller {
             let index = self.state.output.selected;
             let output = self.state.output.states[index];
             self.send(
-                Action::SetOutputDim {
-                    target: output.target,
-                    enabled: output.mode != OutputMode::Dim,
+                Action::SetOutput {
+                    address: OutputAddress {
+                        id: u16::from(output.target.index()),
+                    },
+                    control: OutputControl::Dim,
+                    value: ControlValue::Bool(output.mode != OutputMode::Dim),
                 },
                 pending,
             )?;
@@ -1918,16 +2376,362 @@ impl Controller {
     }
 }
 
-fn link_pair_from_selector(mixer: MixerSurface, selector: u8) -> Option<(u8, u8)> {
-    MixerLinkTarget::from_selector(mixer, selector)
-        .map(|target| (target.left_channel, target.right_channel))
+/// Converts a saved-profile mixer assignment to a normalized routing source.
+pub(crate) fn routing_source_from_assignment(assignment: MixerAssignment) -> RoutingSource {
+    match assignment {
+        MixerAssignment::Preamp(channel) => RoutingSource {
+            bank: 0x00,
+            index: u16::from(channel - 1),
+        },
+        MixerAssignment::ComputerPlay(channel) => RoutingSource {
+            bank: 0x01,
+            index: u16::from(channel - 1),
+        },
+        MixerAssignment::SpdifIn(channel) => RoutingSource {
+            bank: 0x02,
+            index: u16::from(channel - 1),
+        },
+        MixerAssignment::Mute => RoutingSource {
+            bank: 0x08,
+            index: 0,
+        },
+        MixerAssignment::Oscillator(channel) => RoutingSource {
+            bank: 0x09,
+            index: u16::from(channel - 1),
+        },
+        MixerAssignment::EmuMic(channel) => RoutingSource {
+            bank: 0x0a,
+            index: u16::from(channel - 1),
+        },
+    }
 }
 
-/// Computes the next preamp gain raw value for increment/decrement.
 fn next_preamp_gain_raw(current: u8, up: bool) -> u8 {
     if up {
         current.saturating_add(1).min(0x41)
     } else {
         current.saturating_sub(1)
+    }
+}
+
+#[cfg(test)]
+mod correction_tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use antelope_protocol::{
+        CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition, DriverError,
+        DynamicOutputState, InputAddress, MixerAddress, MixerControl, OutputAddress, OutputControl,
+        QueryRequest, RuntimeDriverKind, ZenGoDriver,
+    };
+
+    use super::*;
+    use crate::transport::MockTransport;
+
+    struct AcceptingDriver {
+        definition: DriverDefinition,
+    }
+
+    impl AcceptingDriver {
+        fn new() -> Self {
+            Self {
+                definition: ZenGoDriver::new().definition().clone(),
+            }
+        }
+    }
+
+    impl DeviceDriver for AcceptingDriver {
+        fn definition(&self) -> &DriverDefinition {
+            &self.definition
+        }
+
+        fn startup_requests(&self) -> &[QueryRequest] {
+            &[]
+        }
+
+        fn encode(&self, _action: Action) -> std::result::Result<CommandBatch, DriverError> {
+            Ok(CommandBatch {
+                frames: vec![vec![0; 64]],
+                refresh_requests: Vec::new(),
+            })
+        }
+
+        fn decode(&self, _bytes: &[u8]) -> std::result::Result<Option<DeviceEvent>, DriverError> {
+            Ok(None)
+        }
+    }
+
+    #[test]
+    fn typed_dynamic_addresses_validate_capability_and_exact_topology() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+
+        let unknown = MixerAddress {
+            surface: 0,
+            strip: u16::MAX,
+        };
+        assert!(controller
+            .apply_intent(
+                Intent::SetMixerLevelAt {
+                    address: unknown,
+                    level: 20,
+                },
+                Rect::default(),
+            )
+            .is_err());
+        assert!(transport.take_writes().is_empty());
+
+        let mut entry = crate::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "zen_go_sc")
+            .expect("Zen Go entry")
+            .clone();
+        entry
+            .profile
+            .params
+            .retain(|param| param.name != "mix_solo");
+        controller.state = AppState::from_entry(&entry);
+        assert!(controller
+            .apply_intent(
+                Intent::ToggleMixerSoloAt {
+                    address: MixerAddress {
+                        surface: 0,
+                        strip: 1
+                    },
+                },
+                Rect::default(),
+            )
+            .is_err());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn typed_master_and_non_first_input_addresses_reach_controller() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        let mut entry = crate::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "zen_go_sc")
+            .expect("Zen Go entry")
+            .clone();
+        entry.driver_kind = RuntimeDriverKind::ZenGo;
+        let mut space = entry.profile.address_spaces[0].clone();
+        space.id = "second".into();
+        space.space_id = 9;
+        space.count = Some(1);
+        entry.profile.address_spaces.push(space);
+        let mut input = entry.profile.inputs[0].clone();
+        input.id = "second_1".into();
+        input.space = "second".into();
+        input.space_id = 9;
+        input.index = 0;
+        entry.profile.inputs.push(input);
+        controller.state = AppState::from_entry(&entry);
+        let mut master = controller.state.mixers()[0].strips[0].clone();
+        master.strip = 0;
+        master.name = "Master".into();
+        master.fader = Some(32);
+        master.pan = Some(32);
+        master.muted = Some(false);
+        master.soloed = Some(false);
+        controller.state.mixers_mut()[0].master = Some(master);
+
+        controller
+            .apply_intent(
+                Intent::SetMixerLevelAt {
+                    address: MixerAddress {
+                        surface: 0,
+                        strip: 0,
+                    },
+                    level: 18,
+                },
+                Rect::default(),
+            )
+            .expect("master control");
+        assert_eq!(transport.take_writes().len(), 1);
+
+        controller
+            .apply_intent(
+                Intent::SetInputGainAt {
+                    address: InputAddress { space: 9, index: 0 },
+                    raw: 12,
+                },
+                Rect::default(),
+            )
+            .expect("second input space");
+        controller.flush_commands().expect("flush typed input");
+        assert_eq!(transport.take_writes().len(), 1);
+    }
+
+    #[test]
+    fn profile_mixer_surface_selection_is_navigation_only() {
+        let transport = MockTransport::default();
+        let mut controller =
+            Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
+                .expect("Zen Go controller");
+        let target = controller.state.mixers()[1].surface;
+
+        controller
+            .apply_intent(
+                Intent::SelectMixerSurface { surface: target },
+                Rect::default(),
+            )
+            .expect("select declared mixer surface");
+
+        assert_eq!(controller.state.mixer.surface_index, 1);
+        assert!(transport.take_writes().is_empty());
+        let previous = controller.state.mixer.surface_index;
+        assert!(controller
+            .apply_intent(
+                Intent::SelectMixerSurface { surface: u8::MAX },
+                Rect::default(),
+            )
+            .is_err());
+        assert_eq!(controller.state.mixer.surface_index, previous);
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn assignment_picker_with_empty_mixer_geometry_is_safe_and_does_not_write() {
+        let transport = MockTransport::default();
+        let mut controller =
+            Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
+                .expect("Zen Go controller");
+        controller.state.mixer.surfaces.clear();
+        controller.state.mixer.channels.clear();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            controller.apply_intent(Intent::OpenAssignmentPicker(1), Rect::default())
+        }));
+        assert!(result.is_ok(), "empty mixer geometry must not panic");
+        let error = result
+            .expect("no panic")
+            .expect_err("missing mixer strip must return an error");
+        assert!(error.to_string().contains("mixer surface"));
+        assert!(controller.state.popup.assignment_picker.is_none());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn saturated_queue_rejects_partial_mixer_without_state_mutation() {
+        let transport = MockTransport::default();
+        let mut controller =
+            Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
+                .expect("Zen Go controller");
+        for strip in 1..=64 {
+            assert!(controller
+                .command_queue
+                .enqueue(Action::SetMixerStripState {
+                    address: MixerAddress { surface: 1, strip },
+                    fader: 32,
+                    pan: 32,
+                    muted: false,
+                    soloed: false,
+                    send: None,
+                }));
+        }
+
+        let address = MixerAddress {
+            surface: 0,
+            strip: 1,
+        };
+        let strip = &mut controller.state.mixers_mut()[0].strips[0];
+        strip.fader = Some(20);
+        strip.pan = Some(31);
+        strip.muted = Some(false);
+        strip.soloed = Some(true);
+        controller.state.sync_compatibility_views();
+
+        let dynamic_before = controller.state.mixers()[0].strips[0].clone();
+        let compatibility_before = controller.state.mixer.channels[0][0].clone();
+        let queue_len_before = controller.command_queue.len();
+        let mut original_pending: DynamicOutputState = controller.state.outputs()[2].clone();
+        original_pending.level = Some(55);
+        controller.pending_mutation = Some(PendingMutation::Output(original_pending.clone()));
+        controller.state.ui.last_message = "unchanged".into();
+        let writes_before = transport.take_writes();
+
+        let error = controller
+            .send(
+                Action::SetMixer {
+                    address,
+                    control: MixerControl::Fader,
+                    value: ControlValue::Int(21),
+                },
+                Some(PendingMutation::Mixer(Vec::new())),
+            )
+            .expect_err("partial mixer action must be rejected when queue is full");
+
+        assert!(error.to_string().contains("queue"));
+        assert_eq!(transport.take_writes(), writes_before);
+        assert_eq!(controller.command_queue.len(), queue_len_before);
+        assert_eq!(controller.state.mixers()[0].strips[0], dynamic_before);
+        assert_eq!(controller.state.mixer.channels[0][0], compatibility_before);
+        match controller.pending_mutation.as_ref() {
+            Some(PendingMutation::Output(output)) => assert_eq!(output, &original_pending),
+            other => panic!("pending mutation changed: {other:?}"),
+        }
+        assert_eq!(controller.state.ui.last_message, "unchanged");
+    }
+
+    #[test]
+    fn full_command_queue_rejects_output_before_projection() {
+        let transport = MockTransport::default();
+        let mut controller =
+            Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
+                .expect("Zen Go controller");
+        for strip in 1..=64 {
+            assert!(controller
+                .command_queue
+                .enqueue(Action::SetMixerStripState {
+                    address: MixerAddress { surface: 0, strip },
+                    fader: 32,
+                    pan: 32,
+                    muted: false,
+                    soloed: false,
+                    send: None,
+                }));
+        }
+        assert_eq!(controller.command_queue.len(), 64);
+
+        let dynamic_before = controller.state.outputs().to_vec();
+        let compatibility_before = controller.state.output.states.clone();
+        let mut original_pending: DynamicOutputState = controller.state.outputs()[2].clone();
+        original_pending.level = Some(55);
+        controller.pending_mutation = Some(PendingMutation::Output(original_pending.clone()));
+        controller.state.ui.last_message = "unchanged".into();
+
+        let mut attempted_pending = controller.state.outputs()[0].clone();
+        attempted_pending.level = Some(17);
+        let error = controller
+            .send(
+                Action::SetOutput {
+                    address: OutputAddress { id: 0 },
+                    control: OutputControl::Level,
+                    value: ControlValue::Int(17),
+                },
+                Some(PendingMutation::Output(attempted_pending)),
+            )
+            .expect_err("new output key must be rejected when queue is full");
+
+        assert!(error.to_string().contains("queue"));
+        assert_eq!(controller.state.outputs(), dynamic_before);
+        assert_eq!(controller.state.output.states, compatibility_before);
+        match controller.pending_mutation.as_ref() {
+            Some(PendingMutation::Output(output)) => assert_eq!(output, &original_pending),
+            other => panic!("pending mutation changed: {other:?}"),
+        }
+        assert_eq!(controller.command_queue.len(), 64);
+        assert_eq!(controller.state.ui.last_message, "unchanged");
+        assert!(transport.take_writes().is_empty());
     }
 }

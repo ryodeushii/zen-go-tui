@@ -1,8 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use antelope_protocol::{
-    ClockSource, DeviceMetadata, MixerChannelState, OutputMode, OutputState, OutputTarget,
-    PreampState, SampleRate, Surface,
+    ClockSource, DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState,
+    GlobalControl, InputAddress, InputControl, MixerChannelState, MixerControl, OutputAddress,
+    OutputControl, OutputMode, OutputState, OutputTarget, PreampState, RuntimeDriverKind,
+    RuntimeEntry, RuntimeInputControlKind, RuntimeProfile, RuntimeReadiness, SampleRate, Surface,
 };
 
 use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
@@ -90,29 +93,360 @@ pub struct DeviceState {
     pub dsp_cluster: [u8; 4],
 }
 
-/// Mixer surface state — channels, selection, scroll, and peak meters.
+/// One profile-owned input address space. String IDs remain display/catalog identifiers;
+/// mutations use `space_id` plus each input's numeric index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputSpaceState {
+    pub id: String,
+    pub space_id: u16,
+    pub name: String,
+    pub inputs: Vec<DynamicInputState>,
+}
+
+/// Mixer surface state. Dynamic surfaces are authoritative; `channels` mirrors strips for
+/// existing Zen Go rendering until Task 4 migrates widgets.
 #[derive(Debug, Clone)]
 pub struct MixerState {
     pub surface: Surface,
-    pub channels: [Vec<MixerChannelState>; 2],
+    pub surface_index: usize,
+    pub surfaces: Vec<DynamicMixerSurface>,
+    pub channels: Vec<Vec<MixerChannelState>>,
     pub selected_channel: usize,
     pub strip_scroll: usize,
-    pub peaks: [[Option<MeterPeak>; 16]; 2],
+    pub visible_strip_count: usize,
+    pub peaks: Vec<Vec<Option<MeterPeak>>>,
 }
 
-/// Output state — physical outputs and selection.
+/// Output state. Dynamic records are authoritative; `states` preserves Zen Go rendering.
 #[derive(Debug, Clone)]
 pub struct OutputData {
-    pub states: [OutputState; 3],
+    pub dynamic: Vec<DynamicOutputState>,
+    pub states: Vec<OutputState>,
     pub selected: usize,
 }
 
-/// Preamp state — inputs, selection, and peak meters.
-#[derive(Debug, Clone, Default)]
+/// Input selection and peak state remain separate from profile-owned storage.
+#[derive(Debug, Clone)]
 pub struct PreampData {
     pub state: PreampState,
     pub selected_input: usize,
-    pub peaks: [Option<MeterPeak>; 2],
+    pub peaks: Vec<Option<MeterPeak>>,
+}
+
+impl Default for PreampData {
+    fn default() -> Self {
+        Self {
+            state: PreampState::default(),
+            selected_input: 0,
+            peaks: vec![None; 2],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutingGroupCapability {
+    pub destination: u16,
+    pub name: String,
+    pub channel_count: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiInputCapability {
+    pub kind: RuntimeInputControlKind,
+    pub parameter: String,
+    pub parameter_id: Option<u16>,
+    pub label: String,
+    pub control: Option<InputControl>,
+}
+
+/// Profile facts retained by UI. Capability sets are compiled once from canonical typed records;
+/// observed `None` values never imply that a control is unsupported.
+#[derive(Debug, Clone)]
+pub struct UiProfileState {
+    pub id: String,
+    pub device_name: String,
+    pub readiness: Option<RuntimeReadiness>,
+    pub driver_kind: RuntimeDriverKind,
+    pub support_reason: String,
+    pub actionable: bool,
+    input_controls: HashSet<(InputAddress, InputControl)>,
+    input_capabilities: HashMap<InputAddress, Vec<UiInputCapability>>,
+    output_controls: HashSet<(OutputAddress, OutputControl)>,
+    mixer_controls: HashSet<(u8, MixerControl)>,
+    link_surfaces: HashSet<u8>,
+    global_controls: HashSet<GlobalControl>,
+    routing_destinations: HashSet<u16>,
+}
+
+impl UiProfileState {
+    pub fn from_entry(entry: &RuntimeEntry) -> Self {
+        let profile = &entry.profile;
+        let actionable = entry.readiness.is_selectable()
+            && !matches!(entry.driver_kind, RuntimeDriverKind::None);
+        let confirmed = |name: &str| {
+            profile
+                .params
+                .iter()
+                .any(|param| param.name == name && param.status.eq_ignore_ascii_case("confirmed"))
+        };
+
+        let mut input_capabilities = HashMap::new();
+        let mut input_controls = HashSet::new();
+        for input in &profile.inputs {
+            let address = InputAddress {
+                space: input.space_id,
+                index: input.index,
+            };
+            let Some(space) = profile
+                .address_spaces
+                .iter()
+                .find(|space| space.space_id == input.space_id)
+            else {
+                continue;
+            };
+            let capabilities = space
+                .input_capabilities
+                .iter()
+                .map(|capability| {
+                    let control = match (capability.kind, capability.parameter.as_str()) {
+                        (RuntimeInputControlKind::Gain, "gain") => Some(InputControl::Gain),
+                        (RuntimeInputControlKind::Mode, "input_mode") => Some(InputControl::Mode),
+                        (RuntimeInputControlKind::Phantom, "phantom") => {
+                            Some(InputControl::Phantom)
+                        }
+                        (RuntimeInputControlKind::Phase, "phase_invert") => {
+                            Some(InputControl::Phase)
+                        }
+                        _ => capability.parameter_id.map(InputControl::Parameter),
+                    };
+                    if let Some(control) = control {
+                        input_controls.insert((address, control));
+                    }
+                    UiInputCapability {
+                        kind: capability.kind,
+                        parameter: capability.parameter.clone(),
+                        parameter_id: capability.parameter_id,
+                        label: capability.label.clone(),
+                        control,
+                    }
+                })
+                .collect();
+            input_capabilities.insert(address, capabilities);
+        }
+
+        let mut output_kinds = Vec::new();
+        for (name, control) in [
+            ("bus_level", OutputControl::Level),
+            ("bus_mute", OutputControl::Mute),
+            ("bus_dim", OutputControl::Dim),
+        ] {
+            if confirmed(name) {
+                output_kinds.push(control);
+            }
+        }
+        let output_controls = profile
+            .outputs
+            .iter()
+            .flat_map(|output| {
+                output_kinds
+                    .iter()
+                    .copied()
+                    .map(move |control| (OutputAddress { id: output.id }, control))
+            })
+            .collect();
+
+        let mut mixer_kinds = Vec::new();
+        for (name, control) in [
+            ("mix_fader", MixerControl::Fader),
+            ("mix_pan", MixerControl::Pan),
+            ("mix_send", MixerControl::Send),
+            ("mix_mute", MixerControl::Mute),
+            ("mix_solo", MixerControl::Solo),
+        ] {
+            if confirmed(name) {
+                mixer_kinds.push(control);
+            }
+        }
+        let mixer_controls = profile
+            .mixers
+            .iter()
+            .flat_map(|mixer| {
+                mixer_kinds
+                    .iter()
+                    .copied()
+                    .map(move |control| (mixer.mix_index, control))
+            })
+            .collect();
+        let link_confirmed = confirmed("mix_link") || confirmed("mix_channel_link");
+        let link_surfaces = profile
+            .mixers
+            .iter()
+            .filter(|_| link_confirmed)
+            .map(|mixer| mixer.mix_index)
+            .collect();
+        let global_controls = [
+            ("sample_rate", GlobalControl::SampleRate),
+            ("clock_source", GlobalControl::ClockSource),
+        ]
+        .into_iter()
+        .filter(|(name, _)| confirmed(name))
+        .map(|(_, control)| control)
+        .collect();
+        let routing_destinations = profile
+            .routing_groups
+            .iter()
+            .filter(|_| {
+                confirmed("routing_batch_marker")
+                    || confirmed("mix_channel_link")
+                    || entry.driver_kind == RuntimeDriverKind::ZenGo
+            })
+            .map(|group| group.destination)
+            .collect();
+
+        Self {
+            id: entry.id.clone(),
+            device_name: profile.identity.name.clone(),
+            readiness: Some(entry.readiness),
+            driver_kind: entry.driver_kind,
+            support_reason: entry.support_reason.clone(),
+            actionable,
+            input_controls,
+            input_capabilities,
+            output_controls,
+            mixer_controls,
+            link_surfaces,
+            global_controls,
+            routing_destinations,
+        }
+    }
+
+    pub fn compatibility(profile: &RuntimeProfile) -> Self {
+        Self {
+            id: String::new(),
+            device_name: profile.identity.name.clone(),
+            readiness: None,
+            driver_kind: RuntimeDriverKind::None,
+            support_reason: "readiness unavailable".into(),
+            actionable: false,
+            input_controls: HashSet::new(),
+            input_capabilities: HashMap::new(),
+            output_controls: HashSet::new(),
+            mixer_controls: HashSet::new(),
+            link_surfaces: HashSet::new(),
+            global_controls: HashSet::new(),
+            routing_destinations: HashSet::new(),
+        }
+    }
+
+    pub fn readiness_label(&self) -> &'static str {
+        match self.readiness {
+            Some(RuntimeReadiness::Supported) => "supported",
+            Some(RuntimeReadiness::Partial) => "partial",
+            Some(RuntimeReadiness::Unverified) => "unverified",
+            Some(RuntimeReadiness::Disabled) => "disabled",
+            None => "readiness unavailable",
+        }
+    }
+
+    pub fn input_capabilities(&self, address: InputAddress) -> &[UiInputCapability] {
+        self.input_capabilities
+            .get(&address)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    pub fn declares_input(&self, address: InputAddress, control: InputControl) -> bool {
+        self.input_controls.contains(&(address, control))
+    }
+
+    pub fn supports_input(&self, address: InputAddress, control: InputControl) -> bool {
+        self.actionable && self.declares_input(address, control)
+    }
+
+    pub fn declares_output(&self, address: OutputAddress, control: OutputControl) -> bool {
+        self.output_controls.contains(&(address, control))
+    }
+
+    pub fn supports_output(&self, address: OutputAddress, control: OutputControl) -> bool {
+        self.actionable && self.declares_output(address, control)
+    }
+
+    pub fn declares_mixer(&self, surface: u8, control: MixerControl) -> bool {
+        self.mixer_controls.contains(&(surface, control))
+    }
+
+    pub fn supports_mixer(&self, surface: u8, control: MixerControl) -> bool {
+        self.actionable && self.declares_mixer(surface, control)
+    }
+
+    pub fn declares_link(&self, surface: u8) -> bool {
+        self.link_surfaces.contains(&surface)
+    }
+
+    pub fn supports_link(&self, surface: u8) -> bool {
+        self.actionable && self.declares_link(surface)
+    }
+
+    pub fn supports_global(&self, control: GlobalControl) -> bool {
+        self.actionable && self.global_controls.contains(&control)
+    }
+
+    pub fn supports_routing(&self, destination: u16) -> bool {
+        self.actionable && self.routing_destinations.contains(&destination)
+    }
+}
+
+impl Default for UiProfileState {
+    fn default() -> Self {
+        let mut input_controls = HashSet::new();
+        for index in 0..2 {
+            for control in [
+                InputControl::Mode,
+                InputControl::Gain,
+                InputControl::Phantom,
+                InputControl::Phase,
+            ] {
+                input_controls.insert((InputAddress { space: 0, index }, control));
+            }
+        }
+        let mut output_controls = HashSet::new();
+        for id in 0..3 {
+            for control in [
+                OutputControl::Level,
+                OutputControl::Mute,
+                OutputControl::Dim,
+            ] {
+                output_controls.insert((OutputAddress { id }, control));
+            }
+        }
+        let mut mixer_controls = HashSet::new();
+        for surface in 0..2 {
+            for control in [
+                MixerControl::Fader,
+                MixerControl::Pan,
+                MixerControl::Mute,
+                MixerControl::Solo,
+            ] {
+                mixer_controls.insert((surface, control));
+            }
+        }
+        Self {
+            id: "legacy_zen_go".into(),
+            device_name: "ZEN GO SYNERGY CORE".into(),
+            readiness: Some(RuntimeReadiness::Supported),
+            driver_kind: RuntimeDriverKind::ZenGo,
+            support_reason: "validated built-in driver".into(),
+            actionable: true,
+            input_controls,
+            input_capabilities: HashMap::new(),
+            output_controls,
+            mixer_controls,
+            link_surfaces: [0, 1].into_iter().collect(),
+            global_controls: [GlobalControl::SampleRate, GlobalControl::ClockSource]
+                .into_iter()
+                .collect(),
+            routing_destinations: [0].into_iter().collect(),
+        }
+    }
 }
 
 /// UI navigation, messaging, and settings.
@@ -186,15 +520,42 @@ impl MeterPeak {
 
 impl Default for MixerState {
     fn default() -> Self {
+        let channels: Vec<Vec<_>> = (0..2)
+            .map(|_| (1..=16).map(MixerChannelState::unknown).collect())
+            .collect();
+        let surfaces = (0..2)
+            .map(|surface| DynamicMixerSurface {
+                surface,
+                name: format!("Mix {}", surface + 1),
+                master: None,
+                strips: (1..=16)
+                    .map(|strip| antelope_protocol::DynamicMixerStrip {
+                        strip,
+                        name: format!("CH {strip:02}"),
+                        fader: None,
+                        pan: Some(0x20),
+                        send: None,
+                        muted: None,
+                        soloed: None,
+                        linked: None,
+                        meter: None,
+                        parameters: Vec::new(),
+                    })
+                    .collect(),
+            })
+            .collect();
         Self {
             surface: Surface::MonitorHp1,
-            channels: [
-                (1..=16).map(MixerChannelState::unknown).collect(),
-                (1..=16).map(MixerChannelState::unknown).collect(),
-            ],
+            surface_index: 0,
+            surfaces,
+            peaks: channels
+                .iter()
+                .map(|surface| vec![None; surface.len()])
+                .collect(),
+            channels,
             selected_channel: 0,
             strip_scroll: 0,
-            peaks: [[None; 16]; 2],
+            visible_strip_count: MIXER_STRIP_PAGE_SIZE,
         }
     }
 }
@@ -202,7 +563,33 @@ impl Default for MixerState {
 impl Default for OutputData {
     fn default() -> Self {
         Self {
-            states: [
+            dynamic: vec![
+                DynamicOutputState {
+                    address: antelope_protocol::OutputAddress { id: 0 },
+                    name: "Monitor".into(),
+                    level: Some(0),
+                    muted: Some(false),
+                    dimmed: Some(false),
+                    parameters: Vec::new(),
+                },
+                DynamicOutputState {
+                    address: antelope_protocol::OutputAddress { id: 1 },
+                    name: "HP 1".into(),
+                    level: Some(0),
+                    muted: Some(false),
+                    dimmed: Some(false),
+                    parameters: Vec::new(),
+                },
+                DynamicOutputState {
+                    address: antelope_protocol::OutputAddress { id: 2 },
+                    name: "HP 2".into(),
+                    level: Some(0),
+                    muted: Some(false),
+                    dimmed: Some(false),
+                    parameters: Vec::new(),
+                },
+            ],
+            states: vec![
                 OutputState::new(OutputTarget::Monitor, 0, OutputMode::Normal),
                 OutputState::new(OutputTarget::Hp1, 0, OutputMode::Normal),
                 OutputState::new(OutputTarget::Hp2, 0, OutputMode::Normal),

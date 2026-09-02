@@ -66,6 +66,26 @@ pub enum AddressSpaceKind {
     Unknown,
 }
 
+/// Closed presentation/action kinds for canonical input capabilities.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputControlKind {
+    Gain,
+    Mode,
+    Phantom,
+    Phase,
+    Link,
+    Parameter,
+}
+
+/// One canonical typed input control attached to an address space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputCapabilityDefinition {
+    pub kind: InputControlKind,
+    pub parameter: &'static str,
+    pub parameter_id: Option<u16>,
+    pub label: &'static str,
+}
+
 /// Transport family represented by a profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportKind {
@@ -142,6 +162,7 @@ pub struct AddressSpaceDefinition {
     pub status_text: &'static str,
     pub notes: &'static str,
     pub metadata: &'static str,
+    pub input_capabilities: &'static [InputCapabilityDefinition],
 }
 
 /// One addressable input channel.
@@ -174,6 +195,7 @@ pub struct MixerDefinition {
     pub name: &'static str,
     pub mix_index: u8,
     pub strip_count: u16,
+    pub has_master: bool,
     pub fader_range: Option<(i32, i32)>,
     pub pan_range: Option<(i32, i32)>,
     pub pan_center: Option<i32>,
@@ -182,6 +204,40 @@ pub struct MixerDefinition {
     pub status_text: &'static str,
     pub notes: &'static str,
     pub metadata: &'static str,
+}
+
+/// Closed semantic kind for one confirmed generic link protocol domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkDomainKind {
+    Mixer,
+}
+
+/// One confirmed finite link protocol domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkDomainDefinition {
+    pub protocol_space: u8,
+    pub kind: LinkDomainKind,
+    pub pair_count: u16,
+    pub status: Status,
+    pub evidence: &'static str,
+}
+
+/// One finite source-bank domain allowed for a routing destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingSourceDomainDefinition {
+    pub bank: u8,
+    pub index_count: u16,
+    pub status: Status,
+    pub evidence: &'static str,
+}
+
+/// One finite logical routing destination group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingGroupDefinition {
+    pub destination: u16,
+    pub name: &'static str,
+    pub channel_count: u16,
+    pub source_domains: &'static [RoutingSourceDomainDefinition],
 }
 
 /// A scalar field in a command/report layout.
@@ -199,6 +255,55 @@ pub struct FrameFieldDefinition {
     pub children: &'static [FrameFieldDefinition],
 }
 
+/// Byte order for a typed scalar operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameEndianDefinition {
+    NotApplicable,
+    Little,
+    Big,
+}
+
+/// One finite-domain typed operation compiled from canonical frame geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameOperationDefinition {
+    FixedByte {
+        offset: u16,
+        value: u8,
+    },
+    Scalar {
+        field: &'static str,
+        offset: u16,
+        width: u8,
+        endian: FrameEndianDefinition,
+    },
+    Indexed {
+        base: u16,
+        stride: u16,
+        index_field: &'static str,
+        width: u8,
+        max_index: Option<u16>,
+    },
+    BitField {
+        field: &'static str,
+        offset: u16,
+        mask: u8,
+        shift: u8,
+    },
+    PairIndex {
+        base: u16,
+        stride: u16,
+        pair_field: &'static str,
+        width: u8,
+        max_index: Option<u16>,
+    },
+    AllowedValues {
+        values: &'static [i32],
+    },
+    UncompiledFormula {
+        formula: &'static str,
+    },
+}
+
 /// A command, report, or decoder frame layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameDefinition {
@@ -212,6 +317,7 @@ pub struct FrameDefinition {
     pub opcode: Option<u8>,
     pub opcode_name: &'static str,
     pub fields: &'static [FrameFieldDefinition],
+    pub operations: &'static [FrameOperationDefinition],
     pub metadata: &'static str,
 }
 
@@ -307,6 +413,34 @@ pub struct Provenance {
     pub generator_version: &'static str,
 }
 
+/// One startup category/index query compiled from confirmed readback bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartupQueryDefinition {
+    pub query_id: u8,
+    pub sub_id: u8,
+}
+
+/// One confirmed safe readback category bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadbackCategoryDefinition {
+    pub category: u8,
+    pub count: u16,
+}
+
+/// Optional generic readback layout retained in the built-in artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadbackDefinition {
+    pub request_magic: u8,
+    pub request_subcommand: u32,
+    pub response_magic: u8,
+    pub response_discriminator_offset: u16,
+    pub response_discriminator: u8,
+    pub category_offset: u16,
+    pub index_offset: u16,
+    pub data_offset: u16,
+    pub category_counts: &'static [ReadbackCategoryDefinition],
+}
+
 /// Complete typed definition for one canonical hardware profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceDefinition {
@@ -316,11 +450,15 @@ pub struct DeviceDefinition {
     pub inputs: &'static [InputDefinition],
     pub outputs: &'static [OutputDefinition],
     pub mixers: &'static [MixerDefinition],
+    pub link_domains: &'static [LinkDomainDefinition],
+    pub routing_groups: &'static [RoutingGroupDefinition],
     pub frames: &'static [FrameDefinition],
     pub decoders: &'static [DecoderDefinition],
     pub params: &'static [ParamDefinition],
     pub constraints: &'static [ConstraintDefinition],
     pub hazards: &'static [HazardDefinition],
+    pub startup_queries: &'static [StartupQueryDefinition],
+    pub readback: Option<ReadbackDefinition>,
     pub status: Status,
     pub status_text: &'static str,
     pub support_level: SupportLevel,

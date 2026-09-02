@@ -285,14 +285,14 @@ impl QueryResponse {
         let mut assignments = [None; 16];
         match self.sub_id {
             0x05 if self.body.len() >= 9 => {
-                for (index, chunk) in self.body[1..9].chunks_exact(2).enumerate() {
+                for (index, chunk) in self.body[1..9].as_chunks::<2>().0.iter().enumerate() {
                     assignments[index] =
                         MixerAssignment::from_ordinary_strip_bytes([chunk[0], chunk[1]]);
                 }
                 Some(assignments)
             }
             0x06..=0x09 if self.body.len() >= 33 => {
-                for (index, chunk) in self.body[9..33].chunks_exact(2).enumerate() {
+                for (index, chunk) in self.body[9..33].as_chunks::<2>().0.iter().enumerate() {
                     assignments[index + 4] =
                         MixerAssignment::from_ordinary_strip_bytes([chunk[0], chunk[1]]);
                 }
@@ -368,7 +368,9 @@ impl QueryResponse {
 
         Some(
             self.body[..64]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| (chunk[0], chunk[1]))
                 .collect(),
         )
@@ -435,7 +437,9 @@ impl QueryResponse {
 
         Some(
             self.body[..64]
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|chunk| (chunk[0], chunk[1]))
                 .collect(),
         )
@@ -459,7 +463,7 @@ impl QueryResponse {
         }
 
         let mut surfaces = [[QueriedMixerStripState::default(); 16]; 2];
-        for (index, chunk) in self.body[..64].chunks_exact(2).enumerate() {
+        for (index, chunk) in self.body[..64].as_chunks::<2>().0.iter().enumerate() {
             let surface = index / 16;
             let channel = index % 16;
             surfaces[surface][channel] = QueriedMixerStripState {

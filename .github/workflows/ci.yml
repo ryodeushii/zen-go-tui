@@ -31,6 +31,11 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+      - name: Test generated catalog drift checks
+        run: >-
+          python3 -m unittest -v
+          tools.test_generate_device_catalog.GenerateDeviceCatalogTests.test_check_detects_stale_rust_and_json_artifacts
+          tools.test_generate_device_catalog.GenerateDeviceCatalogTests.test_cli_check_detects_source_and_individual_artifact_drift
 
   build-release:
     name: Build Release

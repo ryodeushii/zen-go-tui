@@ -127,13 +127,7 @@ pub(crate) fn render_mix_meter_state_line(state: &AppState) -> String {
 }
 
 pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {
-    let product = state
-        .device
-        .status
-        .metadata
-        .as_ref()
-        .map(|metadata| metadata.product_name.clone())
-        .unwrap_or_else(|| "ZEN GO SYNERGY CORE".to_string());
+    let product = state.ui_profile.device_name.clone();
     let sample = current_sample_rate_label(state);
     let clock = state
         .device
@@ -155,8 +149,19 @@ pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {
     } else {
         "waiting"
     };
+    let readiness = state.ui_profile.readiness_label().to_uppercase();
+    let readiness_color = if state.ui_profile.actionable {
+        Color::LightGreen
+    } else {
+        Color::LightRed
+    };
+    let reason = (!state.ui_profile.support_reason.is_empty())
+        .then(|| format!(" {}", state.ui_profile.support_reason));
     Line::from(vec![
         Span::styled(product, strong_style(Color::LightGreen)),
+        Span::raw("  "),
+        chip(&readiness, Color::Black, readiness_color),
+        Span::styled(reason.unwrap_or_default(), muted_style()),
         Span::raw("  "),
         chip(
             &connection.to_uppercase(),

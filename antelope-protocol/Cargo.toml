@@ -6,4 +6,6 @@ description = "Protocol definitions and encoding/decoding for Antelope Audio Zen
 license = "MIT"
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 thiserror = "2.0"

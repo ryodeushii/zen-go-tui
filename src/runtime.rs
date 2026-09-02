@@ -9,26 +9,29 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+#[cfg(test)]
+use antelope_protocol::ZenGoDriver;
 use antelope_protocol::{
-    Action, ClockSource, MixerAssignment, MixerSurface, PanState, PreampMode, SampleRate, Surface,
-    ZenGoDriver,
+    Action, ClockSource, ControlValue, GlobalControl, MixerAddress, MixerAssignment, PanState,
+    PreampMode, SampleRate,
 };
 use zen_go_tui::app::{
     Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind,
     SelectorPopupState,
 };
+use zen_go_tui::device::RuntimeDeviceState;
 use zen_go_tui::settings;
 use zen_go_tui::terminal::{
     AppKeyCode, AppKeyEvent, AppKeyEventKind, AppMouseButton, AppMouseEvent, AppMouseEventKind,
 };
-use zen_go_tui::transport::{is_device_error, Transport};
+use zen_go_tui::transport::is_device_error;
 use zen_go_tui::ui;
 
 use crate::input::{collect_pending_input, spawn_input_reader, InputThreadMessage};
 use crate::profile_ops::{append_profile_editor_text, load_selected_profile};
-use crate::timing::{device_poll_interval, should_draw_frame, should_probe_reconnect};
+use crate::timing::{device_poll_interval, should_draw_frame};
 
-pub fn run_app(transport: Box<dyn Transport>) -> Result<()> {
+pub fn run_app(mut devices: RuntimeDeviceState) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     stdout.execute(EnterAlternateScreen)?;
@@ -37,13 +40,35 @@ pub fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
     let input_rx = spawn_input_reader();
-    let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
-    if let Ok(saved) = settings::load_settings() {
-        controller.state.ui.settings = saved;
-    }
-    controller.bootstrap()?;
-    let result = app_loop(&mut terminal, &mut controller, &input_rx);
-    let _ = settings::save_settings(&controller.state.ui.settings);
+
+    let result = (|| -> Result<()> {
+        loop {
+            if devices.session().is_none() {
+                if !device_picker_loop(&mut terminal, &mut devices, &input_rx)? {
+                    return Ok(());
+                }
+                continue;
+            }
+            let exit = {
+                let session = devices.session_mut().expect("checked session");
+                let controller = session.controller_mut();
+                if let Ok(saved) = settings::load_settings() {
+                    controller.state.ui.settings = saved;
+                }
+                controller.bootstrap()?;
+                let result = app_loop(&mut terminal, controller, &input_rx);
+                let _ = settings::save_settings(&controller.state.ui.settings);
+                result
+            };
+            match exit {
+                Ok(AppLoopExit::Quit) => return Ok(()),
+                Ok(AppLoopExit::Disconnected) => devices.disconnect_and_rediscover()?,
+                Err(error) if is_device_error(&error) => devices.disconnect_and_rediscover()?,
+                Err(error) => return Err(error),
+            }
+        }
+    })();
+
     disable_raw_mode()?;
     terminal.show_cursor()?;
     io::stdout().execute(DisableMouseCapture)?;
@@ -51,55 +76,105 @@ pub fn run_app(transport: Box<dyn Transport>) -> Result<()> {
     result
 }
 
-pub fn run_headless_app(transport: Box<dyn Transport>) -> Result<()> {
+pub fn run_headless_app(mut devices: RuntimeDeviceState) -> Result<()> {
     eprintln!("Headless mode active. Press Ctrl+C to stop.");
-    let mut controller = Controller::new(transport, Box::new(ZenGoDriver::new()))?;
-    controller.bootstrap()?;
-    headless_loop(&mut controller)
+    loop {
+        let result = {
+            let session = devices.session_mut().ok_or_else(|| {
+                anyhow::anyhow!("headless mode requires one supported, unambiguous device")
+            })?;
+            session.controller_mut().bootstrap()?;
+            headless_loop(session.controller_mut())
+        };
+        match result {
+            Err(error) if is_device_error(&error) => {
+                devices.disconnect_and_rediscover()?;
+                if devices.session().is_none() {
+                    return Err(anyhow::anyhow!(
+                        "headless reconnect found no supported, unambiguous device"
+                    ));
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppLoopExit {
+    Quit,
+    Disconnected,
+}
+
+fn device_picker_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    devices: &mut RuntimeDeviceState,
+    input_rx: &std::sync::mpsc::Receiver<InputThreadMessage>,
+) -> Result<bool> {
+    loop {
+        for event in collect_pending_input(input_rx)? {
+            match event {
+                zen_go_tui::terminal::AppInputEvent::Key(key)
+                    if key.kind == AppKeyEventKind::Press =>
+                {
+                    match key.code {
+                        AppKeyCode::Char('q') | AppKeyCode::Esc => return Ok(false),
+                        AppKeyCode::Up => devices.picker_mut().select_previous(),
+                        AppKeyCode::Down => devices.picker_mut().select_next(),
+                        AppKeyCode::Enter => {
+                            if devices.open_selected()? {
+                                return Ok(true);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                zen_go_tui::terminal::AppInputEvent::Mouse(mouse)
+                    if matches!(mouse.kind, AppMouseEventKind::Down(AppMouseButton::Left)) =>
+                {
+                    let size = terminal.size()?;
+                    let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+                    if let Some(row) = ui::device_picker_activation_row(
+                        area,
+                        devices.picker(),
+                        mouse.column,
+                        mouse.row,
+                    ) {
+                        devices.picker_mut().select_row(row);
+                        if devices.open_selected()? {
+                            return Ok(true);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let should_retry =
+            devices.picker().last_discovery_at.elapsed() >= devices.picker().retry_after;
+        if should_retry {
+            devices.rediscover()?;
+            if devices.session().is_some() {
+                return Ok(true);
+            }
+        }
+        terminal.draw(|frame| ui::draw_device_picker(frame, devices.picker()))?;
+        std::thread::sleep(crate::timing::MIN_LOOP_SLEEP);
+    }
 }
 
 pub fn headless_loop(controller: &mut Controller) -> Result<()> {
-    let mut reconnect_refresh_pending = false;
-    let mut last_reconnect_probe_at = None;
-    let mut reconnect_probe_attempts = 0;
     let mut last_runtime_activity_at = Some(std::time::Instant::now());
 
     loop {
         let now = std::time::Instant::now();
-        if reconnect_refresh_pending {
-            tick_reconnect_probe(
-                controller,
-                &mut reconnect_refresh_pending,
-                &mut last_reconnect_probe_at,
-                &mut reconnect_probe_attempts,
-                now,
-            )?;
-            if reconnect_refresh_pending {
-                if let Some(last_probe_at) = last_reconnect_probe_at {
-                    let wait = crate::timing::device_retry_interval(
-                        reconnect_probe_attempts.saturating_add(1),
-                    )
-                    .saturating_sub(now.duration_since(last_probe_at));
-                    std::thread::sleep(wait);
-                    continue;
-                }
-            }
-        }
-
         match controller.poll_device(device_poll_interval(last_runtime_activity_at, false, now)) {
             Ok(observed_frame) => {
                 if observed_frame {
                     last_runtime_activity_at = Some(std::time::Instant::now());
                 }
             }
-            Err(error) => {
-                if is_device_error(&error) {
-                    reconnect_refresh_pending = true;
-                    last_reconnect_probe_at = None;
-                    reconnect_probe_attempts = 0;
-                }
-                handle_runtime_error(controller, error)?;
-            }
+            Err(error) => return Err(error),
         }
 
         std::thread::sleep(crate::timing::MIN_LOOP_SLEEP);
@@ -141,27 +216,6 @@ pub fn refresh_after_reconnect_if_needed(
         }
         Err(error) => Err(error),
     }
-}
-
-fn tick_reconnect_probe(
-    controller: &mut Controller,
-    reconnect_refresh_pending: &mut bool,
-    last_reconnect_probe_at: &mut Option<std::time::Instant>,
-    reconnect_probe_attempts: &mut usize,
-    now: std::time::Instant,
-) -> Result<()> {
-    if *reconnect_refresh_pending
-        && should_probe_reconnect(*last_reconnect_probe_at, *reconnect_probe_attempts, now)
-    {
-        refresh_after_reconnect_if_needed(controller, reconnect_refresh_pending)?;
-        *last_reconnect_probe_at = Some(now);
-        *reconnect_probe_attempts += 1;
-        if !*reconnect_refresh_pending {
-            *last_reconnect_probe_at = None;
-            *reconnect_probe_attempts = 0;
-        }
-    }
-    Ok(())
 }
 
 fn cycle_peak_hold_duration(
@@ -467,86 +521,101 @@ pub fn handle_key_press(
         }
         AppKeyCode::Char('o') => {
             if controller.state.ui.focus == FocusArea::Mixer {
-                let active_channel = controller.state.active_mixer_channels()
-                    [controller.state.mixer.selected_channel];
-                let mixer = MixerSurface::from_surface(controller.state.mixer.surface);
-                controller.send_mixer_solo_change(
-                    mixer,
-                    active_channel.channel,
-                    !active_channel.soloed.unwrap_or(false),
-                )?;
+                if let Some((surface, strip)) = controller
+                    .state
+                    .active_mixer_surface()
+                    .and_then(|index| controller.state.mixers().get(index))
+                    .and_then(|surface| {
+                        surface
+                            .strips
+                            .get(controller.state.mixer.selected_channel)
+                            .map(|strip| (surface.surface, strip.strip))
+                    })
+                {
+                    controller.apply_intent(
+                        Intent::ToggleMixerSoloAt {
+                            address: MixerAddress { surface, strip },
+                        },
+                        area,
+                    )?;
+                }
             }
             Ok(())
         }
         AppKeyCode::Char('a') => {
             if controller.state.ui.focus == FocusArea::Mixer {
-                let active_channel = controller.state.active_mixer_channels()
-                    [controller.state.mixer.selected_channel];
-                if !antelope_protocol::MixerStrip::assignment_write_is_grounded(
-                    active_channel.channel,
-                ) {
-                    controller.state.ui.last_message =
-                        "Assignment picking is not grounded for the selected strip.".to_string();
-                } else {
-                    controller
-                        .apply_intent(Intent::OpenAssignmentPicker(active_channel.channel), area)?;
+                if let Some(strip) = controller
+                    .state
+                    .active_mixer_surface()
+                    .and_then(|index| controller.state.mixers().get(index))
+                    .and_then(|surface| surface.strips.get(controller.state.mixer.selected_channel))
+                    .and_then(|strip| u8::try_from(strip.strip).ok())
+                {
+                    if !antelope_protocol::MixerStrip::assignment_write_is_grounded(strip) {
+                        controller.state.ui.last_message =
+                            "Assignment picking is not grounded for the selected strip."
+                                .to_string();
+                    } else {
+                        controller.apply_intent(Intent::OpenAssignmentPicker(strip), area)?;
+                    }
                 }
             }
             Ok(())
         }
         AppKeyCode::Char('l') => {
             if controller.state.ui.focus == FocusArea::Mixer {
-                let active_channel = controller.state.active_mixer_channels()
-                    [controller.state.mixer.selected_channel];
-                let mixer = MixerSurface::from_surface(controller.state.mixer.surface);
-                controller.send_mixer_link_change(
-                    mixer,
-                    active_channel.channel,
-                    !active_channel.linked.unwrap_or(false),
-                )?;
+                if let Some((surface, strip)) = controller
+                    .state
+                    .active_mixer_surface()
+                    .and_then(|index| controller.state.mixers().get(index))
+                    .and_then(|surface| {
+                        surface
+                            .strips
+                            .get(controller.state.mixer.selected_channel)
+                            .map(|strip| (surface.surface, strip.strip))
+                    })
+                {
+                    controller.apply_intent(
+                        Intent::ToggleMixerLinkAt {
+                            address: MixerAddress { surface, strip },
+                        },
+                        area,
+                    )?;
+                }
             }
             Ok(())
         }
-        AppKeyCode::Char('[') => {
+        AppKeyCode::Char('[') | AppKeyCode::Char(']') => {
             if controller.state.ui.focus == FocusArea::Mixer {
-                let active_channel = controller.state.active_mixer_channels()
-                    [controller.state.mixer.selected_channel];
-                let next = active_channel
+                let Some(surface) = controller
+                    .state
+                    .active_mixer_surface()
+                    .and_then(|index| controller.state.mixers().get(index))
+                else {
+                    return Ok(KeyAction::Continue);
+                };
+                let Some(strip) = surface.strips.get(controller.state.mixer.selected_channel)
+                else {
+                    return Ok(KeyAction::Continue);
+                };
+                let current = strip
                     .pan
-                    .raw()
-                    .saturating_sub(1)
-                    .max(PanState::MIN);
-                controller.send(
-                    Action::SetMixerPan {
-                        mixer: MixerSurface::from_surface(controller.state.mixer.surface),
-                        channel: active_channel.channel,
+                    .and_then(|value| u8::try_from(value).ok())
+                    .unwrap_or_else(|| PanState::center().raw());
+                let next = if key_code == AppKeyCode::Char('[') {
+                    current.saturating_sub(1).max(PanState::MIN)
+                } else {
+                    current.saturating_add(1).min(PanState::MAX)
+                };
+                controller.apply_intent(
+                    Intent::SetMixerPanAt {
+                        address: MixerAddress {
+                            surface: surface.surface,
+                            strip: strip.strip,
+                        },
                         pan: PanState::from_raw(next),
-                        muted: active_channel.muted.unwrap_or(false),
-                        soloed: active_channel.soloed.unwrap_or(false),
                     },
-                    None,
-                )?;
-            }
-            Ok(())
-        }
-        AppKeyCode::Char(']') => {
-            if controller.state.ui.focus == FocusArea::Mixer {
-                let active_channel = controller.state.active_mixer_channels()
-                    [controller.state.mixer.selected_channel];
-                let next = active_channel
-                    .pan
-                    .raw()
-                    .saturating_add(1)
-                    .min(PanState::MAX);
-                controller.send(
-                    Action::SetMixerPan {
-                        mixer: MixerSurface::from_surface(controller.state.mixer.surface),
-                        channel: active_channel.channel,
-                        pan: PanState::from_raw(next),
-                        muted: active_channel.muted.unwrap_or(false),
-                        soloed: active_channel.soloed.unwrap_or(false),
-                    },
-                    None,
+                    area,
                 )?;
             }
             Ok(())
@@ -569,6 +638,13 @@ pub fn handle_key_press(
                 });
                 controller.state.ui.focus = FocusArea::Preamp;
                 controller.state.preamp.selected_input = input.min(1) as usize;
+            } else if let Some(surface) = controller
+                .state
+                .mixers()
+                .get(2)
+                .map(|surface| surface.surface)
+            {
+                controller.apply_intent(Intent::SelectMixerSurface { surface }, area)?;
             }
             Ok(())
         }
@@ -583,7 +659,13 @@ pub fn handle_key_press(
                 let all = SampleRate::all_confirmed();
                 let position = all.iter().position(|rate| *rate == current).unwrap_or(2);
                 let next = all[(position + 1) % all.len()];
-                controller.send(Action::SetSampleRate(next), None)?;
+                controller.send(
+                    Action::SetGlobal {
+                        control: GlobalControl::SampleRate,
+                        value: ControlValue::Enum(i32::from(next.code())),
+                    },
+                    None,
+                )?;
             }
             Ok(())
         }
@@ -600,11 +682,32 @@ pub fn handle_key_press(
                 .position(|source| *source == current)
                 .unwrap_or(0);
             let next = all[(position + 1) % all.len()];
-            controller.send(Action::SetClockSource(next), None)?;
+            controller.send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(i32::from(next.code())),
+                },
+                None,
+            )?;
             Ok(())
         }
-        AppKeyCode::Char('1') => controller.send(Action::SelectSurface(Surface::MonitorHp1), None),
-        AppKeyCode::Char('2') => controller.send(Action::SelectSurface(Surface::Hp2), None),
+        AppKeyCode::Char('1' | '2' | '4') => {
+            let index = match key_code {
+                AppKeyCode::Char('1') => 0,
+                AppKeyCode::Char('2') => 1,
+                AppKeyCode::Char('4') => 3,
+                _ => unreachable!(),
+            };
+            if let Some(surface) = controller
+                .state
+                .mixers()
+                .get(index)
+                .map(|surface| surface.surface)
+            {
+                controller.apply_intent(Intent::SelectMixerSurface { surface }, area)?;
+            }
+            Ok(())
+        }
         AppKeyCode::Char('b') if controller.state.popup.raw_view_open => {
             controller.apply_intent(Intent::CaptureRawBaseline, area)?;
             Ok(())
@@ -646,26 +749,13 @@ pub fn app_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     controller: &mut Controller,
     input_rx: &std::sync::mpsc::Receiver<InputThreadMessage>,
-) -> Result<()> {
-    let mut reconnect_refresh_pending = false;
-    let mut last_reconnect_probe_at = None;
-    let mut reconnect_probe_attempts = 0;
+) -> Result<AppLoopExit> {
     let mut last_draw_at = None;
     let mut needs_redraw = true;
     let mut last_runtime_activity_at = Some(std::time::Instant::now());
 
     'app: loop {
         let now = std::time::Instant::now();
-        if reconnect_refresh_pending {
-            tick_reconnect_probe(
-                controller,
-                &mut reconnect_refresh_pending,
-                &mut last_reconnect_probe_at,
-                &mut reconnect_probe_attempts,
-                now,
-            )?;
-        }
-
         let input_events = collect_pending_input(input_rx)?;
         if !input_events.is_empty() {
             last_runtime_activity_at = Some(std::time::Instant::now());
@@ -688,7 +778,7 @@ pub fn app_loop(
                         }
 
                         if action == KeyAction::ReconnectPending {
-                            reconnect_refresh_pending = true;
+                            return Ok(AppLoopExit::Disconnected);
                         }
 
                         needs_redraw = true;
@@ -701,9 +791,9 @@ pub fn app_loop(
                             mouse,
                         ) {
                             if is_device_error(&error) {
-                                reconnect_refresh_pending = true;
+                                return Ok(AppLoopExit::Disconnected);
                             }
-                            handle_runtime_error(controller, error)?;
+                            return Err(error);
                         }
                         if controller.state.ui.quit_requested {
                             break 'app;
@@ -723,25 +813,15 @@ pub fn app_loop(
             }
         }
 
-        if !reconnect_refresh_pending {
-            match controller.poll_device(device_poll_interval(last_runtime_activity_at, true, now))
-            {
-                Ok(observed_frame) => {
-                    needs_redraw |= observed_frame;
-                    if observed_frame {
-                        last_runtime_activity_at = Some(std::time::Instant::now());
-                    }
-                }
-                Err(error) => {
-                    if is_device_error(&error) {
-                        reconnect_refresh_pending = true;
-                        last_reconnect_probe_at = None;
-                        reconnect_probe_attempts = 0;
-                    }
-                    handle_runtime_error(controller, error)?;
-                    needs_redraw = true;
+        match controller.poll_device(device_poll_interval(last_runtime_activity_at, true, now)) {
+            Ok(observed_frame) => {
+                needs_redraw |= observed_frame;
+                if observed_frame {
+                    last_runtime_activity_at = Some(std::time::Instant::now());
                 }
             }
+            Err(error) if is_device_error(&error) => return Ok(AppLoopExit::Disconnected),
+            Err(error) => return Err(error),
         }
 
         let now = std::time::Instant::now();
@@ -766,7 +846,7 @@ pub fn app_loop(
         std::thread::sleep(crate::timing::loop_sleep_for_fps(fps));
     }
 
-    Ok(())
+    Ok(AppLoopExit::Quit)
 }
 
 pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layout::Rect) {
@@ -784,7 +864,14 @@ pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::l
             };
         }
         FocusArea::Mixer => {
-            let channels_len = controller.state.active_mixer_channels().len();
+            let channels_len = controller
+                .state
+                .active_mixer_surface()
+                .and_then(|index| controller.state.mixers().get(index))
+                .map_or(0, |surface| surface.strips.len());
+            if channels_len == 0 {
+                return;
+            }
             controller.state.mixer.selected_channel = if right {
                 (controller.state.mixer.selected_channel + 1) % channels_len
             } else {
@@ -891,4 +978,49 @@ pub fn handle_mouse_event(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zen_go_tui::terminal::AppModifiers;
+    use zen_go_tui::transport::MockTransport;
+
+    fn key(code: AppKeyCode) -> AppKeyEvent {
+        AppKeyEvent {
+            code,
+            modifiers: AppModifiers::default(),
+            kind: AppKeyEventKind::Press,
+        }
+    }
+
+    #[test]
+    fn empty_mixer_pan_keys_are_stable_no_ops() {
+        for code in [AppKeyCode::Char('['), AppKeyCode::Char(']')] {
+            let transport = MockTransport::default();
+            let mut controller =
+                Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
+                    .expect("controller");
+            controller.state.ui.focus = FocusArea::Mixer;
+            controller.state.mixer.surfaces.clear();
+            controller.state.mixer.channels.clear();
+            controller.state.mixer.surface_index = usize::MAX;
+            controller.state.mixer.selected_channel = usize::MAX;
+            controller.state.mixer.strip_scroll = usize::MAX;
+            let selected = controller.state.mixer.selected_channel;
+            let scroll = controller.state.mixer.strip_scroll;
+            let message = controller.state.ui.last_message.clone();
+
+            assert!(handle_key_press(
+                &mut controller,
+                key(code),
+                ratatui::layout::Rect::new(0, 0, 120, 50),
+            )
+            .is_ok());
+            assert_eq!(controller.state.mixer.selected_channel, selected);
+            assert_eq!(controller.state.mixer.strip_scroll, scroll);
+            assert_eq!(controller.state.ui.last_message, message);
+            assert!(transport.take_writes().is_empty());
+        }
+    }
 }

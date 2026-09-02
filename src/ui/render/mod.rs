@@ -9,8 +9,9 @@ use crate::app::{
     AppState, FocusArea, ProfileEditorMode, RawMapScope, RawPacketTab, RefreshRate,
     SelectorPopupKind,
 };
+use crate::device::DevicePickerState;
 use crate::terminal;
-use antelope_protocol::{ClockSource, MixerAssignment, MixerSurface, PreampMode, SampleRate};
+use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate};
 
 use super::layouts::*;
 use super::mouse::mix_meter;
@@ -48,6 +49,46 @@ pub(crate) use text::render_mix_meter_state_line;
 pub(crate) use text::render_raw_map_text;
 #[cfg(test)]
 pub(crate) use text::selected_query_reply_bytes;
+pub fn draw_device_picker(frame: &mut Frame<'_>, picker: &DevicePickerState) {
+    let area = device_picker_area(frame.area());
+    frame.render_widget(Clear, area);
+    let rows = if picker.entries().is_empty() {
+        vec![ListItem::new(
+            "Waiting for an Antelope HID control interface…",
+        )]
+    } else {
+        picker
+            .entries()
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let marker = if picker.selected_index() == Some(index) {
+                    ">"
+                } else {
+                    " "
+                };
+                let serial = entry.candidate.serial().unwrap_or("serial ?");
+                let reason = if entry.diagnostic.is_empty() {
+                    "ready"
+                } else {
+                    entry.diagnostic.as_str()
+                };
+                let line = format!(
+                    "{marker} {} | {} | {} | {} | {reason}",
+                    entry.profile_name, serial, entry.candidate.path, entry.status,
+                );
+                let style = if entry.is_selectable() {
+                    Style::default().fg(Color::LightGreen)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                ListItem::new(line).style(style)
+            })
+            .collect()
+    };
+    frame.render_widget(List::new(rows).block(device_picker_block()), area);
+}
+
 pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     if state.popup.raw_view_open {
         draw_raw_page(frame, frame.area(), state);
@@ -117,7 +158,7 @@ fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
 fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = mixer_page_layout(area);
-    let main = mixer_main_layout(sections[0]);
+    let main = mixer_main_layout_for_state(sections[0], state);
     draw_preamp_bar(frame, main[0], state);
 
     draw_mixer_main(frame, main[1], state);
@@ -129,9 +170,54 @@ fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         return;
     }
 
-    let popup = routing_popup_area(area);
+    let popup = dynamic_routing_popup_area(area, state);
     frame.render_widget(Clear, popup);
     frame.render_widget(panel_block("Routing", Color::Magenta, true), popup);
+
+    if state.ui_profile.driver_kind != RuntimeDriverKind::ZenGo {
+        let inner = Rect::new(
+            popup.x.saturating_add(1),
+            popup.y.saturating_add(1),
+            popup.width.saturating_sub(2),
+            popup.height.saturating_sub(2),
+        );
+        if inner.height > 0 {
+            Paragraph::new(Line::from(vec![chip(
+                "ROUTING",
+                Color::Black,
+                Color::LightMagenta,
+            )]))
+            .render(
+                Rect::new(inner.x, inner.y, inner.width, 1),
+                frame.buffer_mut(),
+            );
+        }
+        for (row, capability) in state
+            .routing_capabilities
+            .iter()
+            .take(usize::from(inner.height.saturating_sub(1)))
+            .enumerate()
+        {
+            let observed = state
+                .routing_group(capability.destination)
+                .and_then(|group| group.sources.get(0).map(|_| group.sources.len()))
+                .unwrap_or(0);
+            let label = format!(
+                "{}  {} ch  observed {observed}",
+                capability.name, capability.channel_count
+            );
+            Paragraph::new(Line::from(label)).render(
+                Rect::new(
+                    inner.x,
+                    inner.y.saturating_add(1).saturating_add(row as u16),
+                    inner.width,
+                    1,
+                ),
+                frame.buffer_mut(),
+            );
+        }
+        return;
+    }
 
     let rows = afx_routing_layout(popup);
     Paragraph::new(Line::from(vec![chip(
@@ -306,19 +392,40 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         area,
     );
     let inner = inner_area(area);
-    for (index, (output, card)) in state
-        .output
-        .states
-        .iter()
-        .zip(output_card_areas(inner))
-        .enumerate()
+    if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo
+        && state.output.states.len() == 3
+        && state.outputs().len() == 3
     {
-        render_output_card_widget(
-            card,
-            frame.buffer_mut(),
-            output,
-            state.ui.focus == FocusArea::Outputs && state.output.selected == index,
-        );
+        for (index, (output, card)) in state
+            .output
+            .states
+            .iter()
+            .zip(output_card_areas(inner))
+            .enumerate()
+        {
+            render_output_card_widget(
+                card,
+                frame.buffer_mut(),
+                output,
+                state.ui.focus == FocusArea::Outputs && state.output.selected == index,
+            );
+        }
+    } else {
+        for (index, row) in dynamic_output_row_areas(area, state.outputs().len())
+            .into_iter()
+            .enumerate()
+        {
+            let Some(controls) = dynamic_output_control_rects(row, state, index) else {
+                continue;
+            };
+            render_dynamic_output_card_widget(
+                controls,
+                frame.buffer_mut(),
+                state,
+                index,
+                state.ui.focus == FocusArea::Outputs && state.output.selected == index,
+            );
+        }
     }
     let help_button = output_hotkeys_button_rect(area);
     if help_button.height > 0 {
@@ -333,6 +440,10 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if state.ui_profile.driver_kind != RuntimeDriverKind::ZenGo {
+        draw_dynamic_input_banks(frame, area, state);
+        return;
+    }
     let cards = preamp_bar_layout(area);
     for (index, card) in cards.into_iter().enumerate() {
         let input = if index == 0 {
@@ -363,23 +474,168 @@ fn draw_preamp_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     }
 }
 
+fn draw_dynamic_input_banks(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let block = panel_block(
+        "Inputs",
+        Color::LightMagenta,
+        state.ui.focus == FocusArea::Preamp,
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let columns = state.input_spaces.len().max(1);
+    let column_width = inner.width / u16::try_from(columns).unwrap_or(u16::MAX).max(1);
+    for (space_index, space) in state.input_spaces.iter().enumerate() {
+        let x = inner.x.saturating_add(
+            u16::try_from(space_index)
+                .unwrap_or(u16::MAX)
+                .saturating_mul(column_width),
+        );
+        Paragraph::new(Line::from(Span::styled(
+            &space.name,
+            strong_style(Color::LightMagenta),
+        )))
+        .render(Rect::new(x, inner.y, column_width, 1), frame.buffer_mut());
+    }
+    for (space_index, input_index, row) in dynamic_input_rows(area, state) {
+        let Some(controls) = dynamic_input_control_rects(row, state, space_index, input_index)
+        else {
+            continue;
+        };
+        render_dynamic_input_row(
+            frame.buffer_mut(),
+            state,
+            space_index,
+            input_index,
+            controls,
+        );
+    }
+}
+
+fn render_dynamic_input_row(
+    buffer: &mut Buffer,
+    state: &AppState,
+    space_index: usize,
+    input_index: usize,
+    controls: DynamicInputControlRects,
+) {
+    let Some(input) = state
+        .input_spaces
+        .get(space_index)
+        .and_then(|space| space.inputs.get(input_index))
+    else {
+        return;
+    };
+    Paragraph::new(Line::from(chip(
+        &input.name,
+        Color::Black,
+        Color::LightBlue,
+    )))
+    .render(
+        Rect::new(
+            controls.row.x,
+            controls.row.y,
+            controls.row.width.min(10),
+            1,
+        ),
+        buffer,
+    );
+    let color = |kind| {
+        let control = state
+            .ui_profile
+            .input_capabilities(input.address)
+            .iter()
+            .find(|capability| capability.kind == kind)
+            .and_then(|capability| capability.control);
+        if control.is_some_and(|control| state.ui_profile.supports_input(input.address, control)) {
+            Color::LightGreen
+        } else {
+            Color::DarkGray
+        }
+    };
+    if let Some(rect) = controls.gain {
+        let label = input
+            .gain
+            .map_or_else(|| "GAIN ?".into(), |value| format!("GAIN {value}"));
+        Paragraph::new(Line::from(chip(
+            &label,
+            Color::Black,
+            color(antelope_protocol::RuntimeInputControlKind::Gain),
+        )))
+        .render(rect, buffer);
+    }
+    if let Some(rect) = controls.mode {
+        let label = input
+            .mode
+            .map_or_else(|| "MODE".into(), |value| format!("M{value}"));
+        Paragraph::new(Line::from(chip(
+            &label,
+            Color::Black,
+            color(antelope_protocol::RuntimeInputControlKind::Mode),
+        )))
+        .render(rect, buffer);
+    }
+    if let Some(rect) = controls.phantom {
+        Paragraph::new(Line::from(chip(
+            "48V",
+            Color::Black,
+            if state
+                .ui_profile
+                .supports_input(input.address, antelope_protocol::InputControl::Phantom)
+                && input.phantom == Some(true)
+            {
+                Color::LightRed
+            } else {
+                color(antelope_protocol::RuntimeInputControlKind::Phantom)
+            },
+        )))
+        .render(rect, buffer);
+    }
+    if let Some(rect) = controls.phase {
+        Paragraph::new(Line::from(chip(
+            "PH",
+            Color::Black,
+            color(antelope_protocol::RuntimeInputControlKind::Phase),
+        )))
+        .render(rect, buffer);
+    }
+    if let Some(rect) = controls.link {
+        Paragraph::new(Line::from(chip(
+            "LINK",
+            Color::Black,
+            color(antelope_protocol::RuntimeInputControlKind::Link),
+        )))
+        .render(rect, buffer);
+    }
+}
+
 fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let layout = mixer_layout(area);
 
-    let surface = MixerSurface::from_surface(state.mixer.surface);
-    let line = Line::from(vec![
-        tab_chip(
-            "MIX 1 / Monitor-HP1",
-            surface == MixerSurface::Mix1,
-            Color::LightCyan,
-        ),
-        Span::raw(" "),
-        tab_chip(
-            "MIX 2 / HP2",
-            surface == MixerSurface::Mix2,
-            Color::LightBlue,
-        ),
-    ]);
+    let mut tabs = Vec::new();
+    for (index, surface) in state.mixers().iter().enumerate() {
+        if index > 0 {
+            tabs.push(Span::raw(" "));
+        }
+        let name = if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
+            match index {
+                0 => "MIX 1 / Monitor-HP1",
+                1 => "MIX 2 / HP2",
+                _ => surface.name.as_str(),
+            }
+        } else {
+            surface.name.as_str()
+        };
+        tabs.push(tab_chip(
+            name,
+            state.active_mixer_surface() == Some(index),
+            if index.is_multiple_of(2) {
+                Color::LightCyan
+            } else {
+                Color::LightBlue
+            },
+        ));
+    }
+    let line = Line::from(tabs);
     frame.render_widget(
         Paragraph::new(line)
             .block(panel_block(
@@ -415,8 +671,15 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let content = mixer_strip_panel_layout(layout[1], mix_meter(state).is_some());
     let inner = content[0];
     let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
-    let total = state.active_mixer_channels().len();
-    let title = if total == 0 {
+    let total = if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
+        state.active_mixer_channels().len()
+    } else {
+        state
+            .active_mixer_surface()
+            .and_then(|index| state.mixers().get(index))
+            .map_or(0, |surface| surface.strips.len())
+    };
+    let mut title = if total == 0 {
         "Mixer Strips".to_string()
     } else {
         format!(
@@ -426,6 +689,13 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             total
         )
     };
+    if state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))
+        .is_some_and(|surface| surface.master.is_some())
+    {
+        title.push_str(" | Master");
+    }
     frame.render_widget(
         panel_block(
             &title,
@@ -459,19 +729,67 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     )]))
     .render(page_buttons[1], frame.buffer_mut());
 
-    for (slot, (index, channel)) in state
-        .active_mixer_channels()
-        .iter()
-        .enumerate()
-        .skip(visible_start)
-        .take(visible_end.saturating_sub(visible_start))
-        .enumerate()
+    let visible_count = visible_end.saturating_sub(visible_start);
+    if let Some((surface, master, card)) = state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))
+        .and_then(|surface| {
+            Some((
+                surface,
+                surface.master.as_ref()?,
+                mixer_master_area(inner, state)?,
+            ))
+        })
     {
-        let card = mixer_strip_card_area(inner, slot);
-        if card.x >= inner.x + inner.width || card.x + card.width > inner.x + inner.width {
+        let address = antelope_protocol::MixerAddress {
+            surface: surface.surface,
+            strip: master.strip,
+        };
+        if let Some(controls) = dynamic_mixer_control_rects(card, state, address) {
+            render_dynamic_mixer_strip_widget(
+                controls,
+                frame.buffer_mut(),
+                state,
+                address,
+                None,
+                master,
+            );
+        }
+    }
+    let strip_area = mixer_input_strip_area(inner, state);
+    let active_surface = state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index));
+    for (slot, index) in (visible_start..visible_end).enumerate() {
+        let Some(strip) = active_surface.and_then(|surface| surface.strips.get(index)) else {
+            continue;
+        };
+        let card = dynamic_mixer_strip_card_area(strip_area, state, slot, visible_count);
+        if card.x >= strip_area.x + strip_area.width
+            || card.x + card.width > strip_area.x + strip_area.width
+        {
             break;
         }
-        render_mixer_strip_widget(card, frame.buffer_mut(), state, index, channel);
+        if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
+            if let Some(channel) = state.active_mixer_channels().get(index) {
+                render_mixer_strip_widget(card, frame.buffer_mut(), state, index, channel);
+            }
+        } else {
+            let address = antelope_protocol::MixerAddress {
+                surface: active_surface.map_or(0, |surface| surface.surface),
+                strip: strip.strip,
+            };
+            if let Some(controls) = dynamic_mixer_control_rects(card, state, address) {
+                render_dynamic_mixer_strip_widget(
+                    controls,
+                    frame.buffer_mut(),
+                    state,
+                    address,
+                    Some(index),
+                    strip,
+                );
+            }
+        }
     }
 
     if let Some((_, left_raw, right_raw)) = mix_meter(state) {

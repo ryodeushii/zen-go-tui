@@ -1,11 +1,14 @@
 use std::time::Duration;
 
 use antelope_protocol::{
-    ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
-    OutputTarget, PanState, PreampMode, SampleRate, Surface,
+    ClockSource, DynamicInputState, DynamicMixerStrip, DynamicOutputState, DynamicRoutingGroup,
+    InputAddress, MixerAddress, MixerAssignment, PanState, PreampMode, SampleRate, Surface,
 };
 
 use crate::app::AppState;
+
+#[cfg(test)]
+use antelope_protocol::{MixerSurface, OutputMode, OutputTarget};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
@@ -52,6 +55,9 @@ pub enum Intent {
     // Navigation/selection
     PageMixerStripsLeft,
     PageMixerStripsRight,
+    SelectMixerSurface {
+        surface: u8,
+    },
     SelectSurface(Surface),
     SelectMixerChannel(usize),
     SelectOutput(usize),
@@ -98,6 +104,35 @@ pub enum Intent {
         strip: u8,
         assignment: MixerAssignment,
     },
+    AdjustMixerLevelAt {
+        address: MixerAddress,
+        increase: bool,
+    },
+    SetMixerLevelAt {
+        address: MixerAddress,
+        level: u8,
+    },
+    AdjustMixerPanAt {
+        address: MixerAddress,
+        right: bool,
+    },
+    SetMixerPanAt {
+        address: MixerAddress,
+        pan: PanState,
+    },
+    SetMixerSendAt {
+        address: MixerAddress,
+        send: i32,
+    },
+    ToggleMixerMuteAt {
+        address: MixerAddress,
+    },
+    ToggleMixerSoloAt {
+        address: MixerAddress,
+    },
+    ToggleMixerLinkAt {
+        address: MixerAddress,
+    },
 
     // Preamp controls
     AdjustPreampGain {
@@ -116,6 +151,37 @@ pub enum Intent {
     },
     TogglePreampPhase(u8),
     TogglePreampPhantom(u8),
+    AdjustInputGainAt {
+        address: InputAddress,
+        increase: bool,
+    },
+    SetInputGainAt {
+        address: InputAddress,
+        raw: u8,
+    },
+    AdjustInputParameterAt {
+        address: InputAddress,
+        parameter_id: u16,
+        increase: bool,
+    },
+    SetInputParameterAt {
+        address: InputAddress,
+        parameter_id: u16,
+        value: i32,
+    },
+    CycleInputModeAt {
+        address: InputAddress,
+    },
+    SetInputModeAt {
+        address: InputAddress,
+        mode: PreampMode,
+    },
+    ToggleInputPhaseAt {
+        address: InputAddress,
+    },
+    ToggleInputPhantomAt {
+        address: InputAddress,
+    },
 
     // Selector popups
     OpenSampleRateSelector,
@@ -141,210 +207,259 @@ pub enum Intent {
 }
 
 impl Intent {
+    pub fn writes_hardware(&self) -> bool {
+        matches!(
+            self,
+            Self::SelectSurface(_)
+                | Self::AdjustOutputLevel { .. }
+                | Self::SetOutputLevel { .. }
+                | Self::ToggleOutputMute(_)
+                | Self::ToggleOutputDim(_)
+                | Self::AdjustMixerLevel { .. }
+                | Self::SetMixerLevel { .. }
+                | Self::AdjustMixerPan { .. }
+                | Self::SetMixerPan { .. }
+                | Self::ToggleMixerMute(_)
+                | Self::ToggleMixerSolo(_)
+                | Self::ToggleMixerLink(_)
+                | Self::PickAssignment { .. }
+                | Self::AdjustMixerLevelAt { .. }
+                | Self::SetMixerLevelAt { .. }
+                | Self::AdjustMixerPanAt { .. }
+                | Self::SetMixerPanAt { .. }
+                | Self::SetMixerSendAt { .. }
+                | Self::ToggleMixerMuteAt { .. }
+                | Self::ToggleMixerSoloAt { .. }
+                | Self::ToggleMixerLinkAt { .. }
+                | Self::AdjustPreampGain { .. }
+                | Self::SetPreampGain { .. }
+                | Self::CyclePreampMode(_)
+                | Self::PickPreampMode { .. }
+                | Self::TogglePreampPhase(_)
+                | Self::TogglePreampPhantom(_)
+                | Self::AdjustInputGainAt { .. }
+                | Self::SetInputGainAt { .. }
+                | Self::AdjustInputParameterAt { .. }
+                | Self::SetInputParameterAt { .. }
+                | Self::CycleInputModeAt { .. }
+                | Self::SetInputModeAt { .. }
+                | Self::ToggleInputPhaseAt { .. }
+                | Self::ToggleInputPhantomAt { .. }
+                | Self::PickSampleRate(_)
+                | Self::PickClockSource(_)
+                | Self::AdjustFocused(_)
+                | Self::ToggleFocusedMute
+                | Self::ToggleFocusedDim
+        )
+    }
+
+    /// Resolve legacy UI indexes through profile-owned collections before creating
+    /// a hardware mutation. Unavailable indexes produce no mutation.
     pub fn pending_mutation(&self, state: &AppState) -> Option<PendingMutation> {
         match self {
             Intent::SetOutputLevel { index, step } => {
-                let target = match index {
-                    0 => OutputTarget::Monitor,
-                    1 => OutputTarget::Hp1,
-                    2 => OutputTarget::Hp2,
-                    _ => return None,
-                };
-                Some(PendingMutation::OutputVolume {
-                    target,
-                    step: *step,
-                })
+                let mut output = state.outputs().get(*index)?.clone();
+                output.level = Some(i32::from(*step));
+                Some(PendingMutation::Output(output))
             }
             Intent::ToggleOutputMute(index) => {
-                let target = match index {
-                    0 => OutputTarget::Monitor,
-                    1 => OutputTarget::Hp1,
-                    2 => OutputTarget::Hp2,
-                    _ => return None,
-                };
-                let current = state.output.states[target.index() as usize].mode;
-                let mode = if current == OutputMode::Mute {
-                    OutputMode::Normal
-                } else {
-                    OutputMode::Mute
-                };
-                Some(PendingMutation::OutputMode { target, mode })
+                let mut output = state.outputs().get(*index)?.clone();
+                output.muted = Some(!output.muted.unwrap_or(false));
+                if output.muted == Some(true) {
+                    output.dimmed = Some(false);
+                }
+                Some(PendingMutation::Output(output))
             }
             Intent::ToggleOutputDim(index) => {
-                let target = match index {
-                    0 => OutputTarget::Monitor,
-                    1 => OutputTarget::Hp1,
-                    2 => OutputTarget::Hp2,
-                    _ => return None,
-                };
-                let current = state.output.states[target.index() as usize].mode;
-                let mode = if current == OutputMode::Dim {
-                    OutputMode::Normal
-                } else {
-                    OutputMode::Dim
-                };
-                Some(PendingMutation::OutputMode { target, mode })
+                let mut output = state.outputs().get(*index)?.clone();
+                output.dimmed = Some(!output.dimmed.unwrap_or(false));
+                if output.dimmed == Some(true) {
+                    output.muted = Some(false);
+                }
+                Some(PendingMutation::Output(output))
             }
             Intent::SetMixerLevel { index, level } => {
-                let channel = (*index + 1) as u8;
-                let mixer = state.active_mixer_surface();
-                let idx = *index;
-                let active = state.mixer.channels[mixer.index()].get(idx).copied()?;
-                if active.linked == Some(true) {
-                    let (left_ch, right_ch, left, right) =
-                        resolve_linked_pair_from_state(state, mixer, channel)?;
-                    Some(PendingMutation::MixerLinkedLevel {
-                        mixer,
-                        left_channel: left_ch,
-                        right_channel: right_ch,
-                        level: *level,
-                        left_pan: left.pan,
-                        right_pan: right.pan,
-                        left_muted: left.muted.unwrap_or(false),
-                        right_muted: right.muted.unwrap_or(false),
-                    })
-                } else {
-                    Some(PendingMutation::MixerLevel {
-                        mixer,
-                        channel,
-                        level: *level,
-                        pan: active.pan,
-                        muted: active.muted.unwrap_or(false),
-                    })
-                }
-            }
-            Intent::SetMixerPan { index, pan } => {
-                let channel = (*index + 1) as u8;
-                let mixer = state.active_mixer_surface();
-                Some(PendingMutation::MixerPan {
-                    mixer,
-                    channel,
-                    pan: *pan,
+                pending_mixer_change(state, *index, |strip| {
+                    strip.fader = Some(i32::from(*level));
                 })
             }
+            Intent::SetMixerLevelAt { address, level } => {
+                pending_mixer_change_at(state, *address, |strip| {
+                    strip.fader = Some(i32::from(*level));
+                })
+            }
+            Intent::SetMixerPanAt { address, pan } => {
+                pending_mixer_change_at(state, *address, |strip| {
+                    strip.pan = Some(i32::from(pan.raw()));
+                })
+            }
+            Intent::SetMixerSendAt { address, send } => {
+                pending_mixer_change_at(state, *address, |strip| strip.send = Some(*send))
+            }
+            Intent::ToggleMixerMuteAt { address } => {
+                pending_mixer_change_at(state, *address, |strip| {
+                    strip.muted = Some(!strip.muted.unwrap_or(false));
+                })
+            }
+            Intent::ToggleMixerSoloAt { address } => {
+                pending_mixer_change_at(state, *address, |strip| {
+                    strip.soloed = Some(!strip.soloed.unwrap_or(false));
+                })
+            }
+            Intent::SetMixerPan { index, pan } => pending_mixer_change(state, *index, |strip| {
+                strip.pan = Some(i32::from(pan.raw()));
+            }),
             Intent::ToggleMixerMute(channel) => {
-                let mixer = state.active_mixer_surface();
-                let idx = channel.saturating_sub(1) as usize;
-                let active = state.mixer.channels[mixer.index()].get(idx).copied()?;
-                let muted = !active.muted.unwrap_or(false);
-                if active.linked == Some(true) {
-                    let (left_ch, right_ch, _, _) =
-                        resolve_linked_pair_from_state(state, mixer, *channel)?;
-                    Some(PendingMutation::MixerLinkedMute {
-                        mixer,
-                        left_channel: left_ch,
-                        right_channel: right_ch,
-                        muted,
-                    })
-                } else {
-                    Some(PendingMutation::MixerMute {
-                        mixer,
-                        channel: *channel,
-                        muted,
-                    })
-                }
+                let index = usize::from(channel.checked_sub(1)?);
+                pending_mixer_change(state, index, |strip| {
+                    strip.muted = Some(!strip.muted.unwrap_or(false));
+                })
             }
             Intent::ToggleMixerSolo(channel) => {
-                let mixer = state.active_mixer_surface();
-                let idx = channel.saturating_sub(1) as usize;
-                let active = state.mixer.channels[mixer.index()].get(idx).copied()?;
-                let soloed = !active.soloed.unwrap_or(false);
-                if active.linked == Some(true) {
-                    let (left_ch, right_ch, _, _) =
-                        resolve_linked_pair_from_state(state, mixer, *channel)?;
-                    Some(PendingMutation::MixerLinkedSolo {
-                        mixer,
-                        left_channel: left_ch,
-                        right_channel: right_ch,
-                        soloed,
-                    })
-                } else {
-                    Some(PendingMutation::MixerSolo {
-                        mixer,
-                        channel: *channel,
-                        soloed,
-                    })
-                }
+                let index = usize::from(channel.checked_sub(1)?);
+                pending_mixer_change(state, index, |strip| {
+                    strip.soloed = Some(!strip.soloed.unwrap_or(false));
+                })
             }
             Intent::ToggleMixerLink(channel) => {
-                let mixer = state.active_mixer_surface();
-                let target = MixerLinkTarget::from_channel(mixer, *channel)?;
-                let enabled = !state.mixer.channels[mixer.index()]
-                    .get(channel.saturating_sub(1) as usize)
-                    .and_then(|c| c.linked)
-                    .unwrap_or(false);
-                Some(PendingMutation::MixerLinkExplicit {
-                    mixer,
-                    left_channel: target.left_channel,
-                    right_channel: target.right_channel,
-                    enabled,
+                let index = usize::from(channel.checked_sub(1)?);
+                pending_mixer_change(state, index, |strip| {
+                    strip.linked = Some(!strip.linked.unwrap_or(false));
                 })
             }
-            Intent::PickAssignment { strip, assignment } => {
-                Some(PendingMutation::MixerAssignment {
-                    strip: *strip,
-                    assignment: *assignment,
-                })
-            }
-            Intent::SetPreampGain { input, raw } => Some(PendingMutation::PreampGain {
-                input: *input,
-                raw: *raw,
+            Intent::SetPreampGain { input, raw } => pending_input_change(state, *input, |slot| {
+                slot.gain = Some(i32::from(*raw));
             }),
-            Intent::PickPreampMode { input, mode } => Some(PendingMutation::PreampMode {
-                input: *input,
-                mode: *mode,
+            Intent::SetInputGainAt { address, raw } => {
+                pending_input_change_at(state, *address, |slot| slot.gain = Some(i32::from(*raw)))
+            }
+            Intent::SetInputParameterAt { address, value, .. } => {
+                pending_input_change_at(state, *address, |slot| slot.gain = Some(*value))
+            }
+            Intent::SetInputModeAt { address, mode } => {
+                pending_input_change_at(state, *address, |slot| {
+                    slot.mode = Some(i32::from(mode.code()))
+                })
+            }
+            Intent::ToggleInputPhantomAt { address } => {
+                pending_input_change_at(state, *address, |slot| {
+                    slot.phantom = Some(!slot.phantom.unwrap_or(false));
+                })
+            }
+            Intent::ToggleInputPhaseAt { address } => {
+                pending_input_change_at(state, *address, |slot| {
+                    slot.phase = Some(!slot.phase.unwrap_or(false));
+                })
+            }
+            Intent::PickPreampMode { input, mode } => pending_input_change(state, *input, |slot| {
+                slot.mode = Some(i32::from(mode.code()));
             }),
-            Intent::TogglePreampPhantom(input) => {
-                let input_state = if *input == 0 {
-                    &state.preamp.state.input1
-                } else {
-                    &state.preamp.state.input2
-                };
-                Some(PendingMutation::PreampPhantom {
-                    input: *input,
-                    enabled: !input_state.phantom_on,
-                })
-            }
-            Intent::TogglePreampPhase(input) => {
-                let input_state = if *input == 0 {
-                    &state.preamp.state.input1
-                } else {
-                    &state.preamp.state.input2
-                };
-                let phase_inverted = input_state.mode_raw & 0x40 != 0;
-                Some(PendingMutation::PreampPhase {
-                    input: *input,
-                    enabled: !phase_inverted,
-                })
-            }
-            Intent::PickSampleRate(_) | Intent::PickClockSource(_) => {
-                // Handled by apply_command_state_update, no pending mutation needed
-                None
-            }
+            Intent::TogglePreampPhantom(input) => pending_input_change(state, *input, |slot| {
+                slot.phantom = Some(!slot.phantom.unwrap_or(false));
+            }),
+            Intent::TogglePreampPhase(input) => pending_input_change(state, *input, |slot| {
+                slot.phase = Some(!slot.phase.unwrap_or(false));
+            }),
             _ => None,
         }
     }
 }
 
-fn resolve_linked_pair_from_state(
-    state: &AppState,
-    mixer: MixerSurface,
-    channel: u8,
-) -> Option<(u8, u8, MixerChannelState, MixerChannelState)> {
-    let (left_channel, right_channel) = if channel % 2 == 1 {
-        (channel, channel.saturating_add(1))
+fn pending_mixer_change<F>(state: &AppState, index: usize, mutate: F) -> Option<PendingMutation>
+where
+    F: Fn(&mut DynamicMixerStrip),
+{
+    let surface_index = state.active_mixer_surface()?;
+    let surface = state.mixers().get(surface_index)?;
+    let active = surface.strips.get(index)?;
+    let mut strips = Vec::new();
+    if active.linked == Some(true) {
+        let left_index = index - (index % 2);
+        for pair_index in [left_index, left_index.checked_add(1)?] {
+            let mut strip = surface.strips.get(pair_index)?.clone();
+            mutate(&mut strip);
+            strips.push(PendingMixerStrip {
+                address: MixerAddress {
+                    surface: surface.surface,
+                    strip: strip.strip,
+                },
+                strip,
+            });
+        }
     } else {
-        (channel.saturating_sub(1), channel)
+        let mut strip = active.clone();
+        mutate(&mut strip);
+        strips.push(PendingMixerStrip {
+            address: MixerAddress {
+                surface: surface.surface,
+                strip: strip.strip,
+            },
+            strip,
+        });
+    }
+    Some(PendingMutation::Mixer(strips))
+}
+
+fn pending_mixer_change_at<F>(
+    state: &AppState,
+    address: MixerAddress,
+    mutate: F,
+) -> Option<PendingMutation>
+where
+    F: Fn(&mut DynamicMixerStrip),
+{
+    let surface = state
+        .mixers()
+        .iter()
+        .find(|surface| surface.surface == address.surface)?;
+    let mut strip = if address.strip == 0 {
+        surface.master.as_ref()?.clone()
+    } else {
+        surface
+            .strips
+            .iter()
+            .find(|strip| strip.strip == address.strip)?
+            .clone()
     };
-    let left_index = left_channel.saturating_sub(1) as usize;
-    let right_index = right_channel.saturating_sub(1) as usize;
-    let left = state.mixer.channels[mixer.index()]
-        .get(left_index)
-        .copied()?;
-    let right = state.mixer.channels[mixer.index()]
-        .get(right_index)
-        .copied()?;
-    Some((left_channel, right_channel, left, right))
+    mutate(&mut strip);
+    Some(PendingMutation::Mixer(vec![PendingMixerStrip {
+        address,
+        strip,
+    }]))
+}
+
+fn pending_input_change_at<F>(
+    state: &AppState,
+    address: InputAddress,
+    mutate: F,
+) -> Option<PendingMutation>
+where
+    F: FnOnce(&mut DynamicInputState),
+{
+    let mut slot = state
+        .input_spaces
+        .iter()
+        .find(|space| space.space_id == address.space)?
+        .inputs
+        .iter()
+        .find(|input| input.address == address)?
+        .clone();
+    mutate(&mut slot);
+    Some(PendingMutation::Input(slot))
+}
+
+fn pending_input_change<F>(state: &AppState, input: u8, mutate: F) -> Option<PendingMutation>
+where
+    F: FnOnce(&mut DynamicInputState),
+{
+    let mut slot = state
+        .input_spaces
+        .first()?
+        .inputs
+        .get(usize::from(input))?
+        .clone();
+    mutate(&mut slot);
+    Some(PendingMutation::Input(slot))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -545,8 +660,19 @@ impl PeakHoldDuration {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+pub struct PendingMixerStrip {
+    pub address: MixerAddress,
+    pub strip: DynamicMixerStrip,
+}
+
+#[derive(Debug, Clone)]
 pub enum PendingMutation {
+    Mixer(Vec<PendingMixerStrip>),
+    Output(DynamicOutputState),
+    Input(DynamicInputState),
+    Routing(DynamicRoutingGroup),
+    #[cfg(test)]
     MixerLevel {
         mixer: MixerSurface,
         channel: u8,
@@ -554,78 +680,55 @@ pub enum PendingMutation {
         pan: PanState,
         muted: bool,
     },
-    MixerLinkedLevel {
-        mixer: MixerSurface,
-        left_channel: u8,
-        right_channel: u8,
-        level: u8,
-        left_pan: PanState,
-        right_pan: PanState,
-        left_muted: bool,
-        right_muted: bool,
-    },
+    #[cfg(test)]
     MixerMute {
         mixer: MixerSurface,
         channel: u8,
         muted: bool,
     },
-    MixerLinkedMute {
-        mixer: MixerSurface,
-        left_channel: u8,
-        right_channel: u8,
-        muted: bool,
-    },
-    MixerSolo {
-        mixer: MixerSurface,
-        channel: u8,
-        soloed: bool,
-    },
-    MixerLinkedSolo {
-        mixer: MixerSurface,
-        left_channel: u8,
-        right_channel: u8,
-        soloed: bool,
-    },
+    #[cfg(test)]
     MixerPan {
         mixer: MixerSurface,
         channel: u8,
         pan: PanState,
     },
+    #[cfg(test)]
     MixerAssignment {
         strip: u8,
         assignment: MixerAssignment,
     },
+    #[cfg(test)]
     MixerLink {
         mixer: MixerSurface,
         selector: u8,
         enabled: bool,
     },
-    MixerLinkExplicit {
-        mixer: MixerSurface,
-        left_channel: u8,
-        right_channel: u8,
-        enabled: bool,
-    },
+    #[cfg(test)]
     OutputVolume {
         target: OutputTarget,
         step: u8,
     },
+    #[cfg(test)]
     OutputMode {
         target: OutputTarget,
         mode: OutputMode,
     },
+    #[cfg(test)]
     PreampGain {
         input: u8,
         raw: u8,
     },
+    #[cfg(test)]
     PreampMode {
         input: u8,
         mode: PreampMode,
     },
+    #[cfg(test)]
     PreampPhantom {
         input: u8,
         enabled: bool,
     },
+    #[cfg(test)]
     PreampPhase {
         input: u8,
         enabled: bool,

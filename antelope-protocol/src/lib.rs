@@ -26,16 +26,23 @@
 
 pub mod driver;
 pub use driver::{
-    Action, CommandBatch, DeviceDefinition, DeviceDriver, DeviceEvent, DriverError,
-    DynamicDeviceState, DynamicMixerSurface,
+    Action, CommandBatch, ControlValue, DeviceDefinition, DeviceDriver, DeviceEvent,
+    DriverDefinition, DriverError, DynamicDeviceState, DynamicGlobalState, DynamicInputState,
+    DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
+    DynamicStatePatch, GlobalControl, InputAddress, InputControl, MixerAddress, MixerControl,
+    OutputAddress, OutputControl, RoutingSource, WholeStateField,
 };
 mod encoder;
 mod frame;
 mod mixer;
+pub mod profile;
+mod profile_codec;
+pub mod profile_driver;
 mod query;
 mod types;
 pub mod zen_go;
 
+pub use profile_driver::ProfileDriver;
 pub use zen_go::ZenGoDriver;
 
 // Explicit re-exports for API stability and discoverability
@@ -47,6 +54,15 @@ pub use frame::{DeviceNotification, DeviceSnapshot, Frame};
 pub use mixer::{
     decode_passive_mixer_state, MixerAssignment, MixerChannelState, MixerLinkTarget,
     MixerPassiveDecode, MixerPassiveStripState, MixerStrip, MixerStripKind, MixerSurface,
+};
+pub use profile::{
+    load_profile_pack, load_profile_pack_file, FrameEndian, FrameOperation, ParamReference,
+    ProfileLoadError, ProfilePack, ReadbackCategory, ReadbackDefinition, RuntimeAddressSpace,
+    RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
+    RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
+    RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMixer, RuntimeOutput, RuntimeParam,
+    RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
+    RuntimeRoutingSourceDomain, RuntimeTransport, PROFILE_PACK_SCHEMA_VERSION,
 };
 pub use query::{control_panel_startup_queries, DeviceMetadata, QueryRequest, QueryResponse};
 pub use types::{

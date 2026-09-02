@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 TOOLS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = TOOLS_DIR.parent
+GENERATOR = TOOLS_DIR / "generate_device_catalog.py"
 sys.path.insert(0, str(TOOLS_DIR))
 
 import generate_device_catalog as generator  # noqa: E402
@@ -76,6 +79,16 @@ def profile_data(name: str, pid: str, *, status: str = "confirmed") -> dict[str,
                 "destination_channels": {"0": 16, "1": 2},
                 "status": "confirmed",
             },
+            "link_command": {
+                "magic_offset": 0,
+                "magic": "0x70",
+                "opcode_offset": 4,
+                "opcode": "0x14",
+                "pair_index_offset": 18,
+                "enabled_offset": 19,
+                "allowed_values": [0, 1],
+                "status": "confirmed",
+            },
         },
         "channels": {"count": 2, "names": ["A1", "A2"], "status": "confirmed"},
         "buses": {
@@ -83,6 +96,35 @@ def profile_data(name: str, pid: str, *, status: str = "confirmed") -> dict[str,
             "status": "confirmed",
         },
         "mixer": {"mixes": 2, "channels_per_mix": 16, "status": "confirmed"},
+        "runtime_topology": {
+            "status": "confirmed",
+            "mixer": {"has_master": False},
+            "link_domains": [
+                {
+                    "protocol_space": 3,
+                    "kind": "mixer",
+                    "pair_count": 8,
+                    "status": "confirmed",
+                    "evidence": "synthetic generator fixture assumption",
+                }
+            ],
+            "routing_source_domains": [
+                {
+                    "id": "fixture_sources",
+                    "status": "confirmed",
+                    "evidence": "synthetic generator fixture assumption",
+                    "banks": [{"bank": 0, "index_count": 2}],
+                }
+            ],
+            "routing_groups": [
+                {
+                    "destination": 0,
+                    "name": "mixer_input_assignments",
+                    "channel_count": 16,
+                    "source_domain": "fixture_sources",
+                }
+            ],
+        },
         "params": {
             "gain": {
                 "id": "0x50",
@@ -122,7 +164,46 @@ def fixture_profiles() -> tempfile.TemporaryDirectory[str]:
     return temporary
 
 
-class GenerateDeviceCatalogTests(unittest.TestCase):
+class GeneratorTests(unittest.TestCase):
+    def test_cli_defaults_to_pinned_repository_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = root / "generated.rs"
+            pack_generated = root / "generated_profiles.json"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(GENERATOR),
+                    "--output",
+                    str(generated),
+                    "--pack-output",
+                    str(pack_generated),
+                ],
+                cwd=root,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                generated.read_bytes(),
+                (REPO_ROOT / "src/device/generated.rs").read_bytes(),
+            )
+            self.assertEqual(
+                pack_generated.read_bytes(),
+                (REPO_ROOT / "src/device/generated_profiles.json").read_bytes(),
+            )
+            self.assertEqual(
+                generator.DEFAULT_PROFILES_DIR,
+                REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
+            )
+            self.assertNotIn(
+                "mic_models.json",
+                {
+                    profile.path.name
+                    for profile in generator.discover_profiles(generator.DEFAULT_PROFILES_DIR)
+                },
+            )
+
     def test_discovers_hardware_profiles_but_excludes_mic_models(self) -> None:
         with fixture_profiles() as temporary:
             profiles = generator.discover_profiles(temporary)
@@ -170,6 +251,458 @@ class GenerateDeviceCatalogTests(unittest.TestCase):
             incomplete_orion_data["frame"] = {}
             incomplete_orion = generator.normalize_profile(incomplete_orion_data)
             self.assertEqual(generator.classify_readiness(incomplete_orion), generator.Readiness.DISABLED)
+
+    def test_orion_readiness_reports_confirmed_transport_blocker(self) -> None:
+        canonical = generator.load_profile(
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
+        )
+        blockers = generator.orion_readiness_blockers(canonical)
+        self.assertIn("transport.uses_numbered_reports is unconfirmed", blockers)
+        self.assertEqual(generator.classify_readiness(canonical), generator.Readiness.DISABLED)
+
+    def test_orion_field_counts_alone_and_one_missing_operation_never_enable(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data["channels"] = {"count": 12, "status": "confirmed"}
+        data["adat"] = {"count": 16, "status": "confirmed"}
+        data["spdif"] = {"count": 2, "status": "confirmed"}
+        data["buses"]["known"] = {
+            str(index): {"name": f"bus_{index}"} for index in range(6)
+        }
+        data["runtime_topology"]["routing_groups"] = [
+            {"destination": index, "name": f"route_{index}", "channel_count": 2}
+            for index in range(15)
+        ]
+        profile = generator.normalize_profile(data)
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
+        self.assertTrue(generator.orion_readiness_blockers(profile))
+
+        data["frame"]["command"]["status"] = "unconfirmed"
+        profile = generator.normalize_profile(data)
+        self.assertTrue(
+            any("frame.command" in blocker for blocker in generator.orion_readiness_blockers(profile))
+        )
+
+    def test_orion_unsupported_formula_and_unsafe_startup_bound_are_blockers(self) -> None:
+        canonical_path = (
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        )
+        data = json.loads(canonical_path.read_text(encoding="utf-8"))
+        data["frame"]["command"]["formula"] = "unknown(channel)"
+        data["frame"]["command"]["status"] = "confirmed"
+        profile = generator.normalize_profile(data, path=canonical_path)
+        self.assertTrue(
+            any("uncompiled formula" in blocker for blocker in generator.orion_readiness_blockers(profile))
+        )
+
+        data = json.loads(canonical_path.read_text(encoding="utf-8"))
+        data["frame"]["readback"]["startup_queries"] = [
+            {"category": "0x04", "index": 4}
+        ]
+        with self.assertRaisesRegex(generator.ProfileError, "outside confirmed finite bounds"):
+            generator.normalize_profile(data, path=canonical_path)
+
+    def test_discrete_readiness_policy_is_unchanged(self) -> None:
+        with fixture_profiles() as temporary:
+            profiles = {profile.path.name: profile for profile in generator.discover_profiles(temporary)}
+            expected = {
+                "discrete_8_pro_synergy_core.json": generator.Readiness.PARTIAL,
+                "discrete_4_synergy_core.json": generator.Readiness.UNVERIFIED,
+                "discrete_4_pro_synergy_core.json": generator.Readiness.UNVERIFIED,
+            }
+            for filename, readiness in expected.items():
+                profile = generator.load_profile(profiles[filename].path, temporary)
+                self.assertEqual(generator.classify_readiness(profile), readiness)
+
+    def test_canonical_orion_startup_walk_preserves_all_113_markers(self) -> None:
+        canonical = generator.load_profile(
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
+        )
+        normalized = json.loads(generator.render_profile_pack([canonical]))["profiles"][0]
+        startup = [
+            (query["query_id"], query["sub_id"])
+            for query in normalized["startup_queries"]
+        ]
+        expected = [
+            (int(category, 0), index)
+            for category, count in sorted(
+                canonical.raw["frame"]["readback"]["category_counts"].items(),
+                key=lambda item: int(item[0], 0),
+            )
+            for index in range(count)
+        ]
+        self.assertEqual(startup, expected)
+        self.assertEqual(len(startup), 113)
+
+    def test_raw_control_sections_are_not_dropped(self) -> None:
+        profiles = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
+
+        def record(name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+            path = profiles / name
+            raw = json.loads(path.read_text())
+            normalized = generator.normalize_profile(
+                raw,
+                path=path,
+                profiles_dir=profiles,
+                source_bytes=path.read_bytes(),
+            )
+            return generator._normalized_profile_record(normalized), raw
+
+        orion, orion_raw = record("orion_studio_3.json")
+        self.assertNotIn("runtime_topology", orion_raw)
+        self.assertEqual(
+            [item["strip_count"] for item in orion["mixers"]], [32, 32, 32, 32]
+        )
+        self.assertEqual(
+            [item["has_master"] for item in orion["mixers"]],
+            [True, True, True, True],
+        )
+        self.assertEqual(
+            [group["channel_count"] for group in orion["routing_groups"]],
+            [16, 2, 2, 2, 2, 2, 32, 16, 2, 32, 32, 32, 32, 32, 16],
+        )
+        self.assertEqual(
+            [group["destination"] for group in orion["routing_groups"]], list(range(15))
+        )
+        source_bounds = {
+            domain["bank"]: domain["index_count"]
+            for domain in orion["routing_groups"][0]["source_domains"]
+        }
+        self.assertEqual(
+            source_bounds,
+            {0: 12, 1: 8, 3: 16, 4: 2, 5: 32, 6: 2, 7: 2, 8: 2, 9: 2, 10: 16, 11: 1},
+        )
+        self.assertEqual(
+            [
+                (domain["protocol_space"], domain["pair_count"])
+                for domain in orion["link_domains"]
+            ],
+            [(3, 16)],
+        )
+        self.assertEqual(len(orion["startup_queries"]), 113)
+        self.assertFalse(
+            any(
+                capability["kind"] == "link"
+                for space in orion["address_spaces"]
+                for capability in space["input_capabilities"]
+            )
+        )
+        def controls(recorded: dict[str, Any], space_id: str) -> list[str]:
+            space = next(item for item in recorded["address_spaces"] if item["id"] == space_id)
+            return [item["kind"] for item in space["input_capabilities"]]
+
+        self.assertEqual(
+            controls(orion, "physical_inputs"), ["gain", "mode", "phantom", "phase"]
+        )
+        self.assertEqual(controls(orion, "adat_inputs"), ["gain"])
+        self.assertEqual(controls(orion, "spdif_inputs"), ["gain"])
+
+        zen, zen_raw = record("zen_go_sc.json")
+        self.assertNotIn("runtime_topology", zen_raw)
+        self.assertEqual(
+            [item["strip_count"] for item in zen["mixers"]], [16, 16]
+        )
+        self.assertEqual(
+            [item["has_master"] for item in zen["mixers"]], [False, False]
+        )
+        self.assertEqual(
+            [(group["destination"], group["channel_count"]) for group in zen["routing_groups"]],
+            [(3, 8), (5, 4), (6, 32), (7, 32), (8, 32), (9, 32)],
+        )
+        self.assertTrue(all(not group["source_domains"] for group in zen["routing_groups"]))
+        self.assertEqual(zen["link_domains"], [])
+
+        for normalized, raw in ((orion, orion_raw), (zen, zen_raw)):
+            frame_ids = {frame["id"] for frame in normalized["frames"]}
+            raw_frame_ids = {
+                name
+                for name, value in raw["frame"].items()
+                if isinstance(value, dict) and not name.startswith("_")
+            }
+            self.assertEqual(frame_ids, raw_frame_ids)
+            for frame_name in ("mix_command", "routing_command", "link_command", "readback"):
+                frame = next(item for item in normalized["frames"] if item["id"] == frame_name)
+                self.assertEqual(json.loads(frame["metadata"]), raw["frame"][frame_name])
+
+    def test_malformed_partial_routing_source_banks_raise_profile_error(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "zen_go_sc.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["frame"]["routing_command"]["source_banks"] = {
+            "0x00": {"index_count": 2, "evidence": 17}
+        }
+
+        with self.assertRaisesRegex(
+            generator.ProfileError,
+            r"frame\.routing_command\.source_banks\.0x00\.evidence must be a string",
+        ):
+            generator.normalize_profile(data, path=path)
+
+    def test_negated_routing_evidence_is_not_confirmed(self) -> None:
+        self.assertFalse(
+            generator._routing_status_is_confirmed(
+                {"status": "not fully decoded"}, "confirmed"
+            )
+        )
+
+    def test_negated_mixer_link_evidence_is_not_confirmed(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data.pop("runtime_topology")
+        data["frame"]["routing_command"]["status"] = "partial"
+        data["frame"]["routing_command"]["addressable_destinations"] = {"0": "mixer"}
+        data["frame"]["routing_command"]["destination_channels"] = {"0": 16}
+        data["frame"]["link_command"]["space_values"] = {
+            "3": "not confirmed mixer link pairs"
+        }
+        profile = generator.normalize_profile(data)
+
+        self.assertEqual(generator._derived_link_domains(profile), [])
+
+    def test_sparse_or_duplicate_indices_are_rejected(self) -> None:
+        for indices in ([0, 2], [0, 1, 1]):
+            with self.assertRaisesRegex(generator.ProfileError, "indices"):
+                generator._index_count_from_raw(
+                    {"indices": indices, "evidence": "confirmed source indices"},
+                    "source_bank",
+                )
+
+    def test_partial_destination_groups_are_not_ignored(self) -> None:
+        data = profile_data("Antelope Zen Go Synergy Core", "0xa015")
+        data.pop("runtime_topology")
+        routing = data["frame"]["routing_command"]
+        routing["status"] = "partial"
+        routing["addressable_destinations"] = {"0": "mixer", "1": "aux"}
+        routing["destination_channels"] = {"0": 16, "1": 2}
+        routing["destination_groups"] = {
+            "2": {"name": "extra_target", "channel_count": 4}
+        }
+        profile = generator.normalize_profile(data)
+
+        groups, confirmed = generator._derived_routing_records(profile)
+
+        self.assertFalse(confirmed)
+        self.assertEqual(
+            [(group["destination"], group["channel_count"]) for group in groups],
+            [(0, 16), (1, 2), (2, 4)],
+        )
+
+    def test_malformed_partial_destination_groups_are_rejected(self) -> None:
+        data = profile_data("Antelope Zen Go Synergy Core", "0xa015")
+        data.pop("runtime_topology")
+        routing = data["frame"]["routing_command"]
+        routing["status"] = "partial"
+        routing["addressable_destinations"] = {"0": "mixer", "1": "aux"}
+        routing["destination_channels"] = {"0": 16, "1": 2}
+        routing["destination_groups"] = {"2": {"name": "missing_count"}}
+
+        with self.assertRaisesRegex(
+            generator.ProfileError,
+            r"frame\.routing_command\.destination_groups\.2\.channel_count is required",
+        ):
+            generator.normalize_profile(data)
+
+    def test_negative_source_bank_evidence_is_not_confirmed(self) -> None:
+        for evidence in (
+            "partial source indices 0-1 confirmed",
+            "ambiguous source indices 0-1 confirmed",
+            "incomplete source indices 0-1 confirmed",
+            "host-dependent source indices 0-1 confirmed",
+        ):
+            with self.subTest(evidence=evidence):
+                data = profile_data("Antelope Orion Studio III", "0xa221")
+                data.pop("runtime_topology")
+                routing = data["frame"]["routing_command"]
+                routing.update(
+                    {
+                        "status": "confirmed",
+                        "addressable_destinations": {"0": "mixer"},
+                        "destination_channels": {"0": 16},
+                        "source_banks": {
+                            "0x00": {"index_count": 2, "evidence": evidence}
+                        },
+                    }
+                )
+                profile = generator.normalize_profile(data)
+
+                self.assertEqual(
+                    generator._derived_routing_source_domains(profile, routing, True), []
+                )
+
+    def test_duplicate_normalized_source_banks_are_rejected(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data.pop("runtime_topology")
+        routing = data["frame"]["routing_command"]
+        routing.update(
+            {
+                "status": "confirmed",
+                "addressable_destinations": {"0": "mixer"},
+                "destination_channels": {"0": 16},
+                "source_banks": {
+                    "0x03": {"index_count": 2, "evidence": "idx 0-1 confirmed"},
+                    "3": {"index_count": 2, "evidence": "idx 0-1 confirmed"},
+                },
+            }
+        )
+
+        with self.assertRaisesRegex(generator.ProfileError, "duplicate source bank"):
+            generator.normalize_profile(data)
+
+    def test_co_present_sparse_indices_are_rejected(self) -> None:
+        for value in (
+            {"index_count": 2, "indices": [0, 2], "evidence": "confirmed"},
+            {"range": [0, 2], "indices": [0, 1, 1], "evidence": "confirmed"},
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(generator.ProfileError, "indices"):
+                    generator._index_count_from_raw(value, "source_bank")
+
+    def test_textual_index_ranges_are_zero_based_and_contiguous(self) -> None:
+        for evidence in (
+            "idx 1-3",
+            "idx 0-1 and idx 4-5",
+            "idx 0-2 and idx 2-4",
+        ):
+            with self.subTest(evidence=evidence):
+                with self.assertRaisesRegex(generator.ProfileError, "index"):
+                    generator._index_count_from_text(evidence, "source_bank")
+        self.assertEqual(
+            generator._index_count_from_text("idx 0/1", "source_bank"), 2
+        )
+
+    def test_co_present_index_evidence_must_agree(self) -> None:
+        for value in (
+            {"index_count": 2, "range": [0, 2], "evidence": "confirmed"},
+            {"index_count": 2, "evidence": "idx 0-2 confirmed"},
+            {"count": 2, "index_count": 3, "evidence": "confirmed"},
+        ):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(generator.ProfileError, r"index evidence|indices"):
+                    generator._index_count_from_raw(value, "source_bank")
+
+    def test_null_destination_groups_are_rejected(self) -> None:
+        data = profile_data("Antelope Zen Go Synergy Core", "0xa015")
+        data.pop("runtime_topology")
+        routing = data["frame"]["routing_command"]
+        routing.update(
+            {
+                "status": "partial",
+                "addressable_destinations": {"0": "mixer"},
+                "destination_channels": {"0": 16},
+                "destination_groups": None,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            generator.ProfileError,
+            r"frame\.routing_command\.destination_groups must be an object",
+        ):
+            generator.normalize_profile(data)
+
+    def test_negative_partial_destination_groups_do_not_inherit_source_domains(self) -> None:
+        for qualification in (
+            {"status": "partial"},
+            {"evidence": "not confirmed destination channels"},
+        ):
+            with self.subTest(qualification=qualification):
+                data = profile_data("Antelope Orion Studio III", "0xa221")
+                data.pop("runtime_topology")
+                routing = data["frame"]["routing_command"]
+                routing.update(
+                    {
+                        "status": "confirmed",
+                        "addressable_destinations": {"0": "mixer"},
+                        "destination_channels": {"0": 16},
+                        "source_banks": {
+                            "0x00": {
+                                "index_count": 2,
+                                "evidence": "idx 0-1 confirmed",
+                            }
+                        },
+                        "destination_groups": {
+                            "2": {"name": "partial", "channel_count": 4, **qualification}
+                        },
+                    }
+                )
+                profile = generator.normalize_profile(data)
+                normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
+                groups = {
+                    group["destination"]: group
+                    for group in normalized["routing_groups"]
+                }
+
+                self.assertTrue(groups[0]["source_domains"])
+                self.assertEqual(groups[2]["source_domains"], [])
+
+    def test_duplicate_normalized_link_spaces_are_rejected(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data.pop("runtime_topology")
+        routing = data["frame"]["routing_command"]
+        routing.update(
+            {
+                "status": "partial",
+                "addressable_destinations": {"0": "mixer"},
+                "destination_channels": {"0": 16},
+            }
+        )
+        data["frame"]["link_command"]["space_values"] = {
+            "0x03": "not confirmed mixer link pairs",
+            "3": "confirmed mixer link pairs",
+        }
+
+        with self.assertRaisesRegex(generator.ProfileError, "duplicate link space"):
+            generator.normalize_profile(data)
+
+    def test_contradictory_route_qualifiers_are_not_confirmed(self) -> None:
+        route = {
+            "status": "confirmed",
+            "notes": "not confirmed routing map",
+        }
+        self.assertFalse(generator._routing_status_is_confirmed(route, "unknown"))
+
+    def test_contradictory_link_qualifiers_are_not_confirmed(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data.pop("runtime_topology")
+        data["frame"]["routing_command"].update(
+            {
+                "status": "partial",
+                "addressable_destinations": {"0": "mixer"},
+                "destination_channels": {"0": 16},
+            }
+        )
+        data["frame"]["link_command"].update(
+            {
+                "status": "confirmed",
+                "notes": "not confirmed link space",
+                "space_values": {"3": "confirmed mixer link pairs"},
+            }
+        )
+
+        profile = generator.normalize_profile(data)
+        self.assertEqual(generator._derived_link_domains(profile), [])
+
+    def test_contradictory_source_qualifiers_are_not_confirmed(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data.pop("runtime_topology")
+        routing = data["frame"]["routing_command"]
+        routing.update(
+            {
+                "status": "confirmed",
+                "addressable_destinations": {"0": "mixer"},
+                "destination_channels": {"0": 16},
+                "source_banks": {
+                    "0x00": {
+                        "index_count": 2,
+                        "evidence": "idx 0-1 confirmed",
+                        "notes": "host-dependent source bound",
+                    }
+                },
+            }
+        )
+
+        profile = generator.normalize_profile(data)
+        self.assertEqual(
+            generator._derived_routing_source_domains(profile, routing, True), []
+        )
 
     def test_known_zen_requires_confirmed_hid_and_required_frame_geometry(self) -> None:
         base = profile_data("Antelope Zen Go Synergy Core", "0xa015")
@@ -422,14 +955,416 @@ class GenerateDeviceCatalogTests(unittest.TestCase):
             with self.assertRaises(generator.ProfileError):
                 generator.normalize_profile(invalid)
 
-    def test_check_detects_stale_generated_catalog(self) -> None:
+    def test_renders_normalized_profile_pack_with_typed_operations(self) -> None:
         with fixture_profiles() as temporary:
-            generated = Path(temporary) / "generated.rs"
+            profiles = [
+                generator.load_profile(source.path, temporary)
+                for source in generator.discover_profiles(temporary)
+                if source.path.name in {"orion_studio_3.json", "zen_go_sc.json"}
+            ]
+            pack = json.loads(generator.render_profile_pack(profiles))
+
+            self.assertEqual(pack["schema_version"], 1)
+            self.assertEqual(pack["generator_version"], generator.GENERATOR_VERSION)
+            self.assertEqual(
+                [profile["id"] for profile in pack["profiles"]],
+                ["orion_studio_3", "zen_go_sc"],
+            )
+            by_id = {profile["id"]: profile for profile in pack["profiles"]}
+            self.assertEqual(by_id["zen_go_sc"]["readiness"], "supported")
+            self.assertEqual(by_id["orion_studio_3"]["readiness"], "disabled")
+            for profile in by_id.values():
+                self.assertIn("startup_queries", profile)
+                self.assertIn("readback", profile)
+                operation_kinds = {
+                    operation["op"]
+                    for frame in profile["frames"]
+                    for operation in frame["operations"]
+                }
+                self.assertTrue(operation_kinds)
+                self.assertIn("fixed_byte", operation_kinds)
+                self.assertIn("scalar", operation_kinds)
+                self.assertIn("indexed", operation_kinds)
+                self.assertIn("bit_field", operation_kinds)
+                self.assertIn("pair_index", operation_kinds)
+                self.assertIn("allowed_values", operation_kinds)
+                scalar_operations = [
+                    operation
+                    for frame in profile["frames"]
+                    for operation in frame["operations"]
+                    if operation["op"] == "scalar"
+                ]
+                self.assertTrue(all(operation["field"] for operation in scalar_operations))
+                self.assertTrue(
+                    all(
+                        operation["endian"] == "not_applicable"
+                        for operation in scalar_operations
+                        if operation["width"] == 1
+                    )
+                )
+                bit_operations = [
+                    operation
+                    for frame in profile["frames"]
+                    for operation in frame["operations"]
+                    if operation["op"] == "bit_field"
+                ]
+                self.assertTrue(all(operation["field"] for operation in bit_operations))
+
+    def test_unproven_multibyte_scalar_endianness_is_unavailable(self) -> None:
+        data = profile_data("Test", "0xa001")
+        data["frame"]["command"] = {
+            "magic_offset": 0,
+            "magic": "0x70",
+            "opcode_offset": 4,
+            "opcode": "0x13",
+            "value_offset": 16,
+            "value_width": 2,
+            "status": "confirmed",
+        }
+        profile = generator.normalize_profile(data)
+        normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
+        operations = next(
+            frame["operations"]
+            for frame in normalized["frames"]
+            if frame["id"] == "command"
+        )
+        self.assertIn(
+            {
+                "op": "uncompiled_formula",
+                "formula": "unproven endianness for value width 2",
+            },
+            operations,
+        )
+
+    def test_input_space_capabilities_are_typed_and_preserve_idless_link(self) -> None:
+        data = profile_data("Typed Inputs", "0xa111")
+        data["params"]["channel_link"] = {
+            "status": "confirmed",
+            "type": "per-pair bool",
+            "frame": "link_command",
+        }
+        data["runtime_topology"]["input_spaces"] = [
+            {
+                "space": "physical_inputs",
+                "controls": [
+                    {"kind": "gain", "parameter": "gain"},
+                    {"kind": "link", "parameter": "channel_link"},
+                ],
+            }
+        ]
+        profile = generator.normalize_profile(data)
+        normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
+        capabilities = next(
+            space["input_capabilities"]
+            for space in normalized["address_spaces"]
+            if space["id"] == "physical_inputs"
+        )
+        self.assertEqual(
+            capabilities,
+            [
+                {
+                    "kind": "gain",
+                    "parameter": "gain",
+                    "parameter_id": 0x50,
+                    "label": "GAIN",
+                },
+                {
+                    "kind": "link",
+                    "parameter": "channel_link",
+                    "parameter_id": None,
+                    "label": "LINK",
+                },
+            ],
+        )
+        rust = generator.render_catalog([profile])
+        self.assertIn("InputControlKind::Gain", rust)
+        self.assertIn("InputControlKind::Link", rust)
+        self.assertIn('parameter: "channel_link", parameter_id: None', rust)
+
+    def test_input_space_capability_kind_key_mapping_is_closed(self) -> None:
+        legal_pairs = {
+            "gain": ("gain", "adat_gain", "spdif_gain"),
+            "mode": ("input_mode",),
+            "phantom": ("phantom",),
+            "phase": ("phase_invert",),
+            "link": ("channel_link", "adat_channel_link", "spdif_channel_link"),
+        }
+        parameter_ids = {
+            "gain": 0x50,
+            "adat_gain": 0x5B,
+            "spdif_gain": 0x5C,
+            "input_mode": 0x4F,
+            "phantom": 0x51,
+            "phase_invert": 0x52,
+            "channel_link": None,
+            "adat_channel_link": None,
+            "spdif_channel_link": None,
+        }
+        for kind, parameter_keys in legal_pairs.items():
+            for parameter_key in parameter_keys:
+                with self.subTest(kind=kind, parameter=parameter_key):
+                    data = profile_data("Valid Inputs", "0xa112")
+                    data["params"][parameter_key] = {
+                        "id": parameter_ids[parameter_key],
+                        "type": "int8",
+                        "status": "confirmed",
+                        "frame": "command value @18",
+                        "readback": "state_report offset 49 + channel",
+                        "range": [0, 75],
+                    }
+                    supplied_parameter_id = parameter_ids[parameter_key]
+                    data["runtime_topology"]["input_spaces"] = [{
+                        "space": "physical_inputs",
+                        "controls": [{
+                            "kind": kind,
+                            "parameter": parameter_key,
+                            "parameter_id": (
+                                hex(supplied_parameter_id)
+                                if supplied_parameter_id is not None
+                                else None
+                            ),
+                        }],
+                    }]
+                    generator.normalize_profile(data)
+
+        for kind, parameter_key in (("phantom", "adat_gain"), ("mode", "spdif_gain")):
+            with self.subTest(kind=kind, parameter=parameter_key):
+                data = profile_data("Invalid Inputs", "0xa113")
+                data["params"][parameter_key] = {
+                    "id": parameter_ids[parameter_key],
+                    "type": "int8",
+                    "status": "confirmed",
+                    "frame": "command value @18",
+                    "readback": "state_report offset 49 + channel",
+                    "range": [0, 75],
+                }
+                data["runtime_topology"]["input_spaces"] = [{
+                    "space": "physical_inputs",
+                    "controls": [{"kind": kind, "parameter": parameter_key}],
+                }]
+                with self.assertRaises(generator.ProfileError) as raised:
+                    generator.normalize_profile(data)
+                message = str(raised.exception)
+                self.assertIn("physical_inputs", message)
+                self.assertIn(kind, message)
+                self.assertIn(parameter_key, message)
+
+    def test_input_space_capability_supplied_parameter_id_is_strict(self) -> None:
+        cases = [
+            ({"kind": "gain", "parameter": "gain", "parameter_id": "0x51"}, "gain"),
+            ({"kind": "link", "parameter": "channel_link", "parameter_id": "0xa2"}, "channel_link"),
+            ({"kind": "gain", "parameter": "gain", "parameter_id": "not-a-number"}, "gain"),
+        ]
+        for control, parameter_key in cases:
+            with self.subTest(control=control):
+                data = profile_data("Invalid Inputs", "0xa114")
+                if parameter_key == "channel_link":
+                    data["params"][parameter_key] = {
+                        "status": "confirmed",
+                        "type": "per-pair bool",
+                        "frame": "link_command",
+                    }
+                data["runtime_topology"]["input_spaces"] = [{
+                    "space": "physical_inputs",
+                    "controls": [control],
+                }]
+                with self.assertRaises(generator.ProfileError) as raised:
+                    generator.normalize_profile(data)
+                message = str(raised.exception)
+                self.assertIn("physical_inputs", message)
+                self.assertIn(control["kind"], message)
+                self.assertIn(parameter_key, message)
+
+    def test_input_space_capabilities_reject_malformed_duplicate_and_unknown_records(self) -> None:
+        cases = [
+            ([{"space": "missing", "controls": []}], "unknown address space"),
+            (
+                [{"space": "physical_inputs", "controls": [{"kind": "gain", "parameter": "missing"}]}],
+                "unknown parameter",
+            ),
+            (
+                [{"space": "physical_inputs", "controls": [
+                    {"kind": "gain", "parameter": "gain"},
+                    {"kind": "gain", "parameter": "gain"},
+                ]}],
+                "duplicate control kind",
+            ),
+            (
+                [{"space": "physical_inputs", "controls": [{"kind": "gain", "parameter": "gain", "label": ""}]}],
+                "label must be non-empty",
+            ),
+            (
+                [{"space": "physical_inputs", "controls": [{"kind": "unknown", "parameter": "gain"}]}],
+                "unknown input control kind",
+            ),
+        ]
+        for input_spaces, message in cases:
+            with self.subTest(message=message):
+                data = profile_data("Invalid Inputs", "0xa112")
+                data["runtime_topology"]["input_spaces"] = input_spaces
+                with self.assertRaisesRegex(generator.ProfileError, message):
+                    generator.normalize_profile(data)
+
+    def test_structured_link_and_routing_domains_are_closed_and_finite(self) -> None:
+        data = profile_data("Typed Domains", "0xa120")
+        profile = generator.normalize_profile(data)
+        normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
+        self.assertEqual(
+            normalized["link_domains"],
+            [{
+                "protocol_space": 3,
+                "kind": "mixer",
+                "pair_count": 8,
+                "status": "confirmed",
+                "evidence": "synthetic generator fixture assumption",
+            }],
+        )
+        self.assertEqual(normalized["routing_groups"][0]["source_domains"][0]["bank"], 0)
+        self.assertEqual(normalized["routing_groups"][0]["source_domains"][0]["index_count"], 2)
+
+        mutations = [
+            lambda topology: topology["link_domains"].append(dict(topology["link_domains"][0])),
+            lambda topology: topology["link_domains"][0].update({"pair_count": 0}),
+            lambda topology: topology["routing_source_domains"][0]["banks"].append(
+                dict(topology["routing_source_domains"][0]["banks"][0])
+            ),
+            lambda topology: topology["routing_source_domains"][0]["banks"][0].update(
+                {"index_count": 257}
+            ),
+            lambda topology: topology["routing_groups"][0].update({"source_domain": "missing"}),
+        ]
+        for mutate in mutations:
+            invalid = profile_data("Invalid Domains", "0xa121")
+            mutate(invalid["runtime_topology"])
+            with self.assertRaises(generator.ProfileError):
+                generator.normalize_profile(invalid)
+
+    def test_canonical_orion_emits_no_input_links_and_only_confirmed_mixer_link_domain(self) -> None:
+        canonical = generator.load_profile(
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
+        )
+        normalized = json.loads(generator.render_profile_pack([canonical]))["profiles"][0]
+        for space in normalized["address_spaces"]:
+            if space["id"] in {"physical_inputs", "adat_inputs", "spdif_inputs"}:
+                self.assertNotIn(
+                    "link",
+                    [capability["kind"] for capability in space["input_capabilities"]],
+                )
+        self.assertEqual(
+            [(domain["protocol_space"], domain["kind"], domain["pair_count"])
+             for domain in normalized["link_domains"]],
+            [(3, "mixer", 16)],
+        )
+        self.assertEqual(len(normalized["routing_groups"]), 15)
+        self.assertTrue(all(group["source_domains"] for group in normalized["routing_groups"]))
+        self.assertTrue(all(
+            all(domain["bank"] != 0x0c for domain in group["source_domains"])
+            for group in normalized["routing_groups"]
+        ))
+
+    def test_orion_normalization_preserves_capability_sections(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data["adat"] = {"count": 16, "status": "confirmed"}
+        data["spdif"] = {"count": 2, "status": "confirmed"}
+        data["frame"]["readback"] = {
+            "request_magic": "0x74",
+            "subcmd": "0x10",
+            "response_magic": "0x75",
+            "response_discriminator_offset": 1,
+            "response_discriminator": 0,
+            "category_offset": 8,
+            "index_offset": 12,
+            "data_offset": 16,
+            "category_counts": {"0x04": 4},
+            "status": "confirmed",
+        }
+        data["hazards"] = {
+            "unsafe_query": {"status": "confirmed", "rule": "bound index", "effect": "crash"}
+        }
+        profile = generator.normalize_profile(data, path=Path("orion_studio_3.json"))
+        normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
+
+        self.assertEqual(
+            {space["id"] for space in normalized["address_spaces"]},
+            {"physical_inputs", "adat_inputs", "spdif_inputs", "outputs"},
+        )
+        self.assertEqual(len(normalized["outputs"]), 1)
+        self.assertEqual(len(normalized["mixers"]), 2)
+        self.assertTrue(any(frame["id"] == "routing_command" for frame in normalized["frames"]))
+        self.assertTrue(normalized["params"])
+        self.assertTrue(normalized["hazards"])
+
+    def test_check_detects_stale_rust_and_json_artifacts(self) -> None:
+        with fixture_profiles() as temporary:
+            artifacts = Path(temporary) / "artifacts"
+            artifacts.mkdir()
+            generated = artifacts / "generated.rs"
+            pack_generated = artifacts / "generated_profiles.json"
             generated.write_text(generator.generate_catalog(temporary), encoding="utf-8")
-            self.assertTrue(generator.check_catalog(temporary, generated))
+            pack_generated.write_text(generator.generate_profile_pack(temporary), encoding="utf-8")
+            self.assertTrue(
+                generator.check_generated_artifacts(
+                    temporary, generated, pack_generated
+                )
+            )
+
             zen_path = Path(temporary) / "zen_go_sc.json"
-            zen_path.write_text(zen_path.read_text(encoding="utf-8").replace('"0xa015"', '"0xa016"'), encoding="utf-8")
+            old_hash = hashlib.sha256(zen_path.read_bytes()).hexdigest()
+            zen_path.write_bytes(zen_path.read_bytes() + b" ")
+            new_hash = hashlib.sha256(zen_path.read_bytes()).hexdigest()
+            self.assertNotEqual(old_hash, new_hash)
             self.assertFalse(generator.check_catalog(temporary, generated))
+            self.assertFalse(generator.check_profile_pack(temporary, pack_generated))
+            self.assertFalse(
+                generator.check_generated_artifacts(
+                    temporary, generated, pack_generated
+                )
+            )
+            regenerated_rust = generator.generate_catalog(temporary)
+            regenerated_pack = generator.generate_profile_pack(temporary)
+            self.assertIn("profiles/zen_go_sc.json", regenerated_rust)
+            self.assertIn("profiles/zen_go_sc.json", regenerated_pack)
+            self.assertIn(new_hash, regenerated_rust)
+            self.assertIn(new_hash, regenerated_pack)
+            self.assertNotIn(old_hash, regenerated_rust)
+            self.assertNotIn(old_hash, regenerated_pack)
+
+    def test_cli_check_detects_source_and_individual_artifact_drift(self) -> None:
+        with fixture_profiles() as temporary:
+            profiles_dir = Path(temporary)
+            artifacts = profiles_dir / "artifacts"
+            artifacts.mkdir()
+            generated = artifacts / "generated.rs"
+            pack_generated = artifacts / "generated_profiles.json"
+            generated_text = generator.generate_catalog(profiles_dir)
+            pack_text = generator.generate_profile_pack(profiles_dir)
+            generated.write_text(generated_text, encoding="utf-8")
+            pack_generated.write_text(pack_text, encoding="utf-8")
+
+            command = [
+                sys.executable,
+                str(TOOLS_DIR / "generate_device_catalog.py"),
+                "--check",
+                str(profiles_dir),
+                "--generated",
+                str(generated),
+                "--pack-generated",
+                str(pack_generated),
+            ]
+            self.assertEqual(subprocess.run(command, check=False).returncode, 0)
+
+            generated.write_text(generated_text + "// stale\n", encoding="utf-8")
+            self.assertNotEqual(subprocess.run(command, check=False).returncode, 0)
+            generated.write_text(generated_text, encoding="utf-8")
+
+            pack_generated.write_text(pack_text + " ", encoding="utf-8")
+            self.assertNotEqual(subprocess.run(command, check=False).returncode, 0)
+            pack_generated.write_text(pack_text, encoding="utf-8")
+
+            source = profiles_dir / "zen_go_sc.json"
+            source.write_bytes(source.read_bytes() + b" ")
+            self.assertNotEqual(subprocess.run(command, check=False).returncode, 0)
 
     def test_section_status_uses_positive_confirmation_only(self) -> None:
         self.assertEqual(generator._section_status({"notes": "confirmed capture"}, "unknown"), "confirmed")
@@ -557,7 +1492,7 @@ class GenerateDeviceCatalogTests(unittest.TestCase):
         )
         rendered = generator.render_catalog([orion])
         mixer_start = rendered.index("static ORION_STUDIO_3_MIXERS")
-        mixer_end = rendered.index("static ORION_STUDIO_3_FRAME", mixer_start)
+        mixer_end = rendered.index("static ORION_STUDIO_3_LINK_DOMAINS", mixer_start)
         mixer_output = rendered[mixer_start:mixer_end]
         self.assertNotIn("status: Status::Confirmed", mixer_output)
 

@@ -1,11 +1,14 @@
-# Zen Go Synergy Core TUI
+# Antelope terminal UI and Zen Go protocol guide
 
 ## What this app is
 
-`zen-go-tui` is a Rust terminal UI for the Zen Go Synergy Core control plane.
-It uses `ratatui` for the interface and a HID transport abstraction for device I/O.
+`zen-go-tui` is a profile-driven Rust terminal UI for Antelope control devices. It uses `ratatui` and a HID transport abstraction.
 
-The implementation follows the reverse-engineered USB HID protocol documented in:
+Zen Go Synergy Core is currently the only selectable profile. The picker also shows known disabled, partial, unverified, ambiguous, and unsupported devices without opening them.
+
+See [device support and profile validation](device-support.md) for the current matrix, profile workflow, and evidence rules.
+
+The supported Zen Go implementation follows the reverse-engineered USB HID protocol documented in:
 
 - `docs/protocol/mixer-protocol.md`
 - `docs/protocol/preamp-protocol.md`
@@ -13,8 +16,9 @@ The implementation follows the reverse-engineered USB HID protocol documented in
 
 ## Transport choice
 
-The concrete HID implementation uses the `hidapi` crate.
-That choice is pragmatic for Linux HID access in Rust, but the app is structured around the `Transport` trait so HID access can be swapped without touching protocol or UI code.
+The concrete HID implementation uses the `hidapi` crate. Runtime startup loads the owned profile catalog before read-only discovery.
+
+The application validates candidate readiness, runtime driver, transport identity, and report geometry before it opens an exact HID path. The `Transport` trait keeps protocol and UI code independent from HID access.
 
 ## Install
 
@@ -23,7 +27,7 @@ That choice is pragmatic for Linux HID access in Rust, but the app is structured
 Install the current-host binary directly from GitHub:
 
 ```bash
-cargo install --git https://github.com/ryodeushii/antelope-analysis-gpt54.git --bin zen-go-tui
+cargo install --git https://github.com/ryodeushii/zen-go-tui.git --bin zen-go-tui
 ```
 
 That installs the executable as `zen-go-tui` in Cargo's bin directory.
@@ -80,11 +84,29 @@ The bundled rule grants access to the Zen Go USB and `hidraw` nodes for:
 
 ### Real device
 
+Start discovery and the picker:
+
 ```bash
 cargo run
 ```
 
-If the rule is installed correctly, the TUI should open the device without `sudo`.
+Select a unique device explicitly:
+
+```bash
+cargo run -- --device 23e5:a015
+cargo run -- --device serial:ZEN-SERIAL
+cargo run -- --device path:/dev/hidraw4
+```
+
+Load a validated normalized profile pack before discovery:
+
+```bash
+cargo run -- --profile-pack ./profiles.json
+```
+
+The application uses the checked-in built-in catalog when `--profile-pack` is absent. It rejects ambiguous selectors and lists matching paths.
+
+If the rule is installed correctly, the picker can access the Zen Go without `sudo`.
 
 ### Mock mode
 
@@ -92,10 +114,13 @@ If the rule is installed correctly, the TUI should open the device without `sudo
 cargo run -- --mock
 ```
 
-The app uses the hardcoded Zen Go Synergy Core HID identifiers for real-device mode:
+Mock mode constructs the Zen Go driver without HID discovery.
 
-- VID: `0x23e5`
-- PID: `0xa015`
+## Profile file types
+
+The normalized JSON profile pack defines runtime device identity, topology, protocol operations, provenance, and readiness. The built-in pack lives at `src/device/generated_profiles.json`.
+
+Saved-state TOML profiles contain user control snapshots. They are not normalized JSON profile packs and cannot add device support.
 
 ## Keyboard controls
 
@@ -142,7 +167,7 @@ The TUI includes a raw-data page for live protocol inspection.
 
 This is especially useful while continuing reverse-engineering of late `0x73` mixer state and auxiliary traffic.
 
-## Confirmed protocol support exposed in the app
+## Confirmed Zen Go protocol support exposed in the app
 
 - startup `0x74` queries and `0x75` metadata parsing
 - grounded startup `0x75` query classification and summary surfacing for:
@@ -244,13 +269,13 @@ Mixer protocol notes:
 - **lock indicator**: not safely decoded from current captures, so the UI marks it as unknown
 - **mixer state decode from `0x73`**: full passive per-strip startup decode is still unresolved. The app now keeps assigned fader level separate from the narrow passive meter-related subset so live activity does not overwrite the stored level display.
 - **preamp / DSP editing**: preamp gains, modes, phantom, and phase are now exposed from the newly isolated captures; richer DSP/preamp page behavior around `51 01 01`, `a2`, `d5`, and `d7` remains intentionally out of scope
-- **link / unlink controls**: the `0x70 / 0x14` family is documented, but selector semantics are not resolved enough to expose as a normal interactive control yet
-- **link / unlink controls**: the TUI now exposes link toggles across all visible adjacent pairs using the grounded selector pattern currently validated in captures; the directly observed selectors are fully grounded, and the remaining pairs align with the same now-promoted map
+- **link / unlink controls**: the TUI exposes Zen Go link toggles across visible adjacent pairs using the grounded selector pattern. Orion input-link controls remain unavailable because their independent domains are ambiguous.
 - **startup `0x75` blocks**: the app now reads back the grounded assignment subset from `0x03`, but it still intentionally does **not** decode the inner meaning of the `0x00` capability/default block or `0x11` status/capability value beyond conservative byte summaries, and it does not trust `0x18/00` for startup level/pan/mute yet
 - **`0x04/*` and `0x0b/03`**: `0x0b/03` is now grounded for startup visible link state on `CH1..16`, and `0x04/00` plus `0x04/01` are grounded for startup level/pan/mute state
 - **metering decode**: per-channel strip metering is now passively decoded from the shared `0x73` strip-lane window `0x8e..0x9d` and stays separate from stored level. The mixer view now shows the active mix raw meter lanes directly, and the preamp panel surfaces narrow observed input meters for `A1` from `0xce` and `A2` from `0xcf`. The UI presents all meters on a shared `-60..0 dB` scale, and values below that floor stay hidden instead of being shown as exactly `-60 dB`. Separate output-panel metering is still intentionally unresolved
 
 ## Verification expectations without hardware
 
-Unit tests use `MockTransport` and do not require a real device.
-Hardware validation still needs a connected Zen Go device.
+Unit tests use `MockTransport` and profile-derived fixtures. They do not require a real device and do not prove physical hardware behavior.
+
+Physical validation requires a separate connected-device run. Follow the procedure in [device support and profile validation](device-support.md). No physical multi-device validation is claimed for the profile-driven implementation.

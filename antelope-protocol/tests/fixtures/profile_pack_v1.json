@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "generator_version": "1.4.0",
+  "profiles": [
+    {
+      "id": "orion_studio_3",
+      "identity": {
+        "name": "Antelope Orion Studio III",
+        "vid": 9189,
+        "pid": 41505,
+        "bcd_device": "04.41",
+        "status": "confirmed",
+        "status_text": "confirmed",
+        "notes": "fixture",
+        "evidence": "fixture"
+      },
+      "transport": {
+        "kind": "hid",
+        "report_size": 320,
+        "out_endpoint": 1,
+        "in_endpoint": 130,
+        "poll_interval_ms": 4,
+        "uses_numbered_reports": false,
+        "expected_interface_number": 3,
+        "expected_usage_page": null,
+        "expected_usage": null,
+        "status": "confirmed",
+        "status_text": "confirmed",
+        "notes": "fixture",
+        "evidence": "fixture"
+      },
+      "address_spaces": [
+        {
+          "id": "physical_inputs",
+          "space_id": 0,
+          "name": "Physical inputs",
+          "kind": "physical_inputs",
+          "count": 1,
+          "addressing": "zero_based",
+          "status": "confirmed",
+          "status_text": "confirmed",
+          "notes": "fixture",
+          "metadata": "{}"
+        }
+      ],
+      "inputs": [
+        {
+          "id": "physical_1",
+          "space": "physical_inputs",
+          "space_id": 0,
+          "index": 0,
+          "name": "Input 1",
+          "hiz_capable": true,
+          "status": "confirmed",
+          "metadata": "{}"
+        }
+      ],
+      "outputs": [
+        {
+          "id": 0,
+          "name": "monitor_1",
+          "aliases": [
+            "monitor"
+          ],
+          "verified": true,
+          "status": "confirmed",
+          "metadata": "{}"
+        }
+      ],
+      "mixers": [
+        {
+          "id": "mix_1",
+          "name": "Mix 1",
+          "mix_index": 0,
+          "strip_count": 1,
+          "fader_range": [
+            0,
+            90
+          ],
+          "pan_range": [
+            -30,
+            30
+          ],
+          "pan_center": 32,
+          "send_range": [
+            0,
+            96
+          ],
+          "status": "confirmed",
+          "status_text": "confirmed",
+          "notes": "fixture",
+          "metadata": "{}",
+          "has_master": true
+        }
+      ],
+      "frames": [
+        {
+          "id": "command",
+          "kind": "command",
+          "status": "confirmed",
+          "report_size": 320,
+          "operations": [
+            {
+              "op": "fixed_byte",
+              "offset": 0,
+              "value": 112
+            },
+            {
+              "op": "fixed_byte",
+              "offset": 4,
+              "value": 19
+            },
+            {
+              "op": "scalar",
+              "offset": 16,
+              "width": 1,
+              "field": "field_16_2",
+              "endian": "not_applicable"
+            },
+            {
+              "op": "scalar",
+              "offset": 17,
+              "width": 1,
+              "field": "field_17_3",
+              "endian": "not_applicable"
+            },
+            {
+              "op": "scalar",
+              "offset": 18,
+              "width": 1,
+              "field": "field_18_4",
+              "endian": "not_applicable"
+            }
+          ],
+          "metadata": "{}"
+        }
+      ],
+      "decoders": [],
+      "params": [
+        {
+          "name": "gain",
+          "id": 80,
+          "value_type": "int",
+          "status": "confirmed",
+          "range": [
+            0,
+            75
+          ],
+          "values": [],
+          "frame": {
+            "text": "command value @18",
+            "formula": "",
+            "offsets": [
+              [
+                "value",
+                18
+              ]
+            ]
+          },
+          "readback": {
+            "text": "state report @49",
+            "formula": "",
+            "offsets": [
+              [
+                "gain",
+                49
+              ]
+            ]
+          },
+          "metadata": "{}",
+          "applies_to": "physical_inputs"
+        }
+      ],
+      "constraints": [],
+      "hazards": [],
+      "startup_queries": [
+        {
+          "query_id": 4,
+          "sub_id": 0
+        }
+      ],
+      "readback": {
+        "request_magic": 116,
+        "request_subcommand": 16,
+        "response_magic": 117,
+        "response_discriminator_offset": 1,
+        "response_discriminator": 0,
+        "category_offset": 8,
+        "index_offset": 12,
+        "data_offset": 16,
+        "category_counts": [
+          {
+            "category": 4,
+            "count": 1
+          }
+        ]
+      },
+      "provenance": {
+        "source_path": "profiles/orion_studio_3.json",
+        "source_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "generator_version": "1.4.0"
+      },
+      "readiness": "supported",
+      "driver_kind": "profile",
+      "support_reason": "fixture",
+      "routing_groups": [
+        {
+          "destination": 0,
+          "name": "fixture_route",
+          "channel_count": 1,
+          "source_domains": [
+            {
+              "bank": 0,
+              "index_count": 1,
+              "status": "confirmed",
+              "evidence": "synthetic profile-pack fixture source domain"
+            }
+          ]
+        }
+      ],
+      "link_domains": [
+        {
+          "protocol_space": 3,
+          "kind": "mixer",
+          "pair_count": 8,
+          "status": "confirmed",
+          "evidence": "synthetic external-pack fixture confirmed mixer domain"
+        }
+      ]
+    }
+  ]
+}

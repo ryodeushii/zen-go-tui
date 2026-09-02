@@ -12,12 +12,17 @@ use crate::profile_ops::run_profile_command;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let transport = cli::open_transport(cli.mock)?;
+    let mut devices = cli::open_runtime(&cli)?;
 
     match cli.command {
-        Some(CliCommand::Profile { command }) => run_profile_command(transport, command),
-        None if cli.headless => runtime::run_headless_app(transport),
-        None => runtime::run_app(transport),
+        Some(CliCommand::Profile { command }) => {
+            let session = devices.take_session().ok_or_else(|| {
+                anyhow::anyhow!("profile command requires one supported, unambiguous device")
+            })?;
+            run_profile_command(session, command)
+        }
+        None if cli.headless => runtime::run_headless_app(devices),
+        None => runtime::run_app(devices),
     }
 }
 
@@ -52,6 +57,23 @@ mod tests {
 
     fn test_controller(transport: Box<dyn Transport>) -> Controller {
         Controller::new(transport, Box::new(ZenGoDriver::new())).expect("Zen Go controller")
+    }
+
+    fn seed_first_mixer_strip_state(
+        controller: &mut Controller,
+        fader: i32,
+        pan: PanState,
+        muted: bool,
+        soloed: bool,
+    ) {
+        let strip = controller.state.mixer.surfaces[0]
+            .strips
+            .get_mut(0)
+            .expect("first mixer strip");
+        strip.fader = Some(fader);
+        strip.pan = Some(i32::from(pan.raw()));
+        strip.muted = Some(muted);
+        strip.soloed = Some(soloed);
     }
 
     fn test_key(code: AppKeyCode) -> AppKeyEvent {
@@ -292,9 +314,7 @@ mod tests {
         let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Mixer;
         controller.state.mixer.selected_channel = 0;
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        seed_first_mixer_strip_state(&mut controller, 0, PanState::center(), false, false);
 
         let action = handle_key_press(
             &mut controller,
@@ -431,9 +451,7 @@ mod tests {
     fn mouse_mixer_level_action_sends_exact_level() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        seed_first_mixer_strip_state(&mut controller, 0, PanState::center(), false, false);
 
         controller
             .apply_intent(
@@ -458,8 +476,7 @@ mod tests {
     fn mouse_mixer_pan_action_sends_exact_pan() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        seed_first_mixer_strip_state(&mut controller, 0, PanState::center(), false, false);
 
         controller
             .apply_intent(
@@ -484,10 +501,7 @@ mod tests {
     fn mouse_adjust_mixer_level_action_sends_single_step_change() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].level = Some(0x20);
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        seed_first_mixer_strip_state(&mut controller, 0x20, PanState::center(), false, false);
 
         controller
             .apply_intent(
@@ -512,9 +526,7 @@ mod tests {
     fn mouse_adjust_mixer_pan_action_sends_single_step_change() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].pan = PanState::center();
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].muted = Some(false);
-        controller.state.mixer.channels[MixerSurface::Mix1.index()][0].soloed = Some(false);
+        seed_first_mixer_strip_state(&mut controller, 0, PanState::center(), false, false);
 
         controller
             .apply_intent(
@@ -897,6 +909,24 @@ mod tests {
         assert!(cli.headless);
         assert!(!cli.mock);
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn cli_accepts_runtime_device_and_profile_pack_flags() {
+        let cli = Cli::try_parse_from([
+            "zen-go-tui",
+            "--device",
+            "23e5:a015",
+            "--profile-pack",
+            "/tmp/profiles.json",
+        ])
+        .expect("parse runtime selection flags");
+
+        assert_eq!(cli.device.as_deref(), Some("23e5:a015"));
+        assert_eq!(
+            cli.profile_pack.as_deref(),
+            Some(std::path::Path::new("/tmp/profiles.json"))
+        );
     }
 
     #[test]

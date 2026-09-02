@@ -1,10 +1,11 @@
 use std::time::Instant;
 
 use antelope_protocol::{
-    ClockSource, DeviceEvent, DeviceNotification, DeviceSnapshot, DeviceStateSnapshot,
-    DynamicDeviceState, DynamicMixerSurface, MixerChannelState, MixerPassiveDecode,
-    MixerPassiveStripState, MixerSurface, OutputState, PreampState, QueryResponse, SampleRate,
-    Surface,
+    Action, ClockSource, ControlValue, DeviceEvent, DeviceSnapshot, DeviceStateSnapshot,
+    DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMixerStrip,
+    DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup, DynamicStatePatch, GlobalControl,
+    MixerAddress, MixerChannelState, MixerPassiveStripState, MixerSurface, OutputMode, OutputState,
+    OutputTarget, PreampState, QueryResponse, RuntimeEntry, RuntimeProfile, SampleRate, Surface,
 };
 
 mod types;
@@ -21,6 +22,11 @@ pub use profile_editor::*;
 
 mod controller;
 pub use controller::Controller;
+
+#[cfg(test)]
+mod dynamic_state_tests;
+#[cfg(test)]
+mod picker_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StructuralSnapshot {
@@ -53,10 +59,16 @@ impl StructuralSnapshot {
 
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
+    pub ui_profile: UiProfileState,
     pub device: DeviceState,
     pub mixer: MixerState,
+    pub mixer_send_surfaces: Vec<u8>,
     pub output: OutputData,
     pub preamp: PreampData,
+    pub input_spaces: Vec<InputSpaceState>,
+    pub globals: Vec<DynamicGlobalState>,
+    pub routing_capabilities: Vec<RoutingGroupCapability>,
+    pub routing: Vec<DynamicRoutingGroup>,
     pub ui: UiState,
     pub popup: PopupState,
     pub raw_view: RawViewState,
@@ -64,22 +76,590 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Allocate UI metadata and addressable storage from one catalog entry.
+    pub fn from_entry(entry: &RuntimeEntry) -> Self {
+        let mut state = Self::from_profile(&entry.profile);
+        state.ui_profile = UiProfileState::from_entry(entry);
+        state
+    }
+
+    /// Compatibility helper for geometry-only callers. It deliberately carries no readiness
+    /// decision and therefore produces read-only controls.
+    pub fn from_profile(profile: &RuntimeProfile) -> Self {
+        let input_spaces: Vec<InputSpaceState> = profile
+            .address_spaces
+            .iter()
+            .map(|space| {
+                let mut inputs: Vec<_> = profile
+                    .inputs
+                    .iter()
+                    .filter(|input| input.space_id == space.space_id)
+                    .map(|input| DynamicInputState {
+                        address: antelope_protocol::InputAddress {
+                            space: input.space_id,
+                            index: input.index,
+                        },
+                        name: input.name.clone(),
+                        mode: None,
+                        gain: None,
+                        phantom: None,
+                        phase: None,
+                        meter: None,
+                        parameters: Vec::new(),
+                    })
+                    .collect();
+                inputs.sort_by_key(|input| input.address.index);
+                InputSpaceState {
+                    id: space.id.clone(),
+                    space_id: space.space_id,
+                    name: space.name.clone(),
+                    inputs,
+                }
+            })
+            .collect();
+        let outputs: Vec<_> = profile
+            .outputs
+            .iter()
+            .map(|output| DynamicOutputState {
+                address: antelope_protocol::OutputAddress { id: output.id },
+                name: if profile.identity.pid == 0xa015 {
+                    match output.id {
+                        0 => "Monitor".into(),
+                        1 => "HP 1".into(),
+                        2 => "HP 2".into(),
+                        _ => output.name.clone(),
+                    }
+                } else {
+                    output.name.clone()
+                },
+                level: None,
+                muted: None,
+                dimmed: None,
+                parameters: Vec::new(),
+            })
+            .collect();
+        let surfaces: Vec<_> = profile
+            .mixers
+            .iter()
+            .map(|mixer| DynamicMixerSurface {
+                surface: mixer.mix_index,
+                name: mixer.name.clone(),
+                master: mixer
+                    .has_master
+                    .then(|| Self::empty_dynamic_strip(0, "Master".into())),
+                strips: (1..=mixer.strip_count)
+                    .map(|strip| Self::empty_dynamic_strip(strip, format!("CH {strip:02}")))
+                    .collect(),
+            })
+            .collect();
+        let channels = surfaces
+            .iter()
+            .map(|surface| {
+                surface
+                    .strips
+                    .iter()
+                    .filter_map(Self::compatibility_channel)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let peaks = channels
+            .iter()
+            .map(|surface| vec![None; surface.len()])
+            .collect();
+        let compatibility_outputs = profile
+            .outputs
+            .iter()
+            .take(3)
+            .enumerate()
+            .filter_map(|(index, _)| {
+                let target = match index {
+                    0 => OutputTarget::Monitor,
+                    1 => OutputTarget::Hp1,
+                    2 => OutputTarget::Hp2,
+                    _ => return None,
+                };
+                Some(OutputState::new(target, 0, OutputMode::Normal))
+            })
+            .collect();
+        let physical_input_count = input_spaces
+            .iter()
+            .find(|space| space.space_id == 0)
+            .map_or(0, |space| space.inputs.len());
+
+        let globals = profile
+            .params
+            .iter()
+            .filter(|parameter| parameter.applies_to == "globals")
+            .filter_map(|parameter| {
+                let control = match parameter.name.as_str() {
+                    "sample_rate" => GlobalControl::SampleRate,
+                    "clock_source" => GlobalControl::ClockSource,
+                    "surface" => GlobalControl::Surface,
+                    _ => GlobalControl::Parameter(parameter.id?),
+                };
+                Some(DynamicGlobalState {
+                    control,
+                    value: if parameter.value_type == "enum" {
+                        ControlValue::Enum(0)
+                    } else {
+                        ControlValue::Int(0)
+                    },
+                })
+            })
+            .collect();
+
+        Self {
+            ui_profile: UiProfileState::compatibility(profile),
+            input_spaces,
+            globals,
+            routing_capabilities: profile
+                .routing_groups
+                .iter()
+                .map(|group| RoutingGroupCapability {
+                    destination: group.destination,
+                    name: group.name.clone(),
+                    channel_count: group.channel_count,
+                })
+                .collect(),
+            routing: Vec::new(),
+            mixer_send_surfaces: profile
+                .mixers
+                .iter()
+                .filter(|mixer| mixer.send_range.is_some())
+                .map(|mixer| mixer.mix_index)
+                .collect(),
+            mixer: MixerState {
+                surface: Surface::MonitorHp1,
+                surface_index: 0,
+                surfaces,
+                channels,
+                selected_channel: 0,
+                strip_scroll: 0,
+                visible_strip_count: MIXER_STRIP_PAGE_SIZE,
+                peaks,
+            },
+            output: OutputData {
+                dynamic: outputs,
+                states: compatibility_outputs,
+                selected: 0,
+            },
+            preamp: PreampData {
+                state: PreampState::default(),
+                selected_input: 0,
+                peaks: vec![None; physical_input_count],
+            },
+            ..Self::default()
+        }
+    }
+
+    fn empty_dynamic_strip(strip: u16, name: String) -> DynamicMixerStrip {
+        DynamicMixerStrip {
+            strip,
+            name,
+            fader: None,
+            pan: None,
+            send: None,
+            muted: None,
+            soloed: None,
+            linked: None,
+            meter: None,
+            parameters: Vec::new(),
+        }
+    }
+
+    fn compatibility_channel(strip: &DynamicMixerStrip) -> Option<MixerChannelState> {
+        let channel = u8::try_from(strip.strip).ok()?;
+        if channel == 0 {
+            return None;
+        }
+        let mut state = MixerChannelState::unknown(channel);
+        state.level = strip.fader.and_then(|value| u8::try_from(value).ok());
+        state.pan = strip
+            .pan
+            .and_then(|value| u8::try_from(value).ok())
+            .map(antelope_protocol::PanState::from_raw)
+            .unwrap_or_default();
+        state.muted = strip.muted;
+        state.soloed = strip.soloed;
+        state.linked = strip.linked;
+        state.meter = strip.meter;
+        Some(state)
+    }
+
+    pub fn inputs_for_space(&self, id: &str) -> &[DynamicInputState] {
+        self.input_spaces
+            .iter()
+            .find(|space| space.id == id)
+            .map_or(&[], |space| space.inputs.as_slice())
+    }
+
+    pub fn outputs(&self) -> &[DynamicOutputState] {
+        &self.output.dynamic
+    }
+
+    pub fn mixers(&self) -> &[DynamicMixerSurface] {
+        &self.mixer.surfaces
+    }
+
+    pub fn mixers_mut(&mut self) -> &mut [DynamicMixerSurface] {
+        &mut self.mixer.surfaces
+    }
+
+    pub fn routing_group(&self, destination: u16) -> Option<&DynamicRoutingGroup> {
+        self.routing
+            .iter()
+            .find(|group| group.destination == destination)
+    }
+
+    pub fn reconfigure_for_profile(&mut self, profile: &RuntimeProfile) {
+        let selected_output = self.output.selected;
+        let selected_input = self.preamp.selected_input;
+        let selected_surface = self.mixer.surface_index;
+        let selected_strip = self.mixer.selected_channel;
+        let strip_scroll = self.mixer.strip_scroll;
+        let visible = self.mixer.visible_strip_count;
+        let mut configured = Self::from_profile(profile);
+        configured.output.selected =
+            selected_output.min(configured.outputs().len().saturating_sub(1));
+        let input_count = configured
+            .input_spaces
+            .first()
+            .map_or(0, |space| space.inputs.len());
+        configured.preamp.selected_input = selected_input.min(input_count.saturating_sub(1));
+        configured.mixer.surface_index =
+            selected_surface.min(configured.mixers().len().saturating_sub(1));
+        let strip_count = configured
+            .mixers()
+            .get(configured.mixer.surface_index)
+            .map_or(0, |surface| surface.strips.len());
+        configured.mixer.selected_channel = selected_strip.min(strip_count.saturating_sub(1));
+        configured.mixer.strip_scroll = strip_scroll.min(strip_count.saturating_sub(1));
+        configured.mixer.visible_strip_count = visible.max(1);
+        configured.device = self.device.clone();
+        configured.ui = self.ui.clone();
+        configured.popup = self.popup.clone();
+        configured.raw_view = self.raw_view.clone();
+        *self = configured;
+    }
+
+    pub fn active_mixer_surface(&self) -> Option<usize> {
+        (!self.mixer.surfaces.is_empty())
+            .then(|| self.mixer.surface_index.min(self.mixer.surfaces.len() - 1))
+    }
+
+    pub(crate) fn active_legacy_mixer_surface(&self) -> MixerSurface {
+        if self.mixer.surface_index == 0 {
+            MixerSurface::Mix1
+        } else {
+            MixerSurface::Mix2
+        }
+    }
+
+    pub fn visible_mixer_strip_bounds(&self) -> std::ops::Range<usize> {
+        let Some(surface) = self.active_mixer_surface() else {
+            return 0..0;
+        };
+        let Some(total) = self
+            .mixer
+            .surfaces
+            .get(surface)
+            .map(|surface| surface.strips.len())
+        else {
+            return 0..0;
+        };
+        if total == 0 {
+            return 0..0;
+        }
+        let start = self.mixer.strip_scroll.min(total - 1);
+        let end = start
+            .saturating_add(self.mixer.visible_strip_count.max(1))
+            .min(total);
+        start..end
+    }
+
+    pub fn complete_mixer_action<F>(&self, address: MixerAddress, mutate: F) -> Option<Action>
+    where
+        F: FnOnce(&mut DynamicMixerStrip),
+    {
+        let surface = self
+            .mixer
+            .surfaces
+            .iter()
+            .find(|surface| surface.surface == address.surface)?;
+        let mut strip = if address.strip == 0 {
+            surface.master.as_ref()?.clone()
+        } else {
+            surface
+                .strips
+                .iter()
+                .find(|strip| strip.strip == address.strip)?
+                .clone()
+        };
+        mutate(&mut strip);
+        Some(Action::SetMixerStripState {
+            address,
+            fader: strip.fader?,
+            pan: strip.pan?,
+            muted: strip.muted?,
+            soloed: strip.soloed?,
+            send: strip.send,
+        })
+    }
+
+    pub fn apply_pending_mutation(&mut self, pending: PendingMutation) -> bool {
+        match pending {
+            PendingMutation::Mixer(strips) => {
+                let mut changed = false;
+                for pending in strips {
+                    let Some(surface) = self
+                        .mixer
+                        .surfaces
+                        .iter_mut()
+                        .find(|surface| surface.surface == pending.address.surface)
+                    else {
+                        continue;
+                    };
+                    let slot = if pending.address.strip == 0 {
+                        surface.master.as_mut()
+                    } else {
+                        surface
+                            .strips
+                            .iter_mut()
+                            .find(|strip| strip.strip == pending.address.strip)
+                    };
+                    if let Some(slot) = slot {
+                        *slot = pending.strip;
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.sync_compatibility_views();
+                }
+                changed
+            }
+            PendingMutation::Output(output) => {
+                let exists = self
+                    .output
+                    .dynamic
+                    .iter()
+                    .any(|slot| slot.address == output.address);
+                if exists {
+                    self.apply_output_patch(vec![output]);
+                }
+                exists
+            }
+            PendingMutation::Input(input) => {
+                let exists = self.input_spaces.iter().any(|space| {
+                    space.space_id == input.address.space
+                        && space
+                            .inputs
+                            .iter()
+                            .any(|slot| slot.address == input.address)
+                });
+                if exists {
+                    self.apply_input_patch(vec![input]);
+                }
+                exists
+            }
+            PendingMutation::Routing(group) => {
+                let Some(slot) = self
+                    .routing
+                    .iter_mut()
+                    .find(|slot| slot.destination == group.destination)
+                else {
+                    return false;
+                };
+                if slot.sources.len() != group.sources.len() {
+                    return false;
+                }
+                *slot = group;
+                true
+            }
+            #[cfg(test)]
+            PendingMutation::MixerLevel {
+                mixer,
+                channel,
+                level,
+                pan,
+                muted,
+            } => self
+                .mixer
+                .channels
+                .get_mut(mixer.index())
+                .and_then(|surface| {
+                    channel
+                        .checked_sub(1)
+                        .and_then(|index| surface.get_mut(usize::from(index)))
+                })
+                .is_some_and(|slot| {
+                    slot.level = Some(level);
+                    slot.pan = pan;
+                    slot.muted = Some(muted);
+                    true
+                }),
+            #[cfg(test)]
+            PendingMutation::MixerMute {
+                mixer,
+                channel,
+                muted,
+            } => self
+                .mixer
+                .channels
+                .get_mut(mixer.index())
+                .and_then(|surface| {
+                    channel
+                        .checked_sub(1)
+                        .and_then(|index| surface.get_mut(usize::from(index)))
+                })
+                .is_some_and(|slot| {
+                    slot.muted = Some(muted);
+                    true
+                }),
+            #[cfg(test)]
+            PendingMutation::MixerPan {
+                mixer,
+                channel,
+                pan,
+            } => self
+                .mixer
+                .channels
+                .get_mut(mixer.index())
+                .and_then(|surface| {
+                    channel
+                        .checked_sub(1)
+                        .and_then(|index| surface.get_mut(usize::from(index)))
+                })
+                .is_some_and(|slot| {
+                    slot.pan = pan;
+                    true
+                }),
+            #[cfg(test)]
+            PendingMutation::MixerAssignment { strip, assignment } => {
+                strip.checked_sub(1).is_some_and(|index| {
+                    let mut changed = false;
+                    for surface in &mut self.mixer.channels {
+                        if let Some(slot) = surface.get_mut(usize::from(index)) {
+                            slot.assignment = Some(assignment);
+                            changed = true;
+                        }
+                    }
+                    changed
+                })
+            }
+            #[cfg(test)]
+            PendingMutation::MixerLink {
+                mixer,
+                selector,
+                enabled,
+            } => antelope_protocol::MixerLinkTarget::from_selector(mixer, selector).is_some_and(
+                |target| {
+                    let (left, right) = (target.left_channel, target.right_channel);
+                    let Some(surface) = self.mixer.channels.get_mut(mixer.index()) else {
+                        return false;
+                    };
+                    let mut changed = false;
+                    for channel in [left, right] {
+                        if let Some(slot) = channel
+                            .checked_sub(1)
+                            .and_then(|index| surface.get_mut(usize::from(index)))
+                        {
+                            slot.linked = Some(enabled);
+                            changed = true;
+                        }
+                    }
+                    changed
+                },
+            ),
+            #[cfg(test)]
+            PendingMutation::OutputVolume { target, step } => self
+                .output
+                .states
+                .get_mut(usize::from(target.index()))
+                .is_some_and(|slot| {
+                    slot.volume = step;
+                    true
+                }),
+            #[cfg(test)]
+            PendingMutation::OutputMode { target, mode } => self
+                .output
+                .states
+                .get_mut(usize::from(target.index()))
+                .is_some_and(|slot| {
+                    slot.mode = mode;
+                    true
+                }),
+            #[cfg(test)]
+            PendingMutation::PreampGain { input, raw } => {
+                let changed = self
+                    .device
+                    .dsp_cluster
+                    .get_mut(usize::from(input))
+                    .is_some_and(|slot| {
+                        *slot = raw;
+                        true
+                    });
+                if changed {
+                    self.refresh_preamp_from_cluster_preserving_observed_meter();
+                }
+                changed
+            }
+            #[cfg(test)]
+            PendingMutation::PreampMode { input, mode } => {
+                let changed = input
+                    .checked_add(2)
+                    .and_then(|offset| self.device.dsp_cluster.get_mut(usize::from(offset)))
+                    .is_some_and(|slot| {
+                        *slot = (*slot & 0xf0) | mode.code();
+                        true
+                    });
+                if changed {
+                    self.refresh_preamp_from_cluster_preserving_observed_meter();
+                }
+                changed
+            }
+            #[cfg(test)]
+            PendingMutation::PreampPhantom { input, enabled } => {
+                let changed = input
+                    .checked_add(2)
+                    .and_then(|offset| self.device.dsp_cluster.get_mut(usize::from(offset)))
+                    .is_some_and(|slot| {
+                        *slot = (*slot & 0x0f) | if enabled { 0x10 } else { 0 };
+                        true
+                    });
+                if changed {
+                    self.refresh_preamp_from_cluster_preserving_observed_meter();
+                }
+                changed
+            }
+            #[cfg(test)]
+            PendingMutation::PreampPhase { input, enabled } => {
+                let changed = input
+                    .checked_add(2)
+                    .and_then(|offset| self.device.dsp_cluster.get_mut(usize::from(offset)))
+                    .is_some_and(|slot| {
+                        *slot = (*slot & 0x1f) | if enabled { 0x40 } else { 0 };
+                        true
+                    });
+                if changed {
+                    self.refresh_preamp_from_cluster_preserving_observed_meter();
+                }
+                changed
+            }
+        }
+    }
+
     pub fn prune_expired_peaks(&mut self) {
         let hold = self.ui.settings.peak_hold_duration.duration();
-        for mix_idx in 0..2 {
-            for ch_idx in 0..16 {
-                if let Some(peak) = self.mixer.peaks[mix_idx][ch_idx] {
-                    if peak.detected_at.elapsed() >= hold {
-                        self.mixer.peaks[mix_idx][ch_idx] = None;
-                    }
+        for surface in &mut self.mixer.peaks {
+            for peak in surface {
+                if peak.is_some_and(|peak| peak.detected_at.elapsed() >= hold) {
+                    *peak = None;
                 }
             }
         }
-        for input_idx in 0..2 {
-            if let Some(peak) = self.preamp.peaks[input_idx] {
-                if peak.detected_at.elapsed() >= hold {
-                    self.preamp.peaks[input_idx] = None;
-                }
+        for peak in &mut self.preamp.peaks {
+            if peak.is_some_and(|peak| peak.detected_at.elapsed() >= hold) {
+                *peak = None;
             }
         }
     }
@@ -95,12 +675,10 @@ impl AppState {
             .and_then(|index| self.raw_view.recent_query_reply_entries.get(index))
     }
 
-    pub fn active_mixer_surface(&self) -> MixerSurface {
-        MixerSurface::from_surface(self.mixer.surface)
-    }
-
     pub fn active_mixer_channels(&self) -> &[MixerChannelState] {
-        &self.mixer.channels[self.active_mixer_surface().index()]
+        self.active_mixer_surface()
+            .and_then(|index| self.mixer.channels.get(index))
+            .map_or(&[], Vec::as_slice)
     }
 
     pub fn clamp_mixer_strip_scroll(&mut self, visible_count: usize) {
@@ -202,7 +780,7 @@ impl AppState {
     }
 
     fn apply_meters_only(&mut self, snapshot: &DeviceStateSnapshot) {
-        let mixer = self.active_mixer_surface();
+        let mixer = self.active_legacy_mixer_surface();
         let mut meter_updates: Vec<(usize, usize, u8)> = Vec::new();
         for channel in 1..=16 {
             let Some(decoded) = snapshot.mixer_decode.strip(mixer, channel) else {
@@ -278,7 +856,7 @@ impl AppState {
             snapshot.clock_source.label(),
             snapshot.surface.label()
         );
-        self.output.states = snapshot.outputs;
+        self.output.states = snapshot.outputs.to_vec();
         self.device.dsp_cluster = snapshot.dsp_cluster;
         self.preamp.state = PreampState::from_cluster(snapshot.dsp_cluster);
         if let Some(meter) = snapshot.mixer_decode.observed_preamp1_meter {
@@ -337,41 +915,392 @@ impl AppState {
         self.preamp.state.input2.observed_meter = observed_meter_input2;
     }
 
+    /// Apply a complete normalized snapshot without fixed-report conversion.
+    pub fn apply_dynamic_state(&mut self, state: DynamicDeviceState, raw: Vec<u8>) -> bool {
+        let was_connected = self.device.connection.connected;
+        let compatibility_changed = state
+            .zen_go_compatibility
+            .as_deref()
+            .map(|compatibility| self.zen_go_dynamic_structurally_differs(compatibility));
+        let raw_changed =
+            self.popup.raw_view_open && self.raw_view.latest_raw_73.as_ref() != Some(&raw);
+        let changed = compatibility_changed.map_or_else(
+            || {
+                !was_connected
+                    || self.globals != state.globals
+                    || self.output.dynamic != state.outputs
+                    || self.mixer.surfaces != state.mixers
+                    || self.routing != state.routing
+                    || raw_changed
+                    || self
+                        .input_spaces
+                        .iter()
+                        .flat_map(|space| &space.inputs)
+                        .ne(state.inputs.iter())
+            },
+            |structural_changed| !was_connected || structural_changed || raw_changed,
+        );
+        self.device.connection.connected = true;
+        self.device.connection.last_snapshot_at = Some(Instant::now());
+        self.device.connection.last_frame_type = Some("0x73 snapshot");
+        self.globals = state.globals;
+        self.apply_input_patch(state.inputs);
+        self.apply_output_patch(state.outputs);
+        self.apply_mixer_snapshot(state.mixers);
+        self.apply_routing_snapshot(state.routing);
+        self.apply_dynamic_globals_to_status();
+        self.raw_view.latest_raw_73 = Some(raw);
+        changed
+    }
+
+    fn zen_go_dynamic_structurally_differs(
+        &self,
+        state: &antelope_protocol::driver::ZenGoCompatibilityState,
+    ) -> bool {
+        let Some(previous) = &self.latest_structural_snapshot else {
+            return true;
+        };
+        if previous.sample_rate != state.sample_rate
+            || previous.sample_rate_hz != state.sample_rate_hz
+            || previous.clock_source != state.clock_source
+            || previous.status_flags.as_slice() != state.status_flags
+            || previous.front_panel_bytes.as_slice() != state.front_panel_bytes
+            || previous.outputs.as_slice() != state.outputs
+            || previous.dsp_cluster.as_slice() != state.dsp_cluster
+            || previous.surface != state.surface
+        {
+            return true;
+        }
+        for (surface, strips) in &state.mixer_surfaces {
+            let Some(previous_surface) = previous.mixer_surfaces.get(surface.index()) else {
+                return true;
+            };
+            if previous_surface.len() != strips.len() {
+                return true;
+            }
+            if previous_surface
+                .iter()
+                .zip(strips)
+                .any(|(previous, current)| {
+                    previous.meter != current.meter
+                        || previous.muted != current.muted
+                        || previous.pan.unwrap_or_default() != current.pan
+                        || previous.linked != current.linked
+                })
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn apply_input_patch(&mut self, inputs: Vec<DynamicInputState>) {
+        for input in inputs {
+            let Some(space) = self
+                .input_spaces
+                .iter_mut()
+                .find(|space| space.space_id == input.address.space)
+            else {
+                continue;
+            };
+            let Some(slot) = space
+                .inputs
+                .iter_mut()
+                .find(|slot| slot.address == input.address)
+            else {
+                continue;
+            };
+            *slot = input;
+        }
+        if let Some(space) = self.input_spaces.iter().find(|space| space.space_id == 0) {
+            for input in &space.inputs {
+                let index = usize::from(input.address.index);
+                let Some(cluster_gain) = self.device.dsp_cluster.get_mut(index) else {
+                    continue;
+                };
+                if let Some(gain) = input.gain.and_then(|gain| u8::try_from(gain).ok()) {
+                    *cluster_gain = gain;
+                }
+                let Some(mode_slot) = index
+                    .checked_add(2)
+                    .and_then(|offset| self.device.dsp_cluster.get_mut(offset))
+                else {
+                    continue;
+                };
+                if let Some(mode) = input.mode.and_then(|mode| u8::try_from(mode).ok()) {
+                    *mode_slot = mode & 0x0f;
+                }
+                if input.phantom == Some(true) {
+                    *mode_slot |= 0x10;
+                }
+                if input.phase == Some(true) {
+                    *mode_slot |= 0x40;
+                }
+            }
+            self.refresh_preamp_from_cluster_preserving_observed_meter();
+        }
+    }
+
+    fn apply_meter_patch(&mut self, inputs: Vec<DynamicInputState>) {
+        for input in inputs {
+            let Some(space) = self
+                .input_spaces
+                .iter_mut()
+                .find(|space| space.space_id == input.address.space)
+            else {
+                continue;
+            };
+            let Some(slot) = space
+                .inputs
+                .iter_mut()
+                .find(|slot| slot.address == input.address)
+            else {
+                continue;
+            };
+            slot.meter = input.meter;
+        }
+    }
+
+    fn apply_output_patch(&mut self, outputs: Vec<DynamicOutputState>) {
+        for output in outputs {
+            let Some(slot) = self
+                .output
+                .dynamic
+                .iter_mut()
+                .find(|slot| slot.address == output.address)
+            else {
+                continue;
+            };
+            *slot = output;
+        }
+        for output in &self.output.dynamic {
+            let index = usize::from(output.address.id);
+            let Some(slot) = self.output.states.get_mut(index) else {
+                continue;
+            };
+            if let Some(level) = output.level.and_then(|level| u8::try_from(level).ok()) {
+                slot.volume = level;
+            }
+            slot.mode = if output.muted == Some(true) {
+                OutputMode::Mute
+            } else if output.dimmed == Some(true) {
+                OutputMode::Dim
+            } else {
+                OutputMode::Normal
+            };
+        }
+    }
+
+    fn apply_mixer_snapshot(&mut self, mixers: Vec<DynamicMixerSurface>) {
+        for mixer in mixers {
+            let Some(slot) = self
+                .mixer
+                .surfaces
+                .iter_mut()
+                .find(|slot| slot.surface == mixer.surface)
+            else {
+                continue;
+            };
+            let topology_matches = slot.master.is_some() == mixer.master.is_some()
+                && slot.strips.len() == mixer.strips.len()
+                && slot
+                    .strips
+                    .iter()
+                    .zip(&mixer.strips)
+                    .all(|(declared, incoming)| declared.strip == incoming.strip)
+                && match (&slot.master, &mixer.master) {
+                    (Some(declared), Some(incoming)) => declared.strip == incoming.strip,
+                    (None, None) => true,
+                    _ => false,
+                };
+            if !topology_matches {
+                continue;
+            }
+            *slot = mixer;
+        }
+        self.sync_compatibility_views();
+        self.clamp_dynamic_selection();
+    }
+
+    pub(crate) fn sync_compatibility_views(&mut self) {
+        self.mixer.channels = self
+            .mixer
+            .surfaces
+            .iter()
+            .map(|surface| {
+                surface
+                    .strips
+                    .iter()
+                    .filter_map(Self::compatibility_channel)
+                    .collect()
+            })
+            .collect();
+        self.mixer
+            .peaks
+            .resize_with(self.mixer.channels.len(), Vec::new);
+        for (peaks, channels) in self.mixer.peaks.iter_mut().zip(&self.mixer.channels) {
+            peaks.resize(channels.len(), None);
+        }
+    }
+
+    fn apply_routing_snapshot(&mut self, groups: Vec<DynamicRoutingGroup>) {
+        let mut observed = Vec::new();
+        for group in groups {
+            let Some(capability) = self
+                .routing_capabilities
+                .iter()
+                .find(|capability| capability.destination == group.destination)
+            else {
+                continue;
+            };
+            if group.sources.len() == usize::from(capability.channel_count) {
+                observed.push(group);
+            }
+        }
+        self.routing = observed;
+    }
+
+    fn apply_routing_patch(&mut self, group: DynamicRoutingGroup) {
+        let Some(capability) = self
+            .routing_capabilities
+            .iter()
+            .find(|capability| capability.destination == group.destination)
+        else {
+            return;
+        };
+        if group.sources.len() != usize::from(capability.channel_count) {
+            return;
+        }
+        if let Some(slot) = self
+            .routing
+            .iter_mut()
+            .find(|slot| slot.destination == group.destination)
+        {
+            *slot = group;
+        } else {
+            self.routing.push(group);
+            self.routing.sort_by_key(|group| group.destination);
+        }
+    }
+
+    fn apply_patch(&mut self, patch: DynamicStatePatch) {
+        match patch {
+            DynamicStatePatch::Inputs(inputs) => self.apply_input_patch(inputs),
+            DynamicStatePatch::Outputs(outputs) => self.apply_output_patch(outputs),
+            DynamicStatePatch::Mixer(mixer) => self.apply_mixer_snapshot(vec![mixer]),
+            DynamicStatePatch::Routing(group) => self.apply_routing_patch(group),
+            DynamicStatePatch::Globals(globals) => {
+                for global in globals {
+                    if let Some(slot) = self
+                        .globals
+                        .iter_mut()
+                        .find(|slot| slot.control == global.control)
+                    {
+                        *slot = global;
+                    }
+                }
+                self.apply_dynamic_globals_to_status();
+            }
+        }
+    }
+
+    fn apply_dynamic_globals_to_status(&mut self) {
+        for global in &self.globals {
+            match global {
+                DynamicGlobalState {
+                    control: GlobalControl::SampleRate,
+                    value: ControlValue::Enum(value),
+                } => {
+                    let rate = SampleRate::from_code(*value as u8);
+                    self.device.status.sample_rate = Some(rate);
+                    self.device.status.sample_rate_hz = rate.hz();
+                }
+                DynamicGlobalState {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(value),
+                } => {
+                    self.device.status.clock_source = Some(ClockSource::from_code(*value as u8));
+                }
+                DynamicGlobalState {
+                    control: GlobalControl::Surface,
+                    value: ControlValue::Enum(value),
+                } => {
+                    if let Ok(index) = usize::try_from(*value) {
+                        self.mixer.surface_index =
+                            index.min(self.mixer.surfaces.len().saturating_sub(1));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn clamp_dynamic_selection(&mut self) {
+        let strip_count = self
+            .active_mixer_surface()
+            .and_then(|index| self.mixer.surfaces.get(index))
+            .map_or(0, |surface| surface.strips.len());
+        self.mixer.selected_channel = self
+            .mixer
+            .selected_channel
+            .min(strip_count.saturating_sub(1));
+        self.mixer.strip_scroll = self.mixer.strip_scroll.min(strip_count.saturating_sub(1));
+    }
+
     pub fn observe_event(&mut self, event: DeviceEvent) -> bool {
         match event {
-            DeviceEvent::Snapshot { state, raw } => {
-                let Some(snapshot) = legacy_snapshot_from_dynamic(state) else {
-                    return false;
-                };
-                self.observe_frame(DeviceSnapshot::Snapshot(snapshot), raw)
-            }
+            DeviceEvent::Snapshot { state, raw } => self.apply_dynamic_state(state, raw),
             DeviceEvent::QueryReply {
                 query_id,
                 sub_id,
                 body,
+                patch,
                 raw,
-            } => self.observe_frame(
-                DeviceSnapshot::QueryReply(QueryResponse {
+            } => {
+                let was_connected = self.device.connection.connected;
+                self.device.connection.connected = true;
+                self.device.connection.last_snapshot_at = Some(Instant::now());
+                self.device.connection.last_frame_type = Some("0x75 query reply");
+                self.raw_view.latest_raw_75 = Some(raw.clone());
+                if let Some(patch) = patch {
+                    self.apply_patch(patch);
+                }
+                let reply = QueryResponse {
                     query_id,
                     sub_id,
                     body,
-                }),
-                raw,
-            ),
-            DeviceEvent::Auxiliary { bytes, raw } => {
-                let Ok(bytes) = bytes.try_into() else {
-                    return false;
                 };
-                self.observe_frame(DeviceSnapshot::Auxiliary(bytes), raw)
+                self.store_startup_query_summary(&reply);
+                self.push_query_reply_log(&reply, raw);
+                !was_connected || true
             }
-            DeviceEvent::Notification { bytes, raw } => {
-                let Ok(bytes) = bytes.try_into() else {
-                    return false;
-                };
-                self.observe_frame(
-                    DeviceSnapshot::Notification(DeviceNotification { bytes }),
-                    raw,
-                )
+            DeviceEvent::Meter { inputs, raw } => {
+                let was_connected = self.device.connection.connected;
+                self.device.connection.connected = true;
+                self.device.connection.last_snapshot_at = Some(Instant::now());
+                self.device.connection.last_frame_type = Some("0x75 meter");
+                self.apply_meter_patch(inputs);
+                self.raw_view.latest_raw_75 = Some(raw);
+                !was_connected || true
+            }
+            DeviceEvent::Auxiliary { bytes, raw } => {
+                let changed = !self.device.connection.connected
+                    || self.raw_view.latest_raw_83.as_ref() != Some(&raw);
+                self.device.connection.connected = true;
+                self.device.connection.last_snapshot_at = Some(Instant::now());
+                self.device.connection.last_frame_type = Some("0x83 auxiliary");
+                self.raw_view.last_auxiliary_len = Some(bytes.len());
+                self.raw_view.latest_raw_83 = Some(raw);
+                changed
+            }
+            DeviceEvent::Notification { raw, .. } => {
+                let changed = !self.device.connection.connected
+                    || self.raw_view.latest_raw_81.as_ref() != Some(&raw);
+                self.device.connection.connected = true;
+                self.device.connection.last_snapshot_at = Some(Instant::now());
+                self.device.connection.last_frame_type = Some("0x81 notification");
+                self.raw_view.latest_raw_81 = Some(raw);
+                changed
             }
         }
     }
@@ -653,71 +1582,6 @@ impl AppState {
     }
 }
 
-fn legacy_snapshot_from_dynamic(state: DynamicDeviceState) -> Option<DeviceStateSnapshot> {
-    let DynamicDeviceState {
-        sample_rate,
-        clock_source,
-        sample_rate_hz,
-        status_flags,
-        front_panel_bytes,
-        outputs,
-        preamps,
-        dsp_cluster,
-        surface,
-        mixer_surfaces,
-        late_shadow,
-    } = state;
-
-    let status_flags: [u8; 2] = status_flags.try_into().ok()?;
-    let front_panel_bytes: [u8; 3] = front_panel_bytes.try_into().ok()?;
-    let outputs: [OutputState; 3] = outputs.try_into().ok()?;
-    let preamps: [antelope_protocol::PreampInputState; 2] = preamps.try_into().ok()?;
-    let dsp_cluster: [u8; 4] = dsp_cluster.try_into().ok()?;
-    let late_shadow: [u8; 12] = late_shadow.try_into().ok()?;
-
-    let mut mixer_decode = MixerPassiveDecode::default();
-    let mut seen_surfaces = [false; 2];
-    for DynamicMixerSurface { mixer, strips } in mixer_surfaces {
-        let mixer_index = mixer.index();
-        if seen_surfaces[mixer_index] {
-            return None;
-        }
-        let strips: [MixerChannelState; 16] = strips.try_into().ok()?;
-        for (index, strip) in strips.into_iter().enumerate() {
-            mixer_decode.surfaces[mixer_index][index] = MixerPassiveStripState {
-                meter: strip.meter,
-                muted: strip.muted,
-                pan: Some(strip.pan),
-                linked: strip.linked,
-            };
-        }
-        seen_surfaces[mixer_index] = true;
-    }
-    if seen_surfaces != [true; 2] {
-        return None;
-    }
-    mixer_decode.observed_preamp1_meter = preamps[0].observed_meter;
-    mixer_decode.observed_preamp2_meter = preamps[1].observed_meter;
-
-    Some(DeviceStateSnapshot {
-        sample_rate,
-        clock_source,
-        sample_rate_hz,
-        status_flags,
-        front_panel_bytes,
-        outputs,
-        dsp_cluster,
-        preamp: PreampState {
-            input1: preamps[0],
-            input2: preamps[1],
-            cluster: dsp_cluster,
-        },
-        surface,
-        mixer_decode,
-        late_shadow,
-    })
-}
-
 fn startup_query_slot(query_id: u8) -> Option<usize> {
     match query_id {
         0x01 => Some(0),
@@ -738,11 +1602,11 @@ mod tests {
     };
     use crate::transport::{MockTransport, Transport};
     use antelope_protocol::{
-        Action, ClockSource, Command, CommandBatch, DeviceDefinition, DeviceDriver, DeviceEvent,
-        DeviceSnapshot, DeviceStateSnapshot, DriverError, Frame, MixerAssignment,
-        MixerChannelState, MixerLinkTarget, MixerStrip, MixerSurface, OutputMode, OutputState,
-        OutputTarget, PanState, PreampMode, PreampState, QueryRequest, QueryResponse, SampleRate,
-        Surface, ZenGoDriver,
+        Action, ClockSource, CommandBatch, ControlValue, DeviceDefinition, DeviceDriver,
+        DeviceEvent, DeviceSnapshot, DeviceStateSnapshot, DriverError, Frame, GlobalControl,
+        InputAddress, InputControl, MixerAddress, MixerAssignment, MixerChannelState,
+        MixerLinkTarget, MixerStrip, MixerSurface, OutputMode, OutputState, OutputTarget, PanState,
+        PreampMode, PreampState, QueryRequest, QueryResponse, SampleRate, Surface, ZenGoDriver,
     };
 
     use super::controller::MAX_FRAMES_PER_POLL;
@@ -758,6 +1622,26 @@ mod tests {
         Controller::new(transport, Box::new(ZenGoDriver::new())).expect("Zen Go controller")
     }
 
+    fn seed_complete_dynamic_mixer(
+        controller: &mut Controller,
+        mixer: MixerSurface,
+        channels: &[u8],
+    ) {
+        for &channel in channels {
+            let legacy = controller.state.mixer.channels[mixer.index()][usize::from(channel - 1)];
+            let strip = controller.state.mixer.surfaces[mixer.index()]
+                .strips
+                .iter_mut()
+                .find(|strip| strip.strip == u16::from(channel))
+                .expect("dynamic mixer strip");
+            strip.fader = Some(i32::from(legacy.level.unwrap_or(0)));
+            strip.pan = Some(i32::from(legacy.pan.raw()));
+            strip.muted = Some(legacy.muted.unwrap_or(false));
+            strip.soloed = Some(legacy.soloed.unwrap_or(false));
+            strip.linked = legacy.linked;
+        }
+    }
+
     struct UnsupportedDriver {
         definition: DeviceDefinition,
     }
@@ -766,8 +1650,8 @@ mod tests {
         fn new() -> Self {
             Self {
                 definition: DeviceDefinition {
-                    id: "unsupported-test-driver",
-                    name: "Unsupported test driver",
+                    id: "unsupported-test-driver".into(),
+                    name: "Unsupported test driver".into(),
                     vid: 0x23e5,
                     pid: 0xffff,
                     supported: false,
@@ -786,11 +1670,60 @@ mod tests {
         }
 
         fn encode(&self, _action: Action) -> Result<CommandBatch, DriverError> {
-            Err(DriverError::UnsupportedAction("test driver"))
+            Err(DriverError::UnsupportedAction("test driver".into()))
         }
 
         fn decode(&self, _bytes: &[u8]) -> Result<Option<DeviceEvent>, DriverError> {
             Ok(None)
+        }
+    }
+
+    fn routing_group_action(
+        strip: u8,
+        assignment: MixerAssignment,
+        mut assignments: [MixerAssignment; 16],
+    ) -> Action {
+        assignments[usize::from(strip - 1)] = assignment;
+        Action::SetRoutingGroup {
+            destination: 0,
+            changed_channel: Some(u16::from(strip - 1)),
+            sources: assignments
+                .into_iter()
+                .map(super::controller::routing_source_from_assignment)
+                .collect(),
+        }
+    }
+
+    struct FailingDriver {
+        definition: DeviceDefinition,
+    }
+
+    impl FailingDriver {
+        fn new() -> Self {
+            Self {
+                definition: DeviceDefinition {
+                    id: "failing-test-driver".into(),
+                    name: "Failing test driver".into(),
+                    vid: 0x23e5,
+                    pid: 0xfffe,
+                    supported: true,
+                },
+            }
+        }
+    }
+
+    impl DeviceDriver for FailingDriver {
+        fn definition(&self) -> &DeviceDefinition {
+            &self.definition
+        }
+        fn startup_requests(&self) -> &[QueryRequest] {
+            &[]
+        }
+        fn encode(&self, _action: Action) -> Result<CommandBatch, DriverError> {
+            Err(DriverError::InvalidAction("injected encode failure".into()))
+        }
+        fn decode(&self, _bytes: &[u8]) -> Result<Option<DeviceEvent>, DriverError> {
+            Err(DriverError::InvalidAction("injected decode failure".into()))
         }
     }
 
@@ -811,6 +1744,22 @@ mod tests {
     }
 
     #[test]
+    fn controller_propagates_driver_encode_and_decode_failures() {
+        let transport = MockTransport::default();
+        let mut controller =
+            Controller::new(Box::new(transport.clone()), Box::new(FailingDriver::new()))
+                .expect("supported failing driver");
+        let action = Action::SetGlobal {
+            control: GlobalControl::SampleRate,
+            value: ControlValue::Enum(2),
+        };
+        assert!(controller.send(action, None).is_err());
+        assert!(transport.take_writes().is_empty());
+        transport.push_read(vec![0; 320]);
+        assert!(controller.poll_device(Duration::ZERO).is_err());
+    }
+
+    #[test]
     fn normalized_query_event_preserves_owned_raw_bytes() {
         let mut state = AppState::default();
         let raw = vec![0x75; 320];
@@ -819,6 +1768,7 @@ mod tests {
             query_id: 0x00,
             sub_id: 0x00,
             body: vec![0x01, 0x02],
+            patch: None,
             raw: raw.clone(),
         }));
         assert_eq!(state.raw_view.latest_raw_75, Some(raw));
@@ -880,9 +1830,11 @@ mod tests {
     fn assignment_pairs(frame: &[u8], count: usize) -> Vec<[u8; 2]> {
         let payload = &frame[0x10 + 0x03..];
         payload
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .take(count)
-            .map(|chunk| [chunk[0], chunk[1]])
+            .copied()
             .collect()
     }
 
@@ -1395,9 +2347,10 @@ mod tests {
 
         controller
             .send(
-                Action::SetPreampGain {
-                    input: 1,
-                    raw: 0x2d,
+                Action::SetInput {
+                    address: InputAddress { space: 0, index: 1 },
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(0x2d),
                 },
                 Some(PendingMutation::PreampGain {
                     input: 1,
@@ -1422,9 +2375,10 @@ mod tests {
 
         controller
             .send(
-                Action::SetPreampGain {
-                    input: 1,
-                    raw: 0x2d,
+                Action::SetInput {
+                    address: InputAddress { space: 0, index: 1 },
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(0x2d),
                 },
                 Some(PendingMutation::PreampGain {
                     input: 1,
@@ -1452,9 +2406,13 @@ mod tests {
 
         controller
             .send(
-                Action::SetPreampMode {
-                    input: 0,
-                    mode: PreampMode::Line,
+                Action::SetInput {
+                    address: InputAddress {
+                        space: 0,
+                        index: 0_u16,
+                    },
+                    control: InputControl::Mode,
+                    value: ControlValue::Enum(i32::from(PreampMode::Line.code())),
                 },
                 Some(PendingMutation::PreampMode {
                     input: 0,
@@ -1470,9 +2428,10 @@ mod tests {
             PreampState::from_cluster(controller.state.device.dsp_cluster);
         controller
             .send(
-                Action::SetPreampPhantom {
-                    input: 1,
-                    enabled: true,
+                Action::SetInput {
+                    address: InputAddress { space: 0, index: 1 },
+                    control: InputControl::Phantom,
+                    value: ControlValue::Bool(true),
                 },
                 Some(PendingMutation::PreampPhantom {
                     input: 1,
@@ -1488,9 +2447,10 @@ mod tests {
             PreampState::from_cluster(controller.state.device.dsp_cluster);
         controller
             .send(
-                Action::SetPreampPhase {
-                    input: 1,
-                    enabled: true,
+                Action::SetInput {
+                    address: InputAddress { space: 0, index: 1 },
+                    control: InputControl::Phase,
+                    value: ControlValue::Bool(true),
                 },
                 Some(PendingMutation::PreampPhase {
                     input: 1,
@@ -1611,7 +2571,13 @@ mod tests {
 
         controller.bootstrap().expect("bootstrap");
         controller
-            .send(Action::SetClockSource(ClockSource::Usb), None)
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(i32::from(ClockSource::Usb.code())),
+                },
+                None,
+            )
             .expect("write command");
         controller.flush_commands().expect("flush");
 
@@ -1631,7 +2597,13 @@ mod tests {
         controller.state.device.status.clock_source = Some(ClockSource::Usb);
 
         controller
-            .send(Action::SetClockSource(ClockSource::Internal), None)
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(i32::from(ClockSource::Internal.code())),
+                },
+                None,
+            )
             .expect("set clock source");
 
         assert_eq!(
@@ -1659,7 +2631,13 @@ mod tests {
         let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller
-            .send(Action::SelectSurface(Surface::Hp2), None)
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::Surface,
+                    value: ControlValue::Enum(i32::from(Surface::Hp2.code())),
+                },
+                None,
+            )
             .expect("select surface");
         controller.flush_commands().expect("flush");
 
@@ -1676,7 +2654,13 @@ mod tests {
         let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller
-            .send(Action::SetClockSource(ClockSource::Usb), None)
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(i32::from(ClockSource::Usb.code())),
+                },
+                None,
+            )
             .expect("set clock source");
         controller.flush_commands().expect("flush");
 
@@ -1691,7 +2675,13 @@ mod tests {
         let mut controller = zen_go_controller(Box::new(transport.clone()));
 
         controller
-            .send(Action::SetSampleRate(SampleRate::Hz96000), None)
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::SampleRate,
+                    value: ControlValue::Enum(i32::from(SampleRate::Hz96000.code())),
+                },
+                None,
+            )
             .expect("set sample rate");
         controller.flush_commands().expect("flush");
 
@@ -1707,13 +2697,16 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerLevel {
-                    mixer: antelope_protocol::MixerSurface::Mix1,
-                    channel: 3,
-                    level: 0x2c,
-                    pan_state: antelope_protocol::PanState::left(),
+                Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: (antelope_protocol::MixerSurface::Mix1).code(),
+                        strip: 3,
+                    },
+                    fader: 0x2c,
+                    pan: i32::from((antelope_protocol::PanState::left()).raw()),
                     muted: false,
                     soloed: false,
+                    send: None,
                 },
                 Some(PendingMutation::MixerLevel {
                     mixer: MixerSurface::Mix1,
@@ -1747,6 +2740,7 @@ mod tests {
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].linked = Some(true);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
+        seed_complete_dynamic_mixer(&mut controller, MixerSurface::Mix1, &[3, 4]);
 
         controller
             .send_mixer_level_change(MixerSurface::Mix1, 4, 0x2c)
@@ -1791,6 +2785,7 @@ mod tests {
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].linked = Some(true);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].pan = PanState::left();
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
+        seed_complete_dynamic_mixer(&mut controller, MixerSurface::Mix1, &[3, 4]);
 
         controller
             .send_mixer_mute_change(MixerSurface::Mix1, 3, true)
@@ -1829,6 +2824,7 @@ mod tests {
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].pan = PanState::right();
         controller.state.mixer.channels[MixerSurface::Mix1.index()][2].muted = Some(false);
         controller.state.mixer.channels[MixerSurface::Mix1.index()][3].muted = Some(false);
+        seed_complete_dynamic_mixer(&mut controller, MixerSurface::Mix1, &[3, 4]);
 
         controller
             .send_mixer_solo_change(MixerSurface::Mix1, 4, true)
@@ -1986,10 +2982,10 @@ mod tests {
         let target = MixerLinkTarget::from_channel(MixerSurface::Mix2, 1).expect("mix2 1-2");
         controller
             .send(
-                Action::SetLinkState {
-                    selector: target.selector,
+                Action::SetLink {
+                    surface: target.mixer.code(),
+                    pair: u16::from((target.left_channel - 1) / 2),
                     enabled: true,
-                    companion_bank: target.companion_bank(),
                 },
                 Some(PendingMutation::MixerLink {
                     mixer: MixerSurface::Mix2,
@@ -2048,6 +3044,48 @@ mod tests {
     }
 
     #[test]
+    fn normalized_zen_assignment_write_updates_legacy_state_without_route_group() {
+        let transport = MockTransport::default();
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
+        for channels in &mut controller.state.mixer.channels {
+            for channel in channels {
+                channel.assignment = Some(MixerAssignment::Mute);
+            }
+        }
+        controller
+            .state
+            .routing
+            .retain(|group| group.destination != 0);
+        assert!(controller.state.routing_group(0).is_none());
+
+        let mut assignments = [MixerAssignment::Mute; 16];
+        assignments[4] = MixerAssignment::Oscillator(1);
+        controller
+            .send(
+                Action::SetRoutingGroup {
+                    destination: 0,
+                    changed_channel: Some(4),
+                    sources: assignments
+                        .into_iter()
+                        .map(super::controller::routing_source_from_assignment)
+                        .collect(),
+                },
+                None,
+            )
+            .expect("normalized Zen assignment write should succeed");
+
+        assert_eq!(
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][4].assignment,
+            Some(MixerAssignment::Oscillator(1))
+        );
+        assert_eq!(
+            controller.state.mixer.channels[MixerSurface::Mix2.index()][4].assignment,
+            Some(MixerAssignment::Oscillator(1))
+        );
+        assert_eq!(transport.take_writes().len(), 5);
+    }
+
+    #[test]
     fn mixer_assignment_write_sends_ordinary_strip_frames_and_updates_shared_state() {
         let transport = MockTransport::default();
         let mut controller = zen_go_controller(Box::new(transport.clone()));
@@ -2055,11 +3093,11 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerAssignment {
-                    strip: 5,
-                    assignment: MixerAssignment::Oscillator(1),
-                    assignments: [MixerAssignment::Mute; 16],
-                },
+                routing_group_action(
+                    5,
+                    MixerAssignment::Oscillator(1),
+                    [MixerAssignment::Mute; 16],
+                ),
                 Some(PendingMutation::MixerAssignment {
                     strip: 5,
                     assignment: MixerAssignment::Oscillator(1),
@@ -2091,11 +3129,11 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerAssignment {
-                    strip: 1,
-                    assignment: MixerAssignment::Oscillator(1),
-                    assignments: [MixerAssignment::Mute; 16],
-                },
+                routing_group_action(
+                    1,
+                    MixerAssignment::Oscillator(1),
+                    [MixerAssignment::Mute; 16],
+                ),
                 Some(PendingMutation::MixerAssignment {
                     strip: 1,
                     assignment: MixerAssignment::Oscillator(1),
@@ -2127,11 +3165,7 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerAssignment {
-                    strip: 11,
-                    assignment: MixerAssignment::ComputerPlay(1),
-                    assignments,
-                },
+                routing_group_action(11, MixerAssignment::ComputerPlay(1), assignments),
                 None,
             )
             .expect("assignment write should succeed");
@@ -2179,10 +3213,10 @@ mod tests {
         ] {
             controller
                 .send(
-                    Action::SetLinkState {
-                        selector: target.selector,
+                    Action::SetLink {
+                        surface: target.mixer.code(),
+                        pair: u16::from((target.left_channel - 1) / 2),
                         enabled: true,
-                        companion_bank: target.companion_bank(),
                     },
                     Some(PendingMutation::MixerLink {
                         mixer: target.mixer,
@@ -2217,10 +3251,10 @@ mod tests {
 
         controller
             .send(
-                Action::SetLinkState {
-                    selector: target.selector,
+                Action::SetLink {
+                    surface: target.mixer.code(),
+                    pair: u16::from((target.left_channel - 1) / 2),
                     enabled: true,
-                    companion_bank: target.companion_bank(),
                 },
                 Some(PendingMutation::MixerLink {
                     mixer: MixerSurface::Mix1,
@@ -2253,12 +3287,16 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerPan {
-                    mixer: MixerSurface::Mix1,
-                    channel: 4,
-                    pan: PanState::from_raw(0x08),
+                Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: (MixerSurface::Mix1).code(),
+                        strip: 4,
+                    },
+                    fader: 0,
+                    pan: i32::from((PanState::from_raw(0x08)).raw()),
                     muted: false,
                     soloed: false,
+                    send: None,
                 },
                 Some(PendingMutation::MixerPan {
                     mixer: MixerSurface::Mix1,
@@ -2271,12 +3309,16 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerPan {
-                    mixer: MixerSurface::Mix2,
-                    channel: 4,
-                    pan: PanState::from_raw(0x36),
+                Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: (MixerSurface::Mix2).code(),
+                        strip: 4,
+                    },
+                    fader: 0,
+                    pan: i32::from((PanState::from_raw(0x36)).raw()),
                     muted: false,
                     soloed: false,
+                    send: None,
                 },
                 Some(PendingMutation::MixerPan {
                     mixer: MixerSurface::Mix2,
@@ -2308,12 +3350,16 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerMute {
-                    mixer: antelope_protocol::MixerSurface::Mix1,
-                    channel: 7,
+                Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: (antelope_protocol::MixerSurface::Mix1).code(),
+                        strip: 7,
+                    },
+                    fader: 0,
+                    pan: i32::from((antelope_protocol::PanState::center()).raw()),
                     muted: true,
-                    pan_state: antelope_protocol::PanState::center(),
                     soloed: false,
+                    send: None,
                 },
                 Some(PendingMutation::MixerMute {
                     mixer: MixerSurface::Mix1,
@@ -2336,12 +3382,16 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerMute {
-                    mixer: antelope_protocol::MixerSurface::Mix1,
-                    channel: 7,
+                Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: (antelope_protocol::MixerSurface::Mix1).code(),
+                        strip: 7,
+                    },
+                    fader: 0,
+                    pan: i32::from((antelope_protocol::PanState::center()).raw()),
                     muted: false,
-                    pan_state: antelope_protocol::PanState::center(),
                     soloed: false,
+                    send: None,
                 },
                 Some(PendingMutation::MixerMute {
                     mixer: MixerSurface::Mix1,
@@ -2370,13 +3420,16 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerLevel {
-                    mixer: MixerSurface::Mix1,
-                    channel: 3,
-                    level: 0x2c,
-                    pan_state: antelope_protocol::PanState::center(),
+                Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: (MixerSurface::Mix1).code(),
+                        strip: 3,
+                    },
+                    fader: 0x2c,
+                    pan: i32::from((antelope_protocol::PanState::center()).raw()),
                     muted: false,
                     soloed: false,
+                    send: None,
                 },
                 Some(PendingMutation::MixerLevel {
                     mixer: MixerSurface::Mix1,
@@ -2391,13 +3444,16 @@ mod tests {
 
         controller
             .send(
-                Action::SetMixerLevel {
-                    mixer: MixerSurface::Mix2,
-                    channel: 3,
-                    level: 0x10,
-                    pan_state: antelope_protocol::PanState::center(),
+                Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: (MixerSurface::Mix2).code(),
+                        strip: 3,
+                    },
+                    fader: 0x10,
+                    pan: i32::from((antelope_protocol::PanState::center()).raw()),
                     muted: false,
                     soloed: false,
+                    send: None,
                 },
                 Some(PendingMutation::MixerLevel {
                     mixer: MixerSurface::Mix2,
@@ -2430,13 +3486,16 @@ mod tests {
         let channel = controller.state.active_mixer_channels()[0].channel;
         controller
             .send(
-                Action::SetMixerLevel {
-                    mixer: MixerSurface::from_surface(controller.state.mixer.surface),
-                    channel,
-                    level: 0x1f,
-                    pan_state: antelope_protocol::PanState::center(),
+                Action::SetMixerStripState {
+                    address: MixerAddress {
+                        surface: MixerSurface::from_surface(controller.state.mixer.surface).code(),
+                        strip: u16::from(channel),
+                    },
+                    fader: 0x1f,
+                    pan: i32::from(antelope_protocol::PanState::center().raw()),
                     muted: false,
                     soloed: false,
+                    send: None,
                 },
                 None,
             )

@@ -15,6 +15,7 @@ use crate::device::discovery::{
     CandidateStatus, DeviceCandidate,
 };
 use crate::device::{DeviceEntry, DEVICE_CATALOG};
+use antelope_protocol::RuntimeEntry;
 
 pub trait Transport: Send {
     fn write(&self, data: &[u8]) -> Result<()>;
@@ -123,8 +124,6 @@ struct HidTransportState {
 }
 
 pub struct HidTransport {
-    vid: u16,
-    pid: u16,
     candidate: DeviceCandidate,
     report_size: usize,
     numbered_reports: bool,
@@ -155,6 +154,63 @@ impl HidTransport {
     pub fn open_path(candidate: &DeviceCandidate) -> Result<Self> {
         let api = Arc::new(Mutex::new(HidApi::new()?));
         Self::open_candidate(api, candidate)
+    }
+
+    /// Open an exact path using an owned runtime-catalog entry.
+    ///
+    /// Identity and report geometry are checked before HIDAPI is created, so
+    /// disabled or incomplete external profiles cannot touch hardware.
+    pub fn open_path_for_entry(candidate: &DeviceCandidate, entry: &RuntimeEntry) -> Result<Self> {
+        let (report_size, numbered_reports) = validate_runtime_transport(candidate, entry)?;
+        let api = Arc::new(Mutex::new(HidApi::new()?));
+        {
+            let api_guard = api.lock().map_err(|_| anyhow!("hidapi lock poisoned"))?;
+            let current = api_guard
+                .device_list()
+                .filter(|info| {
+                    info.vendor_id() == candidate.vid && info.product_id() == candidate.pid
+                })
+                .map(DeviceCandidate::from_device_info)
+                .collect::<Vec<_>>();
+            let exact = current
+                .iter()
+                .filter(|peer| peer.path_bytes == candidate.path_bytes)
+                .collect::<Vec<_>>();
+            if exact.len() != 1 || exact[0] != candidate {
+                return Err(anyhow!(TransportError::DeviceUnavailable).context(format!(
+                    "selected HID path {} disappeared or changed before open",
+                    path_context(&candidate.path_bytes)
+                )));
+            }
+            let identity_peers = current
+                .iter()
+                .filter(|peer| runtime_transport_matches(peer, entry))
+                .filter(
+                    |peer| match (&candidate.serial_number, &peer.serial_number) {
+                        (Some(left), Some(right)) => left == right,
+                        (None, _) | (_, None) => true,
+                    },
+                )
+                .count();
+            if identity_peers != 1 {
+                return Err(anyhow!(TransportError::AmbiguousDevice).context(format!(
+                    "runtime identity became ambiguous before opening path {}",
+                    path_context(&candidate.path_bytes)
+                )));
+            }
+        }
+        let device = open_exact_hid_device(&api, candidate)?;
+        Ok(Self {
+            candidate: candidate.clone(),
+            report_size,
+            numbered_reports,
+            api,
+            state: Mutex::new(HidTransportState {
+                device: Some(device),
+                last_open_attempt: None,
+                read_buffer: vec![0_u8; input_buffer_size(report_size, numbered_reports)],
+            }),
+        })
     }
 
     fn open_candidate(api: Arc<Mutex<HidApi>>, candidate: &DeviceCandidate) -> Result<Self> {
@@ -218,8 +274,6 @@ impl HidTransport {
 
         let device = open_exact_hid_device(&api, candidate)?;
         Ok(Self {
-            vid: candidate.vid,
-            pid: candidate.pid,
             candidate: candidate.clone(),
             report_size,
             numbered_reports,
@@ -342,6 +396,83 @@ impl Transport for HidTransport {
     }
 }
 
+fn runtime_transport_matches(candidate: &DeviceCandidate, entry: &RuntimeEntry) -> bool {
+    let transport = &entry.profile.transport;
+    (candidate.vid, candidate.pid) == (entry.profile.identity.vid, entry.profile.identity.pid)
+        && candidate.interface_number >= 0
+        && transport
+            .expected_interface_number
+            .is_none_or(|expected| candidate.interface_number == expected)
+        && transport
+            .expected_usage_page
+            .is_none_or(|expected| candidate.usage_page == expected)
+        && transport
+            .expected_usage
+            .is_none_or(|expected| candidate.usage == expected)
+}
+
+fn validate_runtime_transport(
+    candidate: &DeviceCandidate,
+    entry: &RuntimeEntry,
+) -> Result<(usize, bool)> {
+    let profile = &entry.profile;
+    if (candidate.vid, candidate.pid) != (profile.identity.vid, profile.identity.pid) {
+        return Err(anyhow!(TransportError::UnsupportedDevice).context(format!(
+            "candidate {:04x}:{:04x} does not match runtime profile {} ({:04x}:{:04x})",
+            candidate.vid,
+            candidate.pid,
+            profile.identity.name,
+            profile.identity.vid,
+            profile.identity.pid
+        )));
+    }
+    if candidate.interface_number < 0 {
+        return Err(anyhow!(TransportError::AmbiguousDevice)
+            .context("runtime candidate interface number is unavailable"));
+    }
+    let transport = &profile.transport;
+    if transport
+        .expected_interface_number
+        .is_some_and(|expected| candidate.interface_number != expected)
+    {
+        return Err(anyhow!(TransportError::AmbiguousDevice).context(format!(
+            "runtime profile {} expects interface {}, found {}",
+            profile.identity.name,
+            transport.expected_interface_number.unwrap(),
+            candidate.interface_number
+        )));
+    }
+    if transport
+        .expected_usage_page
+        .is_some_and(|expected| candidate.usage_page != expected)
+        || transport
+            .expected_usage
+            .is_some_and(|expected| candidate.usage != expected)
+    {
+        return Err(anyhow!(TransportError::AmbiguousDevice).context(format!(
+            "runtime profile {} HID usage does not match candidate",
+            profile.identity.name
+        )));
+    }
+    let report_size = usize::from(transport.report_size.ok_or_else(|| {
+        anyhow!(TransportError::UnsupportedDevice).context(format!(
+            "runtime profile {} has no confirmed HID report size",
+            profile.identity.name
+        ))
+    })?);
+    if report_size == 0 {
+        return Err(anyhow!(TransportError::UnsupportedDevice)
+            .context("runtime profile HID report size must be non-zero"));
+    }
+    let numbered_reports = transport.uses_numbered_reports.ok_or_else(|| {
+        anyhow!(TransportError::UnsupportedDevice).context(format!(
+            "runtime profile {} does not confirm HID report numbering",
+            profile.identity.name
+        ))
+    })?;
+    Ok((report_size, numbered_reports))
+}
+
 fn select_compatibility_candidate(
     candidates: &[DeviceCandidate],
     vid: u16,
@@ -451,6 +582,7 @@ fn open_exact_hid_device(api: &Mutex<HidApi>, candidate: &DeviceCandidate) -> Re
 }
 
 fn reconnect_hid_device(api: &Mutex<HidApi>, candidate: &DeviceCandidate) -> Result<HidDevice> {
+    validate_saved_reconnect_serial(candidate)?;
     let path = CString::new(candidate.path_bytes.as_slice()).map_err(|_| {
         anyhow!(TransportError::UnsupportedDevice).context("HID path contains an interior NUL")
     })?;
@@ -482,29 +614,10 @@ fn reconnect_hid_device(api: &Mutex<HidApi>, candidate: &DeviceCandidate) -> Res
                         &path_context(&candidate.path_bytes),
                         error,
                     );
-                    if candidate.serial_number.is_none() {
-                        return Err(error);
-                    }
                     exact_error = Some(error);
                 }
             }
-        } else if candidate.serial_number.is_none() {
-            return Err(anyhow!(TransportError::AmbiguousDevice).context(format!(
-                "saved HID path identity changed: {}",
-                path_context(&candidate.path_bytes)
-            )));
         }
-    }
-
-    // A candidate without a serial has no safe identity fallback.  Exact raw
-    // path recovery above is still allowed, but another path may not be used.
-    if candidate.serial_number.is_none() {
-        return Err(exact_error.unwrap_or_else(|| {
-            anyhow!(TransportError::DeviceUnavailable).context(format!(
-                "HID identity is not currently present: {}",
-                path_context(&candidate.path_bytes)
-            ))
-        }));
     }
 
     let matches: Vec<_> = api
@@ -552,7 +665,7 @@ fn device_info_matches(info: &DeviceInfo, candidate: &DeviceCandidate) -> bool {
 }
 
 fn reconnect_identity_matches(info: &DeviceInfo, candidate: &DeviceCandidate) -> bool {
-    candidate.serial_number.is_some()
+    reconnect_serial_matches(info.serial_number(), candidate.serial_number.as_deref())
         && device_info_matches(info, candidate)
         && info.path().to_bytes() != candidate.path_bytes.as_slice()
 }
@@ -567,7 +680,27 @@ fn same_unit_identity(info: &DeviceInfo, candidate: &DeviceCandidate) -> bool {
         return false;
     }
 
-    serial_metadata_matches(info.serial_number(), candidate.serial_number.as_deref())
+    reconnect_serial_matches(info.serial_number(), candidate.serial_number.as_deref())
+}
+
+fn nonempty_serial(serial: Option<&str>) -> Option<&str> {
+    serial.filter(|serial| !serial.is_empty())
+}
+
+fn reconnect_serial_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
+    matches!(
+        (nonempty_serial(actual), nonempty_serial(expected)),
+        (Some(actual), Some(expected)) if actual == expected
+    )
+}
+
+fn validate_saved_reconnect_serial(candidate: &DeviceCandidate) -> Result<&str> {
+    nonempty_serial(candidate.serial_number.as_deref()).ok_or_else(|| {
+        anyhow!(TransportError::DeviceUnavailable).context(format!(
+            "saved HID identity has no nonempty serial: {}",
+            path_context(&candidate.path_bytes)
+        ))
+    })
 }
 
 fn serial_metadata_matches(actual: Option<&str>, expected: Option<&str>) -> bool {
@@ -730,7 +863,7 @@ pub struct ThreadedTransport {
     frame_rx: Receiver<Result<Vec<u8>>>,
     #[allow(dead_code)]
     state: Arc<Mutex<ThreadState>>,
-    _thread: JoinHandle<()>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl ThreadedTransport {
@@ -865,7 +998,7 @@ impl ThreadedTransport {
             msg_tx,
             frame_rx,
             state,
-            _thread: thread,
+            thread: Some(thread),
         }
     }
 }
@@ -909,12 +1042,69 @@ impl Transport for ThreadedTransport {
 impl Drop for ThreadedTransport {
     fn drop(&mut self) {
         let _ = self.msg_tx.send(TransportMessage::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switching_closes_old_worker_before_opening_zero_write_replacement() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct DropObservedTransport(Arc<AtomicBool>);
+        impl Drop for DropObservedTransport {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        impl Transport for DropObservedTransport {
+            fn write(&self, _data: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn read(&self, _timeout: Duration) -> Result<Option<Vec<u8>>> {
+                Ok(None)
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let transport =
+            ThreadedTransport::spawn_with_transport(DropObservedTransport(Arc::clone(&dropped)));
+        drop(transport);
+        assert!(dropped.load(Ordering::SeqCst));
+
+        let replacement = MockTransport::default();
+        let replacement_worker = ThreadedTransport::spawn_with_transport(replacement.clone());
+        assert!(replacement.take_writes().is_empty());
+        drop(replacement_worker);
+    }
+
+    #[test]
+    fn runtime_device_selection_rejects_unknown_report_framing_before_hid_open() {
+        let catalog = crate::device::ProfileCatalog::builtin();
+        let entry = catalog.find(0x23e5, 0xa221).expect("Orion profile");
+        let candidate = DeviceCandidate::new(
+            "orion-no-open",
+            0x23e5,
+            0xa221,
+            Some("ORION-1".into()),
+            Some("Orion Studio III".into()),
+            0,
+            0,
+            3,
+        );
+
+        let error = validate_runtime_transport(&candidate, entry)
+            .expect_err("unknown framing must fail before HIDAPI construction");
+
+        assert!(error
+            .to_string()
+            .contains("does not confirm HID report numbering"));
+    }
 
     #[test]
     fn mock_transport_records_writes_and_reads_frames() {
@@ -1230,6 +1420,42 @@ mod tests {
     fn missing_serial_metadata_does_not_match_present_serial() {
         assert!(!serial_metadata_matches(Some("unit-2"), None));
         assert!(serial_metadata_matches(None, None));
+    }
+
+    #[test]
+    fn reconnect_serial_predicate_rejects_absent_and_empty_metadata() {
+        assert!(!reconnect_serial_matches(None, Some("unit-1")));
+        assert!(!reconnect_serial_matches(Some("unit-1"), None));
+        assert!(!reconnect_serial_matches(Some(""), Some("")));
+        assert!(!reconnect_serial_matches(Some(""), Some("unit-1")));
+        assert!(!reconnect_serial_matches(Some("unit-1"), Some("")));
+    }
+
+    #[test]
+    fn reconnect_serial_predicate_accepts_same_nonempty_serial() {
+        assert!(reconnect_serial_matches(Some("unit-1"), Some("unit-1")));
+        assert!(!reconnect_serial_matches(Some("unit-2"), Some("unit-1")));
+    }
+
+    #[test]
+    fn reconnect_validation_rejects_empty_or_absent_saved_serial_before_hid() {
+        for serial in [None, Some("")] {
+            let candidate = DeviceCandidate::new(
+                "never-open-this-path",
+                0x23e5,
+                0xa015,
+                serial.map(str::to_owned),
+                Some("Zen Go".into()),
+                0,
+                0,
+                3,
+            );
+            let error = validate_saved_reconnect_serial(&candidate)
+                .expect_err("missing serial must fail before HID open");
+            assert!(error.chain().any(|cause| {
+                cause.downcast_ref::<TransportError>() == Some(&TransportError::DeviceUnavailable)
+            }));
+        }
     }
 
     #[test]
