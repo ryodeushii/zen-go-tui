@@ -159,6 +159,46 @@ fn dynamic_state_query_patches_use_stable_addresses() {
     assert_eq!(state.mixers()[2].name, "patched");
     assert_eq!(state.mixers()[2].strips[31].fader, Some(32));
 
+    let mut zen_go = AppState::from_profile(&zen_go_profile());
+    let original_name = zen_go.mixers()[0].strips[0].name.clone();
+    let original = &mut zen_go.mixers_mut()[0].strips[0];
+    original.fader = Some(30);
+    original.pan = Some(17);
+    original.muted = Some(true);
+    original.soloed = Some(false);
+    original.linked = Some(true);
+    original.meter = Some(42);
+    let mut partial = zen_go.mixers()[0].clone();
+    partial.name.clear();
+    for strip in &mut partial.strips {
+        strip.name.clear();
+        strip.fader = None;
+        strip.pan = None;
+        strip.send = None;
+        strip.muted = None;
+        strip.soloed = None;
+        strip.linked = None;
+        strip.meter = None;
+        strip.parameters.clear();
+    }
+    partial.strips[0].fader = Some(7);
+    zen_go.observe_event(DeviceEvent::QueryReply {
+        query_id: 4,
+        sub_id: 0,
+        body: vec![],
+        patch: Some(DynamicStatePatch::Mixer(partial)),
+        raw: vec![0x75; 320],
+    });
+    let merged = &zen_go.mixers()[0].strips[0];
+    assert_eq!(zen_go.mixers()[0].name, "Mix 1");
+    assert_eq!(merged.name, original_name);
+    assert_eq!(merged.fader, Some(7));
+    assert_eq!(merged.pan, Some(17));
+    assert_eq!(merged.muted, Some(true));
+    assert_eq!(merged.soloed, Some(false));
+    assert_eq!(merged.linked, Some(true));
+    assert_eq!(merged.meter, Some(42));
+
     let before = state.mixers().to_vec();
     let unknown = DynamicMixerSurface {
         surface: 99,

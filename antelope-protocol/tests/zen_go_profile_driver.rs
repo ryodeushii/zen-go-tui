@@ -112,7 +112,7 @@ fn zen_go_q04_readback_emits_profile_surface_patch() {
 }
 
 #[test]
-fn zen_go_q18_readback_only_emits_declared_solo_field() {
+fn zen_go_q18_readback_emits_both_surfaces_with_declared_solo_field() {
     let driver = ZenGoDriver::new(test_support::zen_go_profile()).expect("driver");
     let event = driver
         .decode(&test_support::hex_fixture(include_str!(
@@ -121,17 +121,27 @@ fn zen_go_q18_readback_only_emits_declared_solo_field() {
         .expect("decode")
         .expect("event");
     let DeviceEvent::QueryReply {
-        patch: Some(DynamicStatePatch::Mixer(surface)),
+        patch: Some(DynamicStatePatch::Mixers(surfaces)),
         ..
     } = event
     else {
-        panic!("expected mixer patch");
+        panic!("expected mixer surfaces patch");
     };
-    assert_eq!(surface.strips[0].fader, None);
-    assert_eq!(surface.strips[0].pan, None);
-    assert_eq!(surface.strips[0].muted, None);
-    assert_eq!(surface.strips[0].meter, None);
-    assert_eq!(surface.strips[0].soloed, Some(true));
+    assert_eq!(surfaces.len(), 2);
+    assert_eq!(surfaces[0].surface, 0);
+    assert_eq!(surfaces[1].surface, 1);
+    assert_eq!(surfaces[0].strips.len(), 16);
+    assert_eq!(surfaces[1].strips.len(), 16);
+    assert_eq!(surfaces[0].strips[0].fader, None);
+    assert_eq!(surfaces[0].strips[0].pan, None);
+    assert_eq!(surfaces[0].strips[0].muted, None);
+    assert_eq!(surfaces[0].strips[0].meter, None);
+    assert_eq!(surfaces[0].strips[0].soloed, Some(true));
+    assert_eq!(surfaces[1].strips[0].fader, None);
+    assert_eq!(surfaces[1].strips[0].pan, None);
+    assert_eq!(surfaces[1].strips[0].muted, None);
+    assert_eq!(surfaces[1].strips[0].meter, None);
+    assert_eq!(surfaces[1].strips[0].soloed, Some(false));
 }
 
 #[test]

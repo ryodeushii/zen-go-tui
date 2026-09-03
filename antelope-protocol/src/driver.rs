@@ -185,6 +185,8 @@ pub enum DynamicStatePatch {
     Inputs(Vec<DynamicInputState>),
     Outputs(Vec<DynamicOutputState>),
     Mixer(DynamicMixerSurface),
+    /// Partial readback containing multiple mixer surfaces.
+    Mixers(Vec<DynamicMixerSurface>),
     Routing(DynamicRoutingGroup),
     Globals(Vec<DynamicGlobalState>),
 }

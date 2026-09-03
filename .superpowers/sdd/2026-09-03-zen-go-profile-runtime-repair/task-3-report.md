@@ -150,5 +150,44 @@ The untracked plan file predated Task 3 and was not staged or committed. No stag
 ## Concerns
 
 - `RuntimeProfile` has no `driver_kind`; per supervisor ruling, constructor validates canonical Zen Go VID/PID and required topology, while `RuntimeEntry.driver_kind` remains factory selection.
-- `DynamicStatePatch` can carry one mixer surface. q18 exposes first 16 records as normalized surface 0; complete q18 body remains preserved in `DeviceEvent::QueryReply.body` and `raw`. A later seam can expose second surface without changing wire handling.
 - Existing profile-codec unused-variable warning remains unrelated to Task 3.
+
+## Fix round 1
+
+Addressed review findings without changing raw `QueryReply` fields or q04 behavior.
+
+### Changes
+
+- Added `DynamicStatePatch::Mixers(Vec<DynamicMixerSurface>)` for multi-surface q18 readback. q18 records are grouped by declared numeric surface and both 16-strip surfaces are returned; q04 remains singular `DynamicStatePatch::Mixer`.
+- Mixer patch application now merges optional incoming strip fields by numeric surface/strip address. `None` fields and empty names preserve profile-owned state; supplied fields update existing values. Topology validation remains required before merge.
+- Added focused q18 assertions for both surfaces and a dynamic application test for partial mixer state/name preservation.
+
+### Exact commands and outputs
+
+```text
+$ cargo fmt --all
+[passed; no output]
+
+$ cargo test -p antelope-protocol --test zen_go_profile_driver
+running 7 tests
+...
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ cargo test --workspace
+antelope-protocol unit tests: 56 passed; 0 failed
+profile_driver integration tests: 69 passed; 0 failed
+profile_pack integration tests: 21 passed; 0 failed
+zen_go_profile_driver integration tests: 7 passed; 0 failed
+zen_go_profile_model integration tests: 4 passed; 0 failed
+zen-go-tui library tests: 331 passed; 2 ignored; 0 failed
+zen-go-tui binary tests: 40 passed; 0 failed
+doc-tests: 1 passed; 0 failed (antelope-protocol), 0 passed; 0 failed (zen-go-tui)
+
+$ cargo fmt --all -- --check
+[passed; no output]
+
+$ git diff --check
+[passed; no output]
+```
+
+Warnings: pre-existing `antelope-protocol/src/profile_codec.rs` unused variable and unrelated application dead-code/unused-mut warnings. No test failures. Deferred concern: shared mixer decoder's candidate `0x52` scope remains unchanged per ruling; Orion parser remains out of scope.

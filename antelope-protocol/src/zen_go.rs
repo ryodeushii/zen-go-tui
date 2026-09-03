@@ -342,7 +342,58 @@ impl ZenGoDriver {
         if !is_q04 && !is_q18 {
             return None;
         }
-        let (surface, records) = if is_q04 {
+        let supports = |field: &str| layout.supported_fields.iter().any(|value| value == field);
+        let decode_surface = |surface: u8, records: Vec<usize>| {
+            let fader = self.profile.mixer_fader(surface);
+            let strips = records
+                .into_iter()
+                .map(|index| {
+                    let (level, state_code) = reply.readback_record(layout, index)?;
+                    let pan = PanState::from_state_code(state_code);
+                    Some(DynamicMixerStrip {
+                        strip: (index % layout.surface_stride.unwrap_or(layout.record_count) + 1)
+                            as u16,
+                        name: String::new(),
+                        fader: if is_q04 {
+                            fader.map(|semantics| {
+                                i32::from(level).clamp(semantics.min, semantics.max)
+                            })
+                        } else if supports("fader") {
+                            Some(i32::from(level))
+                        } else {
+                            None
+                        },
+                        pan: if is_q04 || supports("pan") {
+                            Some(i32::from(pan.raw()))
+                        } else {
+                            None
+                        },
+                        send: None,
+                        muted: if is_q04 || supports("mute") {
+                            Some(PanState::state_code_is_muted(state_code))
+                        } else {
+                            None
+                        },
+                        soloed: if is_q04 || supports("solo") {
+                            Some(PanState::state_code_is_soloed(state_code))
+                        } else {
+                            None
+                        },
+                        linked: None,
+                        meter: supports("meter").then_some(level),
+                        parameters: Vec::new(),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(DynamicMixerSurface {
+                surface,
+                name: String::new(),
+                master: None,
+                strips,
+            })
+        };
+
+        if is_q04 {
             let surface = layout.surface?;
             if self
                 .profile
@@ -352,68 +403,27 @@ impl ZenGoDriver {
             {
                 return None;
             }
-            (surface, 0..layout.record_count)
-        } else {
-            // DynamicStatePatch carries one surface. q18's 32-record block is
-            // retained raw; expose first surface's declared fields here.
-            let stride = layout.surface_stride?;
-            if stride == 0 {
-                return None;
-            }
-            (0, 0..stride.min(layout.record_count))
-        };
-        let fader = self.profile.mixer_fader(surface);
-        let strips = records
-            .map(|index| {
-                let (level, state_code) = reply.readback_record(layout, index)?;
-                let pan = PanState::from_state_code(state_code);
-                Some(DynamicMixerStrip {
-                    strip: (index % layout.surface_stride.unwrap_or(layout.record_count) + 1)
-                        as u16,
-                    name: String::new(),
-                    fader: if is_q04 {
-                        fader.map(|semantics| i32::from(level).clamp(semantics.min, semantics.max))
-                    } else if layout.supported_fields.iter().any(|field| field == "fader") {
-                        Some(i32::from(level))
-                    } else {
-                        None
-                    },
-                    pan: if is_q04 || layout.supported_fields.iter().any(|field| field == "pan") {
-                        Some(i32::from(pan.raw()))
-                    } else {
-                        None
-                    },
-                    send: None,
-                    muted: if is_q04 || layout.supported_fields.iter().any(|field| field == "mute")
-                    {
-                        Some(PanState::state_code_is_muted(state_code))
-                    } else {
-                        None
-                    },
-                    soloed: if is_q04 || layout.supported_fields.iter().any(|field| field == "solo")
-                    {
-                        Some(PanState::state_code_is_soloed(state_code))
-                    } else {
-                        None
-                    },
-                    linked: None,
-                    meter: if layout.supported_fields.iter().any(|field| field == "meter") {
-                        Some(level)
-                    } else {
-                        None
-                    },
-                    parameters: Vec::new(),
-                })
+            return Some(crate::driver::DynamicStatePatch::Mixer(decode_surface(
+                surface,
+                (0..layout.record_count).collect(),
+            )?));
+        }
+
+        let stride = layout.surface_stride?;
+        if stride == 0 || layout.record_count > self.profile.mixers.len().checked_mul(stride)? {
+            return None;
+        }
+        let surfaces = self
+            .profile
+            .mixers
+            .iter()
+            .map(|mixer| {
+                let start = usize::from(mixer.mix_index).checked_mul(stride)?;
+                let end = start.checked_add(stride)?.min(layout.record_count);
+                decode_surface(mixer.mix_index, (start..end).collect())
             })
             .collect::<Option<Vec<_>>>()?;
-        Some(crate::driver::DynamicStatePatch::Mixer(
-            DynamicMixerSurface {
-                surface,
-                name: String::new(),
-                master: None,
-                strips,
-            },
-        ))
+        Some(crate::driver::DynamicStatePatch::Mixers(surfaces))
     }
 }
 

@@ -1091,6 +1091,36 @@ impl AppState {
         }
     }
 
+    fn merge_mixer_strip(existing: &mut DynamicMixerStrip, incoming: DynamicMixerStrip) {
+        if !incoming.name.is_empty() {
+            existing.name = incoming.name;
+        }
+        if incoming.fader.is_some() {
+            existing.fader = incoming.fader;
+        }
+        if incoming.pan.is_some() {
+            existing.pan = incoming.pan;
+        }
+        if incoming.send.is_some() {
+            existing.send = incoming.send;
+        }
+        if incoming.muted.is_some() {
+            existing.muted = incoming.muted;
+        }
+        if incoming.soloed.is_some() {
+            existing.soloed = incoming.soloed;
+        }
+        if incoming.linked.is_some() {
+            existing.linked = incoming.linked;
+        }
+        if incoming.meter.is_some() {
+            existing.meter = incoming.meter;
+        }
+        if !incoming.parameters.is_empty() {
+            existing.parameters = incoming.parameters;
+        }
+    }
+
     fn apply_mixer_snapshot(&mut self, mixers: Vec<DynamicMixerSurface>) {
         for mixer in mixers {
             let Some(slot) = self
@@ -1116,7 +1146,22 @@ impl AppState {
             if !topology_matches {
                 continue;
             }
-            *slot = mixer;
+
+            if !mixer.name.is_empty() {
+                slot.name = mixer.name;
+            }
+            if let (Some(existing), Some(incoming)) = (&mut slot.master, mixer.master) {
+                Self::merge_mixer_strip(existing, incoming);
+            }
+            for incoming in mixer.strips {
+                if let Some(existing) = slot
+                    .strips
+                    .iter_mut()
+                    .find(|existing| existing.strip == incoming.strip)
+                {
+                    Self::merge_mixer_strip(existing, incoming);
+                }
+            }
         }
         self.sync_compatibility_views();
         self.clamp_dynamic_selection();
@@ -1188,6 +1233,7 @@ impl AppState {
             DynamicStatePatch::Inputs(inputs) => self.apply_input_patch(inputs),
             DynamicStatePatch::Outputs(outputs) => self.apply_output_patch(outputs),
             DynamicStatePatch::Mixer(mixer) => self.apply_mixer_snapshot(vec![mixer]),
+            DynamicStatePatch::Mixers(mixers) => self.apply_mixer_snapshot(mixers),
             DynamicStatePatch::Routing(group) => self.apply_routing_patch(group),
             DynamicStatePatch::Globals(globals) => {
                 for global in globals {
