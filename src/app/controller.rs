@@ -9,8 +9,8 @@ use crate::transport::Transport;
 use antelope_protocol::{
     Action, ClockSource, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, GlobalControl,
     InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl, MixerSurface,
-    OutputAddress, OutputControl, OutputMode, PanState, PreampMode, QueryRequest, RoutingSource,
-    RuntimeEntry, SampleRate, Surface,
+    OutputControl, OutputMode, PanState, PreampMode, QueryRequest, RoutingSource, RuntimeEntry,
+    SampleRate, Surface,
 };
 
 use super::picker::{AssignmentPickerState, SelectorPopupKind, SelectorPopupState};
@@ -1003,18 +1003,21 @@ impl Controller {
         increase: bool,
         pending: Option<PendingMutation>,
     ) -> Result<()> {
+        let Some(output) = self.state.outputs().get(index).cloned() else {
+            return Ok(());
+        };
+        if !self
+            .state
+            .ui_profile
+            .supports_output(output.address, OutputControl::Level)
+        {
+            return Ok(());
+        }
+        let Some((min, max)) = self.state.output_range(OutputControl::Level) else {
+            return Ok(());
+        };
         self.state.ui.focus = FocusArea::Outputs;
-        let output = self
-            .state
-            .outputs()
-            .get(index)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
         self.state.output.selected = index;
-        let (min, max) = self
-            .state
-            .output_range(OutputControl::Level)
-            .ok_or_else(|| anyhow::anyhow!("output level range unavailable"))?;
         let current = output.level.unwrap_or(min).clamp(min, max);
         let next = if increase {
             current.saturating_sub(1).max(min)
@@ -1038,18 +1041,22 @@ impl Controller {
         step: u8,
         pending: Option<PendingMutation>,
     ) -> Result<()> {
+        let Some(output) = self.state.outputs().get(index).cloned() else {
+            return Ok(());
+        };
+        if !self
+            .state
+            .ui_profile
+            .supports_output(output.address, OutputControl::Level)
+        {
+            return Ok(());
+        }
+        let Some((min, max)) = self.state.output_range(OutputControl::Level) else {
+            return Ok(());
+        };
         self.state.ui.focus = FocusArea::Outputs;
-        let address = self
-            .state
-            .outputs()
-            .get(index)
-            .map(|output| output.address)
-            .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
         self.state.output.selected = index;
-        let (min, max) = self
-            .state
-            .output_range(OutputControl::Level)
-            .ok_or_else(|| anyhow::anyhow!("output level range unavailable"))?;
+        let address = output.address;
         self.send(
             Action::SetOutput {
                 address,
@@ -1066,13 +1073,17 @@ impl Controller {
         index: usize,
         pending: Option<PendingMutation>,
     ) -> Result<()> {
-        self.state.ui.focus = FocusArea::Outputs;
-        let output = self
+        let Some(output) = self.state.outputs().get(index).cloned() else {
+            return Ok(());
+        };
+        if !self
             .state
-            .outputs()
-            .get(index)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
+            .ui_profile
+            .supports_output(output.address, OutputControl::Dim)
+        {
+            return Ok(());
+        }
+        self.state.ui.focus = FocusArea::Outputs;
         self.state.output.selected = index;
         self.send(
             Action::SetOutput {
@@ -1090,13 +1101,17 @@ impl Controller {
         index: usize,
         pending: Option<PendingMutation>,
     ) -> Result<()> {
-        self.state.ui.focus = FocusArea::Outputs;
-        let output = self
+        let Some(output) = self.state.outputs().get(index).cloned() else {
+            return Ok(());
+        };
+        if !self
             .state
-            .outputs()
-            .get(index)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
+            .ui_profile
+            .supports_output(output.address, OutputControl::Mute)
+        {
+            return Ok(());
+        }
+        self.state.ui.focus = FocusArea::Outputs;
         self.state.output.selected = index;
         self.send(
             Action::SetOutput {
@@ -2366,22 +2381,7 @@ impl Controller {
         match self.state.ui.focus {
             FocusArea::Outputs => {
                 let index = self.state.output.selected;
-                let output = self.state.output.states[index];
-                let next = if increase {
-                    output.volume.saturating_sub(1)
-                } else {
-                    output.volume.saturating_add(1).min(0x60)
-                };
-                self.send(
-                    Action::SetOutput {
-                        address: OutputAddress {
-                            id: u16::from(output.target.index()),
-                        },
-                        control: OutputControl::Level,
-                        value: ControlValue::Int(i32::from(next)),
-                    },
-                    pending,
-                )?;
+                self.handle_output_adjust(index, increase, pending)?;
             }
             FocusArea::Mixer => {
                 let (address, _) = self.mixer_strip_at_ui(self.state.mixer.selected_channel)?;
@@ -2405,17 +2405,7 @@ impl Controller {
         match self.state.ui.focus {
             FocusArea::Outputs => {
                 let index = self.state.output.selected;
-                let output = self.state.output.states[index];
-                self.send(
-                    Action::SetOutput {
-                        address: OutputAddress {
-                            id: u16::from(output.target.index()),
-                        },
-                        control: OutputControl::Mute,
-                        value: ControlValue::Bool(output.mode != OutputMode::Mute),
-                    },
-                    pending,
-                )?;
+                self.handle_output_toggle_mute(index, pending)?;
             }
             FocusArea::Mixer => {
                 let (address, strip) = self.mixer_strip_at_ui(self.state.mixer.selected_channel)?;
@@ -2441,17 +2431,7 @@ impl Controller {
     fn handle_toggle_focused_dim(&mut self, pending: Option<PendingMutation>) -> Result<()> {
         if self.state.ui.focus == FocusArea::Outputs {
             let index = self.state.output.selected;
-            let output = self.state.output.states[index];
-            self.send(
-                Action::SetOutput {
-                    address: OutputAddress {
-                        id: u16::from(output.target.index()),
-                    },
-                    control: OutputControl::Dim,
-                    value: ControlValue::Bool(output.mode != OutputMode::Dim),
-                },
-                pending,
-            )?;
+            self.handle_output_toggle_dim(index, pending)?;
         }
         Ok(())
     }
@@ -2613,6 +2593,71 @@ mod correction_tests {
                 Rect::default(),
             )
             .is_err());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn dynamic_fourth_output_honors_profile_range_and_unsupported_controls_noop() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        let mut entry = crate::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "zen_go_sc")
+            .expect("Zen Go entry")
+            .clone();
+        let mut output = entry.profile.outputs[2].clone();
+        output.id = 3;
+        output.name = "Output 4".into();
+        entry.profile.outputs.push(output);
+        entry
+            .profile
+            .params
+            .iter_mut()
+            .find(|param| param.name == "bus_level")
+            .expect("output level parameter")
+            .range = Some((10, 20));
+        entry
+            .profile
+            .params
+            .retain(|param| param.name != "bus_mute" && param.name != "bus_dim");
+        controller.state = AppState::from_entry(&entry);
+        controller.state.output.selected = 3;
+        controller.state.ui.focus = FocusArea::Outputs;
+        controller.state.output.dynamic[3].level = Some(20);
+        controller.state.output.dynamic[3].muted = Some(false);
+        controller.state.output.dynamic[3].dimmed = Some(false);
+
+        controller
+            .apply_intent(Intent::AdjustFocused(false), Rect::default())
+            .expect("adjust fourth output");
+        assert_eq!(controller.state.outputs()[3].level, Some(20));
+        let queued = controller.command_queue.len();
+
+        controller
+            .apply_intent(Intent::ToggleFocusedMute, Rect::default())
+            .expect("unsupported mute is a no-op");
+        controller
+            .apply_intent(Intent::ToggleFocusedDim, Rect::default())
+            .expect("unsupported dim is a no-op");
+        assert_eq!(controller.state.outputs()[3].muted, Some(false));
+        assert_eq!(controller.state.outputs()[3].dimmed, Some(false));
+        assert_eq!(controller.command_queue.len(), queued);
+
+        controller
+            .apply_intent(
+                Intent::AdjustOutputLevel {
+                    index: usize::MAX,
+                    increase: true,
+                },
+                Rect::default(),
+            )
+            .expect("missing output is a no-op");
+        assert_eq!(controller.state.output.selected, 3);
         assert!(transport.take_writes().is_empty());
     }
 

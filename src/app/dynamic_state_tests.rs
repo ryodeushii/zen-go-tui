@@ -88,7 +88,7 @@ fn dynamic_state_zen_go_preserves_geometry_and_labels() {
     assert_eq!(state.outputs().len(), 3);
     assert_eq!(state.mixers().len(), 2);
     assert!(state.mixers().iter().all(|mixer| mixer.strips.len() == 16));
-    assert_eq!(state.outputs()[0].name, "Monitor");
+    assert_eq!(state.outputs()[0].name, "bus_0");
     assert_eq!(state.mixers()[0].name, "Mix 1");
 }
 
@@ -545,14 +545,16 @@ fn successful_output_actions_project_immediately_to_dynamic_and_compatibility_st
         antelope_protocol::OutputMode::Mute
     );
 
+    // Zen Go profile has no confirmed dim control; unsupported output actions
+    // must leave both dynamic and compatibility state unchanged.
     controller
         .apply_intent(Intent::ToggleOutputDim(1), Rect::default())
-        .expect("toggle output dim");
-    assert_eq!(controller.state.outputs()[1].muted, Some(false));
-    assert_eq!(controller.state.outputs()[1].dimmed, Some(true));
+        .expect("unsupported output dim is a no-op");
+    assert_eq!(controller.state.outputs()[1].muted, Some(true));
+    assert_eq!(controller.state.outputs()[1].dimmed, Some(false));
     assert_eq!(
         controller.state.output.states[1].mode,
-        antelope_protocol::OutputMode::Dim
+        antelope_protocol::OutputMode::Mute
     );
 }
 

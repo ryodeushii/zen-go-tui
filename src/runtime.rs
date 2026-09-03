@@ -10,8 +10,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use antelope_protocol::{
-    Action, ClockSource, ControlValue, GlobalControl, MixerAddress, MixerAssignment, PanState,
-    PreampMode, SampleRate,
+    Action, ClockSource, ControlValue, GlobalControl, InputControl, MixerAddress, MixerAssignment,
+    PanState, PreampMode, SampleRate,
 };
 use zen_go_tui::app::{
     Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind,
@@ -631,22 +631,35 @@ pub fn handle_key_press(
         }
         AppKeyCode::Char('3') => {
             if controller.state.ui.focus == FocusArea::Preamp {
-                let input = controller.state.preamp.selected_input as u8;
-                let current = if input == 0 {
-                    controller.state.preamp.state.input1.mode
-                } else {
-                    controller.state.preamp.state.input2.mode
+                let Some(input) = controller
+                    .state
+                    .inputs_for_space("physical_inputs")
+                    .get(controller.state.preamp.selected_input)
+                    .cloned()
+                else {
+                    return Ok(KeyAction::Continue);
                 };
+                if !controller
+                    .state
+                    .ui_profile
+                    .supports_input(input.address, InputControl::Mode)
+                {
+                    return Ok(KeyAction::Continue);
+                }
+                let Some(input_index) = u8::try_from(controller.state.preamp.selected_input).ok()
+                else {
+                    return Ok(KeyAction::Continue);
+                };
+                let current = PreampMode::from_raw(input.mode.unwrap_or_default() as u8);
                 controller.state.popup.selected_index =
                     [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
                         .iter()
                         .position(|mode| *mode == current)
                         .unwrap_or(0);
                 controller.state.popup.selector_popup = Some(SelectorPopupState {
-                    kind: SelectorPopupKind::PreampMode { input },
+                    kind: SelectorPopupKind::PreampMode { input: input_index },
                 });
                 controller.state.ui.focus = FocusArea::Preamp;
-                controller.state.preamp.selected_input = input.min(1) as usize;
             } else if let Some(surface) = controller
                 .state
                 .mixers()
@@ -861,15 +874,19 @@ pub fn app_loop(
 pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layout::Rect) {
     match controller.state.ui.focus {
         FocusArea::Outputs => {
+            let outputs_len = controller.state.outputs().len();
+            if outputs_len == 0 {
+                return;
+            }
             controller.state.output.selected = if right {
-                (controller.state.output.selected + 1) % controller.state.output.states.len()
+                (controller.state.output.selected + 1) % outputs_len
             } else {
                 controller
                     .state
                     .output
                     .selected
                     .checked_sub(1)
-                    .unwrap_or(controller.state.output.states.len() - 1)
+                    .unwrap_or(outputs_len - 1)
             };
         }
         FocusArea::Mixer => {
@@ -897,7 +914,20 @@ pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::l
                 .ensure_selected_mixer_channel_visible(visible);
         }
         FocusArea::Preamp => {
-            controller.state.preamp.selected_input = if right { 1 } else { 0 };
+            let inputs_len = controller.state.inputs_for_space("physical_inputs").len();
+            if inputs_len == 0 {
+                return;
+            }
+            controller.state.preamp.selected_input = if right {
+                (controller.state.preamp.selected_input + 1) % inputs_len
+            } else {
+                controller
+                    .state
+                    .preamp
+                    .selected_input
+                    .checked_sub(1)
+                    .unwrap_or(inputs_len - 1)
+            };
         }
         _ => {}
     }
@@ -999,6 +1029,28 @@ mod tests {
     use zen_go_tui::terminal::AppModifiers;
     use zen_go_tui::transport::MockTransport;
 
+    fn synthetic_entry() -> antelope_protocol::RuntimeEntry {
+        let mut entry = zen_go_tui::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "zen_go_sc")
+            .expect("Zen Go profile")
+            .clone();
+        let mut input = entry.profile.inputs[1].clone();
+        input.index = 2;
+        input.id = "physical_input_3".into();
+        input.name = "Input 3".into();
+        entry.profile.inputs.push(input);
+        let mut output = entry.profile.outputs[2].clone();
+        output.id = 3;
+        output.name = "Output 4".into();
+        entry.profile.outputs.push(output);
+        entry.profile.address_spaces[0].count = Some(3);
+        entry.profile.mixers.truncate(1);
+        entry.profile.mixers[0].strip_count = 7;
+        entry
+    }
+
     fn key(code: AppKeyCode) -> AppKeyEvent {
         AppKeyEvent {
             code,
@@ -1037,5 +1089,43 @@ mod tests {
             assert_eq!(controller.state.ui.last_message, message);
             assert!(transport.take_writes().is_empty());
         }
+    }
+
+    #[test]
+    fn synthetic_profile_keyboard_reaches_third_input_and_fourth_output() {
+        let entry = synthetic_entry();
+        let transport = MockTransport::default();
+        let mut controller = Controller::new_for_entry(
+            Box::new(transport.clone()),
+            Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+            &entry,
+        )
+        .expect("synthetic controller");
+
+        controller.state.ui.focus = FocusArea::Outputs;
+        controller.state.output.selected = 2;
+        move_selection(&mut controller, true, ratatui::layout::Rect::default());
+        assert_eq!(controller.state.output.selected, 3);
+
+        controller.state.ui.focus = FocusArea::Preamp;
+        controller.state.preamp.selected_input = 2;
+        controller
+            .state
+            .inputs_for_space("physical_inputs")
+            .get(2)
+            .expect("third physical input");
+        handle_key_press(
+            &mut controller,
+            key(AppKeyCode::Char('3')),
+            ratatui::layout::Rect::new(0, 0, 120, 50),
+        )
+        .expect("open third-input mode selector");
+        assert_eq!(
+            controller.state.popup.selector_popup,
+            Some(SelectorPopupState {
+                kind: SelectorPopupKind::PreampMode { input: 2 }
+            })
+        );
+        assert!(transport.take_writes().is_empty());
     }
 }
