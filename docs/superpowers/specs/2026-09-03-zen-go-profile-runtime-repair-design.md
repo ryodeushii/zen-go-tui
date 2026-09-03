@@ -42,6 +42,8 @@ Add profile data for the observed 0x73 candidate preamp meter offsets 0xce and 0
 
 Do not add a typed 0x83 channel map. When a profile lacks a verified map, keep 0x83 as auxiliary raw data. A later capture-backed profile edit can add a typed meter layout without changing the application contract.
 
+Zen Go AFX context does not change this rule. AFX areas above mixer channels 1 through 4 can host Synergy Core effects. The device supports up to four mono AFX paths or two stereo AFX paths, with up to eight processors per path. Antelope-Ctl also mentions an EmuMic feature, but this repository has no capture-backed EmuMic evidence yet. Treat current 0x83 data as a possible aggregate AFX/DSP meter block, not as physical A1/A2 meters. AFX and EmuMic controls remain outside this repair.
+
 ### Make profile topology the application source of truth
 
 `AppState::from_profile` allocates all input spaces, outputs, mixer surfaces, masters, strips, and peak slots from `RuntimeProfile`. Dynamic snapshots and patches update existing entries by numeric address. They do not replace profile topology or introduce fixed fallback dimensions.
