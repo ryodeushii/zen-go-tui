@@ -11,7 +11,7 @@ use crate::app::{
 };
 use crate::device::DevicePickerState;
 use crate::terminal;
-use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate};
+use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, SampleRate};
 
 use super::layouts::*;
 use super::mouse::mix_meter;
@@ -174,95 +174,47 @@ fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(Clear, popup);
     frame.render_widget(panel_block("Routing", Color::Magenta, true), popup);
 
-    if state.ui_profile.driver_kind != RuntimeDriverKind::ZenGo {
-        let inner = Rect::new(
-            popup.x.saturating_add(1),
-            popup.y.saturating_add(1),
-            popup.width.saturating_sub(2),
-            popup.height.saturating_sub(2),
+    let inner = Rect::new(
+        popup.x.saturating_add(1),
+        popup.y.saturating_add(1),
+        popup.width.saturating_sub(2),
+        popup.height.saturating_sub(2),
+    );
+    if inner.height > 0 {
+        Paragraph::new(Line::from(vec![chip(
+            "ROUTING",
+            Color::Black,
+            Color::LightMagenta,
+        )]))
+        .render(
+            Rect::new(inner.x, inner.y, inner.width, 1),
+            frame.buffer_mut(),
         );
-        if inner.height > 0 {
-            Paragraph::new(Line::from(vec![chip(
-                "ROUTING",
-                Color::Black,
-                Color::LightMagenta,
-            )]))
-            .render(
-                Rect::new(inner.x, inner.y, inner.width, 1),
-                frame.buffer_mut(),
-            );
-        }
-        for (row, capability) in state
-            .routing_capabilities
-            .iter()
-            .take(usize::from(inner.height.saturating_sub(1)))
-            .enumerate()
-        {
-            let observed = state
-                .routing_group(capability.destination)
-                .and_then(|group| group.sources.get(0).map(|_| group.sources.len()))
-                .unwrap_or(0);
-            let label = format!(
-                "{}  {} ch  observed {observed}",
-                capability.name, capability.channel_count
-            );
-            Paragraph::new(Line::from(label)).render(
-                Rect::new(
-                    inner.x,
-                    inner.y.saturating_add(1).saturating_add(row as u16),
-                    inner.width,
-                    1,
-                ),
-                frame.buffer_mut(),
-            );
-        }
-        return;
     }
-
-    let rows = afx_routing_layout(popup);
-    Paragraph::new(Line::from(vec![chip(
-        "ROUTING",
-        Color::Black,
-        Color::LightMagenta,
-    )]))
-    .render(rows[0], frame.buffer_mut());
-    Paragraph::new(Line::from(
-        "Zen Go USB recordings mirror mixer strip assignments instead of using a separate routing matrix.",
-    ))
-    .wrap(Wrap { trim: false })
-    .render(rows[1], frame.buffer_mut());
-    Paragraph::new(Line::from("Edit here and mixer strips update immediately."))
-        .wrap(Wrap { trim: false })
-        .render(rows[2], frame.buffer_mut());
-    Paragraph::new(Line::from(vec![
-        Span::styled("PAIR", subdued_style()),
-        Span::raw("  "),
-        Span::styled("REC 1", strong_style(Color::LightCyan)),
-        Span::raw(" / "),
-        Span::styled("REC 2", strong_style(Color::LightCyan)),
-    ]))
-    .render(rows[3], frame.buffer_mut());
-
-    for pair in 0..4 {
-        let pair_area = rows[4 + pair];
-        render_afx_routing_row(pair_area, frame.buffer_mut(), state, pair);
+    for (row, capability) in state
+        .routing_capabilities
+        .iter()
+        .take(usize::from(inner.height.saturating_sub(1)))
+        .enumerate()
+    {
+        let observed = state
+            .routing_group(capability.destination)
+            .map_or(0, |group| group.sources.len());
+        let label = format!(
+            "{}  {} ch  observed {observed}",
+            capability.name, capability.channel_count
+        );
+        Paragraph::new(Line::from(label)).render(
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(1).saturating_add(row as u16),
+                inner.width,
+                1,
+            ),
+            frame.buffer_mut(),
+        );
     }
-
-    Paragraph::new(Line::from(vec![
-        Span::styled("TIP ", subdued_style()),
-        Span::styled(
-            "click a source chip or press `a` for the selected channel",
-            muted_style(),
-        ),
-    ]))
-    .wrap(Wrap { trim: false })
-    .render(rows[8], frame.buffer_mut());
-    Paragraph::new(Line::from(vec![
-        Span::styled("STATUS ", subdued_style()),
-        Span::styled(&state.ui.last_message, strong_style(Color::LightCyan)),
-    ]))
-    .wrap(Wrap { trim: false })
-    .render(rows[9], frame.buffer_mut());
+    // Routing groups are profile-defined; assignment editing happens from each strip source chip.
 }
 
 fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

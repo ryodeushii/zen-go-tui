@@ -3,7 +3,7 @@ use ratatui::widgets::{Block, Borders};
 
 use crate::app::{AppState, RawMapScope, RawPacketTab, MIXER_STRIP_PAGE_SIZE};
 use antelope_protocol::{
-    FaderDirection, FaderSemantics, MixerAddress, MixerControl, OutputControl, RuntimeDriverKind,
+    FaderDirection, FaderSemantics, InputControl, MixerAddress, MixerControl, OutputControl,
     RuntimeInputControlKind,
 };
 
@@ -186,15 +186,9 @@ pub(crate) fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
 }
 
 pub(crate) fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize, usize) {
-    let visible = MIXER_STRIP_PAGE_SIZE.min(usize::from(area.width.max(1)));
-    let total = state
-        .active_mixer_surface()
-        .and_then(|index| state.mixers().get(index))
-        .map_or(0, |surface| surface.strips.len());
-    let profile_visible = visible_mixer_strips(state);
-    let start = profile_visible.start.min(total.saturating_sub(visible));
-    let end = usize::min(start + visible, total);
-    (start, end)
+    let _ = area;
+    let visible = visible_mixer_strips(state);
+    (visible.start, visible.end)
 }
 
 pub(crate) fn mixer_strip_card_area(area: Rect, slot: usize) -> Rect {
@@ -621,14 +615,21 @@ pub(crate) fn routing_popup_area(area: Rect) -> Rect {
 }
 
 pub(crate) fn dynamic_routing_popup_area(area: Rect, state: &AppState) -> Rect {
-    if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
-        return routing_popup_area(area);
-    }
-    let width = area.width.clamp(44, 72);
+    let compatibility_defaults =
+        state.routing_assignment_available() && state.routing_capabilities.is_empty();
+    let width = if compatibility_defaults {
+        area.width.clamp(44, 58)
+    } else {
+        area.width.clamp(44, 72)
+    };
     let wanted = u16::try_from(state.routing_capabilities.len())
         .unwrap_or(u16::MAX)
         .saturating_add(4);
-    let height = wanted.clamp(6, area.height.max(1));
+    let height = if compatibility_defaults {
+        area.height.clamp(11, 14)
+    } else {
+        wanted.clamp(6, area.height.max(1))
+    };
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
@@ -844,6 +845,7 @@ pub(crate) struct DynamicInputControlRects {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DynamicMixerControlRects {
     pub card: Rect,
+    pub source: Option<Rect>,
     pub fader: Option<Rect>,
     pub pan: Option<Rect>,
     pub send: Option<Rect>,
@@ -881,10 +883,11 @@ pub(crate) fn dynamic_output_control_rects(
         let buttons = output_control_rects(row);
         return Some(DynamicOutputControlRects {
             row,
-            level: state
+            level: (state
                 .ui_profile
                 .declares_output(output.address, OutputControl::Level)
-                .then(|| output_level_slider_rect(row)),
+                && state.output_range(OutputControl::Level).is_some())
+            .then(|| output_level_slider_rect(row)),
             dim: state
                 .ui_profile
                 .declares_output(output.address, OutputControl::Dim)
@@ -903,11 +906,12 @@ pub(crate) fn dynamic_output_control_rects(
         x = x.saturating_add(width).saturating_add(1);
         (width > 0).then_some(rect)
     };
-    let level = state
+    let level = (state
         .ui_profile
         .declares_output(output.address, OutputControl::Level)
-        .then(|| take(12))
-        .flatten();
+        && state.output_range(OutputControl::Level).is_some())
+    .then(|| take(12))
+    .flatten();
     let dim = state
         .ui_profile
         .declares_output(output.address, OutputControl::Dim)
@@ -974,6 +978,49 @@ pub(crate) fn dynamic_input_rows(area: Rect, state: &AppState) -> Vec<(usize, us
     rows
 }
 
+pub(crate) fn dynamic_preamp_button_rects(
+    row: Rect,
+    state: &AppState,
+    input: &antelope_protocol::DynamicInputState,
+) -> Vec<(RuntimeInputControlKind, Rect)> {
+    let mut labels = Vec::new();
+    let mut kinds = Vec::new();
+    let declares = |kind| {
+        state
+            .ui_profile
+            .input_capabilities(input.address)
+            .iter()
+            .any(|capability| capability.kind == kind)
+    };
+    if declares(RuntimeInputControlKind::Gain) {
+        labels.extend([ADJUST_DOWN_BUTTON_LABEL, ADJUST_UP_BUTTON_LABEL]);
+        kinds.extend([RuntimeInputControlKind::Gain, RuntimeInputControlKind::Gain]);
+    }
+    for (kind, label) in [
+        (
+            RuntimeInputControlKind::Mode,
+            input.mode.map_or("MODE", |_| "MODE"),
+        ),
+        (RuntimeInputControlKind::Phantom, "48V"),
+        (RuntimeInputControlKind::Phase, "PH"),
+        (RuntimeInputControlKind::Link, "LINK"),
+    ] {
+        if declares(kind) {
+            labels.push(label);
+            kinds.push(kind);
+        }
+    }
+    inline_chip_rects(
+        preamp_card_inner_layout(row)[1].x,
+        preamp_card_inner_layout(row)[1].y,
+        &labels,
+    )
+    .into_iter()
+    .zip(kinds)
+    .map(|(rect, kind)| (kind, rect))
+    .collect()
+}
+
 pub(crate) fn dynamic_input_control_rects(
     row: Rect,
     state: &AppState,
@@ -986,14 +1033,23 @@ pub(crate) fn dynamic_input_control_rects(
         .inputs
         .get(input_index)?;
     if row.height >= 3 {
-        let buttons = preamp_button_rects(row, antelope_protocol::PreampInputState::from_raw(0, 0));
+        let buttons = dynamic_preamp_button_rects(row, state, input);
+        let button_for = |kind| {
+            buttons
+                .iter()
+                .find(|(candidate, _)| *candidate == kind)
+                .map(|(_, rect)| *rect)
+        };
         return Some(DynamicInputControlRects {
             row,
-            gain: Some(preamp_gain_slider_rect(row)),
-            mode: Some(buttons[2]),
-            phantom: Some(buttons[3]),
-            phase: Some(buttons[4]),
-            link: None,
+            gain: state
+                .ui_profile
+                .declares_input(input.address, InputControl::Gain)
+                .then(|| preamp_gain_slider_rect(row)),
+            mode: button_for(RuntimeInputControlKind::Mode),
+            phantom: button_for(RuntimeInputControlKind::Phantom),
+            phase: button_for(RuntimeInputControlKind::Phase),
+            link: button_for(RuntimeInputControlKind::Link),
         });
     }
     let mut x = row.x.saturating_add(row.width.min(10));
@@ -1054,18 +1110,26 @@ pub(crate) fn dynamic_mixer_control_rects(
             .find(|strip| strip.strip == address.strip)?;
     }
     let rows = mixer_strip_rows(card);
-    let fader = state
+    let source = address.strip != 0 && state.routing_assignment_available();
+    let fader = (state
         .ui_profile
         .declares_mixer(address.surface, MixerControl::Fader)
-        .then(|| mixer_level_slider_rect(card));
-    let pan = state
+        && state.mixer_fader(address.surface).is_some())
+    .then(|| mixer_level_slider_rect(card));
+    let pan = (state
         .ui_profile
         .declares_mixer(address.surface, MixerControl::Pan)
-        .then_some(rows[2]);
-    let send = state
+        && state
+            .mixer_range(address.surface, MixerControl::Pan)
+            .is_some())
+    .then_some(rows[2]);
+    let send = (state
         .ui_profile
         .declares_mixer(address.surface, MixerControl::Send)
-        .then_some(rows[4]);
+        && state
+            .mixer_range(address.surface, MixerControl::Send)
+            .is_some())
+    .then_some(rows[4]);
     let labels = [
         state.ui_profile.declares_link(address.surface)
             && address.strip != 0
@@ -1095,8 +1159,27 @@ pub(crate) fn dynamic_mixer_control_rects(
         rect
     });
     let mute = labels[2].then(|| rects[cursor]);
+    let source_label = state
+        .active_mixer_surface()
+        .and_then(|surface| {
+            address
+                .strip
+                .checked_sub(1)
+                .and_then(|index| state.mixer.channels.get(surface)?.get(usize::from(index)))
+        })
+        .and_then(|channel| channel.assignment)
+        .map_or("SOURCE ?", |assignment| assignment.label());
     Some(DynamicMixerControlRects {
         card,
+        source: source.then(|| {
+            let (_, rect) = mixer_header_chip_rects(card, source_label);
+            Rect {
+                x: card.x.saturating_add(card.width / 2),
+                y: rect.y,
+                width: card.width.saturating_sub(card.width / 2),
+                height: rect.height.max(3),
+            }
+        }),
         fader,
         pan,
         send,
@@ -1363,8 +1446,10 @@ pub(crate) fn bounded_signal_area(area: Rect) -> Rect {
     )
 }
 
-pub(crate) fn output_step_from_ratio(ratio: f64) -> u8 {
-    ((1.0 - ratio.clamp(0.0, 1.0)) * 96.0).round() as u8
+pub(crate) fn output_step_from_ratio(ratio: f64, range: (i32, i32)) -> u8 {
+    let (min, max) = range;
+    let value = max as f64 - ratio.clamp(0.0, 1.0) * (max - min) as f64;
+    value.round().clamp(0.0, f64::from(u8::MAX)) as u8
 }
 
 pub(crate) fn fader_ratio(value: i32, semantics: FaderSemantics) -> f64 {
@@ -1418,24 +1503,26 @@ pub(crate) fn visible_mixer_strips(state: &AppState) -> std::ops::Range<usize> {
     start..end
 }
 
-pub(crate) fn pan_from_ratio(ratio: f64) -> antelope_protocol::PanState {
-    let span = (antelope_protocol::PanState::MAX - antelope_protocol::PanState::MIN) as f64;
-    let raw = antelope_protocol::PanState::MIN as f64 + span * ratio.clamp(0.0, 1.0);
-    antelope_protocol::PanState::from_raw(raw.round() as u8)
+pub(crate) fn pan_from_ratio(ratio: f64, range: (i32, i32)) -> antelope_protocol::PanState {
+    let (min, max) = range;
+    let raw = min as f64 + (max - min) as f64 * ratio.clamp(0.0, 1.0);
+    antelope_protocol::PanState::from_raw(raw.round().clamp(0.0, f64::from(u8::MAX)) as u8)
 }
 
-pub(crate) fn preamp_gain_from_ratio(
-    input: antelope_protocol::PreampInputState,
-    ratio: f64,
-) -> Option<u8> {
-    use antelope_protocol::PreampMode;
-    let ratio = ratio.clamp(0.0, 1.0);
-    match input.mode {
-        PreampMode::Mic => Some((ratio * 65.0).round() as u8),
-        PreampMode::Line => Some((-6 + (ratio * 26.0).round() as i8) as u8),
-        PreampMode::HiZ => Some((ratio * 45.0).round() as u8),
-        PreampMode::Unknown(_) => None,
-    }
+pub(crate) fn value_from_ratio(ratio: f64, range: (i32, i32)) -> i32 {
+    let (min, max) = range;
+    (min as f64 + (max - min) as f64 * ratio.clamp(0.0, 1.0))
+        .round()
+        .clamp(min as f64, max as f64) as i32
+}
+
+pub(crate) fn preamp_gain_from_ratio(range: (i32, i32), ratio: f64) -> Option<i32> {
+    let (min, max) = range;
+    Some(
+        (min as f64 + (max - min) as f64 * ratio.clamp(0.0, 1.0))
+            .round()
+            .clamp(min as f64, max as f64) as i32,
+    )
 }
 
 pub(crate) fn slider_state(ratio: Option<f64>) -> tui_slider::SliderState {

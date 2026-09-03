@@ -126,16 +126,7 @@ impl AppState {
             .iter()
             .map(|output| DynamicOutputState {
                 address: antelope_protocol::OutputAddress { id: output.id },
-                name: if profile.identity.pid == 0xa015 {
-                    match output.id {
-                        0 => "Monitor".into(),
-                        1 => "HP 1".into(),
-                        2 => "HP 2".into(),
-                        _ => output.name.clone(),
-                    }
-                } else {
-                    output.name.clone()
-                },
+                name: output.name.clone(),
                 level: None,
                 muted: None,
                 dimmed: None,
@@ -326,6 +317,92 @@ impl AppState {
     /// Return fader semantics declared by selected runtime profile for mixer surface.
     pub(crate) fn mixer_fader(&self, surface: u8) -> Option<antelope_protocol::FaderSemantics> {
         self.runtime_profile.as_ref()?.mixer_fader(surface)
+    }
+
+    pub(crate) fn routing_assignment_available(&self) -> bool {
+        self.runtime_profile.is_none() || self.ui_profile.supports_any_routing()
+    }
+
+    pub(crate) fn mixer_range(
+        &self,
+        surface: u8,
+        control: antelope_protocol::MixerControl,
+    ) -> Option<(i32, i32)> {
+        let mixer = self
+            .runtime_profile
+            .as_ref()?
+            .mixers()
+            .iter()
+            .find(|mixer| mixer.mix_index == surface)?;
+        match control {
+            antelope_protocol::MixerControl::Fader => self
+                .mixer_fader(surface)
+                .map(|fader| (fader.min, fader.max)),
+            antelope_protocol::MixerControl::Pan => mixer.pan_range,
+            antelope_protocol::MixerControl::Send => mixer.send_range,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn output_range(
+        &self,
+        control: antelope_protocol::OutputControl,
+    ) -> Option<(i32, i32)> {
+        let name = match control {
+            antelope_protocol::OutputControl::Level => "bus_level",
+            _ => return None,
+        };
+        self.runtime_profile
+            .as_ref()?
+            .params
+            .iter()
+            .find(|param| param.name == name)
+            .and_then(|param| param.range)
+    }
+
+    pub(crate) fn input_range(
+        &self,
+        address: antelope_protocol::InputAddress,
+        mode: Option<i32>,
+    ) -> Option<(i32, i32)> {
+        let input = self
+            .runtime_profile
+            .as_ref()?
+            .inputs
+            .iter()
+            .find(|input| input.space_id == address.space && input.index == address.index)?;
+        let capability = self
+            .runtime_profile
+            .as_ref()?
+            .address_spaces
+            .iter()
+            .find(|space| space.space_id == input.space_id)?
+            .input_capabilities
+            .iter()
+            .find(|capability| {
+                capability.kind == antelope_protocol::RuntimeInputControlKind::Gain
+            })?;
+        let parameter = self
+            .runtime_profile
+            .as_ref()?
+            .params
+            .iter()
+            .find(|param| param.name == capability.parameter)?;
+        mode.and_then(|mode| {
+            let mode_name = match mode {
+                0 => "mic",
+                1 => "line",
+                2 => "hiz",
+                _ => return None,
+            };
+            parameter
+                .range_by_mode
+                .iter()
+                .find(|(name, _)| name == mode_name)
+                .map(|(_, range)| *range)
+        })
+        .or(parameter.range)
+        .or_else(|| parameter.range_by_mode.first().map(|(_, range)| *range))
     }
 
     pub fn routing_group(&self, destination: u16) -> Option<&DynamicRoutingGroup> {

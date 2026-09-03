@@ -340,6 +340,11 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     status: status(param.status).into(),
                     applies_to: param.applies_to.into(),
                     range: param.range,
+                    range_by_mode: param
+                        .range_by_mode
+                        .iter()
+                        .filter_map(|range| range.range.map(|value| (range.name.into(), value)))
+                        .collect(),
                     values: param
                         .values
                         .iter()

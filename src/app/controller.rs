@@ -1004,11 +1004,15 @@ impl Controller {
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
         self.state.output.selected = index;
-        let current = output.level.unwrap_or(0x30).clamp(0, 0x60);
+        let (min, max) = self
+            .state
+            .output_range(OutputControl::Level)
+            .ok_or_else(|| anyhow::anyhow!("output level range unavailable"))?;
+        let current = output.level.unwrap_or(min).clamp(min, max);
         let next = if increase {
-            current.saturating_sub(1)
+            current.saturating_sub(1).max(min)
         } else {
-            current.saturating_add(1).min(0x60)
+            current.saturating_add(1).min(max)
         };
         self.send(
             Action::SetOutput {
@@ -1035,11 +1039,15 @@ impl Controller {
             .map(|output| output.address)
             .ok_or_else(|| anyhow::anyhow!("output index {index} unavailable"))?;
         self.state.output.selected = index;
+        let (min, max) = self
+            .state
+            .output_range(OutputControl::Level)
+            .ok_or_else(|| anyhow::anyhow!("output level range unavailable"))?;
         self.send(
             Action::SetOutput {
                 address,
                 control: OutputControl::Level,
-                value: ControlValue::Int(i32::from(step.min(0x60))),
+                value: ControlValue::Int(i32::from(step).clamp(min, max)),
             },
             pending,
         )?;
@@ -1353,18 +1361,23 @@ impl Controller {
     ) -> Result<()> {
         self.ensure_input_control(address, InputControl::Gain)?;
         let slot = self.input_at_address(address)?;
-        let current = slot
-            .gain
-            .and_then(|value| u8::try_from(value).ok())
-            .unwrap_or(0);
-        let raw = next_preamp_gain_raw(current, increase);
+        let (min, max) = self
+            .state
+            .input_range(address, slot.mode)
+            .ok_or_else(|| anyhow::anyhow!("input gain range unavailable"))?;
+        let current = slot.gain.unwrap_or(min).clamp(min, max);
+        let raw = if increase {
+            current.saturating_add(1).min(max)
+        } else {
+            current.saturating_sub(1).max(min)
+        };
         self.handle_set_input_gain_at(address, raw, pending)
     }
 
     fn handle_set_input_gain_at(
         &mut self,
         address: InputAddress,
-        raw: u8,
+        raw: i32,
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.ensure_input_control(address, InputControl::Gain)?;
@@ -1373,7 +1386,7 @@ impl Controller {
             Action::SetInput {
                 address,
                 control: InputControl::Gain,
-                value: ControlValue::Int(i32::from(raw)),
+                value: ControlValue::Int(raw),
             },
             pending,
         )
@@ -1715,42 +1728,61 @@ impl Controller {
     ) -> Result<()> {
         self.ensure_mixer_control(address, MixerControl::Fader)?;
         let strip = self.mixer_strip_at_address(address)?;
-        let current = strip.fader.unwrap_or(0x20).clamp(0, 0x60);
-        let next = if increase {
-            current.saturating_sub(1)
-        } else {
-            current.saturating_add(1).min(0x60)
-        };
+        let semantics = self
+            .state
+            .mixer_fader(address.surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer fader semantics unavailable"))?;
+        let current = strip
+            .fader
+            .ok_or_else(|| anyhow::anyhow!("mixer fader value unavailable"))?
+            .clamp(semantics.min, semantics.max);
+        let next = step_fader(current, increase, semantics);
         self.send_complete_mixer_change(address, |strip| strip.fader = Some(next))
     }
 
     fn handle_set_mixer_level_at(&mut self, address: MixerAddress, level: u8) -> Result<()> {
         self.ensure_mixer_control(address, MixerControl::Fader)?;
-        self.send_complete_mixer_change(address, |strip| {
-            strip.fader = Some(i32::from(level.min(0x5a)))
-        })
+        let semantics = self
+            .state
+            .mixer_fader(address.surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer fader semantics unavailable"))?;
+        let level = i32::from(level).clamp(semantics.min, semantics.max);
+        self.send_complete_mixer_change(address, |strip| strip.fader = Some(level))
     }
 
     fn handle_adjust_mixer_pan_at(&mut self, address: MixerAddress, right: bool) -> Result<()> {
         self.ensure_mixer_control(address, MixerControl::Pan)?;
         let strip = self.mixer_strip_at_address(address)?;
-        let current = strip.pan.unwrap_or(i32::from(PanState::center().raw()));
+        let (min, max) = self
+            .state
+            .mixer_range(address.surface, MixerControl::Pan)
+            .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
+        let current = strip.pan.unwrap_or((min + max) / 2).clamp(min, max);
         let next = if right {
-            current.saturating_add(1).min(i32::from(PanState::MAX))
+            current.saturating_add(1).min(max)
         } else {
-            current.saturating_sub(1).max(i32::from(PanState::MIN))
+            current.saturating_sub(1).max(min)
         };
         self.send_complete_mixer_change(address, |strip| strip.pan = Some(next))
     }
 
     fn handle_set_mixer_pan_at(&mut self, address: MixerAddress, pan: PanState) -> Result<()> {
         self.ensure_mixer_control(address, MixerControl::Pan)?;
-        self.send_complete_mixer_change(address, |strip| strip.pan = Some(i32::from(pan.raw())))
+        let (min, max) = self
+            .state
+            .mixer_range(address.surface, MixerControl::Pan)
+            .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
+        let value = i32::from(pan.raw()).clamp(min, max);
+        self.send_complete_mixer_change(address, |strip| strip.pan = Some(value))
     }
 
     fn handle_set_mixer_send_at(&mut self, address: MixerAddress, send: i32) -> Result<()> {
         self.ensure_mixer_control(address, MixerControl::Send)?;
-        self.send_complete_mixer_change(address, |strip| strip.send = Some(send))
+        let (min, max) = self
+            .state
+            .mixer_range(address.surface, MixerControl::Send)
+            .ok_or_else(|| anyhow::anyhow!("mixer send range unavailable"))?;
+        self.send_complete_mixer_change(address, |strip| strip.send = Some(send.clamp(min, max)))
     }
 
     fn handle_toggle_mixer_mute_at(&mut self, address: MixerAddress) -> Result<()> {
@@ -1807,12 +1839,15 @@ impl Controller {
         self.state.ui.focus = FocusArea::Mixer;
         let (address, strip) = self.mixer_strip_at_ui(index)?;
         self.state.mixer.selected_channel = index;
-        let current = strip.fader.unwrap_or(0x20).clamp(0, 0x60);
-        let next = if increase {
-            current.saturating_sub(1)
-        } else {
-            current.saturating_add(1).min(0x60)
-        };
+        let semantics = self
+            .state
+            .mixer_fader(address.surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer fader semantics unavailable"))?;
+        let current = strip
+            .fader
+            .ok_or_else(|| anyhow::anyhow!("mixer fader value unavailable"))?
+            .clamp(semantics.min, semantics.max);
+        let next = step_fader(current, increase, semantics);
         self.send_complete_mixer_change(address, |strip| strip.fader = Some(next))
     }
 
@@ -1825,9 +1860,12 @@ impl Controller {
         self.state.ui.focus = FocusArea::Mixer;
         let (address, _) = self.mixer_strip_at_ui(index)?;
         self.state.mixer.selected_channel = index;
-        self.send_complete_mixer_change(address, |strip| {
-            strip.fader = Some(i32::from(level.min(0x5a)))
-        })
+        let semantics = self
+            .state
+            .mixer_fader(address.surface)
+            .ok_or_else(|| anyhow::anyhow!("mixer fader semantics unavailable"))?;
+        let level = i32::from(level).clamp(semantics.min, semantics.max);
+        self.send_complete_mixer_change(address, |strip| strip.fader = Some(level))
     }
 
     fn handle_adjust_mixer_pan(
@@ -1839,11 +1877,15 @@ impl Controller {
         self.state.ui.focus = FocusArea::Mixer;
         let (address, strip) = self.mixer_strip_at_ui(index)?;
         self.state.mixer.selected_channel = index;
-        let current = strip.pan.unwrap_or(i32::from(PanState::center().raw()));
+        let (min, max) = self
+            .state
+            .mixer_range(address.surface, MixerControl::Pan)
+            .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
+        let current = strip.pan.unwrap_or((min + max) / 2).clamp(min, max);
         let next = if right {
-            current.saturating_add(1).min(i32::from(PanState::MAX))
+            current.saturating_add(1).min(max)
         } else {
-            current.saturating_sub(1).max(i32::from(PanState::MIN))
+            current.saturating_sub(1).max(min)
         };
         self.send_complete_mixer_change(address, |strip| strip.pan = Some(next))
     }
@@ -1857,7 +1899,12 @@ impl Controller {
         self.state.ui.focus = FocusArea::Mixer;
         let (address, _) = self.mixer_strip_at_ui(index)?;
         self.state.mixer.selected_channel = index;
-        self.send_complete_mixer_change(address, |strip| strip.pan = Some(i32::from(pan.raw())))
+        let (min, max) = self
+            .state
+            .mixer_range(address.surface, MixerControl::Pan)
+            .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
+        let value = i32::from(pan.raw()).clamp(min, max);
+        self.send_complete_mixer_change(address, |strip| strip.pan = Some(value))
     }
 
     fn handle_toggle_mixer_mute(
@@ -1919,6 +1966,9 @@ impl Controller {
                 .ok_or_else(|| anyhow::anyhow!("mixer strip must be one-based"))?,
         );
         let (address, _) = self.mixer_strip_at_ui(strip_index)?;
+        if !self.state.routing_assignment_available() {
+            bail!("routing assignment control is unsupported");
+        }
         let surface_index = self
             .state
             .mixers()
@@ -1959,6 +2009,9 @@ impl Controller {
         assignment: MixerAssignment,
         pending: Option<PendingMutation>,
     ) -> Result<()> {
+        if !self.state.routing_assignment_available() {
+            bail!("routing assignment control is unsupported");
+        }
         self.state.popup.assignment_picker = None;
         self.state.popup.selected_index = 0;
         let changed_channel = u16::from(
@@ -2230,65 +2283,17 @@ impl Controller {
                 )?;
             }
             FocusArea::Mixer => {
-                let active_channel =
-                    self.state.active_mixer_channels()[self.state.mixer.selected_channel];
-                let channel = active_channel.channel;
-                let current = active_channel.level.unwrap_or(0x20);
-                let next = if increase {
-                    current.saturating_sub(1)
-                } else {
-                    current.saturating_add(1).min(0x60)
-                };
-                self.send_mixer_level_change(
-                    MixerSurface::from_surface(self.state.mixer.surface),
-                    channel,
-                    next,
-                )?;
+                let (address, _) = self.mixer_strip_at_ui(self.state.mixer.selected_channel)?;
+                self.handle_adjust_mixer_level_at(address, increase)?;
             }
             FocusArea::Preamp => {
-                let input = self.state.preamp.selected_input as u8;
-                let preamp_input = if input == 0 {
-                    &self.state.preamp.state.input1
-                } else {
-                    &self.state.preamp.state.input2
-                };
-                let next = match preamp_input.mode {
-                    PreampMode::Mic => {
-                        if increase {
-                            preamp_input.gain_raw.saturating_add(1).min(0x41)
-                        } else {
-                            preamp_input.gain_raw.saturating_sub(1)
-                        }
-                    }
-                    PreampMode::Line => {
-                        let current = i8::from_ne_bytes([preamp_input.gain_raw]);
-                        let next = if increase {
-                            (current + 1).min(20)
-                        } else {
-                            (current - 1).max(-6)
-                        };
-                        next as u8
-                    }
-                    PreampMode::HiZ => {
-                        if increase {
-                            preamp_input.gain_raw.saturating_add(1).min(0x2d)
-                        } else {
-                            preamp_input.gain_raw.saturating_sub(1)
-                        }
-                    }
-                    PreampMode::Unknown(_) => preamp_input.gain_raw,
-                };
-                self.send(
-                    Action::SetInput {
-                        address: InputAddress {
-                            space: 0,
-                            index: u16::from(input),
-                        },
-                        control: InputControl::Gain,
-                        value: ControlValue::Int(i32::from(next)),
-                    },
-                    pending,
-                )?;
+                let input = self
+                    .state
+                    .input_spaces
+                    .first()
+                    .and_then(|space| space.inputs.get(self.state.preamp.selected_input))
+                    .ok_or_else(|| anyhow::anyhow!("selected input unavailable"))?;
+                self.handle_adjust_input_gain_at(input.address, increase, pending)?;
             }
             _ => {}
         }
@@ -2312,34 +2317,20 @@ impl Controller {
                 )?;
             }
             FocusArea::Mixer => {
-                let active_channel =
-                    self.state.active_mixer_channels()[self.state.mixer.selected_channel];
-                let channel = active_channel.channel;
-                let muted = !active_channel.muted.unwrap_or(false);
-                self.send_mixer_mute_change(
-                    MixerSurface::from_surface(self.state.mixer.surface),
-                    channel,
-                    muted,
-                )?;
+                let (address, strip) = self.mixer_strip_at_ui(self.state.mixer.selected_channel)?;
+                self.ensure_mixer_control(address, MixerControl::Mute)?;
+                self.send_complete_mixer_change(address, |slot| {
+                    slot.muted = Some(!strip.muted.unwrap_or(false))
+                })?;
             }
             FocusArea::Preamp => {
-                let input = self.state.preamp.selected_input as u8;
-                let current = if input == 0 {
-                    self.state.preamp.state.input1
-                } else {
-                    self.state.preamp.state.input2
-                };
-                self.send(
-                    Action::SetInput {
-                        address: InputAddress {
-                            space: 0,
-                            index: u16::from(input),
-                        },
-                        control: InputControl::Phantom,
-                        value: ControlValue::Bool(!current.phantom_on),
-                    },
-                    pending,
-                )?;
+                let input = self
+                    .state
+                    .input_spaces
+                    .first()
+                    .and_then(|space| space.inputs.get(self.state.preamp.selected_input))
+                    .ok_or_else(|| anyhow::anyhow!("selected input unavailable"))?;
+                self.handle_toggle_input_phantom_at(input.address, pending)?;
             }
             _ => {}
         }
@@ -2405,6 +2396,17 @@ pub(crate) fn routing_source_from_assignment(assignment: MixerAssignment) -> Rou
             index: u16::from(channel - 1),
         },
     }
+}
+
+fn step_fader(current: i32, increase: bool, semantics: antelope_protocol::FaderSemantics) -> i32 {
+    let delta = match (increase, semantics.direction) {
+        (true, antelope_protocol::FaderDirection::Direct)
+        | (false, antelope_protocol::FaderDirection::Attenuation) => 1,
+        _ => -1,
+    };
+    current
+        .saturating_add(delta)
+        .clamp(semantics.min, semantics.max)
 }
 
 fn next_preamp_gain_raw(current: u8, up: bool) -> u8 {

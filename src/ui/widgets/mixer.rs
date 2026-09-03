@@ -8,8 +8,7 @@ use tui_slider::{Slider, SliderOrientation};
 use crate::app::{AppState, FocusArea};
 use crate::terminal;
 use antelope_protocol::{
-    meter_display_db, DynamicMixerStrip, FaderDirection, FaderSemantics, OutputMode, OutputState,
-    PreampInputState, PreampMode,
+    meter_display_db, DynamicMixerStrip, OutputMode, OutputState, PreampInputState, PreampMode,
 };
 
 use super::super::layouts::*;
@@ -538,11 +537,34 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
         },
     )))
     .render(label_rect, buffer);
+    if let Some(rect) = controls.source {
+        let source = address
+            .strip
+            .checked_sub(1)
+            .and_then(|index| {
+                state
+                    .active_mixer_surface()
+                    .and_then(|surface| state.mixer.channels.get(surface)?.get(usize::from(index)))
+            })
+            .and_then(|channel| channel.assignment)
+            .map_or_else(
+                || "SOURCE ?".to_string(),
+                |assignment| assignment.label().to_string(),
+            );
+        Paragraph::new(Line::from(chip(&source, Color::Black, Color::LightCyan)))
+            .alignment(Alignment::Right)
+            .render(rect, buffer);
+    }
     let enabled = |control| state.ui_profile.supports_mixer(address.surface, control);
     if let Some(rect) = controls.pan {
-        let ratio = strip
-            .pan
-            .map_or(0.5, |value| (value as f64 / 64.0).clamp(0.0, 1.0));
+        let ratio = state
+            .mixer_range(address.surface, antelope_protocol::MixerControl::Pan)
+            .and_then(|(min, max)| {
+                strip
+                    .pan
+                    .map(|value| ((value - min) as f64 / (max - min).max(1) as f64).clamp(0.0, 1.0))
+            })
+            .unwrap_or(0.5);
         render_pan_slider(rect, buffer, ratio);
         Paragraph::new(Line::from(Span::styled(
             strip
@@ -556,14 +578,7 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
         )))
         .render(mixer_strip_rows(controls.card)[1], buffer);
     }
-    let semantics = state
-        .mixer_fader(address.surface)
-        .unwrap_or(FaderSemantics {
-            min: 0,
-            max: 90,
-            direction: FaderDirection::Direct,
-            unity: 0,
-        });
+    let semantics = state.mixer_fader(address.surface);
     let rows = mixer_strip_rows(controls.card);
     Paragraph::new(Line::from(Span::styled(
         strip
@@ -578,14 +593,14 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
         rows[5],
         buffer,
         strip.meter.and_then(meter_display_db),
-        strip.fader.map(|value| fader_ratio(value, semantics)),
+        semantics.and_then(|semantics| strip.fader.map(|value| fader_ratio(value, semantics))),
         None,
     );
     if let Some(rect) = controls.fader {
         render_level_slider(
             rect,
             buffer,
-            strip.fader.map(|value| fader_ratio(value, semantics)),
+            semantics.and_then(|semantics| strip.fader.map(|value| fader_ratio(value, semantics))),
             if enabled(antelope_protocol::MixerControl::Fader) {
                 Color::Yellow
             } else {
@@ -593,9 +608,14 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
             },
         );
         Paragraph::new(Line::from(Span::styled(
-            strip.fader.map_or_else(
+            semantics.map_or_else(
                 || "LVL ?".into(),
-                |value| format!("LVL {} dB", fader_display_db(value, semantics)),
+                |semantics| {
+                    strip.fader.map_or_else(
+                        || "LVL ?".into(),
+                        |value| format!("LVL {} dB", fader_display_db(value, semantics)),
+                    )
+                },
             ),
             strong_style(Color::Yellow),
         )))

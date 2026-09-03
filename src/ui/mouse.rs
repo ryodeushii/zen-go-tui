@@ -75,10 +75,15 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
         }
         Intent::ToggleMixerMute(_) => active_surface_supports(state, MixerControl::Mute),
         Intent::ToggleMixerSolo(_) => active_surface_supports(state, MixerControl::Solo),
-        Intent::ToggleMixerLink(_) | Intent::PickAssignment { .. } => state
+        Intent::ToggleMixerLink(_) => state
             .active_mixer_surface()
             .and_then(|index| state.mixers().get(index))
             .is_some_and(|surface| state.ui_profile.supports_link(surface.surface)),
+        Intent::OpenAssignmentPicker(strip) | Intent::PickAssignment { strip, .. } => {
+            *strip > 0
+                && antelope_protocol::MixerStrip::assignment_write_is_grounded(*strip)
+                && state.ui_profile.supports_any_routing()
+        }
         Intent::AdjustMixerLevelAt { address, .. } | Intent::SetMixerLevelAt { address, .. } => {
             state
                 .ui_profile
@@ -296,7 +301,7 @@ fn routing_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     if !contains_point(popup, point) {
         return Some(Intent::CloseRoutingPopup);
     }
-    if state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+    if state.routing_assignment_available() {
         afx_routing_mouse_action(popup, state, point)
     } else {
         None
@@ -697,7 +702,9 @@ fn dynamic_mixer_control_action(
     address: antelope_protocol::MixerAddress,
     point: (u16, u16),
     wheel: Option<bool>,
-    semantics: antelope_protocol::FaderSemantics,
+    semantics: Option<antelope_protocol::FaderSemantics>,
+    pan_range: Option<(i32, i32)>,
+    send_range: Option<(i32, i32)>,
 ) -> Option<Intent> {
     if let Some(increase) = wheel {
         if controls
@@ -721,7 +728,7 @@ fn dynamic_mixer_control_action(
         if let Some(ratio) = slider_ratio_for_horizontal_point(rect, point) {
             return Some(Intent::SetMixerPanAt {
                 address,
-                pan: pan_from_ratio(ratio),
+                pan: pan_from_ratio(ratio, pan_range?),
             });
         }
     }
@@ -729,7 +736,7 @@ fn dynamic_mixer_control_action(
         if let Some(ratio) = slider_ratio_for_vertical_point(rect, point) {
             return Some(Intent::SetMixerLevelAt {
                 address,
-                level: mixer_level_from_ratio(ratio, semantics),
+                level: mixer_level_from_ratio(ratio, semantics?),
             });
         }
     }
@@ -737,7 +744,7 @@ fn dynamic_mixer_control_action(
         if let Some(ratio) = slider_ratio_for_horizontal_point(rect, point) {
             return Some(Intent::SetMixerSendAt {
                 address,
-                send: (ratio * 90.0).round() as i32,
+                send: value_from_ratio(ratio, send_range?),
             });
         }
     }
@@ -779,19 +786,23 @@ fn dynamic_mixer_mouse_action(
         };
         let controls = dynamic_mixer_control_rects(card, state, address)?;
         if contains_point(card, point) {
+            if wheel.is_none()
+                && controls
+                    .source
+                    .is_some_and(|rect| contains_point(rect, point))
+            {
+                return u8::try_from(address.strip)
+                    .ok()
+                    .map(Intent::OpenAssignmentPicker);
+            }
             return dynamic_mixer_control_action(
                 controls,
                 address,
                 point,
                 wheel,
-                state
-                    .mixer_fader(address.surface)
-                    .unwrap_or(antelope_protocol::FaderSemantics {
-                        min: 0,
-                        max: 90,
-                        direction: antelope_protocol::FaderDirection::Direct,
-                        unity: 0,
-                    }),
+                state.mixer_fader(address.surface),
+                state.mixer_range(address.surface, MixerControl::Pan),
+                state.mixer_range(address.surface, MixerControl::Send),
             );
         }
     }
@@ -809,19 +820,23 @@ fn dynamic_mixer_mouse_action(
             strip: strip.strip,
         };
         let controls = dynamic_mixer_control_rects(card, state, address)?;
+        if wheel.is_none()
+            && controls
+                .source
+                .is_some_and(|rect| contains_point(rect, point))
+        {
+            return u8::try_from(address.strip)
+                .ok()
+                .map(Intent::OpenAssignmentPicker);
+        }
         return dynamic_mixer_control_action(
             controls,
             address,
             point,
             wheel,
-            state
-                .mixer_fader(address.surface)
-                .unwrap_or(antelope_protocol::FaderSemantics {
-                    min: 0,
-                    max: 90,
-                    direction: antelope_protocol::FaderDirection::Direct,
-                    unity: 0,
-                }),
+            state.mixer_fader(address.surface),
+            state.mixer_range(address.surface, MixerControl::Pan),
+            state.mixer_range(address.surface, MixerControl::Send),
         )
         .or_else(|| wheel.is_none().then_some(Intent::SelectMixerChannel(index)));
     }
@@ -878,46 +893,64 @@ fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
             .get(input_index)?;
         let controls = dynamic_input_control_rects(row, state, space_index, input_index)?;
         if row.height >= 3 {
-            let legacy = if input_index == 0 {
-                state.preamp.state.input1
-            } else {
-                state.preamp.state.input2
-            };
-            if let Some(ratio) =
-                slider_ratio_for_horizontal_point(preamp_gain_slider_rect(row), point)
-            {
-                return Some(Intent::SetPreampGain {
-                    input: input_index as u8,
-                    raw: preamp_gain_from_ratio(legacy, ratio)?,
-                });
+            let range = state.input_range(input.address, input.mode)?;
+            if let Some(gain) = controls.gain {
+                if let Some(ratio) = slider_ratio_for_horizontal_point(gain, point) {
+                    return Some(Intent::SetInputGainAt {
+                        address: input.address,
+                        raw: preamp_gain_from_ratio(range, ratio)?,
+                    });
+                }
             }
-            let buttons = preamp_button_rects(row, legacy);
-            if contains_point(buttons[0], point) {
-                return Some(Intent::AdjustPreampGain {
-                    input: input_index as u8,
+            let buttons = dynamic_preamp_button_rects(row, state, input);
+            if buttons
+                .first()
+                .is_some_and(|(_, rect)| contains_point(*rect, point))
+            {
+                return Some(Intent::AdjustInputGainAt {
+                    address: input.address,
                     increase: false,
                 });
             }
-            if contains_point(buttons[1], point) {
-                return Some(Intent::AdjustPreampGain {
-                    input: input_index as u8,
+            if buttons
+                .get(1)
+                .is_some_and(|(_, rect)| contains_point(*rect, point))
+            {
+                return Some(Intent::AdjustInputGainAt {
+                    address: input.address,
                     increase: true,
                 });
             }
-            if contains_point(buttons[2], point) {
-                return Some(Intent::OpenPreampModeSelector(input_index as u8));
+            if controls
+                .mode
+                .is_some_and(|rect| contains_point(rect, point))
+            {
+                return Some(Intent::CycleInputModeAt {
+                    address: input.address,
+                });
             }
-            if contains_point(buttons[3], point) {
-                return Some(Intent::TogglePreampPhantom(input_index as u8));
+            if controls
+                .phantom
+                .is_some_and(|rect| contains_point(rect, point))
+            {
+                return Some(Intent::ToggleInputPhantomAt {
+                    address: input.address,
+                });
             }
-            if contains_point(buttons[4], point) {
-                return Some(Intent::TogglePreampPhase(input_index as u8));
+            if controls
+                .phase
+                .is_some_and(|rect| contains_point(rect, point))
+            {
+                return Some(Intent::ToggleInputPhaseAt {
+                    address: input.address,
+                });
             }
             return Some(Intent::SelectPreampInput(input_index));
         }
         if let Some(gain) = controls.gain {
             if let Some(ratio) = slider_ratio_for_horizontal_point(gain, point) {
-                let value = (ratio.clamp(0.0, 1.0) * 65.0).round() as i32;
+                let value =
+                    preamp_gain_from_ratio(state.input_range(input.address, input.mode)?, ratio)?;
                 let control = state
                     .ui_profile
                     .input_capabilities(input.address)
@@ -929,7 +962,7 @@ fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
                 return Some(match control {
                     InputControl::Gain => Intent::SetInputGainAt {
                         address: input.address,
-                        raw: value as u8,
+                        raw: value,
                     },
                     InputControl::Parameter(parameter_id) => Intent::SetInputParameterAt {
                         address: input.address,
@@ -1004,9 +1037,12 @@ fn preamp_slider_wheel_action(
             .get(input_index)?;
         let controls = dynamic_input_control_rects(row, state, space_index, input_index)?;
         if row.height >= 3 {
-            if contains_point(wheel_hitbox(preamp_gain_slider_rect(row)), point) {
-                return Some(Intent::AdjustPreampGain {
-                    input: input_index as u8,
+            if controls
+                .gain
+                .is_some_and(|rect| contains_point(wheel_hitbox(rect), point))
+            {
+                return Some(Intent::AdjustInputGainAt {
+                    address: input.address,
                     increase,
                 });
             }
@@ -1059,7 +1095,7 @@ fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
             if let Some(ratio) = slider_ratio_for_horizontal_point(level, point) {
                 return Some(Intent::SetOutputLevel {
                     index,
-                    step: output_step_from_ratio(ratio).min(0x60),
+                    step: output_step_from_ratio(ratio, state.output_range(OutputControl::Level)?),
                 });
             }
         }
@@ -1097,7 +1133,7 @@ fn output_list_slider_mouse_action(
             if let Some(ratio) = slider_ratio_for_horizontal_point(level, point) {
                 return Some(Intent::SetOutputLevel {
                     index,
-                    step: output_step_from_ratio(ratio).min(0x60),
+                    step: output_step_from_ratio(ratio, state.output_range(OutputControl::Level)?),
                 });
             }
         }
@@ -1161,7 +1197,7 @@ pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) 
 }
 
 fn afx_routing_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
-    if !contains_point(area, point) {
+    if state.active_mixer_channels().len() < 8 || !contains_point(area, point) {
         return None;
     }
 

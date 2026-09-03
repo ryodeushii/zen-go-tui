@@ -295,10 +295,10 @@ impl UiProfileState {
         let routing_destinations = profile
             .routing_groups
             .iter()
-            .filter(|_| {
+            .filter(|group| {
                 confirmed("routing_batch_marker")
                     || confirmed("mix_channel_link")
-                    || entry.driver_kind == RuntimeDriverKind::ZenGo
+                    || !group.source_domains.is_empty()
             })
             .map(|group| group.destination)
             .collect();
@@ -392,6 +392,10 @@ impl UiProfileState {
 
     pub fn supports_routing(&self, destination: u16) -> bool {
         self.actionable && self.routing_destinations.contains(&destination)
+    }
+
+    pub fn supports_any_routing(&self) -> bool {
+        self.actionable && !self.routing_destinations.is_empty()
     }
 }
 

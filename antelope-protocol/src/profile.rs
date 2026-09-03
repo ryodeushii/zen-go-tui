@@ -313,6 +313,8 @@ pub struct RuntimeParam {
     pub status: String,
     pub applies_to: String,
     pub range: Option<(i32, i32)>,
+    #[serde(default)]
+    pub range_by_mode: Vec<(String, (i32, i32))>,
     pub values: Vec<(i32, String)>,
     pub frame: ParamReference,
     pub readback: ParamReference,

@@ -157,7 +157,7 @@ pub enum Intent {
     },
     SetInputGainAt {
         address: InputAddress,
-        raw: u8,
+        raw: i32,
     },
     AdjustInputParameterAt {
         address: InputAddress,
@@ -331,7 +331,7 @@ impl Intent {
                 slot.gain = Some(i32::from(*raw));
             }),
             Intent::SetInputGainAt { address, raw } => {
-                pending_input_change_at(state, *address, |slot| slot.gain = Some(i32::from(*raw)))
+                pending_input_change_at(state, *address, |slot| slot.gain = Some(*raw))
             }
             Intent::SetInputParameterAt { address, value, .. } => {
                 pending_input_change_at(state, *address, |slot| slot.gain = Some(*value))
