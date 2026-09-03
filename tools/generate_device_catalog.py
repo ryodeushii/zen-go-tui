@@ -2574,6 +2574,30 @@ def _build_routing_groups(profile: NormalizedProfile) -> list[dict[str, Any]]:
     return _runtime_topology(profile)[1]
 
 
+def _fader_domain(profile: NormalizedProfile) -> dict[str, Any] | None:
+    fader = profile.mixer.get("fader", {})
+    if not isinstance(fader, Mapping):
+        raise ProfileError("mixer.fader must be an object")
+    domain_keys = {"min", "max", "direction", "unity"}
+    if not domain_keys.intersection(fader):
+        return None
+    missing = domain_keys - fader.keys()
+    if missing:
+        missing_text = ", ".join(sorted(missing))
+        raise ProfileError(f"mixer.fader missing required domain fields: {missing_text}")
+    minimum = _checked_i32(fader["min"], "mixer.fader.min")
+    maximum = _checked_i32(fader["max"], "mixer.fader.max")
+    if minimum > maximum:
+        raise ProfileError("mixer.fader.min must not exceed mixer.fader.max")
+    direction = fader["direction"]
+    if not isinstance(direction, str) or not direction.strip():
+        raise ProfileError("mixer.fader.direction must be a non-empty string")
+    unity = _checked_i32(fader["unity"], "mixer.fader.unity")
+    if not minimum <= unity <= maximum:
+        raise ProfileError("mixer.fader.unity must fit mixer.fader min/max")
+    return {"min": minimum, "max": maximum, "direction": direction, "unity": unity}
+
+
 def _build_mixers(profile: NormalizedProfile) -> list[dict[str, Any]]:
     has_master, _ = _runtime_topology(profile)
     if has_master is None:
@@ -2585,6 +2609,7 @@ def _build_mixers(profile: NormalizedProfile) -> list[dict[str, Any]]:
     pan = profile.mixer.get("pan", {}) if isinstance(profile.mixer.get("pan", {}), Mapping) else {}
     fader_range = _range(fader.get("range"), "mixer.fader.range")
     fader_range = fader_range or _profile_param_range(profile, ("mix_fader",))
+    fader_domain = _fader_domain(profile)
     pan_range = _range(pan.get("range_deg"), "mixer.pan.range_deg")
     pan_range = pan_range or _profile_param_range(profile, ("mix_pan",))
     pan_center_value = pan.get("center", frame_mixer.get("pan_center"))
@@ -2609,6 +2634,7 @@ def _build_mixers(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 "strip_count": strip_count,
                 "has_master": has_master,
                 "fader_range": fader_range,
+                "fader": fader_domain,
                 "pan_range": pan_range,
                 "pan_center": pan_center,
                 "send_range": send_range,
@@ -3650,6 +3676,7 @@ def _frame_operations(
             operations.append(operation)
         if frame_id == "state_report":
             operations.extend(_orion_state_meter_operations(profile))
+            operations.extend(_candidate_preamp_meter_operations(profile))
         return _retain_meter_report_operations(profile, frame_id, operations)
 
     operations: list[dict[str, Any]] = []
@@ -3804,8 +3831,56 @@ def _frame_operations(
     walk(frame, "frame")
     if frame_id == "state_report":
         operations.extend(_orion_state_meter_operations(profile))
+        operations.extend(_candidate_preamp_meter_operations(profile))
     operations = _disambiguate_orion_inferred_semantics(profile, frame_id, operations)
     return _retain_meter_report_operations(profile, frame_id, operations)
+
+
+def _candidate_preamp_meters(profile: NormalizedProfile) -> list[dict[str, Any]]:
+    state = profile.frame.get("state_report")
+    if not isinstance(state, Mapping) or "candidate_preamp_meters" not in state:
+        return []
+    raw_meters = state["candidate_preamp_meters"]
+    if not isinstance(raw_meters, list):
+        raise ProfileError("frame.state_report.candidate_preamp_meters must be an array")
+    meters: list[dict[str, Any]] = []
+    for index, raw_meter in enumerate(raw_meters):
+        context = f"frame.state_report.candidate_preamp_meters[{index}]"
+        if not isinstance(raw_meter, Mapping):
+            raise ProfileError(f"{context} must be an object")
+        input_index = _checked_u8(raw_meter.get("input_index"), f"{context}.input_index")
+        offset = _checked_u16(raw_meter.get("offset"), f"{context}.offset")
+        status = raw_meter.get("status")
+        caveat = raw_meter.get("caveat")
+        if not isinstance(status, str) or not status.strip():
+            raise ProfileError(f"{context}.status must be a non-empty string")
+        if not isinstance(caveat, str) or not caveat.strip():
+            raise ProfileError(f"{context}.caveat must be a non-empty string")
+        meters.append(
+            {
+                "input_index": input_index,
+                "offset": offset,
+                "status": status,
+                "caveat": caveat,
+            }
+        )
+    return meters
+
+
+def _candidate_preamp_meter_operations(profile: NormalizedProfile) -> list[dict[str, Any]]:
+    return [
+        {
+            "op": "scalar",
+            "field": f"candidate_preamp_meter_{meter['input_index']}",
+            "offset": meter["offset"],
+            "width": 1,
+            "endian": "not_applicable",
+            "input_index": meter["input_index"],
+            "status": meter["status"],
+            "caveat": meter["caveat"],
+        }
+        for meter in _candidate_preamp_meters(profile)
+    ]
 
 
 def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | None, list[dict[str, int]]]:
@@ -3846,42 +3921,97 @@ def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | N
         "category_offset": _checked_u16(required["category_offset"], "frame.readback.category_offset"),
         "index_offset": _checked_u16(required["index_offset"], "frame.readback.index_offset"),
         "data_offset": _checked_u16(required["data_offset"], "frame.readback.data_offset"),
-        "category_counts": counts,
+        "category_counts": counts if counts else {},
     }
     bounds = {item["category"]: item["count"] for item in counts}
-    explicit_startup = raw.get("startup_queries")
-    if explicit_startup is not None:
-        if not isinstance(explicit_startup, list):
-            raise ProfileError("frame.readback.startup_queries must be an array")
-        startup: list[dict[str, int]] = []
-        for record_index, record in enumerate(explicit_startup):
+
+    def parse_queries(raw_queries: Any, field: str) -> list[dict[str, int]]:
+        if not isinstance(raw_queries, list):
+            raise ProfileError(f"{field} must be an array")
+        queries: list[dict[str, int]] = []
+        for record_index, record in enumerate(raw_queries):
+            context = f"{field}[{record_index}]"
             if not isinstance(record, Mapping):
-                raise ProfileError(
-                    f"frame.readback.startup_queries[{record_index}] must be an object"
-                )
-            category = _checked_u8(
-                record.get("category"),
-                f"frame.readback.startup_queries[{record_index}].category",
-            )
-            index = _checked_u8(
-                record.get("index"),
-                f"frame.readback.startup_queries[{record_index}].index",
-            )
+                raise ProfileError(f"{context} must be an object")
+            category = _checked_u8(record.get("category"), f"{context}.category")
+            index = _checked_u8(record.get("index"), f"{context}.index")
             count = bounds.get(category)
-            if count is None or index >= count:
+            if count is not None and index >= count:
                 raise ProfileError(
-                    f"frame.readback.startup_queries[{record_index}] category {category:#04x} "
-                    f"index {index} is outside confirmed finite bounds"
+                    f"{context} category {category:#04x} index {index} is outside confirmed finite bounds"
                 )
-            startup.append({"query_id": category, "sub_id": index})
-    else:
-        startup = [
-            {"query_id": item["category"], "sub_id": index}
-            for item in counts
-            for index in range(item["count"])
-            if index <= 0xFF
-        ]
-    return readback, startup
+            queries.append({"category": category, "index": index})
+        return queries
+
+    has_explicit_safe_queries = "safe_queries" in raw
+    safe_queries = parse_queries(raw["safe_queries"], "frame.readback.safe_queries") if has_explicit_safe_queries else None
+    if safe_queries is None:
+        explicit_startup = raw.get("startup_queries")
+        if explicit_startup is not None:
+            safe_queries = parse_queries(explicit_startup, "frame.readback.startup_queries")
+        else:
+            safe_queries = [
+                {"category": item["category"], "index": index}
+                for item in counts
+                for index in range(item["count"])
+                if index <= 0xFF
+            ]
+    if has_explicit_safe_queries:
+        readback["safe_queries"] = safe_queries
+
+    layouts_raw = raw.get("layouts", [])
+    if not isinstance(layouts_raw, list):
+        raise ProfileError("frame.readback.layouts must be an array")
+    safe_pairs = {(item["category"], item["index"]) for item in safe_queries}
+    layouts: list[dict[str, Any]] = []
+    seen_layout_pairs: set[tuple[int, int]] = set()
+    for layout_index, raw_layout in enumerate(layouts_raw):
+        context = f"frame.readback.layouts[{layout_index}]"
+        if not isinstance(raw_layout, Mapping):
+            raise ProfileError(f"{context} must be an object")
+        category = _checked_u8(raw_layout.get("category"), f"{context}.category")
+        index = _checked_u8(raw_layout.get("index"), f"{context}.index")
+        if (category, index) not in safe_pairs:
+            raise ProfileError(f"{context} query {category:#04x}:{index} is not in frame.readback.safe_queries")
+        if (category, index) in seen_layout_pairs:
+            raise ProfileError(f"{_profile_id(profile)}: {context} duplicates query {category:#04x}:{index}")
+        seen_layout_pairs.add((category, index))
+        kind = raw_layout.get("kind")
+        status = raw_layout.get("status")
+        if not isinstance(kind, str) or not kind.strip():
+            raise ProfileError(f"{context}.kind must be a non-empty string")
+        if not isinstance(status, str) or not status.strip():
+            raise ProfileError(f"{context}.status must be a non-empty string")
+        body_size = _checked_u16(raw_layout.get("body_size"), f"{context}.body_size")
+        record_count = _checked_u16(raw_layout.get("record_count"), f"{context}.record_count")
+        record_stride = _checked_u16(raw_layout.get("record_stride"), f"{context}.record_stride")
+        if body_size == 0 or record_count == 0 or record_stride == 0:
+            raise ProfileError(f"{context} body_size, record_count, and record_stride must be positive")
+        if record_count * record_stride > body_size:
+            raise ProfileError(f"{context}.record_count * record_stride exceeds body_size")
+        normalized_layout = dict(raw_layout)
+        normalized_layout.update(
+            {
+                "category": category,
+                "index": index,
+                "body_size": body_size,
+                "record_count": record_count,
+                "record_stride": record_stride,
+            }
+        )
+        for field in ("level_offset", "state_offset", "surface_stride"):
+            if field in raw_layout:
+                normalized_layout[field] = _checked_u16(raw_layout[field], f"{context}.{field}")
+        if "surface" in raw_layout:
+            normalized_layout["surface"] = _checked_u8(raw_layout["surface"], f"{context}.surface")
+        if "supported_fields" in raw_layout:
+            fields = raw_layout["supported_fields"]
+            if not isinstance(fields, list) or not all(isinstance(field, str) and field.strip() for field in fields):
+                raise ProfileError(f"{context}.supported_fields must be an array of non-empty strings")
+        layouts.append(normalized_layout)
+    if "layouts" in raw:
+        readback["layouts"] = layouts
+    return readback, [{"query_id": item["category"], "sub_id": item["index"]} for item in safe_queries]
 
 
 def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
@@ -3969,6 +4099,11 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
             }
             for group in _build_routing_groups(profile)
         ],
+        **(
+            {"state_report": {"candidate_preamp_meters": _candidate_preamp_meters(profile)}}
+            if _candidate_preamp_meters(profile)
+            else {}
+        ),
         "frames": [
             {
                 "id": frame["id"],

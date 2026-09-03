@@ -14,9 +14,17 @@ from typing import Any
 TOOLS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOLS_DIR.parent
 GENERATOR = TOOLS_DIR / "generate_device_catalog.py"
+ZEN_GO_PROFILE = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "zen_go_sc.json"
 sys.path.insert(0, str(TOOLS_DIR))
 
 import generate_device_catalog as generator  # noqa: E402
+
+
+def normalized_zen_go() -> dict[str, Any]:
+    profile = generator.load_profile(
+        ZEN_GO_PROFILE, REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
+    )
+    return generator._normalized_profile_record(profile)
 
 
 EXPECTED_PROFILES = {
@@ -173,6 +181,147 @@ def fixture_profiles() -> tempfile.TemporaryDirectory[str]:
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_zen_go_keeps_sparse_safe_queries_explicitly(self) -> None:
+        normalized = normalized_zen_go()
+        readback = normalized["readback"]
+
+        expected = [
+            {"category": 0x01, "index": 0},
+            {"category": 0x11, "index": 0},
+            {"category": 0x0A, "index": 0},
+            {"category": 0x17, "index": 0},
+            {"category": 0x18, "index": 0},
+            {"category": 0x11, "index": 1},
+            {"category": 0x03, "index": 0},
+            {"category": 0x03, "index": 1},
+            {"category": 0x03, "index": 2},
+            {"category": 0x03, "index": 3},
+            {"category": 0x03, "index": 4},
+            {"category": 0x03, "index": 5},
+            {"category": 0x03, "index": 6},
+            {"category": 0x03, "index": 7},
+            {"category": 0x03, "index": 8},
+            {"category": 0x03, "index": 9},
+            {"category": 0x0B, "index": 0},
+            {"category": 0x16, "index": 0},
+            {"category": 0x0A, "index": 0},
+            {"category": 0x04, "index": 0},
+            {"category": 0x0B, "index": 3},
+            {"category": 0x04, "index": 1},
+            {"category": 0x0B, "index": 3},
+            {"category": 0x04, "index": 2},
+            {"category": 0x0B, "index": 3},
+            {"category": 0x04, "index": 3},
+            {"category": 0x0B, "index": 3},
+            {"category": 0x15, "index": 0},
+            {"category": 0x19, "index": 0},
+            {"category": 0x19, "index": 1},
+            {"category": 0x07, "index": 0x27},
+            {"category": 0x07, "index": 0x2C},
+            {"category": 0x07, "index": 0x09},
+            {"category": 0x07, "index": 0x14},
+            {"category": 0x07, "index": 0x4C},
+            {"category": 0x19, "index": 2},
+            {"category": 0x19, "index": 3},
+            {"category": 0x19, "index": 4},
+            {"category": 0x19, "index": 5},
+            {"category": 0x19, "index": 6},
+            {"category": 0x19, "index": 7},
+            {"category": 0x19, "index": 8},
+            {"category": 0x19, "index": 9},
+            {"category": 0x19, "index": 10},
+            {"category": 0x19, "index": 11},
+            {"category": 0x0B, "index": 4},
+            {"category": 0x12, "index": 0},
+        ]
+        self.assertEqual(readback["category_counts"], {})
+        self.assertEqual(readback["safe_queries"], expected)
+        self.assertEqual(len(readback["safe_queries"]), 47)
+        self.assertEqual(readback["safe_queries"].count({"category": 0x0A, "index": 0}), 2)
+        self.assertEqual(readback["safe_queries"].count({"category": 0x0B, "index": 3}), 4)
+        self.assertIn({"category": 0x0B, "index": 3}, readback["safe_queries"])
+        self.assertTrue(all(item in readback["safe_queries"] for item in [
+            *[{"category": 0x03, "index": index} for index in range(10)],
+            *[{"category": 0x19, "index": index} for index in range(12)],
+        ]))
+
+    def test_zen_go_profile_declares_capture_scoped_mixer_layouts(self) -> None:
+        layouts = normalized_zen_go()["readback"]["layouts"]
+
+        q040 = next(layout for layout in layouts if layout["category"] == 0x04 and layout["index"] == 0)
+        q041 = next(layout for layout in layouts if layout["category"] == 0x04 and layout["index"] == 1)
+        q180 = next(layout for layout in layouts if layout["category"] == 0x18 and layout["index"] == 0)
+
+        self.assertEqual(
+            (q040["body_size"], q040["record_count"], q040["record_stride"]),
+            (34, 16, 2),
+        )
+        self.assertEqual((q040["level_offset"], q040["state_offset"], q040["surface"]), (2, 3, 0))
+        self.assertEqual(q041["surface"], 1)
+        self.assertEqual(
+            (q180["body_size"], q180["record_count"], q180["record_stride"]),
+            (64, 32, 2),
+        )
+        self.assertEqual(q180["supported_fields"], ["solo"])
+
+    def test_zen_go_profile_declares_candidate_preamp_meter_offsets(self) -> None:
+        meters = normalized_zen_go()["state_report"]["candidate_preamp_meters"]
+
+        self.assertEqual(
+            [(item["input_index"], item["offset"]) for item in meters],
+            [(0, 0xCE), (1, 0xCF)],
+        )
+        self.assertTrue(all(item["status"] == "observed" for item in meters))
+        self.assertTrue(all("mixed-signal" in item["caveat"] for item in meters))
+
+    def test_zen_go_profile_declares_attenuation_fader_domain(self) -> None:
+        fader = normalized_zen_go()["mixers"][0]["fader"]
+
+        self.assertEqual(
+            fader,
+            {"min": 0, "max": 90, "direction": "attenuation", "unity": 0},
+        )
+
+    def test_readback_declarations_validate_sparse_query_and_layout_geometry(self) -> None:
+        def profile_with_readback(safe_queries: list[dict[str, Any]], layout: dict[str, Any]) -> dict[str, Any]:
+            data = profile_data("Antelope Zen Go Synergy Core", "0xa015")
+            data["frame"]["readback"] = {
+                "request_magic": "0x74",
+                "subcmd": "0x10",
+                "response_magic": "0x75",
+                "response_discriminator_offset": 1,
+                "response_discriminator": 0,
+                "category_offset": 8,
+                "index_offset": 12,
+                "data_offset": 16,
+                "category_counts": {},
+                "safe_queries": safe_queries,
+                "layouts": [layout],
+            }
+            return data
+
+        with self.assertRaisesRegex(generator.ProfileError, r"safe_queries\[0\]\.category"):
+            generator.normalize_profile(
+                profile_with_readback(
+                    [{"category": 0x100, "index": 0}],
+                    {"category": 0x18, "index": 0, "kind": "observed", "body_size": 64, "record_count": 32, "record_stride": 2, "status": "observed"},
+                )
+            )
+        with self.assertRaisesRegex(generator.ProfileError, r"is not in frame\.readback\.safe_queries"):
+            generator.normalize_profile(
+                profile_with_readback(
+                    [{"category": 0x18, "index": 0}],
+                    {"category": 0x04, "index": 0, "kind": "mixer", "body_size": 34, "record_count": 16, "record_stride": 2, "status": "observed"},
+                )
+            )
+        with self.assertRaisesRegex(generator.ProfileError, r"record_count \* record_stride exceeds body_size"):
+            generator.normalize_profile(
+                profile_with_readback(
+                    [{"category": 0x18, "index": 0}],
+                    {"category": 0x18, "index": 0, "kind": "observed", "body_size": 1, "record_count": 32, "record_stride": 2, "status": "observed"},
+                )
+            )
+
     def test_cli_defaults_to_pinned_repository_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
