@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
@@ -21,9 +21,49 @@ use antelope_protocol::{
     OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
 };
 
+use crate::device::ProfileCatalog;
 use crate::transport::MockTransport;
 
 use super::*;
+
+fn zen_go_state() -> AppState {
+    let catalog = ProfileCatalog::builtin();
+    let entry = catalog
+        .entries()
+        .iter()
+        .find(|entry| entry.id == "zen_go_sc")
+        .expect("Zen Go profile");
+    AppState::from_entry(entry)
+}
+
+fn zen_mixer_controls(
+    area: Rect,
+    state: &AppState,
+    index: usize,
+) -> layouts::DynamicMixerControlRects {
+    let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
+    let main = layouts::mixer_main_layout_for_state(page[0], state);
+    let mixer = layouts::mixer_layout(main[1]);
+    let inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
+    let (start, end) = layouts::mixer_strip_visible_bounds(inner, state);
+    let strip_area = layouts::mixer_input_strip_area(inner, state);
+    let card = layouts::dynamic_mixer_strip_card_area(
+        strip_area,
+        state,
+        index.saturating_sub(start),
+        end.saturating_sub(start),
+    );
+    let surface = state.mixers()[state.mixer.surface_index].surface;
+    layouts::dynamic_mixer_control_rects(
+        card,
+        state,
+        MixerAddress {
+            surface,
+            strip: state.mixers()[state.mixer.surface_index].strips[index].strip,
+        },
+    )
+    .expect("mixer controls")
+}
 
 fn afx_routing_source_label(assignment: Option<MixerAssignment>) -> String {
     assignment
@@ -1186,14 +1226,15 @@ fn mouse_action_selects_raw_packet_tab_when_raw_view_is_open() {
 #[test]
 fn mouse_action_opens_routing_popup_from_mixer_surface_button() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = zen_go_state();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let main = layouts::mixer_main_layout(page[0]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
     let mixer = layouts::mixer_layout(main[1]);
     let button = layouts::mixer_header_button_rects(mixer[0])[1];
     let point = (button.x + button.width / 2, button.y);
 
     assert_eq!(
-        mouse_action(area, &AppState::default(), point.0, point.1),
+        mouse_action(area, &state, point.0, point.1),
         Some(Intent::OpenRoutingPopup)
     );
 }
@@ -1201,14 +1242,15 @@ fn mouse_action_opens_routing_popup_from_mixer_surface_button() {
 #[test]
 fn mouse_action_opens_profiles_popup_from_mixer_surface_button() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = zen_go_state();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let main = layouts::mixer_main_layout(page[0]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
     let mixer = layouts::mixer_layout(main[1]);
     let button = layouts::mixer_header_button_rects(mixer[0])[0];
     let point = (button.x + button.width / 2, button.y);
 
     assert_eq!(
-        mouse_action(area, &AppState::default(), point.0, point.1),
+        mouse_action(area, &state, point.0, point.1),
         Some(Intent::OpenProfilesPopup)
     );
 }
@@ -1216,18 +1258,14 @@ fn mouse_action_opens_profiles_popup_from_mixer_surface_button() {
 #[test]
 fn mouse_action_pages_mixer_strips_left_from_panel_button() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = zen_go_state();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let main = layouts::mixer_main_layout(page[0]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
     let mixer = layouts::mixer_layout(main[1]);
     let button = layouts::mixer_strip_page_button_rects(mixer[1])[0];
 
     assert_eq!(
-        mouse_action(
-            area,
-            &AppState::default(),
-            button.x + button.width / 2,
-            button.y
-        ),
+        mouse_action(area, &state, button.x + button.width / 2, button.y),
         Some(Intent::PageMixerStripsLeft)
     );
 }
@@ -1235,18 +1273,14 @@ fn mouse_action_pages_mixer_strips_left_from_panel_button() {
 #[test]
 fn mouse_action_pages_mixer_strips_right_from_panel_button() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = zen_go_state();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let main = layouts::mixer_main_layout(page[0]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
     let mixer = layouts::mixer_layout(main[1]);
     let button = layouts::mixer_strip_page_button_rects(mixer[1])[1];
 
     assert_eq!(
-        mouse_action(
-            area,
-            &AppState::default(),
-            button.x + button.width / 2,
-            button.y
-        ),
+        mouse_action(area, &state, button.x + button.width / 2, button.y),
         Some(Intent::PageMixerStripsRight)
     );
 }
@@ -1327,14 +1361,15 @@ fn mouse_action_does_not_open_sample_rate_selector_when_clock_is_external() {
 #[test]
 fn mouse_action_hits_visible_surface_tab_position() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = zen_go_state();
     let chunks = layouts::root_chunks(area);
     let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
     let mixer = layouts::mixer_layout(main[1]);
-    let tabs = layouts::surface_tab_hit_areas(mixer[0]);
+    let tabs = layouts::dynamic_surface_tab_hit_areas(mixer[0], &state);
 
     assert_eq!(
-        mouse_action(area, &AppState::default(), tabs[1].x + 1, tabs[1].y),
+        mouse_action(area, &state, tabs[1].x + 1, tabs[1].y),
         Some(Intent::SelectMixerSurface { surface: 1 })
     );
 }
@@ -1450,20 +1485,25 @@ fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
 }
 
 #[test]
-fn mouse_action_hits_preamp_gain_up_button() {
+fn mouse_action_hits_preamp_gain_control() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let cards = layouts::preamp_bar_layout(main[0]);
-    let buttons = layouts::preamp_button_rects(cards[0], AppState::default().preamp.state.input1);
-    let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+    let state = zen_go_state();
+    let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
+    let (_, _, row) = layouts::dynamic_input_rows(main[0], &state)
+        .into_iter()
+        .find(|(_, index, _)| *index == 0)
+        .expect("first input row");
+    let controls = layouts::dynamic_input_control_rects(row, &state, 0, 0).expect("controls");
+    let gain = controls.gain.expect("gain control");
+    let point = (gain.x + gain.width.saturating_sub(1), gain.y);
+    let address = state.input_spaces[0].inputs[0].address;
 
     assert_eq!(
-        mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(Intent::AdjustPreampGain {
-            input: 0,
-            increase: true,
+        mouse_action(area, &state, point.0, point.1),
+        Some(Intent::SetInputGainAt {
+            address,
+            raw: state.input_range(address, None).expect("input range").1,
         })
     );
 }
@@ -1493,12 +1533,15 @@ fn preamp_controls_render_arrow_adjust_buttons() {
 #[test]
 fn slider_wheel_action_adjusts_output_level_one_step() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = zen_go_state();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let card = layouts::output_card_areas(layouts::inner_area(page[1]))[0];
-    let track = layouts::output_level_slider_rect(card);
+    let row =
+        layouts::dynamic_output_card_areas(layouts::inner_area(page[1]), state.outputs().len())[0];
+    let controls = layouts::dynamic_output_control_rects(row, &state, 0).expect("output controls");
+    let track = controls.level.expect("output level control");
 
     assert_eq!(
-        slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
+        slider_wheel_action(area, &state, track.x, track.y, true),
         Some(Intent::AdjustOutputLevel {
             index: 0,
             increase: true,
@@ -1509,15 +1552,21 @@ fn slider_wheel_action_adjusts_output_level_one_step() {
 #[test]
 fn slider_wheel_action_adjusts_preamp_gain_one_step() {
     let area = Rect::new(0, 0, 120, 50);
-    let card = layouts::preamp_bar_layout(
-        layouts::mixer_main_layout(layouts::mixer_page_layout(layouts::root_chunks(area)[1])[0])[0],
-    )[0];
-    let track = layouts::preamp_gain_slider_rect(card);
+    let state = zen_go_state();
+    let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
+    let (_, _, row) = layouts::dynamic_input_rows(main[0], &state)
+        .into_iter()
+        .find(|(_, index, _)| *index == 0)
+        .expect("first input row");
+    let address = state.input_spaces[0].inputs[0].address;
+    let controls = layouts::dynamic_input_control_rects(row, &state, 0, 0).expect("controls");
+    let gain = controls.gain.expect("gain control");
 
     assert_eq!(
-        slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
-        Some(Intent::AdjustPreampGain {
-            input: 0,
+        slider_wheel_action(area, &state, gain.x, gain.y, true),
+        Some(Intent::AdjustInputGainAt {
+            address,
             increase: true,
         })
     );
@@ -1526,18 +1575,18 @@ fn slider_wheel_action_adjusts_preamp_gain_one_step() {
 #[test]
 fn slider_wheel_action_adjusts_mixer_pan_inside_strip_panel() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
-    let card = layouts::mixer_strip_card_area(list_inner, 0);
-    let track = layouts::mixer_pan_slider_rect(card);
+    let state = zen_go_state();
+    let controls = zen_mixer_controls(area, &state, 0);
+    let track = controls.pan.expect("mixer pan control");
+    let address = MixerAddress {
+        surface: 0,
+        strip: 1,
+    };
 
     assert_eq!(
-        slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
-        Some(Intent::AdjustMixerPan {
-            index: 0,
+        slider_wheel_action(area, &state, track.x, track.y, true),
+        Some(Intent::AdjustMixerPanAt {
+            address,
             right: true,
         })
     );
@@ -1546,18 +1595,18 @@ fn slider_wheel_action_adjusts_mixer_pan_inside_strip_panel() {
 #[test]
 fn slider_wheel_action_adjusts_mixer_level_inside_strip_panel() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
-    let card = layouts::mixer_strip_card_area(list_inner, 0);
-    let track = layouts::mixer_level_slider_rect(card);
+    let state = zen_go_state();
+    let controls = zen_mixer_controls(area, &state, 0);
+    let track = controls.fader.expect("mixer fader control");
+    let address = MixerAddress {
+        surface: 0,
+        strip: 1,
+    };
 
     assert_eq!(
-        slider_wheel_action(area, &AppState::default(), track.x, track.y, true),
-        Some(Intent::AdjustMixerLevel {
-            index: 0,
+        slider_wheel_action(area, &state, track.x, track.y, true),
+        Some(Intent::AdjustMixerLevelAt {
+            address,
             increase: true,
         })
     );
@@ -1566,24 +1615,18 @@ fn slider_wheel_action_adjusts_mixer_level_inside_strip_panel() {
 #[test]
 fn slider_wheel_action_uses_wider_hitbox_for_thin_mixer_level_slider() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
-    let card = layouts::mixer_strip_card_area(list_inner, 0);
-    let track = layouts::mixer_level_slider_rect(card);
+    let state = zen_go_state();
+    let controls = zen_mixer_controls(area, &state, 0);
+    let track = controls.fader.expect("mixer fader control");
+    let address = MixerAddress {
+        surface: 0,
+        strip: 1,
+    };
 
     assert_eq!(
-        slider_wheel_action(
-            area,
-            &AppState::default(),
-            track.x.saturating_sub(1),
-            track.y,
-            true
-        ),
-        Some(Intent::AdjustMixerLevel {
-            index: 0,
+        slider_wheel_action(area, &state, track.x.saturating_sub(1), track.y, true),
+        Some(Intent::AdjustMixerLevelAt {
+            address,
             increase: true,
         })
     );
@@ -1592,66 +1635,48 @@ fn slider_wheel_action_uses_wider_hitbox_for_thin_mixer_level_slider() {
 #[test]
 fn mouse_action_hits_visible_output_level_slider_position() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = zen_go_state();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let card = layouts::output_card_areas(layouts::inner_area(page[1]))[0];
-    let slider_row = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(card)[1];
-    let slider_area = layouts::bounded_signal_area(slider_row);
-    let label_width = layouts::SIGNAL_LABEL_WIDTH
-        .min(slider_area.width.saturating_sub(1))
-        .max(1);
-    let track = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(label_width), Constraint::Min(1)])
-        .split(slider_area)[1];
+    let row =
+        layouts::dynamic_output_card_areas(layouts::inner_area(page[1]), state.outputs().len())[0];
+    let controls = layouts::dynamic_output_control_rects(row, &state, 0).expect("output controls");
+    let track = controls.level.expect("output level control");
 
     assert_eq!(
         mouse_action(
             area,
-            &AppState::default(),
+            &state,
             track.x + track.width.saturating_sub(1),
             track.y
         ),
-        Some(Intent::SetOutputLevel { index: 0, step: 0 })
+        Some(Intent::SetOutputLevel { index: 0, step: 96 })
     );
 }
 
 #[test]
 fn mouse_action_hits_visible_preamp_gain_slider_position() {
     let area = Rect::new(0, 0, 120, 50);
-    let card = layouts::preamp_bar_layout(
-        layouts::mixer_main_layout(layouts::mixer_page_layout(layouts::root_chunks(area)[1])[0])[0],
-    )[0];
-    let signal_area = layouts::preamp_card_inner_layout(card)[0];
-    let gain_row = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(signal_area)[1];
-    let slider_area = layouts::bounded_signal_area(gain_row);
-    let label_width = layouts::SIGNAL_LABEL_WIDTH
-        .min(slider_area.width.saturating_sub(1))
-        .max(1);
-    let track = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(label_width), Constraint::Min(1)])
-        .split(slider_area)[1];
+    let state = zen_go_state();
+    let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
+    let (_, _, row) = layouts::dynamic_input_rows(main[0], &state)
+        .into_iter()
+        .find(|(_, index, _)| *index == 0)
+        .expect("first input row");
+    let controls = layouts::dynamic_input_control_rects(row, &state, 0, 0).expect("controls");
+    let track = controls.gain.expect("gain control");
+    let address = state.input_spaces[0].inputs[0].address;
 
     assert_eq!(
         mouse_action(
             area,
-            &AppState::default(),
+            &state,
             track.x + track.width.saturating_sub(1),
             track.y
         ),
-        Some(Intent::SetPreampGain {
-            input: 0,
-            raw: 0x41
+        Some(Intent::SetInputGainAt {
+            address,
+            raw: state.input_range(address, None).expect("input range").1,
         })
     );
 }
@@ -1659,35 +1684,23 @@ fn mouse_action_hits_visible_preamp_gain_slider_position() {
 #[test]
 fn mouse_action_hits_visible_mixer_pan_slider_position() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
-    let card = layouts::mixer_strip_card_area(list_inner, 0);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(layouts::mixer_strip_inner_area(card));
+    let state = zen_go_state();
+    let controls = zen_mixer_controls(area, &state, 0);
+    let track = controls.pan.expect("mixer pan control");
+    let address = MixerAddress {
+        surface: 0,
+        strip: 1,
+    };
 
     assert_eq!(
         mouse_action(
             area,
-            &AppState::default(),
-            rows[2].x + rows[2].width.saturating_sub(1),
-            rows[2].y
+            &state,
+            track.x + track.width.saturating_sub(1),
+            track.y
         ),
-        Some(Intent::SetMixerPan {
-            index: 0,
+        Some(Intent::SetMixerPanAt {
+            address,
             pan: PanState::right(),
         })
     );
@@ -1696,70 +1709,44 @@ fn mouse_action_hits_visible_mixer_pan_slider_position() {
 #[test]
 fn mouse_action_hits_visible_mixer_level_slider_position() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
-    let card = layouts::mixer_strip_card_area(list_inner, 0);
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(3),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(layouts::mixer_strip_inner_area(card));
-    let combo = rows[5];
-    let content_width = 6.min(combo.width);
-    let content_area = Rect::new(
-        combo.x + combo.width.saturating_sub(content_width) / 2,
-        combo.y,
-        content_width,
-        combo.height,
-    );
-    let level = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(2),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(content_area)[2];
+    let state = zen_go_state();
+    let controls = zen_mixer_controls(area, &state, 0);
+    let track = controls.fader.expect("mixer fader control");
+    let address = MixerAddress {
+        surface: 0,
+        strip: 1,
+    };
 
     assert_eq!(
-        mouse_action(area, &AppState::default(), level.x, level.y),
-        Some(Intent::SetMixerLevel { index: 0, level: 0 })
+        mouse_action(area, &state, track.x, track.y),
+        Some(Intent::SetMixerLevelAt { address, level: 0 })
     );
 }
 
 #[test]
 fn mouse_action_hits_visible_preamp_mode_chip_position() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let cards = layouts::preamp_bar_layout(main[0]);
-    let state = AppState::default();
-    let mode = layouts::preamp_button_rects(cards[0], state.preamp.state.input1)[2];
+    let state = zen_go_state();
+    let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
+    let main = layouts::mixer_main_layout_for_state(page[0], &state);
+    let (_, _, row) = layouts::dynamic_input_rows(main[0], &state)
+        .into_iter()
+        .find(|(_, index, _)| *index == 0)
+        .expect("first input row");
+    let controls = layouts::dynamic_input_control_rects(row, &state, 0, 0).expect("controls");
+    let mode = controls.mode.expect("mode control");
+    let address = state.input_spaces[0].inputs[0].address;
 
     assert_eq!(
         mouse_action(area, &state, mode.x + mode.width / 2, mode.y),
-        Some(Intent::OpenPreampModeSelector(0))
+        Some(Intent::CycleInputModeAt { address })
     );
 }
 
 #[test]
 fn mouse_action_picks_preamp_mode_from_selector_popup() {
     let area = Rect::new(0, 0, 120, 50);
-    let mut state = AppState::default();
+    let mut state = zen_go_state();
     state.popup.selector_popup = Some(SelectorPopupState {
         kind: SelectorPopupKind::PreampMode { input: 0 },
     });
@@ -1807,55 +1794,54 @@ fn preamp_control_row_keeps_leading_chip_padding_when_rendered() {
 #[test]
 fn mouse_action_hits_mixer_link_button_on_odd_strip() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
-    let card = layouts::mixer_strip_card_area(list_inner, 0);
-    let buttons = mouse::mixer_control_button_rects(card, true);
-    let point = (buttons[0].x + buttons[0].width / 2, buttons[0].y);
+    let state = zen_go_state();
+    let controls = zen_mixer_controls(area, &state, 0);
+    let link = controls.link.expect("mixer link control");
 
     assert_eq!(
-        mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(Intent::ToggleMixerLink(1))
+        mouse_action(area, &state, link.x, link.y),
+        Some(Intent::ToggleMixerLinkAt {
+            address: MixerAddress {
+                surface: 0,
+                strip: 1
+            },
+        })
     );
 }
 
 #[test]
 fn mouse_action_hits_mixer_solo_button() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
-    let card = layouts::mixer_strip_card_area(list_inner, 0);
-    let buttons = mouse::mixer_control_button_rects(card, true);
-    let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+    let state = zen_go_state();
+    let controls = zen_mixer_controls(area, &state, 0);
+    let solo = controls.solo.expect("mixer solo control");
 
     assert_eq!(
-        mouse_action(area, &AppState::default(), point.0, point.1),
-        Some(Intent::ToggleMixerSolo(1))
+        mouse_action(area, &state, solo.x, solo.y),
+        Some(Intent::ToggleMixerSoloAt {
+            address: MixerAddress {
+                surface: 0,
+                strip: 1
+            },
+        })
     );
 }
 
 #[test]
 fn mouse_action_hits_visible_mixer_solo_chip_position() {
     let area = Rect::new(0, 0, 120, 50);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
-    let card = layouts::mixer_strip_card_area(list_inner, 0);
-    let state = AppState::default();
-    let buttons = mouse::mixer_control_button_rects(card, true);
-    let point = (buttons[1].x + buttons[1].width / 2, buttons[1].y);
+    let state = zen_go_state();
+    let controls = zen_mixer_controls(area, &state, 0);
+    let solo = controls.solo.expect("mixer solo control");
 
     assert_eq!(
-        mouse_action(area, &state, point.0, point.1),
-        Some(Intent::ToggleMixerSolo(1))
+        mouse_action(area, &state, solo.x, solo.y),
+        Some(Intent::ToggleMixerSoloAt {
+            address: MixerAddress {
+                surface: 0,
+                strip: 1
+            },
+        })
     );
 }
 

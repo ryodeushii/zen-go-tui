@@ -556,10 +556,16 @@ pub fn handle_key_press(
                         strip: strip.strip,
                     })
                 {
-                    // Keep keyboard assignment shortcut compatibility; mouse uses
-                    // profile-addressed OpenAssignmentPickerAt.
-                    if let Ok(strip) = u8::try_from(address.strip) {
-                        controller.apply_intent(Intent::OpenAssignmentPicker(strip), area)?;
+                    if controller
+                        .state
+                        .ui_profile
+                        .supports_assignment(address.surface, address.strip)
+                    {
+                        controller
+                            .apply_intent(Intent::OpenAssignmentPickerAt { address }, area)?;
+                    } else {
+                        controller.state.ui.last_message =
+                            "Routing assignment is unsupported for the selected strip.".into();
                     }
                 }
             }

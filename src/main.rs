@@ -34,12 +34,14 @@ mod tests {
 
     use antelope_protocol::{
         control_panel_startup_queries, ClockSource, MixerAssignment, MixerSurface, OutputMode,
-        OutputState, OutputTarget, PanState, PreampMode, SampleRate, Surface,
+        OutputState, OutputTarget, PanState, PreampMode, RuntimeRoutingSourceDomain, SampleRate,
+        Surface,
     };
     use zen_go_tui::app::{
         AssignmentPickerState, Controller, FocusArea, ProfileEditorMode, ProfileEditorState,
         SelectorPopupKind, SelectorPopupState,
     };
+    use zen_go_tui::device::ProfileCatalog;
     use zen_go_tui::terminal::{
         AppKeyCode, AppKeyEvent, AppKeyEventKind, AppModifiers, AppMouseEvent, AppMouseEventKind,
     };
@@ -56,9 +58,27 @@ mod tests {
     use crate::timing::{device_poll_interval, should_draw_frame, should_probe_reconnect};
 
     fn test_controller(transport: Box<dyn Transport>) -> Controller {
-        Controller::new(
+        let catalog = ProfileCatalog::builtin();
+        let mut entry = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "zen_go_sc")
+            .expect("Zen Go profile")
+            .clone();
+        // Assignment tests use explicit supported destination 0 to exercise legacy
+        // compatibility while keeping runtime keyboard routing address-based.
+        entry.profile.routing_groups[0].destination = 0;
+        entry.profile.routing_groups[0].channel_count = 16;
+        entry.profile.routing_groups[0].source_domains = vec![RuntimeRoutingSourceDomain {
+            bank: 0,
+            index_count: 16,
+            status: "confirmed".into(),
+            evidence: "test fixture".into(),
+        }];
+        Controller::new_for_entry(
             transport,
             Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+            &entry,
         )
         .expect("Zen Go controller")
     }

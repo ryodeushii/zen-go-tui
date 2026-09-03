@@ -123,6 +123,10 @@ fn output_render_and_mouse_use_profile_range() {
     state.output.dynamic[3].level = Some(21);
     let text = render_text(&state);
     assert!(text.contains("LVL -21 dB"));
+    assert_eq!(layouts::output_ratio(0, (0, 42)), 0.0);
+    assert_eq!(layouts::output_ratio(42, (0, 42)), 1.0);
+    assert_eq!(layouts::output_step_from_ratio(0.0, (0, 42)), 0);
+    assert_eq!(layouts::output_step_from_ratio(1.0, (0, 42)), 42);
     assert_eq!(layouts::output_ratio(21, (0, 42)), 0.5);
     assert_eq!(layouts::output_step_from_ratio(0.5, (0, 42)), 21);
 }

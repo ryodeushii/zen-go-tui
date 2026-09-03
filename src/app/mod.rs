@@ -324,9 +324,18 @@ impl AppState {
     }
 
     pub(crate) fn legacy_routing_assignment_available(&self) -> bool {
-        self.runtime_profile.is_none()
-            || self.ui_profile.supports_any_routing()
-            || self.routing_group(0).is_none()
+        if self.runtime_profile.is_none() {
+            return true;
+        }
+        self.active_mixer_surface()
+            .and_then(|index| self.mixers().get(index))
+            .and_then(|surface| {
+                surface
+                    .strips
+                    .get(self.mixer.selected_channel)
+                    .map(|strip| (surface.surface, strip.strip))
+            })
+            .is_some_and(|(surface, strip)| self.routing_assignment_available(surface, strip))
     }
 
     pub(crate) fn mixer_range(

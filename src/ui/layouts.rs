@@ -1447,7 +1447,7 @@ pub(crate) fn bounded_signal_area(area: Rect) -> Rect {
 
 pub(crate) fn output_step_from_ratio(ratio: f64, range: (i32, i32)) -> u8 {
     let (min, max) = range;
-    let value = max as f64 - ratio.clamp(0.0, 1.0) * (max - min) as f64;
+    let value = min as f64 + ratio.clamp(0.0, 1.0) * (max - min) as f64;
     value.round().clamp(0.0, f64::from(u8::MAX)) as u8
 }
 
