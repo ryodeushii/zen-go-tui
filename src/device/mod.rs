@@ -11,15 +11,17 @@ pub mod profile;
 pub mod session;
 
 pub use definition::{
-    AddressSpaceDefinition, AddressSpaceKind, AddressingMode, ConstraintDefinition,
-    DecoderDefinition, DefinitionStatus, DeviceDefinition, DeviceEntry, DeviceIdentity,
-    FrameDefinition, FrameEndianDefinition, FrameFieldDefinition, FrameKind,
-    FrameOperationDefinition, HazardDefinition, InputCapabilityDefinition, InputControlKind,
-    InputDefinition, LinkDomainDefinition, LinkDomainKind, MixerDefinition, OutputDefinition,
-    ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReference,
+    AddressSpaceDefinition, AddressSpaceKind, AddressingMode, CandidatePreampMeterDefinition,
+    ConstraintDefinition, DecoderDefinition, DefinitionStatus, DeviceDefinition, DeviceEntry,
+    DeviceIdentity, FaderDirectionDefinition, FaderSemanticsDefinition, FrameDefinition,
+    FrameEndianDefinition, FrameFieldDefinition, FrameKind, FrameOperationDefinition,
+    HazardDefinition, InputCapabilityDefinition, InputControlKind, InputDefinition,
+    LinkDomainDefinition, LinkDomainKind, MixerDefinition, MixerReadbackLayoutDefinition,
+    OutputDefinition, ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReference,
     ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition,
     ReadbackDefinition, Readiness, RoutingGroupDefinition, RoutingSourceDomainDefinition,
-    StartupQueryDefinition, Status, SupportLevel, TransportDefinition, TransportKind,
+    SafeQueryDefinition, StartupQueryDefinition, StateReportDefinition, Status, SupportLevel,
+    TransportDefinition, TransportKind,
 };
 pub use discovery::{
     classify_candidate, classify_candidate_details, classify_candidates,

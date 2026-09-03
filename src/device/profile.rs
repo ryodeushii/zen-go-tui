@@ -6,13 +6,14 @@ use super::{
     TransportKind, DEVICE_CATALOG,
 };
 use antelope_protocol::{
-    FrameEndian, FrameOperation, ParamReference, ProfileLoadError, ProfilePack, QueryRequest,
+    CandidatePreampMeter, FaderDirection, FaderSemantics, FrameEndian, FrameOperation,
+    MixerReadbackLayout, ParamReference, ProfileLoadError, ProfilePack, QueryRequest,
     ReadbackCategory, ReadbackDefinition as RuntimeReadbackDefinition, RuntimeAddressSpace,
     RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
     RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
     RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMixer, RuntimeOutput, RuntimeParam,
     RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
-    RuntimeRoutingSourceDomain, RuntimeTransport,
+    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport,
 };
 use std::collections::HashSet;
 
@@ -243,6 +244,15 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     strip_count: mixer.strip_count,
                     has_master: mixer.has_master,
                     fader_range: mixer.fader_range,
+                    fader: mixer.fader.map(|fader| FaderSemantics {
+                        min: fader.min,
+                        max: fader.max,
+                        direction: match fader.direction {
+                            super::FaderDirectionDefinition::Direct => FaderDirection::Direct,
+                            super::FaderDirectionDefinition::Attenuation => FaderDirection::Attenuation,
+                        },
+                        unity: fader.unity,
+                    }),
                     pan_range: mixer.pan_range,
                     pan_center: mixer.pan_center,
                     send_range: mixer.send_range,
@@ -252,6 +262,16 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     metadata: mixer.metadata.into(),
                 })
                 .collect(),
+            state_report: definition.state_report.map(|state_report| RuntimeStateReport {
+                candidate_preamp_meters: state_report
+                    .candidate_preamp_meters
+                    .iter()
+                    .map(|meter| CandidatePreampMeter {
+                        input_index: meter.input_index,
+                        offset: meter.offset,
+                    })
+                    .collect(),
+            }),
             link_domains: definition
                 .link_domains
                 .iter()
@@ -366,6 +386,30 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                         .map(|category| ReadbackCategory {
                             category: category.category,
                             count: category.count,
+                        })
+                        .collect(),
+                    safe_queries: readback
+                        .safe_queries
+                        .iter()
+                        .map(|query| antelope_protocol::SafeQuery {
+                            category: query.category,
+                            index: query.index,
+                        })
+                        .collect(),
+                    layouts: readback
+                        .layouts
+                        .iter()
+                        .map(|layout| MixerReadbackLayout {
+                            category: layout.category,
+                            index: layout.index,
+                            body_size: layout.body_size,
+                            record_count: layout.record_count,
+                            record_stride: layout.record_stride,
+                            level_offset: layout.level_offset,
+                            state_offset: layout.state_offset,
+                            surface: layout.surface,
+                            surface_stride: layout.surface_stride,
+                            supported_fields: layout.supported_fields.iter().map(|field| (*field).into()).collect(),
                         })
                         .collect(),
                 }),

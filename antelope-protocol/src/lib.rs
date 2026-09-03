@@ -56,13 +56,15 @@ pub use mixer::{
     MixerPassiveDecode, MixerPassiveStripState, MixerStrip, MixerStripKind, MixerSurface,
 };
 pub use profile::{
-    load_profile_pack, load_profile_pack_file, FrameEndian, FrameOperation, ParamReference,
+    load_profile_pack, load_profile_pack_file, CandidatePreampMeter, FaderDirection,
+    FaderSemantics, FrameEndian, FrameOperation, MixerReadbackLayout, ParamReference,
     ProfileLoadError, ProfilePack, ReadbackCategory, ReadbackDefinition, RuntimeAddressSpace,
     RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
     RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
     RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMixer, RuntimeOutput, RuntimeParam,
     RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
-    RuntimeRoutingSourceDomain, RuntimeTransport, PROFILE_PACK_SCHEMA_VERSION,
+    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport, SafeQuery,
+    PROFILE_PACK_SCHEMA_VERSION,
 };
 pub use query::{control_panel_startup_queries, DeviceMetadata, QueryRequest, QueryResponse};
 pub use types::{

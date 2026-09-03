@@ -33,6 +33,8 @@ pub struct RuntimeProfile {
     pub outputs: Vec<RuntimeOutput>,
     pub mixers: Vec<RuntimeMixer>,
     #[serde(default)]
+    pub state_report: Option<RuntimeStateReport>,
+    #[serde(default)]
     pub link_domains: Vec<RuntimeLinkDomain>,
     pub routing_groups: Vec<RuntimeRoutingGroup>,
     pub frames: Vec<RuntimeFrame>,
@@ -56,13 +58,68 @@ pub struct ReadbackDefinition {
     pub category_offset: u16,
     pub index_offset: u16,
     pub data_offset: u16,
+    #[serde(default)]
     pub category_counts: Vec<ReadbackCategory>,
+    #[serde(default)]
+    pub safe_queries: Vec<SafeQuery>,
+    #[serde(default)]
+    pub layouts: Vec<MixerReadbackLayout>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SafeQuery {
+    pub category: u8,
+    pub index: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MixerReadbackLayout {
+    pub category: u8,
+    pub index: u8,
+    pub body_size: usize,
+    pub record_count: usize,
+    pub record_stride: usize,
+    pub level_offset: usize,
+    pub state_offset: usize,
+    #[serde(default)]
+    pub surface: Option<u8>,
+    #[serde(default)]
+    pub surface_stride: Option<usize>,
+    #[serde(default)]
+    pub supported_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidatePreampMeter {
+    pub input_index: u16,
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaderDirection {
+    Direct,
+    Attenuation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FaderSemantics {
+    pub min: i32,
+    pub max: i32,
+    pub direction: FaderDirection,
+    pub unity: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadbackCategory {
     pub category: u8,
     pub count: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeStateReport {
+    #[serde(default)]
+    pub candidate_preamp_meters: Vec<CandidatePreampMeter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +243,8 @@ pub struct RuntimeMixer {
     pub strip_count: u16,
     pub has_master: bool,
     pub fader_range: Option<(i32, i32)>,
+    #[serde(default)]
+    pub fader: Option<FaderSemantics>,
     pub pan_range: Option<(i32, i32)>,
     pub pan_center: Option<i32>,
     pub send_range: Option<(i32, i32)>,
@@ -512,6 +571,23 @@ impl RuntimeEntry {
     }
 }
 
+impl ReadbackDefinition {
+    pub fn allows(&self, query: QueryRequest) -> bool {
+        self.safe_queries
+            .iter()
+            .any(|safe| safe.category == query.query_id && safe.index == query.sub_id)
+            || self.category_counts.iter().any(|category| {
+                category.category == query.query_id && u16::from(query.sub_id) < category.count
+            })
+    }
+
+    pub fn layout_for(&self, query: QueryRequest) -> Option<&MixerReadbackLayout> {
+        self.layouts
+            .iter()
+            .find(|layout| layout.category == query.query_id && layout.index == query.sub_id)
+    }
+}
+
 impl RuntimeProfile {
     pub fn identity(&self) -> &RuntimeIdentity {
         &self.identity
@@ -530,6 +606,22 @@ impl RuntimeProfile {
 
     pub fn mixers(&self) -> &[RuntimeMixer] {
         &self.mixers
+    }
+
+    pub fn candidate_preamp_meter(&self, input_index: u16) -> Option<usize> {
+        self.state_report
+            .as_ref()?
+            .candidate_preamp_meters
+            .iter()
+            .find(|meter| meter.input_index == input_index)
+            .map(|meter| meter.offset)
+    }
+
+    pub fn mixer_fader(&self, surface: u8) -> Option<FaderSemantics> {
+        self.mixers
+            .iter()
+            .find(|mixer| mixer.mix_index == surface)
+            .and_then(|mixer| mixer.fader)
     }
 }
 
@@ -770,6 +862,33 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
             profile_id: profile_id.to_owned(),
             field: format!("profiles[{entry_index}].runtime_topology"),
         });
+    }
+
+    for (mixer_index, mixer) in profile.mixers.iter().enumerate() {
+        if let Some(fader) = mixer.fader {
+            if fader.min > fader.max || !(fader.min..=fader.max).contains(&fader.unity) {
+                return Err(ProfileLoadError::InvalidReportGeometry {
+                    profile_id: profile_id.to_owned(),
+                    field: format!("profiles[{entry_index}].mixers[{mixer_index}].fader"),
+                    detail: "fader min must not exceed max and unity must fit the domain".into(),
+                });
+            }
+        }
+    }
+    if let (Some(report_size), Some(state_report)) =
+        (profile.transport.report_size, profile.state_report.as_ref())
+    {
+        for (meter_index, meter) in state_report.candidate_preamp_meters.iter().enumerate() {
+            if meter.offset >= usize::from(report_size) {
+                return Err(ProfileLoadError::InvalidReportGeometry {
+                    profile_id: profile_id.to_owned(),
+                    field: format!(
+                        "profiles[{entry_index}].state_report.candidate_preamp_meters[{meter_index}].offset"
+                    ),
+                    detail: format!("offset {} exceeds state report size {report_size}", meter.offset),
+                });
+            }
+        }
     }
 
     let mut parameter_ids = HashSet::new();
@@ -1085,19 +1204,88 @@ fn validate_readback(
             });
         }
     }
+    // Safe queries also preserve ordered startup walks, so repeated pairs are
+    // valid. Membership set below is used only to validate layout references.
+    let safe_pairs: HashSet<(u8, u8)> = readback
+        .safe_queries
+        .iter()
+        .map(|safe| (safe.category, safe.index))
+        .collect();
+    let mut layouts = HashSet::new();
+    for (layout_index, layout) in readback.layouts.iter().enumerate() {
+        let field = format!("profiles[{entry_index}].readback.layouts[{layout_index}]");
+        if !safe_pairs.contains(&(layout.category, layout.index)) {
+            return Err(ProfileLoadError::InvalidReadbackBounds {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: "layout query is not present in safe_queries".into(),
+            });
+        }
+        if !layouts.insert((layout.category, layout.index))
+            || layout.body_size == 0
+            || layout.record_count == 0
+            || layout.record_stride == 0
+            || layout
+                .record_count
+                .checked_mul(layout.record_stride)
+                .is_none_or(|span| span > layout.body_size)
+        {
+            return Err(ProfileLoadError::InvalidReadbackBounds {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: "layout query must be unique and records must fit body_size".into(),
+            });
+        }
+        for (name, offset) in [
+            ("level_offset", layout.level_offset),
+            ("state_offset", layout.state_offset),
+        ] {
+            let Some(last) = (layout.record_count - 1)
+                .checked_mul(layout.record_stride)
+                .and_then(|base| base.checked_add(offset))
+                .and_then(|end| end.checked_add(1))
+            else {
+                return Err(ProfileLoadError::InvalidReadbackBounds {
+                    profile_id: profile_id.to_owned(),
+                    field: format!("{field}.{name}"),
+                    detail: "layout offset span overflows".into(),
+                });
+            };
+            if last > layout.body_size {
+                return Err(ProfileLoadError::InvalidReadbackBounds {
+                    profile_id: profile_id.to_owned(),
+                    field: format!("{field}.{name}"),
+                    detail: format!(
+                        "last record ends at {last}, beyond body_size {}",
+                        layout.body_size
+                    ),
+                });
+            }
+        }
+        if let Some(surface_stride) = layout.surface_stride {
+            if surface_stride == 0
+                || surface_stride > layout.record_count
+                || surface_stride
+                    .checked_mul(layout.record_stride)
+                    .is_none_or(|span| span > layout.body_size)
+            {
+                return Err(ProfileLoadError::InvalidReadbackBounds {
+                    profile_id: profile_id.to_owned(),
+                    field: format!("{field}.surface_stride"),
+                    detail: "surface stride exceeds layout body_size".into(),
+                });
+            }
+        }
+    }
     for (query_index, query) in profile.startup_queries.iter().enumerate() {
-        let Some(count) = counts.get(&query.query_id) else {
+        if !readback.allows(*query) {
             return Err(ProfileLoadError::InvalidReadbackBounds {
                 profile_id: profile_id.to_owned(),
                 field: format!("profiles[{entry_index}].startup_queries[{query_index}]"),
-                detail: format!("category {:#04x} has no confirmed count", query.query_id),
-            });
-        };
-        if u16::from(query.sub_id) >= *count {
-            return Err(ProfileLoadError::InvalidReadbackBounds {
-                profile_id: profile_id.to_owned(),
-                field: format!("profiles[{entry_index}].startup_queries[{query_index}].sub_id"),
-                detail: format!("index {} is outside count {count}", query.sub_id),
+                detail: format!(
+                    "query {:#04x}:{} is not in readback safety data",
+                    query.query_id, query.sub_id
+                ),
             });
         }
     }

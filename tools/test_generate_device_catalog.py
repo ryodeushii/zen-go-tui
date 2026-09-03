@@ -234,7 +234,7 @@ class GeneratorTests(unittest.TestCase):
             {"category": 0x0B, "index": 4},
             {"category": 0x12, "index": 0},
         ]
-        self.assertEqual(readback["category_counts"], {})
+        self.assertEqual(readback["category_counts"], [])
         self.assertEqual(readback["safe_queries"], expected)
         self.assertEqual(len(readback["safe_queries"]), 47)
         self.assertEqual(readback["safe_queries"].count({"category": 0x0A, "index": 0}), 2)

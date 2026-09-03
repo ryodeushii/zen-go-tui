@@ -2592,6 +2592,8 @@ def _fader_domain(profile: NormalizedProfile) -> dict[str, Any] | None:
     direction = fader["direction"]
     if not isinstance(direction, str) or not direction.strip():
         raise ProfileError("mixer.fader.direction must be a non-empty string")
+    if direction.strip().lower() not in {"direct", "attenuation"}:
+        raise ProfileError("mixer.fader.direction must be direct or attenuation")
     unity = _checked_i32(fader["unity"], "mixer.fader.unity")
     if not minimum <= unity <= maximum:
         raise ProfileError("mixer.fader.unity must fit mixer.fader min/max")
@@ -3921,7 +3923,7 @@ def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | N
         "category_offset": _checked_u16(required["category_offset"], "frame.readback.category_offset"),
         "index_offset": _checked_u16(required["index_offset"], "frame.readback.index_offset"),
         "data_offset": _checked_u16(required["data_offset"], "frame.readback.data_offset"),
-        "category_counts": counts if counts else {},
+        "category_counts": counts,
     }
     bounds = {item["category"]: item["count"] for item in counts}
 
@@ -4235,6 +4237,21 @@ def _render_range(value: tuple[int, int] | None) -> str:
     return f"Some(({value[0]}, {value[1]}))"
 
 
+def _render_fader(value: Mapping[str, Any] | None) -> str:
+    if value is None:
+        return "None"
+    direction = {"direct": "Direct", "attenuation": "Attenuation"}.get(
+        str(value["direction"]).strip().lower()
+    )
+    if direction is None:
+        raise ProfileError(f"unsupported mixer.fader.direction {value['direction']!r}")
+    return (
+        "Some(FaderSemanticsDefinition { "
+        f"min: {value['min']}, max: {value['max']}, "
+        f"direction: FaderDirectionDefinition::{direction}, unity: {value['unity']} }})"
+    )
+
+
 def _render_values(values: Sequence[Mapping[str, Any]], helper: str, lines: list[str]) -> str:
     if not values:
         return "&[]"
@@ -4419,6 +4436,8 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         "    FrameEndianDefinition, FrameFieldDefinition, FrameKind, FrameOperationDefinition, HazardDefinition, InputDefinition, LinkDomainDefinition, LinkDomainKind, MixerDefinition,",
         "    OutputDefinition, ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReference, RoutingGroupDefinition, RoutingSourceDomainDefinition,",
         "    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition,",
+        "    SafeQueryDefinition, MixerReadbackLayoutDefinition, StateReportDefinition,",
+        "    CandidatePreampMeterDefinition, FaderDirectionDefinition, FaderSemanticsDefinition,",
         "    Readiness, StartupQueryDefinition, Status, SupportLevel, TransportDefinition, TransportKind,",
         "};",
         "",
@@ -4508,7 +4527,8 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 "    MixerDefinition { "
                 f"id: {_rust_string(item['id'])}, name: {_rust_string(item['name'])}, "
                 f"mix_index: {_rust_u8(item['mix_index'])}, strip_count: {_rust_u16(item['strip_count'])}, has_master: {str(item['has_master']).lower()}, "
-                f"fader_range: {_render_range(item['fader_range'])}, pan_range: {_render_range(item['pan_range'])}, "
+                f"fader_range: {_render_range(item['fader_range'])}, fader: {_render_fader(item['fader'])}, "
+                f"pan_range: {_render_range(item['pan_range'])}, "
                 f"pan_center: {_rust_option(item['pan_center'], _rust_i32)}, send_range: {_render_range(item['send_range'])}, "
                 f"status: Status::{_status_variant(item['status'])}, status_text: {_rust_string(item['status_text'])}, "
                 f"notes: {_rust_string(item['notes'])}, metadata: {_rust_string(item['metadata'])} }},"
@@ -4673,6 +4693,23 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             )
         lines.append("];\n")
 
+        state_report = runtime_record.get("state_report")
+        if state_report is None:
+            state_report_name = "None"
+        else:
+            lines.append(f"static {slug}_CANDIDATE_PREAMP_METERS: &[CandidatePreampMeterDefinition] = &[")
+            for meter in state_report["candidate_preamp_meters"]:
+                lines.append(
+                    "    CandidatePreampMeterDefinition { "
+                    f"input_index: {meter['input_index']}u16, offset: {meter['offset']}usize }},"
+                )
+            lines.append("];\n")
+            lines.append(
+                f"static {slug}_STATE_REPORT: StateReportDefinition = StateReportDefinition {{ "
+                f"candidate_preamp_meters: {slug}_CANDIDATE_PREAMP_METERS }};"
+            )
+            state_report_name = f"Some({slug}_STATE_REPORT)"
+
         readback = runtime_record["readback"]
         if readback is None:
             readback_name = "None"
@@ -4684,6 +4721,32 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                     f"category: {category['category']}u8, count: {category['count']}u16 }},"
                 )
             lines.append("];\n")
+            lines.append(f"static {slug}_READBACK_SAFE_QUERIES: &[SafeQueryDefinition] = &[")
+            for query in readback.get("safe_queries", []):
+                lines.append(
+                    "    SafeQueryDefinition { "
+                    f"category: {query['category']}u8, index: {query['index']}u8 }},"
+                )
+            lines.append("];\n")
+            layout_helpers: list[str] = []
+            for layout_index, layout in enumerate(readback.get("layouts", [])):
+                helper = f"{slug}_READBACK_LAYOUT_{layout_index}_FIELDS"
+                layout_helpers.append(helper)
+                fields = layout.get("supported_fields", [])
+                lines.append(f"static {helper}: &[&str] = &[{', '.join(_rust_string(field) for field in fields)}];")
+            lines.append(f"static {slug}_READBACK_LAYOUTS: &[MixerReadbackLayoutDefinition] = &[")
+            for layout_index, layout in enumerate(readback.get("layouts", [])):
+                lines.append(
+                    "    MixerReadbackLayoutDefinition { "
+                    f"category: {layout['category']}u8, index: {layout['index']}u8, "
+                    f"body_size: {layout['body_size']}usize, record_count: {layout['record_count']}usize, "
+                    f"record_stride: {layout['record_stride']}usize, level_offset: {layout['level_offset']}usize, "
+                    f"state_offset: {layout['state_offset']}usize, "
+                    f"surface: {_rust_option(layout.get('surface'), _rust_u8)}, "
+                    f"surface_stride: {_rust_option(layout.get('surface_stride'), str)}, "
+                    f"supported_fields: {layout_helpers[layout_index]} }},"
+                )
+            lines.append("];\n")
             lines.append(
                 f"static {slug}_READBACK: ReadbackDefinition = ReadbackDefinition {{ "
                 f"request_magic: {readback['request_magic']}u8, request_subcommand: {readback['request_subcommand']}u32, "
@@ -4691,7 +4754,8 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 f"response_discriminator_offset: {readback['response_discriminator_offset']}u16, "
                 f"response_discriminator: {readback['response_discriminator']}u8, "
                 f"category_offset: {readback['category_offset']}u16, index_offset: {readback['index_offset']}u16, "
-                f"data_offset: {readback['data_offset']}u16, category_counts: {slug}_READBACK_CATEGORIES }};"
+                f"data_offset: {readback['data_offset']}u16, category_counts: {slug}_READBACK_CATEGORIES, "
+                f"safe_queries: {slug}_READBACK_SAFE_QUERIES, layouts: {slug}_READBACK_LAYOUTS }};"
             )
             readback_name = f"Some({slug}_READBACK)"
 
@@ -4715,6 +4779,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 "constraints": f"{slug}_CONSTRAINTS",
                 "hazards": f"{slug}_HAZARDS",
                 "startup_queries": f"{slug}_STARTUP_QUERIES",
+                "state_report": state_report_name,
                 "readback": readback_name,
                 "raw": f"{slug}_RAW_PROFILE",
             }
@@ -4769,7 +4834,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             f"            frames: {item['frames']}, decoders: {item['decoders']}, params: {item['params']}, constraints: {item['constraints']}, hazards: {item['hazards']},"
         )
         lines.append(
-            f"            startup_queries: {item['startup_queries']}, readback: {item['readback']},"
+            f"            startup_queries: {item['startup_queries']}, state_report: {item['state_report']}, readback: {item['readback']},"
         )
         lines.append(
             f"            status: Status::{_status_variant(status)}, status_text: {_rust_string(status)}, "

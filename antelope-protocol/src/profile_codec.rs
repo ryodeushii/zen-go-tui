@@ -586,22 +586,17 @@ pub(crate) fn encode_query(
     readback: &ReadbackDefinition,
     query: QueryRequest,
 ) -> Result<Vec<u8>, DriverError> {
-    let count = readback
-        .category_counts
+    let explicitly_safe = readback
+        .safe_queries
         .iter()
-        .find(|category| category.category == query.query_id)
-        .map(|category| category.count)
-        .ok_or_else(|| {
-            DriverError::InvalidAction(format!(
-                "readback category {:#04x} has no confirmed count",
-                query.query_id
-            ))
-        })?;
-    if u16::from(query.sub_id) >= count {
-        return Err(DriverError::InvalidAction(format!(
-            "readback category {:#04x} index {} outside count {count}",
-            query.query_id, query.sub_id
-        )));
+        .any(|safe| safe.category == query.query_id && safe.index == query.sub_id);
+    let bounded = readback.category_counts.iter().any(|category| {
+        category.category == query.query_id && u16::from(query.sub_id) < category.count
+    });
+    if !explicitly_safe && !bounded {
+        return Err(DriverError::UnsupportedAction(
+            "query pair is not in profile readback safety data".into(),
+        ));
     }
     let mut bytes = vec![0; report_size(profile)?];
     bytes[0] = readback.request_magic;

@@ -188,6 +188,21 @@ pub struct OutputDefinition {
     pub metadata: &'static str,
 }
 
+/// Fader domain direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaderDirectionDefinition {
+    Direct,
+    Attenuation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FaderSemanticsDefinition {
+    pub min: i32,
+    pub max: i32,
+    pub direction: FaderDirectionDefinition,
+    pub unity: i32,
+}
+
 /// One virtual mixer surface and its strip geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MixerDefinition {
@@ -197,6 +212,7 @@ pub struct MixerDefinition {
     pub strip_count: u16,
     pub has_master: bool,
     pub fader_range: Option<(i32, i32)>,
+    pub fader: Option<FaderSemanticsDefinition>,
     pub pan_range: Option<(i32, i32)>,
     pub pan_center: Option<i32>,
     pub send_range: Option<(i32, i32)>,
@@ -427,6 +443,41 @@ pub struct ReadbackCategoryDefinition {
     pub count: u16,
 }
 
+/// One explicitly safe readback query pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SafeQueryDefinition {
+    pub category: u8,
+    pub index: u8,
+}
+
+/// One captured readback body layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MixerReadbackLayoutDefinition {
+    pub category: u8,
+    pub index: u8,
+    pub body_size: usize,
+    pub record_count: usize,
+    pub record_stride: usize,
+    pub level_offset: usize,
+    pub state_offset: usize,
+    pub surface: Option<u8>,
+    pub surface_stride: Option<usize>,
+    pub supported_fields: &'static [&'static str],
+}
+
+/// Candidate meter byte retained with state-report metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidatePreampMeterDefinition {
+    pub input_index: u16,
+    pub offset: usize,
+}
+
+/// State-report metadata retained in the built-in artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StateReportDefinition {
+    pub candidate_preamp_meters: &'static [CandidatePreampMeterDefinition],
+}
+
 /// Optional generic readback layout retained in the built-in artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadbackDefinition {
@@ -439,6 +490,8 @@ pub struct ReadbackDefinition {
     pub index_offset: u16,
     pub data_offset: u16,
     pub category_counts: &'static [ReadbackCategoryDefinition],
+    pub safe_queries: &'static [SafeQueryDefinition],
+    pub layouts: &'static [MixerReadbackLayoutDefinition],
 }
 
 /// Complete typed definition for one canonical hardware profile.
@@ -457,6 +510,7 @@ pub struct DeviceDefinition {
     pub params: &'static [ParamDefinition],
     pub constraints: &'static [ConstraintDefinition],
     pub hazards: &'static [HazardDefinition],
+    pub state_report: Option<StateReportDefinition>,
     pub startup_queries: &'static [StartupQueryDefinition],
     pub readback: Option<ReadbackDefinition>,
     pub status: Status,
