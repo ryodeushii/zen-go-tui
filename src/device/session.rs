@@ -650,3 +650,21 @@ fn driver_for_entry(entry: &RuntimeEntry) -> Result<Box<dyn DeviceDriver>> {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::driver_for_entry;
+    use crate::device::ProfileCatalog;
+    use antelope_protocol::{RuntimeDriverKind, RuntimeReadiness};
+
+    #[test]
+    fn profile_driver_mapping_constructs_profile_driver_for_supported_orion() {
+        let catalog = ProfileCatalog::builtin();
+        let entry = catalog.find(0x23e5, 0xa221).expect("Orion profile");
+        assert_eq!(entry.readiness, RuntimeReadiness::Supported);
+        assert_eq!(entry.driver_kind, RuntimeDriverKind::Profile);
+
+        let driver = driver_for_entry(entry).expect("Profile driver mapping");
+        assert_eq!(driver.definition().id, "orion_studio_3");
+    }
+}

@@ -165,6 +165,32 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
             metadata: input.metadata.into(),
         })
         .collect();
+    let is_orion = id == "orion_studio_3";
+    let mut hazards: Vec<RuntimeHazard> = definition
+        .hazards
+        .iter()
+        .map(|hazard| RuntimeHazard {
+            name: hazard.name.into(),
+            status: status(hazard.status).into(),
+            rule: hazard.rule.into(),
+            effect: hazard.effect.into(),
+            notes: hazard.notes.into(),
+            opcodes: hazard.opcodes.to_vec(),
+            metadata: hazard.metadata.into(),
+        })
+        .collect();
+    if is_orion {
+        hazards.push(RuntimeHazard {
+            name: "orion_framing_assumption".into(),
+            status: "unknown".into(),
+            rule: "uses_numbered_reports=false".into(),
+            effect: "hardware verification pending".into(),
+            notes: "Source-backed runtime assumption; verify Orion HID report framing on hardware."
+                .into(),
+            opcodes: Vec::new(),
+            metadata: "{\"raw\":\"transport.uses_numbered_reports is absent\",\"verification\":\"pending\"}".into(),
+        });
+    }
     RuntimeEntry {
         id,
         profile: RuntimeProfile {
@@ -317,19 +343,7 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     metadata: constraint.metadata.into(),
                 })
                 .collect(),
-            hazards: definition
-                .hazards
-                .iter()
-                .map(|hazard| RuntimeHazard {
-                    name: hazard.name.into(),
-                    status: status(hazard.status).into(),
-                    rule: hazard.rule.into(),
-                    effect: hazard.effect.into(),
-                    notes: hazard.notes.into(),
-                    opcodes: hazard.opcodes.to_vec(),
-                    metadata: hazard.metadata.into(),
-                })
-                .collect(),
+            hazards,
             startup_queries: definition
                 .startup_queries
                 .iter()
@@ -367,11 +381,15 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
             (RuntimeReadiness::Supported, _) => RuntimeDriverKind::Profile,
             _ => RuntimeDriverKind::None,
         },
-        support_reason: match readiness {
-            RuntimeReadiness::Supported => "validated built-in driver",
-            RuntimeReadiness::Partial => "profile data is incomplete for safe read/write control",
+        support_reason: if is_orion {
+            "validated source-backed profile; assumes unnumbered HID reports pending hardware verification"
+        } else {
+            match readiness {
+                RuntimeReadiness::Supported => "validated built-in driver",
+                RuntimeReadiness::Partial => "profile data is incomplete for safe read/write control",
             RuntimeReadiness::Unverified => "transport or frame geometry is unverified",
-            RuntimeReadiness::Disabled => "profile is not enabled for control",
+                RuntimeReadiness::Disabled => "profile is not enabled for control",
+            }
         }
         .into(),
     }
@@ -535,13 +553,13 @@ mod tests {
     use antelope_protocol::{load_profile_pack, RuntimeReadiness};
 
     #[test]
-    fn builtin_catalog_is_owned_sorted_and_keeps_orion_disabled() {
+    fn builtin_catalog_is_owned_sorted_and_promotes_orion_to_profile_support() {
         let catalog = ProfileCatalog::builtin();
         assert_eq!(catalog.entries().len(), DEVICE_CATALOG.len());
         assert_eq!(catalog.entries()[0].readiness, RuntimeReadiness::Supported);
         let orion = catalog.find(0x23e5, 0xa221).expect("Orion entry");
-        assert_eq!(orion.readiness, RuntimeReadiness::Disabled);
-        assert_eq!(orion.driver_kind, RuntimeDriverKind::None);
+        assert_eq!(orion.readiness, RuntimeReadiness::Supported);
+        assert_eq!(orion.driver_kind, RuntimeDriverKind::Profile);
         assert_eq!(orion.profile.inputs_in("physical_inputs"), 12);
     }
 
@@ -556,8 +574,8 @@ mod tests {
             ),
             (
                 "Antelope Orion Studio III",
-                RuntimeReadiness::Disabled,
-                RuntimeDriverKind::None,
+                RuntimeReadiness::Supported,
+                RuntimeDriverKind::Profile,
             ),
             (
                 "Antelope Discrete 8 Pro Synergy Core",
@@ -608,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn checked_in_normalized_pack_loads_and_keeps_orion_disabled() {
+    fn checked_in_normalized_pack_loads_promoted_orion_support() {
         let pack = load_profile_pack(include_bytes!("generated_profiles.json"))
             .expect("checked-in normalized pack");
         assert_eq!(pack.profiles().len(), 5);
@@ -617,12 +635,12 @@ mod tests {
             .iter()
             .find(|entry| entry.profile.identity.pid == 0xa221)
             .expect("Orion pack entry");
-        assert_eq!(orion.readiness, RuntimeReadiness::Disabled);
-        assert_eq!(orion.driver_kind, RuntimeDriverKind::None);
+        assert_eq!(orion.readiness, RuntimeReadiness::Supported);
+        assert_eq!(orion.driver_kind, RuntimeDriverKind::Profile);
     }
 
     #[test]
-    fn builtin_entries_equal_checked_in_normalized_pack_field_for_field() {
+    fn builtin_entries_match_checked_in_normalized_pack_profiles() {
         let builtin = ProfileCatalog::builtin();
         let pack = load_profile_pack(include_bytes!("generated_profiles.json"))
             .expect("checked-in normalized pack");
@@ -633,7 +651,11 @@ mod tests {
                 .iter()
                 .find(|entry| entry.id == built_in.id)
                 .expect("matching normalized entry");
-            assert_eq!(built_in, packed, "profile {}", built_in.id);
+            assert_eq!(
+                built_in, packed,
+                "builtin and normalized-pack RuntimeEntry mismatch for {}",
+                built_in.id
+            );
         }
     }
 

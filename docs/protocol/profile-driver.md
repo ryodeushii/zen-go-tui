@@ -12,10 +12,9 @@ A supported profile must provide confirmed, report-sized frames named:
 - `link_command`
 - `routing_command`
 - `state_report`
-- `meter_report`
 - `readback`
 
-It must also provide one confirmed decoder for each report family and a confirmed readback definition. Constructor validation rejects absent, duplicate, ambiguous, unconfirmed, out-of-report, or `uncompiled_formula` mappings before I/O.
+Every supported profile must provide one confirmed meter source: either a confirmed `meter_report` with its decoder or a confirmed state-report `physical_meter` layout. It must also provide confirmed decoders for the report families it uses and a confirmed readback definition. Constructor validation rejects absent, duplicate, ambiguous, unconfirmed, out-of-report, or `uncompiled_formula` mappings before I/O.
 
 Scalar and bit-field operations require stable semantic `field` names. One-byte scalars use `not_applicable` endianness. Wider scalars require explicit `little` or `big`; source data without proven wider-scalar endianness is emitted as `uncompiled_formula` and cannot enable a profile driver.
 
@@ -36,6 +35,12 @@ Routing commands are complete ordered assignment tables. Callers must use `SetRo
 5. Register entry as `driver_kind: profile` only after mappings are complete. Set `readiness: supported` only after constructor validation and fixture tests pass.
 6. Regenerate both catalog artifacts and run generator drift checks, workspace tests, and clippy.
 
-## Orion Studio III blocker
+## Orion Studio III status and limits
 
-Orion Studio III remains disabled. Representative profile fixtures validate generic mechanics only; they do not constitute hardware confirmation. Promotion requires captured, verified command/readback mappings for all required frame families, complete mixer and routing domains, proven multi-byte endianness, and hardware round-trip tests.
+Orion Studio III is `Supported` with `RuntimeDriverKind::Profile`. Its generator uses a non-numbered framing assumption: `transport.uses_numbered_reports: false`. This is a generator-only assumption pending descriptor and hardware validation. No hardware validation is claimed.
+
+Orion physical-channel meters come from `state_report` at offset 157. Superseded `meter_report` bytes 33 and later are not per-channel values and are not interpreted as channel meters.
+
+Only mixer link space 3 is exposed. Physical and ADAT links remain non-actionable; the profile driver does not expose controls for them.
+
+Profile-driver fixtures validate codec, bounds, and framing mechanics only. They do not constitute physical Orion validation.

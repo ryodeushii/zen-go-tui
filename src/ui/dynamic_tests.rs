@@ -133,14 +133,14 @@ fn selectable_picker_rows_share_rendered_list_geometry() {
 }
 
 #[test]
-fn disabled_picker_row_renders_but_has_no_mouse_activation() {
+fn unsupported_picker_row_renders_but_has_no_mouse_activation() {
     let catalog = ProfileCatalog::builtin();
     let candidate = DeviceCandidate::new(
         "orion",
         0x23e5,
-        0xa221,
-        Some("ORION-1".into()),
-        Some("Orion Studio III".into()),
+        0xbeef,
+        Some("UNKNOWN-1".into()),
+        Some("Unknown Antelope".into()),
         0,
         0,
         3,
@@ -149,10 +149,10 @@ fn disabled_picker_row_renders_but_has_no_mouse_activation() {
     let mut terminal = test_terminal(100, 30);
     terminal
         .draw(|frame| draw_device_picker(frame, &picker))
-        .expect("draw disabled picker");
+        .expect("draw unsupported picker");
     let text = terminal_text(&terminal);
-    assert!(text.contains("Antelope Orion Studio III"));
-    assert!(text.contains("disabled"));
+    assert!(text.contains("Unknown Antelope"));
+    assert!(text.contains("unsupported"));
     assert!(device_picker_activation_row(Rect::new(0, 0, 100, 30), &picker, 3, 4,).is_none());
 }
 
@@ -190,11 +190,11 @@ fn render_to_string(state: &AppState) -> String {
 }
 
 #[test]
-fn orion_header_includes_device_name_and_disabled_reason() {
+fn orion_header_includes_device_name_and_supported_readiness() {
     let text = render_orion_screen();
     assert!(text.contains("Antelope Orion Studio III"));
-    assert!(text.to_lowercase().contains("disabled"));
-    assert!(text.contains("profile is not enabled for control"));
+    assert!(text.to_lowercase().contains("supported"));
+    assert!(!text.to_lowercase().contains("disabled"));
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn non_zen_mixer_title_and_page_right_use_authoritative_strips() {
 }
 
 #[test]
-fn orion_input_spaces_use_only_canonical_typed_controls() {
+fn orion_input_spaces_use_only_canonical_typed_controls_and_expose_intents() {
     let state = orion_ui_state();
     let expected = [
         (
@@ -300,11 +300,11 @@ fn orion_input_spaces_use_only_canonical_typed_controls() {
     }
     assert!(available_intents(&state)
         .iter()
-        .all(|intent| !intent.writes_hardware()));
+        .any(Intent::writes_hardware));
 }
 
 #[test]
-fn orion_input_links_have_no_capability_rectangle_hit_area_or_write_intent() {
+fn orion_input_links_have_no_capability_rectangle_hit_area() {
     let state = orion_ui_state();
     for space_index in 0..3 {
         let input = &state.input_spaces[space_index].inputs[0];
@@ -320,7 +320,7 @@ fn orion_input_links_have_no_capability_rectangle_hit_area_or_write_intent() {
                 .is_none()
         );
     }
-    assert!(!available_intents(&state).iter().any(|intent| matches!(
+    assert!(available_intents(&state).iter().any(|intent| matches!(
         intent,
         Intent::SetInputParameterAt { .. } | Intent::AdjustInputParameterAt { .. }
     )));
@@ -374,13 +374,15 @@ fn routing_lists_every_destination_and_declared_finite_row_count() {
 
 #[test]
 fn disabled_profiles_are_visible_but_produce_no_hardware_intents() {
-    for state in [orion_ui_state(), discrete_4_ui_state()] {
-        let text = render_to_string(&state).to_lowercase();
-        assert!(text.contains(state.ui_profile.readiness_label()));
-        assert!(available_intents(&state)
-            .iter()
-            .all(|intent| !intent.writes_hardware()));
-    }
+    let mut entry = entry("discrete_4_synergy_core");
+    entry.readiness = RuntimeReadiness::Disabled;
+    entry.driver_kind = RuntimeDriverKind::None;
+    let state = AppState::from_entry(&entry);
+    let text = render_to_string(&state).to_lowercase();
+    assert!(text.contains(state.ui_profile.readiness_label()));
+    assert!(available_intents(&state)
+        .iter()
+        .all(|intent| !intent.writes_hardware()));
 }
 
 #[test]
@@ -534,13 +536,13 @@ fn dynamic_master_controls_are_separate_and_addressed_as_strip_zero() {
 }
 
 #[test]
-fn disabled_orion_has_all_dynamic_rows_but_no_control_intents() {
+fn supported_orion_has_all_dynamic_rows_and_control_intents() {
     let state = orion_ui_state();
     assert_eq!(super::layouts::dynamic_output_row_count_for_test(&state), 6);
     assert_eq!(super::layouts::dynamic_input_row_count_for_test(&state), 30);
     assert!(available_intents(&state)
         .iter()
-        .all(|intent| !intent.writes_hardware()));
+        .any(Intent::writes_hardware));
 }
 
 #[test]
@@ -603,9 +605,13 @@ fn visible_mouse_hardware_intents_resolve_to_profile_bounds() {
 }
 
 #[test]
-fn orion_readiness_remains_disabled() {
+fn orion_readiness_is_promoted_supported() {
     assert_eq!(
         entry("orion_studio_3").readiness,
-        RuntimeReadiness::Disabled
+        RuntimeReadiness::Supported
+    );
+    assert_eq!(
+        entry("orion_studio_3").driver_kind,
+        RuntimeDriverKind::Profile
     );
 }

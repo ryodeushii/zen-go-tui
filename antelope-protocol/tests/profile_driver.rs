@@ -3,7 +3,8 @@ use antelope_protocol::{
     Action, Command, ControlValue, DeviceDriver, DeviceEvent, DriverError, DynamicMixerSurface,
     DynamicStatePatch, FrameEndian, FrameOperation, GlobalControl, InputAddress, InputControl,
     MixerAddress, MixerControl, OutputAddress, OutputControl, ProfileDriver, QueryRequest,
-    RoutingSource, RuntimeDriverKind, RuntimeEntry, RuntimeReadiness, WholeStateField, ZenGoDriver,
+    RoutingSource, RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeReadiness,
+    WholeStateField, ZenGoDriver,
 };
 
 fn stored_orion_entry() -> RuntimeEntry {
@@ -26,11 +27,71 @@ fn fixture_entry() -> RuntimeEntry {
 }
 
 fn disabled_orion_entry() -> RuntimeEntry {
-    stored_orion_entry()
+    let mut entry = stored_orion_entry();
+    entry.readiness = RuntimeReadiness::Disabled;
+    entry.driver_kind = RuntimeDriverKind::None;
+    entry.profile.transport.uses_numbered_reports = None;
+    entry
 }
 
 fn profile_driver_from_fixture() -> ProfileDriver {
     ProfileDriver::new(fixture_entry()).expect("profile driver")
+}
+
+fn non_orion_fixture_entry() -> RuntimeEntry {
+    let mut entry = fixture_entry();
+    entry.id = "synthetic_other_profile".into();
+    entry.profile.identity.vid = 0x1234;
+    entry.profile.identity.pid = 0x5678;
+    for parameter in &mut entry.profile.params {
+        parameter.applies_to = match parameter.name.as_str() {
+            name if name.starts_with("bus_") => "outputs",
+            "adat_gain" => "adat_inputs",
+            "spdif_gain" => "spdif_inputs",
+            "gain" => "physical_inputs",
+            name if name.starts_with("mix_") => "mixers",
+            applies_to => applies_to,
+        }
+        .into();
+        // Replace Orion's legacy-only offset aliases so non-Orion tests can
+        // exercise unrelated behavior under strict reference validation.
+        if parameter
+            .frame
+            .offsets
+            .iter()
+            .all(|(field, _)| field.starts_with("offset_"))
+        {
+            parameter.frame.offsets = if parameter.applies_to == "globals" {
+                vec![("value".into(), 17)]
+            } else {
+                vec![
+                    ("param_id".into(), 16),
+                    ("channel".into(), 17),
+                    ("value".into(), 18),
+                ]
+            };
+        }
+    }
+    entry
+}
+
+fn add_topology_constraints(entry: &mut RuntimeEntry) {
+    for (name, scalar) in [
+        ("mixer_readback_category", 0x04),
+        ("routing_readback_category", 0x03),
+        ("routing_source_count", 32),
+        ("routing_destination_count", 15),
+    ] {
+        entry.profile.constraints.push(RuntimeConstraint {
+            name: name.into(),
+            status: "confirmed".into(),
+            range: None,
+            values: Vec::new(),
+            scalar: Some(scalar),
+            text: String::new(),
+            metadata: String::new(),
+        });
+    }
 }
 
 fn hex_fixture(text: &str) -> Vec<u8> {
@@ -110,6 +171,70 @@ fn profile_driver_rejects_supported_non_profile_entry() {
 }
 
 #[test]
+fn non_orion_rejects_alias_like_parameter_with_mismatched_target() {
+    let mut entry = non_orion_fixture_entry();
+    add_topology_constraints(&mut entry);
+    entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|parameter| parameter.name == "bus_level")
+        .expect("bus_level fixture parameter")
+        .applies_to = "physical_inputs".into();
+    let driver = ProfileDriver::new(entry).expect("current behavior constructs driver");
+    let error = driver
+        .encode(Action::SetOutput {
+            address: OutputAddress { id: 5 },
+            control: OutputControl::Parameter(71),
+            value: ControlValue::Int(1),
+        })
+        .expect_err("mismatched target must be rejected");
+    assert!(matches!(error, DriverError::InvalidAction(_)));
+}
+
+#[test]
+fn non_orion_rejects_unknown_offset_semantic() {
+    let mut entry = non_orion_fixture_entry();
+    entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|parameter| parameter.name == "gain")
+        .expect("gain fixture parameter")
+        .frame
+        .offsets
+        .push(("offset_unknown".into(), 16));
+    let error = ProfileDriver::new(entry).expect_err("unknown offset semantic must be rejected");
+    assert!(matches!(error, DriverError::InvalidAction(_)));
+}
+
+#[test]
+fn non_orion_rejects_parameter_with_only_unknown_offset_semantics() {
+    let mut entry = non_orion_fixture_entry();
+    add_topology_constraints(&mut entry);
+    entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|parameter| parameter.name == "gain")
+        .expect("gain fixture parameter")
+        .frame
+        .offsets = vec![("offset_unknown".into(), 16)];
+
+    let error = ProfileDriver::new(entry)
+        .expect_err("non-Orion unknown-only offset parameter must be rejected");
+    assert!(matches!(error, DriverError::InvalidAction(_)));
+}
+
+#[test]
+fn non_orion_rejects_topology_inference_without_scalar_constraints() {
+    let entry = non_orion_fixture_entry();
+    let error = ProfileDriver::new(entry)
+        .expect_err("missing routing/category scalars must reject non-Orion profile");
+    assert!(matches!(error, DriverError::InvalidAction(_)));
+}
+
+#[test]
 fn profile_driver_rejects_unconfirmed_or_absent_parameter() {
     let driver = profile_driver_from_fixture();
     let error = driver
@@ -164,13 +289,13 @@ fn profile_driver_encodes_full_frames_and_checks_bounds() {
                 strip: 32,
             },
             fader: 60,
-            pan: 12,
+            pan: 30,
             muted: false,
             soloed: false,
             send: Some(30),
         })
         .expect("mixer frame");
-    assert_eq!(&mixer.frames[0][16..23], &[0xd4, 0x05, 3, 32, 60, 12, 30]);
+    assert_eq!(&mixer.frames[0][16..23], &[0xd4, 0x05, 3, 32, 60, 62, 30]);
 
     for action in [
         Action::SetInput {
@@ -228,15 +353,16 @@ fn query_bounds_and_layout_are_profile_driven() {
 #[test]
 fn profile_derived_startup_walk_is_exactly_113_bounded_requests() {
     let driver = profile_driver_from_fixture();
-    let mut expected = vec![(0x11, 0), (0x11, 1), (0x0b, 1), (0x0b, 2), (0x1b, 0)];
-    expected.extend((0..16).map(|index| (0x1a, index)));
+    let mut expected = Vec::new();
     expected.extend((0..15).map(|index| (0x03, index)));
-    for index in 0..4 {
-        expected.extend([(0x04, index), (0x0b, 3)]);
-    }
-    expected.extend([(0x0a, 0), (0x15, 0), (0x16, 0)]);
+    expected.extend((0..4).map(|index| (0x04, index)));
+    expected.extend([(0x0a, 0)]);
+    expected.extend((0..8).map(|index| (0x0b, index)));
+    expected.extend((0..2).map(|index| (0x11, index)));
+    expected.extend([(0x15, 0), (0x16, 0)]);
     expected.extend((0..64).map(|index| (0x19, index)));
-    expected.extend([(0x0b, 0), (0x0b, 4)]);
+    expected.extend((0..16).map(|index| (0x1a, index)));
+    expected.extend([(0x1b, 0)]);
 
     let actual: Vec<_> = driver
         .startup_requests()
@@ -263,18 +389,17 @@ fn profile_derived_startup_fixture_matches_every_complete_frame() {
     assert_eq!(fixture.len(), 113 * 320);
 
     let driver = profile_driver_from_fixture();
-    let encoded: Vec<u8> = driver
-        .startup_requests()
-        .iter()
-        .flat_map(|request| {
-            driver
-                .encode(Action::Query(*request))
-                .expect("bounded startup request")
-                .frames
-                .remove(0)
-        })
-        .collect();
-    assert_eq!(encoded, fixture);
+    for (index, expected) in fixture.chunks(320).enumerate() {
+        let request = QueryRequest::new(expected[8], expected[12]);
+        let actual = driver
+            .encode(Action::Query(request))
+            .expect("fixture startup request must be bounded")
+            .frames
+            .into_iter()
+            .next()
+            .expect("query frame");
+        assert_eq!(actual, expected, "startup frame {index}");
+    }
 }
 
 #[test]
@@ -395,7 +520,7 @@ fn required_orion_actions() -> Vec<Action> {
                 strip: 32,
             },
             fader: 44,
-            pan: 32,
+            pan: 30,
             muted: true,
             soloed: false,
             send: Some(55),
@@ -571,28 +696,33 @@ fn profile_derived_confirmed_parameter_families_match_complete_frames() {
 fn profile_driver_encodes_every_confirmed_finite_orion_family() {
     let driver = profile_driver_from_fixture();
     for action in required_orion_actions() {
-        let batch = driver.encode(action).expect("confirmed Orion action");
-        assert_eq!(batch.frames.len(), 1);
-        assert_eq!(batch.frames[0].len(), 320);
+        let is_unconfirmed = matches!(action, Action::SetWholeState { .. });
+        let result = driver.encode(action);
+        if is_unconfirmed {
+            assert!(
+                result.is_err(),
+                "unconfirmed AuraVerb action must fail closed"
+            );
+        } else {
+            let batch = result.expect("confirmed Orion action");
+            assert_eq!(batch.frames.len(), 1);
+            assert_eq!(batch.frames[0].len(), 320);
+        }
     }
 }
 
 #[test]
-fn profile_derived_auraverb_whole_state_matches_complete_confirmed_frame() {
+fn profile_derived_auraverb_whole_state_rejects_unconfirmed_frame() {
     let action = required_orion_actions()
         .into_iter()
         .find(|action| matches!(action, Action::SetWholeState { .. }))
         .expect("AuraVerb action");
-    let actual = profile_driver_from_fixture()
+    let error = profile_driver_from_fixture()
         .encode(action)
-        .unwrap()
-        .frames
-        .remove(0);
-    let mut expected = vec![0; 320];
-    expected[0] = 0x70;
-    expected[4] = 0x1d;
-    expected[16..29].copy_from_slice(&[0xda, 0x0b, 0, 81, 100, 0, 100, 11, 13, 24, 66, 50, 1]);
-    assert_eq!(actual, expected);
+        .expect_err("unconfirmed AuraVerb frame must fail closed");
+    assert!(error
+        .to_string()
+        .contains("confirmed whole-state operation"));
 }
 
 #[test]
@@ -623,6 +753,21 @@ fn whole_state_is_fail_closed_for_partial_duplicate_or_out_of_range_fields() {
 }
 
 #[test]
+fn superseded_meter_fallback_requires_canonical_orion_identity() {
+    let mut entry = non_orion_fixture_entry();
+    add_topology_constraints(&mut entry);
+    entry.id = "noncanonical_orion".into();
+    let driver = ProfileDriver::new(entry).expect("driver with changed runtime identity");
+    let mut frame = vec![0; 320];
+    frame[0] = 0x75;
+    frame[1] = 0x1f;
+    assert!(matches!(
+        driver.decode(&frame),
+        Err(DriverError::InvalidAction(_))
+    ));
+}
+
+#[test]
 fn readback_and_meter_discriminators_are_distinct_and_raw_is_owned() {
     let driver = profile_driver_from_fixture();
     let readback = hex_fixture(include_str!("fixtures/orion/readback_75.hex"));
@@ -639,8 +784,23 @@ fn readback_and_meter_discriminators_are_distinct_and_raw_is_owned() {
     let mut meter = vec![0; 320];
     meter[0] = 0x75;
     meter[1] = 0x1f;
-    let event = driver.decode(&meter).expect("meter decode").expect("event");
-    assert!(matches!(event, DeviceEvent::Meter { raw, .. } if raw == meter));
+    let event = driver.decode(&meter).expect("superseded meter decode");
+    assert!(
+        event.is_none(),
+        "state source must ignore superseded meter response"
+    );
+}
+
+#[test]
+fn state_only_readback_with_unproven_discriminator_is_rejected() {
+    let driver = profile_driver_from_fixture();
+    let mut frame = vec![0; 320];
+    frame[0] = 0x75;
+    frame[1] = 0x20;
+    assert!(matches!(
+        driver.decode(&frame),
+        Err(DriverError::InvalidAction(_))
+    ));
 }
 
 #[test]
@@ -648,10 +808,13 @@ fn malformed_known_reports_fail_instead_of_being_ignored() {
     let driver = profile_driver_from_fixture();
     assert!(driver.decode(&[0x75; 12]).is_err());
 
-    let mut invalid_discriminator = vec![0; 320];
-    invalid_discriminator[0] = 0x75;
-    invalid_discriminator[1] = 0x7f;
-    assert!(driver.decode(&invalid_discriminator).is_err());
+    let mut unknown_readback = vec![0; 320];
+    unknown_readback[0] = 0x75;
+    unknown_readback[1] = 0x7f;
+    assert!(matches!(
+        driver.decode(&unknown_readback),
+        Err(DriverError::InvalidAction(_))
+    ));
 
     let unknown = vec![0x99; 320];
     assert!(driver.decode(&unknown).expect("unknown policy").is_none());
@@ -727,12 +890,12 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
             .map(|output| (output.address.id, output.level, output.muted, output.dimmed,))
             .collect::<Vec<_>>(),
         vec![
-            (0, Some(10), Some(true), Some(false)),
-            (1, Some(20), Some(false), Some(true)),
-            (2, Some(30), Some(false), Some(false)),
-            (3, Some(40), Some(true), None),
+            (0, Some(10), None, None),
+            (1, Some(20), None, None),
+            (2, Some(30), None, None),
+            (3, Some(40), None, None),
             (4, Some(50), None, None),
-            (5, Some(60), Some(false), Some(true)),
+            (5, Some(60), None, None),
         ]
     );
     assert_eq!(
@@ -756,8 +919,102 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
 }
 
 #[test]
-fn profile_derived_meter_report_decodes_all_confirmed_physical_meters() {
+fn state_only_profile_populates_physical_meters_from_state_report() {
     let driver = profile_driver_from_fixture();
+    let frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        state
+            .inputs
+            .iter()
+            .filter(|input| input.address.space == 0)
+            .map(|input| input.meter)
+            .collect::<Vec<_>>(),
+        vec![Some(0); 12]
+    );
+}
+
+#[test]
+fn state_only_profile_ignores_superseded_meter_report_bytes_after_monitor_level() {
+    let driver = profile_driver_from_fixture();
+    let mut frame = vec![0; 320];
+    frame[0] = 0x75;
+    frame[1] = 0x1f;
+    frame[32] = 9;
+    frame[33..45].copy_from_slice(&[1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34]);
+    assert!(driver.decode(&frame).unwrap().is_none());
+}
+
+#[test]
+fn confirmed_meter_report_emits_meter_only_for_confirmed_discriminator() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "meter_report")
+        .unwrap()
+        .status = "confirmed".into();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "meter_report")
+        .unwrap()
+        .operations
+        .push(FrameOperation::FixedByte {
+            offset: 1,
+            value: 0x1f,
+        });
+    entry
+        .profile
+        .decoders
+        .iter_mut()
+        .find(|decoder| decoder.frame_id == "meter_report")
+        .unwrap()
+        .status = "confirmed".into();
+    let driver = ProfileDriver::new(entry).expect("confirmed meter source");
+    let mut frame = vec![0; 320];
+    frame[0] = 0x75;
+    frame[1] = 0x73;
+    frame[33..45].fill(0xff);
+    let error = driver
+        .decode(&frame)
+        .expect_err("unconfirmed discriminator must not decode as meter");
+    assert!(error.to_string().contains("discriminator"));
+}
+
+#[test]
+fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "meter_report")
+        .unwrap()
+        .status = "confirmed".into();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "meter_report")
+        .unwrap()
+        .operations
+        .push(FrameOperation::FixedByte {
+            offset: 1,
+            value: 0x1f,
+        });
+    entry
+        .profile
+        .decoders
+        .iter_mut()
+        .find(|decoder| decoder.frame_id == "meter_report")
+        .unwrap()
+        .status = "confirmed".into();
+    let driver = ProfileDriver::new(entry).expect("confirmed meter source");
     let mut frame = vec![0; 320];
     frame[0] = 0x75;
     frame[1] = 0x1f;
@@ -779,6 +1036,147 @@ fn profile_derived_meter_report_decodes_all_confirmed_physical_meters() {
             ))
             .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn meter_source_does_not_require_state_physical_meter_layout() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "meter_report")
+        .unwrap()
+        .status = "confirmed".into();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "meter_report")
+        .unwrap()
+        .operations
+        .push(FrameOperation::FixedByte {
+            offset: 1,
+            value: 0x1f,
+        });
+    entry
+        .profile
+        .decoders
+        .iter_mut()
+        .find(|decoder| decoder.frame_id == "meter_report")
+        .unwrap()
+        .status = "confirmed".into();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "state_report")
+        .unwrap()
+        .operations
+        .retain(|operation| {
+            !matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == "physical_meter")
+        });
+    let driver = ProfileDriver::new(entry).expect("meter source without state meter");
+    let state = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&state).unwrap().unwrap() else {
+        panic!("snapshot")
+    };
+    assert!(state
+        .inputs
+        .iter()
+        .filter(|input| input.address.space == 0)
+        .all(|input| input.meter.is_none()));
+}
+
+#[test]
+fn typed_routing_readback_layout_is_validated_when_present() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "readback")
+        .unwrap()
+        .operations
+        .push(FrameOperation::Indexed {
+            base: 17,
+            stride: 2,
+            index_field: "routing_source_pair".into(),
+            width: 1,
+            max_index: Some(31),
+        });
+    assert!(ProfileDriver::new(entry).is_err());
+}
+
+#[test]
+fn no_send_implicit_mixer_readback_decodes_three_byte_records_without_send() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .params
+        .retain(|parameter| parameter.name != "mix_send");
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "mix_command")
+        .unwrap()
+        .operations
+        .retain(|operation| {
+            !matches!(operation, FrameOperation::Scalar { field, .. } if field == "send")
+        });
+    let driver = ProfileDriver::new(entry).expect("no-send mixer profile");
+    let frame = hex_fixture(include_str!("fixtures/orion/readback_75.hex"));
+    let DeviceEvent::QueryReply {
+        patch: Some(DynamicStatePatch::Mixer(surface)),
+        ..
+    } = driver.decode(&frame).unwrap().unwrap()
+    else {
+        panic!("mixer patch")
+    };
+    assert!(surface.master.as_ref().expect("master").send.is_none());
+    assert!(surface.strips.iter().all(|strip| strip.send.is_none()));
+}
+
+#[test]
+fn state_meter_layout_requires_finite_width_count_and_range() {
+    for mutation in 0..3 {
+        let mut entry = fixture_entry();
+        let state = entry
+            .profile
+            .frames
+            .iter_mut()
+            .find(|frame| frame.id == "state_report")
+            .unwrap();
+        let FrameOperation::Indexed {
+            base,
+            width,
+            max_index,
+            ..
+        } = state
+            .operations
+            .iter_mut()
+            .find(|operation| {
+                matches!(
+                    operation,
+                    FrameOperation::Indexed { index_field, .. } if index_field == "physical_meter"
+                )
+            })
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        match mutation {
+            0 => *width = 2,
+            1 => *max_index = Some(10),
+            2 => *base = 319,
+            _ => unreachable!(),
+        }
+        assert!(
+            ProfileDriver::new(entry).is_err(),
+            "state meter mutation {mutation} must fail construction"
+        );
+    }
 }
 
 #[test]
@@ -815,7 +1213,7 @@ fn globals_and_routing_group_validate_before_writing() {
     assert_eq!(&global.frames[0][16..18], &[0x03, 0x02]);
 
     let sources = (0..16)
-        .map(|index| RoutingSource { bank: 2, index })
+        .map(|index| RoutingSource { bank: 3, index })
         .collect();
     let routing = driver
         .encode(Action::SetRoutingGroup {
@@ -963,10 +1361,30 @@ fn constructor_rejects_missing_state_frame() {
 }
 
 #[test]
-fn constructor_rejects_missing_meter_frame() {
-    assert!(constructor_error_without_frame("meter_report")
-        .to_string()
-        .contains("meter"));
+fn constructor_allows_state_only_profile_without_meter_frame() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .retain(|frame| frame.id != "meter_report");
+    assert!(ProfileDriver::new(entry).is_ok());
+}
+
+#[test]
+fn state_only_profile_decodes_readback_without_meter_frame() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .retain(|frame| frame.id != "meter_report");
+    let driver = ProfileDriver::new(entry).expect("state-only profile driver");
+    let mut frame = vec![0; 320];
+    frame[0] = 0x75;
+    frame[8] = 0x0a;
+    assert!(matches!(
+        driver.decode(&frame),
+        Ok(Some(DeviceEvent::QueryReply { .. }))
+    ));
 }
 
 #[test]
@@ -996,8 +1414,8 @@ fn constructor_rejects_missing_or_unsafe_startup_walk_before_io() {
 #[test]
 fn constructor_rejects_missing_state_or_meter_semantics_before_io() {
     for (frame_id, semantic) in [
-        ("state_report", "physical_gain"),
-        ("meter_report", "physical_meter"),
+        ("state_report", "gain_base"),
+        ("state_report", "physical_meter"),
     ] {
         let mut entry = fixture_entry();
         entry
@@ -1009,6 +1427,7 @@ fn constructor_rejects_missing_state_or_meter_semantics_before_io() {
             .operations
             .retain(|operation| {
                 !matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == semantic)
+                    && !matches!(operation, FrameOperation::Scalar { field, .. } if field == semantic)
             });
         assert!(ProfileDriver::new(entry).is_err(), "{frame_id}/{semantic}");
     }
@@ -1036,7 +1455,7 @@ fn constructor_rejects_ambiguous_semantic_operation() {
         .iter_mut()
         .find(|frame| frame.id == "command")
         .unwrap();
-    let duplicate = frame.operations.iter().find(|operation| matches!(operation, FrameOperation::Scalar { field, .. } if field == "parameter")).unwrap().clone();
+    let duplicate = frame.operations.iter().find(|operation| matches!(operation, FrameOperation::Scalar { field, .. } if field == "param_id")).unwrap().clone();
     frame.operations.push(duplicate);
     assert!(ProfileDriver::new(entry)
         .expect_err("ambiguous mapping")
@@ -1074,7 +1493,7 @@ fn scalar_schema_requires_semantics_and_declared_endianness() {
         .iter_mut()
         .find(|frame| frame.id == "command")
         .unwrap();
-    let FrameOperation::Scalar { field, .. } = frame.operations.iter_mut().find(|operation| matches!(operation, FrameOperation::Scalar { field, .. } if field == "parameter")).unwrap() else { unreachable!() };
+    let FrameOperation::Scalar { field, .. } = frame.operations.iter_mut().find(|operation| matches!(operation, FrameOperation::Scalar { field, .. } if field == "param_id")).unwrap() else { unreachable!() };
     field.clear();
     assert!(ProfileDriver::new(entry).is_err());
 
@@ -1148,12 +1567,12 @@ fn constructor_rejects_bit_field_mask_zero_before_encode() {
         .profile
         .frames
         .iter_mut()
-        .find(|frame| frame.id == "mix_command")
+        .find(|frame| frame.id == "state_report")
         .unwrap();
     let FrameOperation::BitField { mask, .. } = frame
         .operations
         .iter_mut()
-        .find(|operation| matches!(operation, FrameOperation::BitField { field, .. } if field == "pan"))
+        .find(|operation| matches!(operation, FrameOperation::BitField { field, .. } if field == "mask"))
         .unwrap()
     else {
         unreachable!()
@@ -1163,7 +1582,7 @@ fn constructor_rejects_bit_field_mask_zero_before_encode() {
     let error = ProfileDriver::new(entry).expect_err("zero bit-field mask must fail construction");
     assert!(error
         .to_string()
-        .contains("mix_command bit field \"pan\" has zero mask"));
+        .contains("state_report bit field \"mask\" has zero mask"));
 }
 
 #[test]
@@ -1173,12 +1592,12 @@ fn constructor_rejects_bit_field_shift_eight_before_encode() {
         .profile
         .frames
         .iter_mut()
-        .find(|frame| frame.id == "mix_command")
+        .find(|frame| frame.id == "state_report")
         .unwrap();
     let FrameOperation::BitField { shift, .. } = frame
         .operations
         .iter_mut()
-        .find(|operation| matches!(operation, FrameOperation::BitField { field, .. } if field == "pan"))
+        .find(|operation| matches!(operation, FrameOperation::BitField { field, .. } if field == "mask"))
         .unwrap()
     else {
         unreachable!()
@@ -1189,7 +1608,7 @@ fn constructor_rejects_bit_field_shift_eight_before_encode() {
         ProfileDriver::new(entry).expect_err("shift-eight bit field must fail construction");
     assert!(error
         .to_string()
-        .contains("mix_command bit field \"pan\" shift 8"));
+        .contains("state_report bit field \"mask\" shift 8"));
 }
 
 #[test]
@@ -1199,12 +1618,12 @@ fn constructor_rejects_bit_field_mask_below_shift_before_encode() {
         .profile
         .frames
         .iter_mut()
-        .find(|frame| frame.id == "mix_command")
+        .find(|frame| frame.id == "state_report")
         .unwrap();
     let FrameOperation::BitField { mask, shift, .. } = frame
         .operations
         .iter_mut()
-        .find(|operation| matches!(operation, FrameOperation::BitField { field, .. } if field == "pan"))
+        .find(|operation| matches!(operation, FrameOperation::BitField { field, .. } if field == "mask"))
         .unwrap()
     else {
         unreachable!()
@@ -1216,7 +1635,7 @@ fn constructor_rejects_bit_field_mask_below_shift_before_encode() {
         .expect_err("bit-field mask fully below shift must fail construction");
     assert!(error
         .to_string()
-        .contains("mix_command bit field \"pan\" mask 0x03 is below shift 2"));
+        .contains("state_report bit field \"mask\" mask 0x03 is below shift 2"));
 }
 
 #[test]
@@ -1231,8 +1650,8 @@ fn shifted_semantic_offsets_and_big_endian_width_are_profile_driven() {
     for operation in &mut frame.operations {
         if let FrameOperation::Scalar { field, offset, .. } = operation {
             *offset = match field.as_str() {
-                "parameter" => 30,
-                "target" => 31,
+                "param_id" => 30,
+                "channel" => 31,
                 "value" => 32,
                 _ => *offset,
             };
@@ -1245,8 +1664,8 @@ fn shifted_semantic_offsets_and_big_endian_width_are_profile_driven() {
     {
         for (field, offset) in &mut parameter.frame.offsets {
             *offset = match field.as_str() {
-                "parameter" => 30,
-                "target" => 31,
+                "param_id" => 30,
+                "channel" => 31,
                 "value" => 32,
                 _ => *offset,
             };
@@ -1339,7 +1758,8 @@ fn complete_mixer_mutations_preserve_all_companion_fields() {
         expected[18] = 2;
         expected[19] = 17;
         expected[20] = fader as u8;
-        expected[21] = pan as u8 | if muted { 0x40 } else { 0 } | if soloed { 0x80 } else { 0 };
+        expected[21] =
+            (pan + 32) as u8 | if muted { 0x40 } else { 0 } | if soloed { 0x80 } else { 0 };
         expected[22] = send as u8;
         assert_eq!(frame, expected);
     }
@@ -1361,15 +1781,6 @@ fn mixer_profile_without_send_accepts_none_and_rejects_some() {
     mix.operations.retain(
         |operation| !matches!(operation, FrameOperation::Scalar { field, .. } if field == "send"),
     );
-    let readback = entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "readback")
-        .unwrap();
-    let FrameOperation::Indexed { stride, width, .. } = readback.operations.iter_mut().find(|operation| matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == "mixer_slot")).unwrap() else { unreachable!() };
-    *stride = 2;
-    *width = 2;
     let driver = ProfileDriver::new(entry).expect("no-send mixer profile");
     let complete = Action::SetMixerStripState {
         address: MixerAddress {
@@ -1470,21 +1881,21 @@ fn destination_specific_routing_domains_control_outbound_and_inbound_validation(
     let mut entry = fixture_entry();
     entry.profile.routing_groups[1]
         .source_domains
-        .retain(|domain| domain.bank != 2);
+        .retain(|domain| domain.bank != 3);
     let driver = ProfileDriver::new(entry).expect("destination-specific routing fixture");
 
     driver
         .encode(Action::SetRoutingGroup {
             destination: 0,
             changed_channel: None,
-            sources: vec![RoutingSource { bank: 2, index: 15 }; 16],
+            sources: vec![RoutingSource { bank: 3, index: 15 }; 16],
         })
         .expect("bank 2 is valid for destination A");
     let outbound_error = driver
         .encode(Action::SetRoutingGroup {
             destination: 1,
             changed_channel: None,
-            sources: vec![RoutingSource { bank: 2, index: 0 }; 2],
+            sources: vec![RoutingSource { bank: 3, index: 0 }; 2],
         })
         .expect_err("bank 2 is unavailable for destination B");
     assert!(outbound_error.to_string().contains("destination 1"));
@@ -1494,19 +1905,21 @@ fn destination_specific_routing_domains_control_outbound_and_inbound_validation(
     inbound[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
     inbound[8] = 0x03;
     inbound[12] = 0;
+    inbound[16] = 0;
     for channel in 0..16 {
-        inbound[16 + channel * 2] = 2;
-        inbound[17 + channel * 2] = channel as u8;
+        inbound[17 + channel * 2] = 3;
+        inbound[18 + channel * 2] = channel as u8;
     }
     driver
         .decode(&inbound)
         .expect("destination A inbound domain")
         .expect("destination A event");
     inbound[12] = 1;
+    inbound[16] = 1;
     let inbound_error = driver
         .decode(&inbound)
         .expect_err("destination B inbound domain must reject");
-    assert!(inbound_error.to_string().contains("index 1"));
+    assert!(inbound_error.to_string().contains("source bank 3"));
 }
 
 #[test]
@@ -1573,7 +1986,7 @@ fn complete_routing_group_preserves_every_ordered_source_pair() {
         })
         .is_err());
     let sources: Vec<_> = (0..16)
-        .map(|index| RoutingSource { bank: 2, index })
+        .map(|index| RoutingSource { bank: 3, index })
         .collect();
     let frame = driver
         .encode(Action::SetRoutingGroup {
@@ -1631,7 +2044,7 @@ fn inbound_readback_bounds_and_complete_patches_are_enforced() {
             master.soloed,
             master.send
         ),
-        (Some(10), Some(2), Some(true), Some(false), Some(20))
+        (Some(10), Some(-30), Some(true), Some(false), Some(20))
     );
     assert_eq!(surface.strips.len(), 32);
     assert_eq!(
@@ -1642,9 +2055,10 @@ fn inbound_readback_bounds_and_complete_patches_are_enforced() {
     let mut routing = mixer_bytes.clone();
     routing[8] = 0x03;
     routing[12] = 0;
+    routing[16] = 0;
     for index in 0..16 {
-        routing[16 + index * 2] = 2;
-        routing[17 + index * 2] = index as u8;
+        routing[17 + index * 2] = 3;
+        routing[18 + index * 2] = index as u8;
     }
     let DeviceEvent::QueryReply {
         patch: Some(DynamicStatePatch::Routing(group)),
@@ -1654,7 +2068,7 @@ fn inbound_readback_bounds_and_complete_patches_are_enforced() {
         panic!("routing patch")
     };
     assert_eq!(group.sources.len(), 16);
-    assert_eq!(group.sources[15], RoutingSource { bank: 2, index: 15 });
+    assert_eq!(group.sources[15], RoutingSource { bank: 3, index: 15 });
 
     let mut unknown = mixer_bytes.clone();
     unknown[8] = 0x7e;

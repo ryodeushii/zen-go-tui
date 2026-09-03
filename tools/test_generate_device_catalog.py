@@ -63,6 +63,8 @@ def profile_data(name: str, pid: str, *, status: str = "confirmed") -> dict[str,
                 "magic": "0x73",
                 "gain_base_offset": 49,
                 "status_base_offset": 61,
+                "channel_meter_base_offset": 157,
+                "channel_meter_notes": "confirmed synthetic physical channel meters",
                 "bus_block": {
                     "base_offset": 28,
                     "bytes_per_bus": 3,
@@ -90,7 +92,13 @@ def profile_data(name: str, pid: str, *, status: str = "confirmed") -> dict[str,
                 "status": "confirmed",
             },
         },
-        "channels": {"count": 2, "names": ["A1", "A2"], "status": "confirmed"},
+        "channels": {
+            "count": 2,
+            "count_confirmed": 2,
+            "confirmed_indices": [0, 1],
+            "names": ["A1", "A2"],
+            "status": "confirmed",
+        },
         "buses": {
             "known": {"0": {"name": "monitor", "aliases": ["mon"]}},
             "status": "confirmed",
@@ -237,12 +245,15 @@ class GeneratorTests(unittest.TestCase):
         with fixture_profiles() as temporary:
             profiles = {profile.path.name: profile for profile in generator.discover_profiles(temporary)}
             zen = generator.load_profile(profiles["zen_go_sc.json"].path, temporary)
-            orion = generator.load_profile(profiles["orion_studio_3.json"].path, temporary)
+            orion = generator.load_profile(
+                REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+                REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
+            )
             discrete_8 = generator.load_profile(profiles["discrete_8_pro_synergy_core.json"].path, temporary)
             discrete_4 = generator.load_profile(profiles["discrete_4_synergy_core.json"].path, temporary)
 
             self.assertEqual(generator.classify_readiness(zen), generator.Readiness.SUPPORTED)
-            self.assertEqual(generator.classify_readiness(orion), generator.Readiness.DISABLED)
+            self.assertEqual(generator.classify_readiness(orion), generator.Readiness.SUPPORTED)
             self.assertEqual(generator.classify_readiness(discrete_8), generator.Readiness.PARTIAL)
             self.assertEqual(generator.classify_readiness(discrete_4), generator.Readiness.UNVERIFIED)
 
@@ -252,14 +263,440 @@ class GeneratorTests(unittest.TestCase):
             incomplete_orion = generator.normalize_profile(incomplete_orion_data)
             self.assertEqual(generator.classify_readiness(incomplete_orion), generator.Readiness.DISABLED)
 
+    def test_orion_explicit_numbered_reports_is_unrepresentable_blocker(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["transport"]["uses_numbered_reports"] = True
+        profile = generator.normalize_profile(data, path=path)
+
+        blockers = generator.orion_readiness_blockers(profile)
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
+        self.assertTrue(any("unrepresentable" in blocker for blocker in blockers))
+
     def test_orion_readiness_reports_confirmed_transport_blocker(self) -> None:
         canonical = generator.load_profile(
             REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
             REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
         )
         blockers = generator.orion_readiness_blockers(canonical)
-        self.assertIn("transport.uses_numbered_reports is unconfirmed", blockers)
-        self.assertEqual(generator.classify_readiness(canonical), generator.Readiness.DISABLED)
+        self.assertNotIn("transport.uses_numbered_reports is unconfirmed", blockers)
+        self.assertEqual(generator.classify_readiness(canonical), generator.Readiness.SUPPORTED)
+
+    def test_builtin_catalog_uses_effective_orion_framing(self) -> None:
+        canonical = generator.load_profile(
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
+        )
+        rendered = generator.render_catalog([canonical])
+        self.assertIn("uses_numbered_reports: Some(false)", rendered)
+
+    def test_orion_normal_support_policy(self) -> None:
+        profiles_dir = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
+        canonical_path = profiles_dir / "orion_studio_3.json"
+        canonical = generator.load_profile(canonical_path, profiles_dir)
+        normalized = json.loads(generator.render_profile_pack([canonical]))["profiles"][0]
+        blockers = generator.orion_readiness_blockers(canonical)
+
+        self.assertEqual(normalized["readiness"], "supported")
+        self.assertEqual(normalized["driver_kind"], "profile")
+        self.assertFalse(normalized["transport"]["uses_numbered_reports"])
+        self.assertNotIn("transport.uses_numbered_reports is unconfirmed", blockers)
+        self.assertNotIn("physical/ADAT link action has ambiguous space=0 semantics", blockers)
+        self.assertEqual(normalized["identity"]["status"], "unknown")
+        self.assertEqual(
+            normalized["provenance"]["source_sha256"],
+            "3ed69b5efa7070e8f43af7967c64e58afed4bc99f013350f82057bea58972c0b",
+        )
+
+    def test_orion_unconfirmed_source_only_params_are_non_actionable(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        profile = generator.load_profile(path, REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles")
+        normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
+        params = {param["name"]: param for param in normalized["params"]}
+        for name in ("oscillator", "surround_monitor", "dc_coupling", "routing_batch_marker"):
+            self.assertNotEqual(generator._normalized_status(params[name]["status"]), "confirmed")
+            self.assertIsNone(params[name]["id"])
+            self.assertIn("id", json.loads(params[name]["metadata"]))
+
+    def test_orion_actionable_params_have_complete_runtime_shape(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        profile = generator.load_profile(path, REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles")
+        normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
+        params = {param["name"]: param for param in normalized["params"]}
+        actionable = {
+            "input_mode",
+            "gain",
+            "phantom",
+            "phase_invert",
+            "bus_level",
+            "bus_dim",
+            "bus_mute",
+            "bus_mono",
+            "sample_rate",
+            "screen_brightness",
+            "adat_gain",
+            "talkback_button",
+            "talkback_source",
+            "talkback_gain",
+            "spdif_gain",
+        }
+        for name in actionable:
+            parameter = params[name]
+            self.assertIsNotNone(parameter["id"], name)
+            self.assertTrue(parameter["applies_to"].strip(), name)
+            self.assertTrue(parameter["frame"]["text"].strip(), name)
+            self.assertTrue(parameter["frame"]["offsets"], name)
+            self.assertTrue(parameter["readback"]["text"].strip(), name)
+            self.assertTrue(parameter["readback"]["offsets"], name)
+        for name in (
+            "output_trim",
+            "routing",
+            "oscillator",
+            "surround_monitor",
+            "dc_coupling",
+            "talkback_dest_assign",
+        ):
+            self.assertIsNone(params[name]["id"], name)
+
+    def test_orion_identity_requires_profile_stem(self) -> None:
+        data = json.loads(
+            (REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json").read_text()
+        )
+        profile = generator.normalize_profile(data, path=Path("same_vid_pid.json"))
+        self.assertFalse(generator._is_orion(profile))
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
+
+    def test_orion_frame_promotion_matches_exact_identifiers(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        for value in data["params"].values():
+            if not isinstance(value, dict):
+                continue
+            reference = str(value.get("frame", value.get("runtime_frame", "")))
+            if generator._reference_mentions_frame(reference, "command"):
+                value["status"] = "unconfirmed"
+        data["frame"]["command"]["runtime_status"] = "unconfirmed"
+        profile = generator.normalize_profile(data, path=path)
+        self.assertNotEqual(
+            generator._status_variant(
+                generator._effective_frame_status(profile, "command", profile.frame["command"])
+            ),
+            "Confirmed",
+        )
+
+    def test_orion_auraverb_and_micmodeling_never_promote(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        for frame_id in ("auraverb_command", "micmodeling_command"):
+            data["frame"][frame_id]["runtime_status"] = "confirmed"
+            data["frame"][frame_id]["notes"] = "future confirmed mapping"
+            profile = generator.normalize_profile(data, path=path)
+            self.assertNotEqual(
+                generator._status_variant(
+                    generator._effective_frame_status(profile, frame_id, profile.frame[frame_id])
+                ),
+                "Confirmed",
+                frame_id,
+            )
+
+    def test_orion_inferred_semantics_are_unique_without_renaming_lookups(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        profile = generator.normalize_profile(data, path=path)
+        operations = generator._frame_operations(profile, "state_report", profile.frame["state_report"])
+        for kind in ("scalar", "bit_field"):
+            names = [operation["field"] for operation in operations if operation["op"] == kind]
+            self.assertEqual(len(names), len(set(names)), kind)
+        names = {operation.get("field") for operation in operations}
+        self.assertTrue({"gain_base", "status_base", "adat_gain_base", "spdif_gain_base"} <= names)
+        self.assertIn("physical_meter", {operation.get("index_field") for operation in operations})
+        self.assertIn("mask__2", names)
+        self.assertIn("byte__2", names)
+
+    def test_orion_inferred_scalar_bit_field_collisions_share_namespace(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        profile = generator.normalize_profile(json.loads(path.read_text()), path=path)
+        operations = generator._disambiguate_orion_inferred_semantics(
+            profile,
+            "state_report",
+            [
+                {"op": "scalar", "field": "shared", "offset": 1, "width": 1},
+                {"op": "bit_field", "field": "shared", "offset": 2, "mask": 1, "shift": 0},
+                {"op": "scalar", "field": "shared__2", "offset": 3, "width": 1},
+                {"op": "bit_field", "field": "shared", "offset": 4, "mask": 2, "shift": 1},
+            ],
+        )
+        self.assertEqual(
+            [operation["field"] for operation in operations],
+            ["shared", "shared__2", "shared__2__2", "shared__3"],
+        )
+
+    def test_orion_parameter_qualifiers_block_referenced_promotion(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        for name, value in data["params"].items():
+            if not isinstance(value, dict):
+                continue
+            reference = str(value.get("frame", value.get("runtime_frame", "")))
+            if generator._reference_mentions_frame(reference, "global_command"):
+                value["status"] = "unconfirmed"
+        data["params"]["sample_rate"]["status"] = "confirmed"
+        data["params"]["sample_rate"]["notes"] = "superseded evidence"
+        data["frame"]["global_command"]["runtime_status"] = "unconfirmed"
+        profile = generator.normalize_profile(data, path=path)
+        self.assertNotEqual(
+            generator._status_variant(
+                generator._effective_frame_status(profile, "global_command", profile.frame["global_command"])
+            ),
+            "Confirmed",
+        )
+
+    def test_orion_geometry_blocker_is_emitted_once(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["frame"]["command"]["runtime_operations"] = [
+            {"op": "scalar", "field": "bad", "offset": 320, "width": 1, "endian": "not_applicable"}
+        ]
+        profile = generator.normalize_profile(data, path=path)
+        blockers = generator.orion_readiness_blockers(profile)
+        self.assertEqual(sum("frame.command operation geometry exceeds" in blocker for blocker in blockers), 1)
+
+    def test_orion_rejects_superseded_evidence_and_out_of_bounds_operation(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["frame"]["command"]["notes"] = "superseded mapping"
+        profile = generator.normalize_profile(data, path=path)
+        self.assertTrue(any("frame.command" in blocker for blocker in generator.orion_readiness_blockers(profile)))
+
+        data = json.loads(path.read_text())
+        data["frame"]["command"]["runtime_operations"] = [
+            {"op": "scalar", "field": "bad", "offset": 320, "width": 1, "endian": "not_applicable"}
+        ]
+        profile = generator.normalize_profile(data, path=path)
+        self.assertTrue(any("operation geometry exceeds" in blocker for blocker in generator.orion_readiness_blockers(profile)))
+
+    def test_orion_state_meter_requires_confirmed_complete_physical_indices(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["channels"].pop("confirmed_indices")
+        profile = generator.normalize_profile(data, path=path)
+        self.assertTrue(any("physical channel meter" in blocker for blocker in generator.orion_readiness_blockers(profile)))
+
+    def test_orion_physical_meter_is_scoped_to_state_report(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        profile = generator.normalize_profile(data, path=path)
+        normalized = generator._normalized_profile_record(profile)
+
+        operations_by_frame = {
+            frame["id"]: frame["operations"] for frame in normalized["frames"]
+        }
+        state_meters = [
+            operation
+            for operation in operations_by_frame["state_report"]
+            if operation.get("op") == "indexed"
+            and operation.get("index_field") == "physical_meter"
+        ]
+        self.assertEqual(
+            state_meters,
+            [{"op": "indexed", "base": 157, "stride": 1, "index_field": "physical_meter", "width": 1, "max_index": 11}],
+        )
+        leaked_frames = {
+            frame_id
+            for frame_id, operations in operations_by_frame.items()
+            if frame_id != "state_report"
+            and any(operation.get("index_field") == "physical_meter" for operation in operations)
+        }
+        self.assertEqual(leaked_frames, set())
+
+    def test_orion_meter_removes_only_obsolete_channel_indexing(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["frame"]["meter_report"]["channel_meter_stride"] = 1
+        profile = generator.normalize_profile(data, path=path)
+        normalized = generator._normalized_profile_record(profile)
+        meter = next(frame for frame in normalized["frames"] if frame["id"] == "meter_report")
+        self.assertIn({"op": "fixed_byte", "offset": 0, "value": 0x75}, meter["operations"])
+        self.assertIn(
+            {
+                "op": "scalar",
+                "field": "channel_meter_base",
+                "offset": 32,
+                "width": 1,
+                "endian": "not_applicable",
+            },
+            meter["operations"],
+        )
+        self.assertFalse(
+            any(
+                operation.get("op") == "indexed"
+                and operation.get("index_field") == "channel_meter"
+                for operation in meter["operations"]
+            )
+        )
+        self.assertIn("channel_meter_base_offset", meter["metadata"])
+
+    def test_orion_rejects_out_of_bounds_obsolete_meter_operation(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["frame"]["meter_report"]["channel_meter_base_offset"] = 320
+        data["frame"]["meter_report"]["channel_meter_stride"] = 1
+        profile = generator.normalize_profile(data, path=path)
+
+        blockers = generator.orion_readiness_blockers(profile)
+        self.assertIn("frame.meter_report operation geometry exceeds report bounds", blockers)
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
+
+        normalized = generator._normalized_profile_record(profile)
+        meter = next(frame for frame in normalized["frames"] if frame["id"] == "meter_report")
+        self.assertTrue(
+            any(
+                operation.get("op") == "indexed"
+                and operation.get("index_field") == "channel_meter"
+                for operation in meter["operations"]
+            )
+        )
+
+    def test_orion_omits_mixer_link_domains_outside_protocol_space_three(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data["runtime_topology"]["link_domains"] = [
+            {
+                "protocol_space": 2,
+                "kind": "mixer",
+                "pair_count": 8,
+                "status": "confirmed",
+                "evidence": "confirmed alternate mixer space",
+            },
+            {
+                "protocol_space": 3,
+                "kind": "mixer",
+                "pair_count": 8,
+                "status": "confirmed",
+                "evidence": "confirmed protocol mixer space",
+            },
+        ]
+        profile = generator.normalize_profile(data, path=Path("orion_studio_3.json"))
+        self.assertEqual(
+            [
+                (domain["protocol_space"], domain["kind"])
+                for domain in generator._build_link_domains(profile)
+            ],
+            [(3, "mixer")],
+        )
+
+    def test_orion_skipped_physical_link_validates_protocol_space(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["runtime_topology"] = {
+            "status": "confirmed",
+            "mixer": {"has_master": False},
+            "routing_groups": [],
+            "routing_source_domains": [],
+            "link_domains": [{
+                "protocol_space": 256,
+                "kind": "physical",
+                "pair_count": 6,
+                "status": "confirmed",
+                "evidence": "confirmed physical links",
+            }],
+        }
+        with self.assertRaises(generator.ProfileError):
+            generator.normalize_profile(data, path=path)
+
+    def test_orion_skipped_adat_link_validates_pair_count(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["runtime_topology"] = {
+            "status": "confirmed",
+            "mixer": {"has_master": False},
+            "routing_groups": [],
+            "routing_source_domains": [],
+            "link_domains": [{
+                "protocol_space": 0,
+                "kind": "adat",
+                "pair_count": 0,
+                "status": "confirmed",
+                "evidence": "confirmed ADAT links",
+            }],
+        }
+        with self.assertRaises(generator.ProfileError):
+            generator.normalize_profile(data, path=path)
+
+    def test_orion_confirmed_physical_adat_link_capabilities_are_actionable_blocker(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["runtime_topology"] = {
+            "status": "confirmed",
+            "mixer": {"has_master": True},
+            "routing_groups": [],
+            "routing_source_domains": [],
+            "input_spaces": [{
+                "space": "physical_inputs",
+                "controls": [{"kind": "link", "parameter": "channel_link"}],
+            }],
+        }
+        profile = generator.normalize_profile(data, path=path)
+        blockers = generator.orion_readiness_blockers(profile)
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
+        self.assertTrue(any("physical/ADAT link action" in blocker for blocker in blockers))
+
+    def test_orion_physical_link_domain_is_actionable_blocker(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["runtime_topology"] = {
+            "status": "confirmed",
+            "mixer": {"has_master": False},
+            "routing_groups": [],
+            "routing_source_domains": [],
+            "link_domains": [{
+                "protocol_space": 0,
+                "kind": "physical",
+                "pair_count": 6,
+                "status": "confirmed",
+                "evidence": "confirmed physical links",
+            }],
+        }
+        profile = generator.normalize_profile(data, path=path)
+        blockers = generator.orion_readiness_blockers(profile)
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
+        self.assertTrue(any("physical/ADAT link action" in blocker for blocker in blockers))
+
+    def test_orion_combined_physical_adat_space_zero_is_disabled_not_rejected(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        data = json.loads(path.read_text())
+        data["runtime_topology"] = {
+            "status": "confirmed",
+            "mixer": {"has_master": False},
+            "routing_groups": [],
+            "routing_source_domains": [],
+            "link_domains": [
+                {
+                    "protocol_space": 0,
+                    "kind": "physical",
+                    "pair_count": 6,
+                    "status": "confirmed",
+                    "evidence": "confirmed physical links",
+                },
+                {
+                    "protocol_space": 0,
+                    "kind": "adat",
+                    "pair_count": 8,
+                    "status": "confirmed",
+                    "evidence": "confirmed ADAT links",
+                },
+                {
+                    "protocol_space": 3,
+                    "kind": "mixer",
+                    "pair_count": 16,
+                    "status": "confirmed",
+                    "evidence": "confirmed mixer links",
+                },
+            ],
+        }
+        profile = generator.normalize_profile(data, path=path)
+        blockers = generator.orion_readiness_blockers(profile)
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
+        self.assertIn("physical/ADAT link action has ambiguous space=0 semantics", blockers)
 
     def test_orion_field_counts_alone_and_one_missing_operation_never_enable(self) -> None:
         data = profile_data("Antelope Orion Studio III", "0xa221")
@@ -273,12 +710,12 @@ class GeneratorTests(unittest.TestCase):
             {"destination": index, "name": f"route_{index}", "channel_count": 2}
             for index in range(15)
         ]
-        profile = generator.normalize_profile(data)
+        profile = generator.normalize_profile(data, path=Path("orion_studio_3.json"))
         self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
         self.assertTrue(generator.orion_readiness_blockers(profile))
 
         data["frame"]["command"]["status"] = "unconfirmed"
-        profile = generator.normalize_profile(data)
+        profile = generator.normalize_profile(data, path=Path("orion_studio_3.json"))
         self.assertTrue(
             any("frame.command" in blocker for blocker in generator.orion_readiness_blockers(profile))
         )

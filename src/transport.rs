@@ -1086,13 +1086,15 @@ mod tests {
     #[test]
     fn runtime_device_selection_rejects_unknown_report_framing_before_hid_open() {
         let catalog = crate::device::ProfileCatalog::builtin();
-        let entry = catalog.find(0x23e5, 0xa221).expect("Orion profile");
+        let entry = catalog
+            .find(0x23e5, 0xa2bf)
+            .expect("Discrete 4 Pro profile");
         let candidate = DeviceCandidate::new(
-            "orion-no-open",
+            "unknown-framing-no-open",
             0x23e5,
-            0xa221,
-            Some("ORION-1".into()),
-            Some("Orion Studio III".into()),
+            0xa2bf,
+            Some("DISCRETE-4-PRO-1".into()),
+            Some("Discrete 4 Pro Synergy Core".into()),
             0,
             0,
             3,
@@ -1125,10 +1127,15 @@ mod tests {
     }
 
     #[test]
-    fn non_numbered_output_gets_explicit_zero_report_id() {
-        let report = prepare_output_report(&[1, 2, 3], 3, false).expect("frame");
+    fn non_numbered_320_byte_output_gets_zero_report_id_and_exact_hid_length() {
+        let payload = vec![0xa5; 320];
+        let report = prepare_output_report(&payload, 320, false).expect("frame");
 
-        assert_eq!(report, vec![0, 1, 2, 3]);
+        assert_eq!(report.len(), 321);
+        assert_eq!(report[0], 0);
+        assert_eq!(&report[1..], payload.as_slice());
+        validate_hid_write_length(report.len(), 321).expect("exact HID length");
+        assert!(validate_hid_write_length(320, 321).is_err());
     }
 
     #[test]

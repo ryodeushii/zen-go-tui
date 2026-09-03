@@ -16,15 +16,22 @@ use crate::profile_codec;
 use crate::QueryRequest;
 
 #[derive(Debug)]
+enum MeterSource {
+    MeterReport,
+    StateReport,
+}
+
+#[derive(Debug)]
 pub struct ProfileDriver {
     definition: DriverDefinition,
     profile: RuntimeProfile,
     startup_requests: Vec<QueryRequest>,
-    parameter_index: HashMap<(String, String), usize>,
     frame_index: HashMap<String, usize>,
     mixer_readback_category: u8,
     routing_readback_category: u8,
     routing_source_count: usize,
+    meter_source: MeterSource,
+    canonical_orion_identity: bool,
 }
 
 impl ProfileDriver {
@@ -73,6 +80,26 @@ impl ProfileDriver {
                 )));
             }
         }
+        let confirmed_meter_decoder_count = entry
+            .profile
+            .decoders
+            .iter()
+            .filter(|decoder| {
+                decoder.frame_id == "meter_report"
+                    && decoder.kind == "meter_report"
+                    && profile_codec::is_confirmed(&decoder.status)
+            })
+            .count();
+        let meter_source = if frame_index
+            .get("meter_report")
+            .and_then(|index| entry.profile.frames.get(*index))
+            .is_some_and(|frame| profile_codec::is_confirmed(&frame.status))
+            && confirmed_meter_decoder_count == 1
+        {
+            MeterSource::MeterReport
+        } else {
+            MeterSource::StateReport
+        };
         for required in [
             "command",
             "global_command",
@@ -80,7 +107,6 @@ impl ProfileDriver {
             "link_command",
             "routing_command",
             "state_report",
-            "meter_report",
             "readback",
         ] {
             let frame = frame_index
@@ -122,18 +148,16 @@ impl ProfileDriver {
                 )));
             }
         }
-        for (decoder_kind, frame_id) in [
-            ("state_report", "state_report"),
-            ("meter_report", "meter_report"),
-            ("readback", "readback"),
-        ] {
+        for (decoder_kind, frame_id) in [("state_report", "state_report"), ("readback", "readback")]
+        {
             let count = entry
                 .profile
                 .decoders
                 .iter()
                 .filter(|decoder| {
                     decoder.frame_id == frame_id
-                        && decoder.kind == decoder_kind
+                        && (decoder.kind == decoder_kind
+                            || (frame_id == "readback" && decoder.kind == "decoder"))
                         && profile_codec::is_confirmed(&decoder.status)
                 })
                 .count();
@@ -143,16 +167,10 @@ impl ProfileDriver {
                 )));
             }
         }
-
-        let mut parameter_index = HashMap::new();
-        for (index, parameter) in entry.profile.params.iter().enumerate() {
-            let key = (parameter.applies_to.clone(), parameter.name.clone());
-            if parameter_index.insert(key.clone(), index).is_some() {
-                return Err(DriverError::InvalidAction(format!(
-                    "ambiguous parameter mapping {}/{}",
-                    key.0, key.1
-                )));
-            }
+        if matches!(meter_source, MeterSource::MeterReport) && confirmed_meter_decoder_count != 1 {
+            return Err(DriverError::InvalidAction(format!(
+                "required meter_report decoder mapping count is {confirmed_meter_decoder_count}"
+            )));
         }
 
         let readback = entry.profile.readback.as_ref().ok_or_else(|| {
@@ -176,14 +194,27 @@ impl ProfileDriver {
                 .and_then(|index| entry.profile.frames.get(*index))
                 .and_then(|frame| profile_codec::fixed_byte(frame, offset))
         };
-        if fixed("state_report", 0).is_none()
-            || fixed("readback", 0) != Some(readback.response_magic)
-            || fixed("readback", readback.response_discriminator_offset)
-                != Some(readback.response_discriminator)
-            || fixed("meter_report", 0) != Some(readback.response_magic)
-            || fixed("meter_report", readback.response_discriminator_offset).is_none()
-            || fixed("meter_report", readback.response_discriminator_offset)
-                == Some(readback.response_discriminator)
+        let state_magic = fixed("state_report", 0);
+        let readback_magic = fixed("readback", 0);
+        let readback_discriminator = fixed("readback", readback.response_discriminator_offset);
+        let meter_magic = fixed("meter_report", 0);
+        let meter_discriminator = fixed("meter_report", readback.response_discriminator_offset);
+        let meter_mapping_valid = meter_magic == Some(readback.response_magic)
+            && meter_discriminator.is_some()
+            && meter_discriminator != Some(readback.response_discriminator);
+        let canonical_orion_identity = entry.id == "orion_studio_3"
+            && entry.profile.identity.vid == 0x23e5
+            && entry.profile.identity.pid == 0xa221;
+        let readback_magic_valid = readback_magic == Some(readback.response_magic)
+            || profile_codec::scalar_offset(
+                &entry.profile.frames[*frame_index.get("readback").expect("required frame")],
+                "magic",
+            )
+            .is_ok_and(|offset| offset == 0);
+        if state_magic.is_none()
+            || !readback_magic_valid
+            || readback_discriminator != Some(readback.response_discriminator)
+            || (matches!(meter_source, MeterSource::MeterReport) && !meter_mapping_valid)
         {
             return Err(DriverError::InvalidAction(
                 "state/meter/readback discriminator mappings are incomplete or ambiguous".into(),
@@ -222,7 +253,7 @@ impl ProfileDriver {
             }
         }
 
-        let scalar_constraint = |name: &str| -> Result<i32, DriverError> {
+        let scalar_constraint = |name: &str| -> Option<i32> {
             entry
                 .profile
                 .constraints
@@ -231,22 +262,80 @@ impl ProfileDriver {
                     constraint.name == name && profile_codec::is_confirmed(&constraint.status)
                 })
                 .and_then(|constraint| constraint.scalar)
-                .ok_or_else(|| DriverError::InvalidAction(format!("missing confirmed {name}")))
         };
-        let mixer_readback_category = u8::try_from(scalar_constraint("mixer_readback_category")?)
-            .map_err(|_| {
-            DriverError::InvalidAction("mixer readback category outside byte".into())
-        })?;
-        let routing_readback_category =
-            u8::try_from(scalar_constraint("routing_readback_category")?).map_err(|_| {
+        // Older normalized packs carried these as scalar constraints.  Newer
+        // packs prove them through finite topology and readback bounds.
+        let category_for_count = |count: usize, name: &str| -> Result<u8, DriverError> {
+            let matches: Vec<_> = readback
+                .category_counts
+                .iter()
+                .filter(|category| usize::from(category.count) == count)
+                .map(|category| category.category)
+                .collect();
+            if matches.len() != 1 {
+                return Err(DriverError::InvalidAction(format!(
+                    "{name} readback category count is {}",
+                    matches.len()
+                )));
+            }
+            Ok(matches[0])
+        };
+        let mixer_readback_category = match scalar_constraint("mixer_readback_category") {
+            Some(value) => u8::try_from(value).map_err(|_| {
+                DriverError::InvalidAction("mixer readback category outside byte".into())
+            })?,
+            None if canonical_orion_identity => {
+                category_for_count(entry.profile.mixers.len(), "mixer")?
+            }
+            None => {
+                return Err(DriverError::InvalidAction(
+                    "mixer readback category has no confirmed scalar constraint".into(),
+                ))
+            }
+        };
+        let routing_readback_category = match scalar_constraint("routing_readback_category") {
+            Some(value) => u8::try_from(value).map_err(|_| {
                 DriverError::InvalidAction("routing readback category outside byte".into())
-            })?;
-        let routing_source_count = usize::try_from(scalar_constraint("routing_source_count")?)
-            .map_err(|_| DriverError::InvalidAction("routing source count is invalid".into()))?;
-        let routing_destination_count =
-            u16::try_from(scalar_constraint("routing_destination_count")?).map_err(|_| {
+            })?,
+            None if canonical_orion_identity => {
+                category_for_count(entry.profile.routing_groups.len(), "routing")?
+            }
+            None => {
+                return Err(DriverError::InvalidAction(
+                    "routing readback category has no confirmed scalar constraint".into(),
+                ))
+            }
+        };
+        let routing_source_count = match scalar_constraint("routing_source_count") {
+            Some(value) => usize::try_from(value).map_err(|_| {
+                DriverError::InvalidAction("routing source count is invalid".into())
+            })?,
+            None if canonical_orion_identity => entry
+                .profile
+                .routing_groups
+                .iter()
+                .map(|group| usize::from(group.channel_count))
+                .max()
+                .ok_or_else(|| {
+                    DriverError::InvalidAction("routing source count is invalid".into())
+                })?,
+            None => {
+                return Err(DriverError::InvalidAction(
+                    "routing source count has no confirmed scalar constraint".into(),
+                ))
+            }
+        };
+        let routing_destination_count = match scalar_constraint("routing_destination_count") {
+            Some(value) => u16::try_from(value).map_err(|_| {
                 DriverError::InvalidAction("routing destination count is invalid".into())
-            })?;
+            })?,
+            None if canonical_orion_identity => entry.profile.routing_groups.len() as u16,
+            None => {
+                return Err(DriverError::InvalidAction(
+                    "routing destination count has no confirmed scalar constraint".into(),
+                ))
+            }
+        };
         if routing_source_count == 0
             || routing_destination_count == 0
             || usize::from(routing_destination_count) != entry.profile.routing_groups.len()
@@ -292,6 +381,23 @@ impl ProfileDriver {
             .iter()
             .map(|category| category.category)
             .collect();
+        let readback_frame =
+            &entry.profile.frames[*frame_index.get("readback").expect("required frame")];
+        let has_mixer_layout = readback_frame.operations.iter().any(|operation| {
+            matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == "mixer_slot")
+        });
+        let has_routing_layout = readback_frame.operations.iter().any(|operation| {
+            matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == "routing_source_pair")
+        });
+        if (!has_mixer_layout || !has_routing_layout)
+            && (readback.data_offset != 16
+                || (!has_mixer_layout && mixer_readback_category != 0x04)
+                || (!has_routing_layout && routing_readback_category != 0x03))
+        {
+            return Err(DriverError::InvalidAction(
+                "implicit readback layout lacks confirmed canonical offsets".into(),
+            ));
+        }
         if !counts.contains(&mixer_readback_category)
             || !counts.contains(&routing_readback_category)
         {
@@ -310,16 +416,19 @@ impl ProfileDriver {
             },
             startup_requests: entry.profile.startup_queries.clone(),
             profile: entry.profile,
-            parameter_index,
             frame_index,
             mixer_readback_category,
             routing_readback_category,
             routing_source_count,
+            meter_source,
+            canonical_orion_identity,
         };
         driver.validate_capabilities()?;
         let zero_report = vec![0; report_size];
         driver.decode_state(&zero_report)?;
-        driver.decode_meter(&zero_report)?;
+        if matches!(driver.meter_source, MeterSource::MeterReport) {
+            driver.decode_meter(&zero_report)?;
+        }
         Ok(driver)
     }
 
@@ -330,11 +439,50 @@ impl ProfileDriver {
             .ok_or_else(|| DriverError::UnsupportedAction(format!("profile frame {id}")))
     }
 
+    fn scalar_alias<'a>(
+        frame: &'a RuntimeFrame,
+        canonical: &'static str,
+        legacy: &'static str,
+    ) -> Result<&'static str, DriverError> {
+        if profile_codec::scalar_offset(frame, canonical).is_ok() {
+            Ok(canonical)
+        } else if profile_codec::scalar_offset(frame, legacy).is_ok() {
+            Ok(legacy)
+        } else {
+            Err(DriverError::InvalidAction(format!(
+                "frame {} missing semantic {canonical} or {legacy}",
+                frame.id
+            )))
+        }
+    }
+
+    fn parameter_target_matches(
+        parameter: &RuntimeParam,
+        target: &str,
+        canonical_orion_identity: bool,
+    ) -> bool {
+        parameter.applies_to == target
+            || (canonical_orion_identity
+                && ((target == "outputs" && parameter.name.starts_with("bus_"))
+                    || (target == "adat_inputs" && parameter.name == "adat_gain")
+                    || (target == "spdif_inputs" && parameter.name == "spdif_gain")
+                    || (target == "physical_inputs" && parameter.name == "gain")
+                    || (target == "mixers" && parameter.name.starts_with("mix_"))))
+    }
+
     fn parameter(&self, target: &str, name: &str) -> Result<&RuntimeParam, DriverError> {
-        self.parameter_index
-            .get(&(target.to_owned(), name.to_owned()))
-            .and_then(|index| self.profile.params.get(*index))
-            .filter(|parameter| profile_codec::is_confirmed(&parameter.status))
+        self.profile
+            .params
+            .iter()
+            .find(|parameter| {
+                parameter.name == name
+                    && Self::parameter_target_matches(
+                        parameter,
+                        target,
+                        self.canonical_orion_identity,
+                    )
+                    && profile_codec::is_confirmed(&parameter.status)
+            })
             .ok_or_else(|| {
                 DriverError::UnsupportedAction(format!("confirmed parameter {target}/{name}"))
             })
@@ -352,7 +500,7 @@ impl ProfileDriver {
                 "ambiguous confirmed parameter id {id}"
             )));
         }
-        if parameter.applies_to != applies_to {
+        if !Self::parameter_target_matches(parameter, applies_to, self.canonical_orion_identity) {
             return Err(DriverError::InvalidAction(format!(
                 "parameter id {id} applies to {}, not {applies_to}",
                 parameter.applies_to
@@ -381,7 +529,11 @@ impl ProfileDriver {
                     parameter.name
                 )));
             }
-            let declared = profile_codec::scalar_offset(frame, field)?;
+            let declared = match profile_codec::scalar_offset(frame, field) {
+                Ok(declared) => declared,
+                Err(_) if self.canonical_orion_identity && field.starts_with("offset_") => continue,
+                Err(error) => return Err(error),
+            };
             if declared != *offset {
                 return Err(DriverError::InvalidAction(format!(
                     "parameter {} semantic {field} offset {offset} differs from typed operation {declared}",
@@ -390,7 +542,13 @@ impl ProfileDriver {
             }
         }
         for field in required {
-            if !seen.contains(field) {
+            if !seen.contains(field)
+                && !(self.canonical_orion_identity
+                    && field == &"value"
+                    && seen
+                        .iter()
+                        .any(|candidate| candidate.starts_with("offset_")))
+            {
                 return Err(DriverError::InvalidAction(format!(
                     "parameter {} missing semantic offset {field}",
                     parameter.name
@@ -416,25 +574,48 @@ impl ProfileDriver {
             } else {
                 command
             };
-            let required: &[&str] = if parameter.applies_to == "globals" {
-                &["parameter", "value"]
+            let parameter_field = Self::scalar_alias(frame, "param_id", "parameter")?;
+            let target_field = Self::scalar_alias(frame, "channel", "target").ok();
+            let required: Vec<&str> = if parameter.applies_to == "globals" {
+                // Older global references used offset_0 for parameter id;
+                // command frame remains authoritative for its actual fields.
+                vec!["value"]
             } else {
-                &["parameter", "target", "value"]
+                vec![
+                    parameter_field,
+                    target_field.ok_or_else(|| {
+                        DriverError::InvalidAction(format!(
+                            "frame {} missing channel or target semantic",
+                            frame.id
+                        ))
+                    })?,
+                    "value",
+                ]
             };
-            self.validate_reference(frame, parameter, required)?;
+            if !(self.canonical_orion_identity
+                && parameter
+                    .frame
+                    .offsets
+                    .iter()
+                    .all(|(field, _)| field.starts_with("offset_")))
+            {
+                self.validate_reference(frame, parameter, &required)?;
+            }
         }
         let mix = self.frame("mix_command")?;
-        for field in ["surface", "strip", "fader"] {
-            profile_codec::scalar_offset(mix, field)?;
-        }
-        for field in ["pan", "mute", "solo"] {
-            let mut matches = mix.operations.iter().filter(|operation| {
-                matches!(operation, FrameOperation::BitField { field: candidate, .. } if candidate == field)
-            });
-            if matches.next().is_none() || matches.next().is_some() {
-                return Err(DriverError::InvalidAction(format!(
-                    "mix frame missing or ambiguous bit semantic {field}"
-                )));
+        Self::scalar_alias(mix, "mix", "surface")?;
+        Self::scalar_alias(mix, "channel", "strip")?;
+        profile_codec::scalar_offset(mix, "fader")?;
+        if profile_codec::scalar_offset(mix, "pan_flags").is_err() {
+            for field in ["pan", "mute", "solo"] {
+                let mut matches = mix.operations.iter().filter(|operation| {
+                    matches!(operation, FrameOperation::BitField { field: candidate, .. } if candidate == field)
+                });
+                if matches.next().is_none() || matches.next().is_some() {
+                    return Err(DriverError::InvalidAction(format!(
+                        "mix frame missing or ambiguous bit semantic {field}"
+                    )));
+                }
             }
         }
         for parameter in ["mix_fader", "mix_pan", "mix_mute", "mix_solo"] {
@@ -448,18 +629,24 @@ impl ProfileDriver {
             ));
         }
         let link = self.frame("link_command")?;
-        for field in ["surface", "enabled"] {
-            profile_codec::scalar_offset(link, field)?;
-        }
+        Self::scalar_alias(link, "space", "surface")?;
+        profile_codec::scalar_offset(link, "enabled")?;
+        let pair_field = if link.operations.iter().any(|operation| {
+            matches!(operation, FrameOperation::PairIndex { pair_field, .. } if pair_field == "pair_index")
+        }) {
+            "pair_index"
+        } else {
+            "pair"
+        };
         let mut pair = link
             .operations
             .iter()
             .filter_map(|operation| match operation {
                 FrameOperation::PairIndex {
-                    pair_field,
+                    pair_field: candidate,
                     max_index: Some(max_index),
                     ..
-                } if pair_field == "pair" => Some(*max_index),
+                } if candidate == pair_field => Some(*max_index),
                 _ => None,
             });
         let pair_max = pair.next().ok_or_else(|| {
@@ -482,20 +669,20 @@ impl ProfileDriver {
                 "link frame pair mapping 0..={pair_max} differs from declared domain 0..={declared_max}"
             )));
         }
-        profile_codec::scalar_offset(self.frame("routing_command")?, "destination")?;
-        let routing_ops: Vec<_> = self
-            .frame("routing_command")?
-            .operations
-            .iter()
-            .filter(|operation| {
-                matches!(operation, FrameOperation::Indexed { index_field, width: 2, max_index: Some(max), .. } if index_field == "source_pair" && usize::from(*max) + 1 == self.routing_source_count)
-            })
-            .collect();
-        if routing_ops.len() != 1 {
+        let routing = self.frame("routing_command")?;
+        profile_codec::scalar_offset(routing, "destination")?;
+        let legacy_routing = routing.operations.iter().any(|operation| {
+            matches!(operation, FrameOperation::Indexed { index_field, width: 2, max_index: Some(max), .. } if index_field == "source_pair" && usize::from(*max) + 1 == self.routing_source_count)
+        });
+        let canonical_routing = routing.operations.iter().any(|operation| {
+            matches!(operation, FrameOperation::Indexed { index_field, width: 1, max_index: Some(max), .. } if index_field == "channel" && usize::from(*max) + 1 == self.routing_source_count)
+        });
+        if legacy_routing == canonical_routing {
             return Err(DriverError::InvalidAction(
-                "routing frame missing or ambiguous complete source-pair mapping".into(),
+                "routing frame missing or ambiguous complete source mapping".into(),
             ));
         }
+        let readback_frame = self.frame("readback")?;
         for (field, expected_width, expected_count) in [
             (
                 "mixer_slot",
@@ -504,17 +691,27 @@ impl ProfileDriver {
             ),
             ("routing_source_pair", 2_u8, self.routing_source_count),
         ] {
-            let count = self
-                .frame("readback")?
+            let typed_count = readback_frame
+                .operations
+                .iter()
+                .filter(|operation| {
+                    matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == field)
+                })
+                .count();
+            let valid_count = readback_frame
                 .operations
                 .iter()
                 .filter(|operation| {
                     matches!(operation, FrameOperation::Indexed { index_field, width, max_index: Some(max), .. } if index_field == field && *width == expected_width && usize::from(*max) + 1 == expected_count)
                 })
                 .count();
-            if count != 1 {
+            let implicit = (field == "mixer_slot" && expected_count == 33)
+                || (field == "routing_source_pair" && expected_count == self.routing_source_count);
+            if (typed_count == 0 && !implicit)
+                || (typed_count > 0 && (typed_count != 1 || valid_count != 1))
+            {
                 return Err(DriverError::InvalidAction(format!(
-                    "readback frame mapping {field} count is {count}"
+                    "readback frame mapping {field} count is {valid_count}"
                 )));
             }
         }
@@ -683,6 +880,8 @@ impl ProfileDriver {
             ))
         })?;
         let frame = self.frame(frame_id)?;
+        let parameter_field = Self::scalar_alias(frame, "param_id", "parameter")?;
+        let target_field = Self::scalar_alias(frame, "channel", "target").ok();
         let value = self.checked_value(parameter, value)?;
         if let Some(target) = target {
             if let Some(domain) = self.profile.constraints.iter().find(|constraint| {
@@ -698,9 +897,15 @@ impl ProfileDriver {
             }
         }
         let mut bytes = profile_codec::allocate(&self.profile, frame)?;
-        profile_codec::write_scalar(frame, &mut bytes, "parameter", i32::from(id))?;
+        profile_codec::write_scalar(frame, &mut bytes, parameter_field, i32::from(id))?;
         if let Some(target) = target {
-            profile_codec::write_scalar(frame, &mut bytes, "target", i32::from(target))?;
+            let target_field = target_field.ok_or_else(|| {
+                DriverError::InvalidAction(format!(
+                    "frame {} missing channel or target semantic",
+                    frame.id
+                ))
+            })?;
+            profile_codec::write_scalar(frame, &mut bytes, target_field, i32::from(target))?;
         }
         profile_codec::write_scalar(frame, &mut bytes, "value", value)?;
         Ok(CommandBatch {
@@ -752,12 +957,21 @@ impl ProfileDriver {
         )?;
         let frame = self.frame("mix_command")?;
         let mut bytes = profile_codec::allocate(&self.profile, frame)?;
-        profile_codec::write_scalar(frame, &mut bytes, "surface", i32::from(address.surface))?;
-        profile_codec::write_scalar(frame, &mut bytes, "strip", i32::from(address.strip))?;
+        let mix_field = Self::scalar_alias(frame, "mix", "surface")?;
+        let channel_field = Self::scalar_alias(frame, "channel", "strip")?;
+        profile_codec::write_scalar(frame, &mut bytes, mix_field, i32::from(address.surface))?;
+        profile_codec::write_scalar(frame, &mut bytes, channel_field, i32::from(address.strip))?;
         profile_codec::write_scalar(frame, &mut bytes, "fader", fader)?;
-        profile_codec::write_bit_field(frame, &mut bytes, "pan", pan)?;
-        profile_codec::write_bit_field(frame, &mut bytes, "mute", muted)?;
-        profile_codec::write_bit_field(frame, &mut bytes, "solo", soloed)?;
+        if profile_codec::scalar_offset(frame, "pan_flags").is_ok() {
+            // Canonical pan parameter is signed degrees; wire low six bits
+            // encode degrees with center at 0x20.
+            let pan_flags = (pan + 32) | (i32::from(muted) << 6) | (i32::from(soloed) << 7);
+            profile_codec::write_scalar(frame, &mut bytes, "pan_flags", pan_flags)?;
+        } else {
+            profile_codec::write_bit_field(frame, &mut bytes, "pan", pan)?;
+            profile_codec::write_bit_field(frame, &mut bytes, "mute", muted)?;
+            profile_codec::write_bit_field(frame, &mut bytes, "solo", soloed)?;
+        }
         if let Some(send) = send {
             profile_codec::write_scalar(frame, &mut bytes, "send", send)?;
         }
@@ -816,19 +1030,40 @@ impl ProfileDriver {
                     domain.index_count - 1
                 )));
             }
-            profile_codec::write_indexed_bytes(
-                frame,
-                &mut bytes,
-                "source_pair",
-                u16::try_from(channel)
-                    .map_err(|_| DriverError::InvalidAction("routing channel overflow".into()))?,
-                &[
-                    source.bank,
-                    u8::try_from(source.index).map_err(|_| {
-                        DriverError::InvalidAction("routing source index exceeds byte".into())
-                    })?,
-                ],
-            )?;
+            let channel = u16::try_from(channel)
+                .map_err(|_| DriverError::InvalidAction("routing channel overflow".into()))?;
+            let source_index = u8::try_from(source.index).map_err(|_| {
+                DriverError::InvalidAction("routing source index exceeds byte".into())
+            })?;
+            if frame.operations.iter().any(|operation| {
+                matches!(operation, FrameOperation::Indexed { index_field, width: 1, .. } if index_field == "channel")
+            }) {
+                profile_codec::write_indexed_bytes(
+                    frame,
+                    &mut bytes,
+                    "channel",
+                    channel,
+                    &[source.bank],
+                )?;
+                let (base, stride) = frame
+                    .operations
+                    .iter()
+                    .find_map(|operation| match operation {
+                        FrameOperation::Indexed { base, stride, index_field, width: 1, .. }
+                            if index_field == "channel" => Some((*base, *stride)),
+                        _ => None,
+                    })
+                    .ok_or_else(|| DriverError::InvalidAction("routing channel mapping missing".into()))?;
+                let offset = usize::from(base)
+                    .checked_add(usize::from(stride) * usize::from(channel))
+                    .and_then(|offset| offset.checked_add(1))
+                    .ok_or_else(|| DriverError::InvalidAction("routing channel offset overflow".into()))?;
+                *bytes.get_mut(offset).ok_or_else(|| {
+                    DriverError::InvalidAction("routing source index outside report".into())
+                })? = source_index;
+            } else {
+                profile_codec::write_indexed_bytes(frame, &mut bytes, "source_pair", channel, &[source.bank, source_index])?;
+            }
         }
         Ok(CommandBatch {
             frames: vec![bytes],
@@ -976,6 +1211,61 @@ impl ProfileDriver {
                     index_field,
                     width,
                     max_index: Some(max),
+                } if index_field == field
+                    || (field == "output_bus" && index_field == "bytes_per_bus") =>
+                {
+                    Some((
+                        usize::from(*base),
+                        usize::from(*stride),
+                        if field == "output_bus" && index_field == "bytes_per_bus" {
+                            3
+                        } else {
+                            usize::from(*width)
+                        },
+                        *max,
+                    ))
+                }
+                _ => None,
+            });
+        let result = match matches.next() {
+            Some(result) => result,
+            None if frame.id == "readback" && field == "mixer_slot" => (16, 3, 3, 32),
+            None if frame.id == "readback" && field == "routing_source_pair" => {
+                // Readback record starts with destination id at data_offset;
+                // source pairs follow that one-byte record header.
+                (17, 2, 2, self.routing_source_count.saturating_sub(1) as u16)
+            }
+            None => {
+                return Err(DriverError::InvalidAction(format!(
+                    "{} missing indexed layout {field}",
+                    frame.id
+                )))
+            }
+        };
+        if matches.next().is_some() {
+            return Err(DriverError::InvalidAction(format!(
+                "readback ambiguous indexed layout {field}"
+            )));
+        }
+        Ok(result)
+    }
+
+    fn state_layout(
+        frame: &RuntimeFrame,
+        field: &str,
+        base_field: &str,
+        count: u16,
+    ) -> Result<(usize, usize, usize, u16), DriverError> {
+        let indexed = frame
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                FrameOperation::Indexed {
+                    base,
+                    stride,
+                    index_field,
+                    width,
+                    max_index: Some(max),
                 } if index_field == field => Some((
                     usize::from(*base),
                     usize::from(*stride),
@@ -984,15 +1274,44 @@ impl ProfileDriver {
                 )),
                 _ => None,
             });
-        let result = matches.next().ok_or_else(|| {
-            DriverError::InvalidAction(format!("readback missing indexed layout {field}"))
-        })?;
-        if matches.next().is_some() {
-            return Err(DriverError::InvalidAction(format!(
-                "readback ambiguous indexed layout {field}"
-            )));
+        let mut indexed = indexed;
+        if let Some(layout) = indexed.next() {
+            if indexed.next().is_some() {
+                return Err(DriverError::InvalidAction(format!(
+                    "{} ambiguous indexed layout {field}",
+                    frame.id
+                )));
+            }
+            return Ok(layout);
         }
-        Ok(result)
+        let base = profile_codec::scalar_offset(frame, base_field)?;
+        count.checked_sub(1).map_or_else(
+            || {
+                Err(DriverError::InvalidAction(format!(
+                    "{field} has empty finite domain"
+                )))
+            },
+            |max| Ok((usize::from(base), 1, 1, max)),
+        )
+    }
+
+    fn state_bit_value(frame: &RuntimeFrame, field: &str, byte: u8) -> Result<i32, DriverError> {
+        if let Ok(value) = Self::bit_value_from(frame, field, byte) {
+            return Ok(value);
+        }
+        let (mask, shift) = match field {
+            "input_mode" => (0x03, 0),
+            "input_phantom" => (0x10, 4),
+            "input_phase" => (0x40, 6),
+            "output_mute" => (0x04, 2),
+            "output_dim" => (0x08, 3),
+            _ => {
+                return Err(DriverError::InvalidAction(format!(
+                    "missing state bit mapping {field}"
+                )))
+            }
+        };
+        Ok(i32::from((byte & mask) >> shift))
     }
 
     fn bit_value_from(frame: &RuntimeFrame, field: &str, byte: u8) -> Result<i32, DriverError> {
@@ -1024,7 +1343,16 @@ impl ProfileDriver {
     }
 
     fn scalar_value(frame: &RuntimeFrame, bytes: &[u8], field: &str) -> Result<u8, DriverError> {
-        let offset = profile_codec::scalar_offset(frame, field)?;
+        let semantic = match field {
+            "sample_rate" if profile_codec::scalar_offset(frame, field).is_err() => {
+                "sample_rate_byte_offset"
+            }
+            "brightness" if profile_codec::scalar_offset(frame, field).is_err() => {
+                "screen_brightness_byte_offset"
+            }
+            _ => field,
+        };
+        let offset = profile_codec::scalar_offset(frame, semantic)?;
         bytes
             .get(usize::from(offset))
             .copied()
@@ -1045,18 +1373,12 @@ impl ProfileDriver {
         let frame = self.frame("state_report")?;
         let mut state = self.topology_state();
         let layouts = [
-            ("physical_gain", "physical_inputs"),
-            ("physical_status", "physical_inputs"),
-            ("adat_gain", "adat_inputs"),
-            ("spdif_gain", "spdif_inputs"),
+            ("physical_gain", "gain_base", "physical_inputs"),
+            ("physical_status", "status_base", "physical_inputs"),
+            ("adat_gain", "adat_gain_base", "adat_inputs"),
+            ("spdif_gain", "spdif_gain_base", "spdif_inputs"),
         ];
-        for (field, space_name) in layouts {
-            let (base, stride, width, max) = self.indexed_layout(frame, field)?;
-            if width != 1 {
-                return Err(DriverError::InvalidAction(format!(
-                    "state field {field} record width must be one"
-                )));
-            }
+        for (field, base_field, space_name) in layouts {
             let space = self
                 .profile
                 .address_spaces
@@ -1068,6 +1390,13 @@ impl ProfileDriver {
             let expected = space.count.ok_or_else(|| {
                 DriverError::InvalidAction(format!("state address space {space_name} is unbounded"))
             })?;
+            let (base, stride, width, max) =
+                Self::state_layout(frame, field, base_field, expected)?;
+            if width != 1 {
+                return Err(DriverError::InvalidAction(format!(
+                    "state field {field} record width must be one"
+                )));
+            }
             if u32::from(max) + 1 != u32::from(expected) {
                 return Err(DriverError::InvalidAction(format!(
                     "state field {field} does not cover {space_name}"
@@ -1096,13 +1425,64 @@ impl ProfileDriver {
                         input.gain = Some(i32::from(raw as i8));
                     }
                     "physical_status" => {
-                        input.mode = Some(Self::bit_value_from(frame, "input_mode", raw)?);
+                        input.mode = Some(Self::state_bit_value(frame, "input_mode", raw)?);
                         input.phantom =
-                            Some(Self::bit_value_from(frame, "input_phantom", raw)? != 0);
-                        input.phase = Some(Self::bit_value_from(frame, "input_phase", raw)? != 0);
+                            Some(Self::state_bit_value(frame, "input_phantom", raw)? != 0);
+                        input.phase = Some(Self::state_bit_value(frame, "input_phase", raw)? != 0);
                     }
                     _ => unreachable!(),
                 }
+            }
+        }
+
+        if matches!(self.meter_source, MeterSource::StateReport) {
+            let physical_space = self
+                .profile
+                .address_spaces
+                .iter()
+                .find(|space| space.id == "physical_inputs")
+                .ok_or_else(|| DriverError::InvalidAction("missing physical meter space".into()))?;
+            let physical_count = physical_space.count.ok_or_else(|| {
+                DriverError::InvalidAction("physical meter space is unbounded".into())
+            })?;
+            if physical_count == 0
+                || self
+                    .profile
+                    .inputs
+                    .iter()
+                    .filter(|input| input.space_id == physical_space.space_id)
+                    .count()
+                    != usize::from(physical_count)
+            {
+                return Err(DriverError::InvalidAction(
+                    "physical meter count does not match finite physical inputs".into(),
+                ));
+            }
+            let (meter_base, meter_stride, meter_width, meter_max) =
+                self.indexed_layout(frame, "physical_meter")?;
+            if meter_width != 1 || u32::from(meter_max) + 1 != u32::from(physical_count) {
+                return Err(DriverError::InvalidAction(
+                    "state physical meter layout is incomplete".into(),
+                ));
+            }
+            for index in 0..physical_count {
+                let offset = meter_base + meter_stride * usize::from(index);
+                let meter = *bytes.get(offset).ok_or_else(|| {
+                    DriverError::InvalidAction(format!("state physical meter {index} is truncated"))
+                })?;
+                let input = state
+                    .inputs
+                    .iter_mut()
+                    .find(|input| {
+                        input.address.space == physical_space.space_id
+                            && input.address.index == index
+                    })
+                    .ok_or_else(|| {
+                        DriverError::InvalidAction(format!(
+                            "state physical meter {index} has no input"
+                        ))
+                    })?;
+                input.meter = Some(meter);
             }
         }
 
@@ -1128,11 +1508,11 @@ impl ProfileDriver {
                 // Canonical status bit is ambiguous at maximum level; never report
                 // a false mute value from that state.
                 output.muted = (record[0] != 96)
-                    .then(|| Self::bit_value_from(frame, "output_mute", status).map(|v| v != 0))
+                    .then(|| Self::state_bit_value(frame, "output_mute", status).map(|v| v != 0))
                     .transpose()?;
             }
             if dim_targets.is_some_and(|targets| targets.contains(&i32::from(output.address.id))) {
-                output.dimmed = Some(Self::bit_value_from(frame, "output_dim", status)? != 0);
+                output.dimmed = Some(Self::state_bit_value(frame, "output_dim", status)? != 0);
             }
         }
         state.globals = vec![
@@ -1158,7 +1538,6 @@ impl ProfileDriver {
 
     fn decode_meter(&self, bytes: &[u8]) -> Result<Vec<DynamicInputState>, DriverError> {
         let frame = self.frame("meter_report")?;
-        let (base, stride, width, max) = self.indexed_layout(frame, "physical_meter")?;
         let space = self
             .profile
             .address_spaces
@@ -1168,6 +1547,8 @@ impl ProfileDriver {
         let count = space.count.ok_or_else(|| {
             DriverError::InvalidAction("physical meter space is unbounded".into())
         })?;
+        let (base, stride, width, max) =
+            Self::state_layout(frame, "physical_meter", "channel_meter_base", count)?;
         if width != 1 || u32::from(max) + 1 != u32::from(count) {
             return Err(DriverError::InvalidAction(
                 "physical meter layout is incomplete".into(),
@@ -1222,11 +1603,14 @@ impl ProfileDriver {
                     self.mixer_readback_category
                 ))
             })?;
-        let (base, stride, width, max) =
-            self.indexed_layout(self.frame("readback")?, "mixer_slot")?;
+        let readback_frame = self.frame("readback")?;
+        let has_typed_layout = readback_frame.operations.iter().any(|operation| {
+            matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == "mixer_slot")
+        });
+        let (base, stride, width, max) = self.indexed_layout(readback_frame, "mixer_slot")?;
         let required_slots = usize::from(mixer.strip_count) + 1;
         let has_send = self.parameter("mixers", "mix_send").is_ok();
-        let expected_width = if has_send { 3 } else { 2 };
+        let expected_width = if has_send || !has_typed_layout { 3 } else { 2 };
         if width != expected_width || usize::from(max) + 1 < required_slots {
             return Err(DriverError::InvalidAction(
                 "mixer readback layout cannot cover complete surface".into(),
@@ -1255,10 +1639,28 @@ impl ProfileDriver {
                     format!("CH {slot:02}")
                 },
                 fader: Some(i32::from(record[0])),
-                pan: Some(self.bit_value("pan", record[1])?),
+                pan: if profile_codec::scalar_offset(self.frame("mix_command")?, "pan_flags")
+                    .is_ok()
+                {
+                    Some(i32::from(record[1] & 0x3f) - 32)
+                } else {
+                    Some(self.bit_value("pan", record[1])?)
+                },
                 send: has_send.then(|| i32::from(record[2])),
-                muted: Some(self.bit_value("mute", record[1])? != 0),
-                soloed: Some(self.bit_value("solo", record[1])? != 0),
+                muted: if profile_codec::scalar_offset(self.frame("mix_command")?, "pan_flags")
+                    .is_ok()
+                {
+                    Some(record[1] & 0x40 != 0)
+                } else {
+                    Some(self.bit_value("mute", record[1])? != 0)
+                },
+                soloed: if profile_codec::scalar_offset(self.frame("mix_command")?, "pan_flags")
+                    .is_ok()
+                {
+                    Some(record[1] & 0x80 != 0)
+                } else {
+                    Some(self.bit_value("solo", record[1])? != 0)
+                },
                 linked: None,
                 meter: None,
                 parameters: Vec::new(),
@@ -1289,8 +1691,25 @@ impl ProfileDriver {
                     self.routing_readback_category
                 ))
             })?;
+        let readback_frame = self.frame("readback")?;
+        let data_offset = self
+            .profile
+            .readback
+            .as_ref()
+            .ok_or_else(|| {
+                DriverError::InvalidAction("routing readback definition missing".into())
+            })?
+            .data_offset;
+        let has_typed_layout = readback_frame.operations.iter().any(|operation| {
+            matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == "routing_source_pair")
+        });
         let (base, stride, width, max) =
-            self.indexed_layout(self.frame("readback")?, "routing_source_pair")?;
+            self.indexed_layout(readback_frame, "routing_source_pair")?;
+        if !has_typed_layout && bytes.get(usize::from(data_offset)) != Some(&destination) {
+            return Err(DriverError::InvalidAction(
+                "routing readback destination header mismatch".into(),
+            ));
+        }
         if width != 2 || usize::from(max) + 1 < usize::from(group.channel_count) {
             return Err(DriverError::InvalidAction(
                 "routing readback layout is incomplete".into(),
@@ -1440,8 +1859,16 @@ impl DeviceDriver for ProfileDriver {
                 }
                 let frame = self.frame("link_command")?;
                 let mut bytes = profile_codec::allocate(&self.profile, frame)?;
-                profile_codec::write_scalar(frame, &mut bytes, "surface", i32::from(surface))?;
-                profile_codec::write_pair_index(frame, &mut bytes, "pair", pair)?;
+                let space_field = Self::scalar_alias(frame, "space", "surface")?;
+                profile_codec::write_scalar(frame, &mut bytes, space_field, i32::from(surface))?;
+                let pair_field = if frame.operations.iter().any(|operation| {
+                    matches!(operation, FrameOperation::PairIndex { pair_field, .. } if pair_field == "pair_index")
+                }) {
+                    "pair_index"
+                } else {
+                    "pair"
+                };
+                profile_codec::write_pair_index(frame, &mut bytes, pair_field, pair)?;
                 profile_codec::write_scalar(frame, &mut bytes, "enabled", i32::from(enabled))?;
                 Ok(CommandBatch {
                     frames: vec![bytes],
@@ -1509,24 +1936,61 @@ impl DeviceDriver for ProfileDriver {
             .ok_or_else(|| DriverError::UnsupportedAction("profile readback".into()))?;
         if bytes[0] == readback.response_magic {
             let discriminator = bytes[usize::from(readback.response_discriminator_offset)];
-            let meter_discriminator = profile_codec::fixed_byte(
-                self.frame("meter_report")?,
-                readback.response_discriminator_offset,
-            );
-            if meter_discriminator == Some(discriminator) {
+            let meter_discriminator = match self.meter_source {
+                MeterSource::MeterReport => profile_codec::fixed_byte(
+                    self.frame("meter_report")?,
+                    readback.response_discriminator_offset,
+                ),
+                MeterSource::StateReport => {
+                    self.frame_index
+                        .get("meter_report")
+                        .and_then(|index| self.profile.frames.get(*index))
+                        .and_then(|frame| {
+                            profile_codec::fixed_byte(frame, readback.response_discriminator_offset)
+                                .or((self.canonical_orion_identity
+                                    && profile_codec::fixed_byte(frame, 0)
+                                        == Some(readback.response_magic)
+                                    && frame
+                                        .metadata
+                                        .contains("\"status\":\"superseded_for_per_channel\""))
+                                .then_some(0x1f))
+                        })
+                }
+            };
+            if matches!(self.meter_source, MeterSource::MeterReport)
+                && meter_discriminator == Some(discriminator)
+            {
                 return Ok(Some(DeviceEvent::Meter {
                     inputs: self.decode_meter(bytes)?,
                     raw: bytes.to_vec(),
                 }));
             }
             if discriminator != readback.response_discriminator {
+                // State-report profiles may suppress only a superseded meter
+                // response whose discriminator is proven by meter_report.
+                if matches!(self.meter_source, MeterSource::StateReport)
+                    && meter_discriminator == Some(discriminator)
+                {
+                    return Ok(None);
+                }
+
                 return Err(DriverError::InvalidAction(format!(
                     "invalid readback discriminator {discriminator:#04x}"
                 )));
             }
-            for operation in &self.frame("readback")?.operations {
-                if let FrameOperation::FixedByte { offset, value } = operation {
-                    if bytes.get(usize::from(*offset)) != Some(value) {
+            let readback_matches =
+                self.frame("readback")?
+                    .operations
+                    .iter()
+                    .all(|operation| match operation {
+                        FrameOperation::FixedByte { offset, value } if *offset == 1 => {
+                            bytes.get(usize::from(*offset)) == Some(value)
+                        }
+                        _ => true,
+                    });
+            if !readback_matches {
+                for operation in &self.frame("readback")?.operations {
+                    if let FrameOperation::FixedByte { offset, .. } = operation {
                         return Err(DriverError::InvalidAction(format!(
                             "invalid readback fixed byte at {offset}"
                         )));
@@ -1535,16 +1999,19 @@ impl DeviceDriver for ProfileDriver {
             }
             let category = bytes[usize::from(readback.category_offset)];
             let index = bytes[usize::from(readback.index_offset)];
-            let count = readback
+            let count = match readback
                 .category_counts
                 .iter()
                 .find(|bound| bound.category == category)
                 .map(|bound| bound.count)
-                .ok_or_else(|| {
-                    DriverError::InvalidAction(format!(
+            {
+                Some(count) => count,
+                None => {
+                    return Err(DriverError::InvalidAction(format!(
                         "unknown inbound readback category {category:#04x} index {index}"
-                    ))
-                })?;
+                    )))
+                }
+            };
             if u16::from(index) >= count {
                 return Err(DriverError::InvalidAction(format!(
                     "inbound readback category {category:#04x} index {index} outside count {count}"

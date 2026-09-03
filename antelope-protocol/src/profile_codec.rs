@@ -93,9 +93,9 @@ pub(crate) fn validate_operations(
         let semantic = match operation {
             FrameOperation::Scalar {
                 field,
+                offset,
                 width,
                 endian,
-                ..
             } => {
                 if field.trim().is_empty() {
                     return Err(DriverError::InvalidAction(format!(
@@ -117,7 +117,7 @@ pub(crate) fn validate_operations(
                         frame.id
                     )));
                 }
-                Some(("scalar", field.as_str()))
+                Some(field.clone())
             }
             FrameOperation::BitField {
                 field, mask, shift, ..
@@ -146,7 +146,7 @@ pub(crate) fn validate_operations(
                         frame.id
                     )));
                 }
-                Some(("bit_field", field.as_str()))
+                Some(field.clone())
             }
             FrameOperation::Indexed { index_field, .. } => {
                 if index_field.trim().is_empty() {
@@ -155,7 +155,7 @@ pub(crate) fn validate_operations(
                         frame.id
                     )));
                 }
-                Some(("indexed", index_field.as_str()))
+                Some(format!("indexed:{index_field}"))
             }
             FrameOperation::PairIndex { pair_field, .. } => {
                 if pair_field.trim().is_empty() {
@@ -164,7 +164,7 @@ pub(crate) fn validate_operations(
                         frame.id
                     )));
                 }
-                Some(("pair_index", pair_field.as_str()))
+                Some(format!("pair_index:{pair_field}"))
             }
             FrameOperation::FixedByte { offset, .. } => {
                 if !fixed_offsets.insert(*offset) {
@@ -178,15 +178,112 @@ pub(crate) fn validate_operations(
             FrameOperation::AllowedValues { .. } | FrameOperation::UncompiledFormula { .. } => None,
         };
         if let Some(key) = semantic {
-            if !semantics.insert(key) {
+            if !semantics.insert(key.clone()) {
                 return Err(DriverError::InvalidAction(format!(
-                    "frame {} has ambiguous {} semantic {}",
-                    frame.id, key.0, key.1
+                    "frame {} has ambiguous semantic {}",
+                    frame.id, key
                 )));
             }
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(id: &str, operations: Vec<FrameOperation>) -> RuntimeFrame {
+        RuntimeFrame {
+            id: id.into(),
+            kind: "test".into(),
+            status: "confirmed".into(),
+            report_size: Some(8),
+            operations,
+            metadata: String::new(),
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_scalar_field_even_at_distinct_offsets() {
+        let result = validate_operations(
+            &frame(
+                "state_report",
+                vec![
+                    FrameOperation::Scalar {
+                        field: "status_byte".into(),
+                        offset: 1,
+                        width: 1,
+                        endian: FrameEndian::NotApplicable,
+                    },
+                    FrameOperation::Scalar {
+                        field: "status_byte".into(),
+                        offset: 2,
+                        width: 1,
+                        endian: FrameEndian::NotApplicable,
+                    },
+                ],
+            ),
+            8,
+        );
+        assert!(
+            result.is_err(),
+            "duplicate scalar semantic must be rejected"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_scalar_and_bit_field_semantic_name() {
+        let result = validate_operations(
+            &frame(
+                "state_report",
+                vec![
+                    FrameOperation::Scalar {
+                        field: "status_byte".into(),
+                        offset: 1,
+                        width: 1,
+                        endian: FrameEndian::NotApplicable,
+                    },
+                    FrameOperation::BitField {
+                        field: "status_byte".into(),
+                        offset: 2,
+                        mask: 0x01,
+                        shift: 0,
+                    },
+                ],
+            ),
+            8,
+        );
+        assert!(
+            result.is_err(),
+            "scalar and bit-field semantic names must share namespace"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_bit_field_with_distinct_masks() {
+        let result = validate_operations(
+            &frame(
+                "state_report",
+                vec![
+                    FrameOperation::BitField {
+                        field: "mask".into(),
+                        offset: 1,
+                        mask: 0x04,
+                        shift: 2,
+                    },
+                    FrameOperation::BitField {
+                        field: "mask".into(),
+                        offset: 1,
+                        mask: 0x08,
+                        shift: 3,
+                    },
+                ],
+            ),
+            8,
+        );
+        assert!(result.is_err(), "duplicate bit semantic must be rejected");
+    }
 }
 
 pub(crate) fn allocate(

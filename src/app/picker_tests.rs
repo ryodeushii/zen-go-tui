@@ -1,8 +1,8 @@
 use antelope_protocol::load_profile_pack;
 
 use crate::device::{
-    select_candidate, select_reconnect_candidate, DeviceCandidate, DevicePickerState,
-    DeviceSelection, DeviceSession, ProfileCatalog, SelectionMatch,
+    select_candidate, select_reconnect_candidate, CandidateStatus, DeviceCandidate,
+    DevicePickerState, DeviceSelection, DeviceSession, ProfileCatalog, SelectionMatch,
 };
 
 fn candidate(path: &[u8], pid: u16, serial: Option<&str>) -> DeviceCandidate {
@@ -19,7 +19,7 @@ fn candidate(path: &[u8], pid: u16, serial: Option<&str>) -> DeviceCandidate {
 }
 
 #[test]
-fn picker_sorts_supported_candidates_before_disabled_candidates() {
+fn picker_sorts_promoted_supported_orion_before_zen_go_by_profile_name() {
     let catalog = ProfileCatalog::builtin();
     let picker = DevicePickerState::new(
         vec![
@@ -28,10 +28,10 @@ fn picker_sorts_supported_candidates_before_disabled_candidates() {
         ],
         &catalog,
     );
-    assert!(picker.entries()[0].status.is_selectable());
-    assert_eq!(picker.entries()[0].candidate.path_bytes, b"zen-go");
-    assert!(!picker.entries()[1].status.is_selectable());
-    assert!(picker.entries()[1].diagnostic.contains("disabled"));
+    assert_eq!(picker.entries()[0].status, CandidateStatus::Supported);
+    assert_eq!(picker.entries()[0].candidate.path_bytes, b"orion");
+    assert_eq!(picker.entries()[1].status, CandidateStatus::Supported);
+    assert_eq!(picker.entries()[1].candidate.path_bytes, b"zen-go");
 }
 
 #[test]
@@ -48,12 +48,19 @@ fn non_control_peer_does_not_make_control_candidate_ambiguous() {
 }
 
 #[test]
-fn disabled_picker_entry_has_no_activation_action() {
+fn promoted_orion_picker_entry_supports_activation() {
     let catalog = ProfileCatalog::builtin();
     let picker =
         DevicePickerState::new(vec![candidate(b"orion", 0xa221, Some("ORION-1"))], &catalog);
-    assert!(picker.activate_selected().is_none());
-    assert!(picker.activate_row(0).is_none());
+    assert_eq!(picker.entries()[0].status, CandidateStatus::Supported);
+    assert_eq!(
+        picker.activate_selected().map(|c| c.path_bytes.as_slice()),
+        Some(b"orion".as_slice())
+    );
+    assert_eq!(
+        picker.activate_row(0).map(|c| c.path_bytes.as_slice()),
+        Some(b"orion".as_slice())
+    );
 }
 
 #[test]
@@ -67,16 +74,16 @@ fn empty_picker_navigation_and_activation_are_safe() {
 }
 
 #[test]
-fn disabled_orion_is_rejected_before_hid_open() {
+fn partial_profile_is_rejected_before_hid_open() {
     let catalog = ProfileCatalog::builtin();
-    let orion = candidate(b"this-path-must-never-open", 0xa221, Some("ORION-1"));
+    let candidate = candidate(b"this-path-must-never-open", 0xa2b5, Some("DISCRETE-8-1"));
 
-    let error = match DeviceSession::open_candidate(&orion, &catalog) {
+    let error = match DeviceSession::open_candidate(&candidate, &catalog) {
         Err(error) => error,
-        Ok(_) => panic!("disabled candidate must fail before HIDAPI construction"),
+        Ok(_) => panic!("partial candidate must fail before HIDAPI construction"),
     };
 
-    assert!(error.to_string().contains("disabled"));
+    assert!(error.to_string().contains("partial"), "{error:#}");
 }
 
 #[test]

@@ -558,15 +558,15 @@ mod tests {
     }
 
     #[test]
-    fn disabled_profile_is_classified_disabled_with_reason() {
+    fn unknown_profile_is_classified_unsupported_with_reason() {
         let classification =
-            super::classify_candidate_details(&candidate("/dev/hidraw3", 0xa221), DEVICE_CATALOG);
+            super::classify_candidate_details(&candidate("/dev/hidraw3", 0xbeef), DEVICE_CATALOG);
 
-        assert_eq!(classification.status, CandidateStatus::Disabled);
+        assert_eq!(classification.status, CandidateStatus::Unsupported);
         assert!(classification
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.contains("disabled")));
+            .any(|diagnostic| diagnostic.contains("unsupported")));
     }
 
     #[test]

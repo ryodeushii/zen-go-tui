@@ -1,6 +1,7 @@
 use antelope_protocol::{
-    load_profile_pack, FrameOperation, ProfileLoadError, ProfilePack, RuntimeDriverKind,
-    RuntimeEntry, RuntimeInputCapability, RuntimeInputControlKind, RuntimeReadiness,
+    load_profile_pack, FrameOperation, ProfileDriver, ProfileLoadError, ProfilePack,
+    RuntimeDriverKind, RuntimeEntry, RuntimeInputCapability, RuntimeInputControlKind,
+    RuntimeReadiness,
 };
 
 fn fixture_pack() -> ProfilePack {
@@ -155,6 +156,22 @@ fn file_loader_reads_owned_profile_pack() {
         .join("tests/fixtures/profile_pack_v1.json");
     let pack = antelope_protocol::load_profile_pack_file(&path).expect("fixture file");
     assert_eq!(pack.profiles()[0].id, "orion_studio_3");
+}
+
+#[test]
+fn promoted_orion_fixture_constructs_profile_driver() {
+    let pack = antelope_protocol::load_profile_pack(include_bytes!(
+        "fixtures/orion/profile_driver_pack.json"
+    ))
+    .expect("promoted Orion fixture must load");
+    let entry = pack
+        .profiles
+        .into_iter()
+        .find(|entry| entry.id == "orion_studio_3")
+        .expect("promoted Orion profile");
+    assert_eq!(entry.readiness, RuntimeReadiness::Supported);
+    assert_eq!(entry.driver_kind, RuntimeDriverKind::Profile);
+    ProfileDriver::new(entry).expect("promoted Orion profile driver");
 }
 
 #[test]

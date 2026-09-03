@@ -61,7 +61,7 @@ mod tests {
         );
         assert_eq!(
             entry("Antelope Orion Studio III").readiness,
-            Readiness::Disabled
+            Readiness::Supported
         );
         assert_eq!(
             entry("Antelope Discrete 8 Pro Synergy Core").readiness,

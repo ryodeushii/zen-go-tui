@@ -7,7 +7,7 @@ This page defines device readiness, profile sources, selection safety, and valid
 | Device | Readiness | Runtime driver | Current result |
 |---|---|---|---|
 | Antelope Zen Go Synergy Core | `Supported` | `ZenGo` | Selectable for control |
-| Antelope Orion Studio III | `Disabled` | `None` | Visible with blocker diagnostics |
+| Antelope Orion Studio III | `Supported` | `Profile` | Selectable for control |
 | Antelope Discrete 8 Pro Synergy Core | `Partial` | `None` | Visible but not selectable |
 | Antelope Discrete 4 Synergy Core | `Unverified` | `None` | Visible but not selectable |
 | Antelope Discrete 4 Pro Synergy Core | `Unverified` | `None` | Visible but not selectable |
@@ -135,9 +135,9 @@ The generated Zen Go topology defines:
 
 The built-in `ZenGo` driver also supports the tested global, output, preamp, mixer, routing, readback, raw-view, and metering behavior described in [Zen Go Synergy Core TUI](zen-go-tui.md).
 
-Zen Go is the only profile currently selectable for control. Unit and integration tests preserve its exact protocol bytes.
+Zen Go and Orion Studio III are currently selectable for control. Unit and integration tests preserve exact protocol bytes for Zen Go. Supported profiles still pass the same selection gate and safety limits described above.
 
-## Orion foundation and blockers
+## Orion runtime support and limits
 
 The normalized Orion profile preserves this profile-derived topology:
 
@@ -148,14 +148,13 @@ The normalized Orion profile preserves this profile-derived topology:
 - one confirmed mixer link domain in protocol space 3 with 16 pairs;
 - an exact 113-request startup query order with finite readback bounds.
 
-Generic profile-driver tests cover representative writes, typed decoding, routing bounds, whole-state behavior, and profile-derived fixtures. These tests are not physical Orion validation.
+Orion is `Supported` with `RuntimeDriverKind::Profile`. The generator applies an Orion-only, non-numbered framing assumption: `transport.uses_numbered_reports: false`. The canonical raw profile remains unchanged; generated support metadata records this assumption and states that hardware verification remains pending. No descriptor or hardware validation establishes this framing yet.
 
-Orion remains `Disabled` with `RuntimeDriverKind::None` for two safety reasons:
+Orion per-channel input meters come from `state_report` at offset 157, one byte per physical channel. The superseded `meter_report` bytes 33 and later are not interpreted as per-channel meters. The generic driver uses the confirmed state-report source and ignores those superseded channel values.
 
-1. The canonical profile does not confirm whether HID reports use report IDs.
-2. Physical, ADAT, and S/PDIF input-link independence is ambiguous.
+Only the confirmed mixer link domain at protocol space 3 is exposed. Physical and ADAT link semantics remain non-actionable, so the UI exposes no controls for those links. The catalog does not add unconfirmed link actions.
 
-The UI exposes no input-link control for those ambiguous domains. The catalog keeps only the confirmed mixer link domain.
+Generic profile-driver tests cover representative writes, typed decoding, routing bounds, whole-state behavior, state-report meter decoding, superseded meter handling, and profile-derived fixtures. These tests are not physical Orion validation.
 
 ## Discrete profile status
 

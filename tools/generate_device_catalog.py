@@ -233,6 +233,8 @@ def _profile_has_confirmed_runtime_shape(profile: NormalizedProfile) -> bool:
     if _status_variant(transport.status) != "Confirmed":
         return False
 
+    if "count" not in profile.channels or profile.channels["count"] is None:
+        return False
     channel_count = _count(
         profile.channels,
         ("count", "count_confirmed", "count_assumed_total"),
@@ -757,13 +759,171 @@ def source_sha256(path: Path | str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def _is_orion(profile: NormalizedProfile) -> bool:
+    return (
+        profile.path.stem == "orion_studio_3"
+        and (profile.identity.vid, profile.identity.pid) == (0x23E5, 0xA221)
+    )
+
+
+def _effective_framing(profile: NormalizedProfile) -> bool | None:
+    """Apply Orion's source-backed default while retaining raw values elsewhere."""
+
+    if not _is_orion(profile):
+        return profile.transport.uses_numbered_reports
+    if profile.transport.uses_numbered_reports is None:
+        return False
+    return profile.transport.uses_numbered_reports
+
+
+def _reference_mentions_frame(text: str, frame_id: str) -> bool:
+    """Match complete frame identifiers, not identifiers containing one another."""
+
+    match = re.match(r"\s*(?:frame\.)?([A-Za-z_][A-Za-z0-9_]*)", text)
+    return match is not None and match.group(1) == frame_id
+
+
+def _parameter_blocks_promotion(parameter: Mapping[str, Any]) -> bool:
+    """Treat qualifiers anywhere in referenced parameter evidence as blocking."""
+
+    return _evidence_has_negative_qualifier(
+        " ".join((str(parameter.get("status", "")), str(parameter.get("metadata", ""))))
+    )
+
+
+def _effective_frame_status(profile: NormalizedProfile, frame_id: str, frame: Mapping[str, Any]) -> str:
+    """Promote allowlisted Orion mappings only with confirmed source evidence."""
+
+    raw_status = _section_status(frame, profile.profile_status or "unknown")
+    allowlisted = {
+        "command",
+        "global_command",
+        "mix_command",
+        "link_command",
+        "state_report",
+        "readback",
+    }
+    if _is_orion(profile) and frame_id in {"auraverb_command", "micmodeling_command"}:
+        return "unknown"
+    if not _is_orion(profile) or frame_id not in allowlisted:
+        return raw_status
+    explicit_status = str(frame.get("status", ""))
+    explicit_decoded = frame_id == "readback" and re.match(
+        r"\s*decoded\b", explicit_status, re.IGNORECASE
+    ) is not None
+    parameters = _build_params(profile)
+    has_confirmed_mapping = any(
+        _reference_mentions_frame(
+            parameter["frame_reference"]["text"] + " " + parameter["readback_reference"]["text"], frame_id
+        )
+        and _normalized_status(parameter["status"]) == "confirmed"
+        and not _parameter_blocks_promotion(parameter)
+        for parameter in parameters
+    )
+    if frame_id == "state_report":
+        has_confirmed_mapping = has_confirmed_mapping or _evidence_is_confirmed(
+            str(frame.get("channel_meter_notes", ""))
+        )
+    explicit_evidence = " ".join(str(frame.get(key, "")) for key in ("status", "runtime_status", "notes", "evidence"))
+    if (not has_confirmed_mapping and not explicit_decoded) or _evidence_has_negative_qualifier(explicit_evidence):
+        return raw_status
+    try:
+        operations = _frame_operations(profile, frame_id, frame)
+    except ProfileError:
+        return raw_status
+    if any(operation["op"] == "uncompiled_formula" for operation in operations):
+        return raw_status
+    if not _operations_fit_report(profile, operations):
+        return raw_status
+    return "confirmed"
+
+
+def _operations_fit_report(profile: NormalizedProfile, operations: list[dict[str, Any]]) -> bool:
+    report_size = profile.transport.report_size
+    if report_size is None:
+        return False
+    try:
+        for operation in operations:
+            kind = operation["op"]
+            if kind in {"fixed_byte", "scalar", "bit_field"}:
+                span = operation.get("width", 1)
+                if not _report_span_fits(operation["offset"], span, report_size):
+                    return False
+            elif kind in {"indexed", "pair_index"}:
+                span = operation["width"]
+                end = operation["base"] + operation["stride"] * operation["max_index"]
+                if not _report_span_fits(end, span, report_size):
+                    return False
+        return True
+    except (KeyError, TypeError):
+        return False
+
+
+def _orion_state_meter_operations(profile: NormalizedProfile) -> list[dict[str, Any]]:
+    state = profile.frame.get("state_report")
+    if not _is_orion(profile) or not isinstance(state, Mapping):
+        return []
+    evidence = str(state.get("channel_meter_notes", ""))
+    if not _evidence_is_confirmed(evidence):
+        return []
+    count = profile.channels.get("count_confirmed")
+    indices = profile.channels.get("confirmed_indices")
+    if (
+        not isinstance(count, int)
+        or isinstance(count, bool)
+        or count <= 0
+        or not isinstance(indices, list)
+        or indices != list(range(count))
+    ):
+        return []
+    base = state.get("channel_meter_base_offset")
+    if count is None or count <= 0 or base is None:
+        return []
+    try:
+        base = _checked_u16(base, "frame.state_report.channel_meter_base_offset")
+        if not _report_span_fits(base, count, profile.transport.report_size or 0):
+            return []
+    except ProfileError:
+        return []
+    return [{"op": "indexed", "base": base, "stride": 1, "index_field": "physical_meter", "width": 1, "max_index": count - 1}]
+
+
+def _orion_has_confirmed_ambiguous_input_link(profile: NormalizedProfile) -> bool:
+    """Block confirmed physical/ADAT links whose shared space byte is unresolved."""
+
+    link_parameters = {"channel_link", "adat_channel_link"}
+    topology = profile.raw.get("runtime_topology")
+    topology_confirmed = isinstance(topology, Mapping) and _normalized_status(
+        str(topology.get("status", ""))
+    ) == "confirmed"
+    records = topology.get("input_spaces", []) if topology_confirmed else []
+    for record in records:
+        if not isinstance(record, Mapping) or record.get("space") not in {
+            "physical_inputs",
+            "adat_inputs",
+        }:
+            continue
+        controls = record.get("controls", [])
+        if any(
+            isinstance(control, Mapping)
+            and control.get("kind") == "link"
+            and control.get("parameter") in link_parameters
+            for control in controls
+        ):
+            return True
+    return False
+
+
 def orion_readiness_blockers(profile: NormalizedProfile) -> list[str]:
     """Return confirmed-only Orion promotion blockers without inferring protocol facts."""
 
-    if (profile.identity.vid, profile.identity.pid) != (0x23E5, 0xA221):
+    if not _is_orion(profile):
         return []
     blockers: list[str] = []
-    if profile.transport.uses_numbered_reports is None:
+    framing = _effective_framing(profile)
+    if framing is True:
+        blockers.append("transport.uses_numbered_reports=true is unrepresentable for Orion")
+    elif framing is None:
         blockers.append("transport.uses_numbered_reports is unconfirmed")
     if profile.transport.report_size != 320:
         blockers.append("transport.report_size is not confirmed as 320")
@@ -803,20 +963,34 @@ def orion_readiness_blockers(profile: NormalizedProfile) -> list[str]:
         "mix_command",
         "link_command",
         "routing_command",
-        "auraverb_command",
         "state_report",
-        "meter_report",
         "readback",
     }
     built_frames = {frame["id"]: frame for frame in _build_frames(profile)}
     for frame_id in sorted(required_frames):
         frame = built_frames.get(frame_id)
-        if frame is None or _status_variant(frame["status"]) != "Confirmed":
+        if frame is None:
             blockers.append(f"frame.{frame_id} is missing or unconfirmed")
             continue
         operations = _frame_operations(profile, frame_id, profile.frame.get(frame_id, {}))
+        if not _operations_fit_report(profile, operations):
+            blockers.append(f"frame.{frame_id} operation geometry exceeds report bounds")
+        if _status_variant(_effective_frame_status(profile, frame_id, profile.frame.get(frame_id, {}))) != "Confirmed":
+            blockers.append(f"frame.{frame_id} is missing or unconfirmed")
+            continue
         if any(operation["op"] == "uncompiled_formula" for operation in operations):
             blockers.append(f"frame.{frame_id} has an uncompiled formula")
+
+    meter_report = profile.frame.get("meter_report")
+    if isinstance(meter_report, Mapping):
+        meter_operations = _frame_operations(profile, "meter_report", meter_report)
+        obsolete_operations = [
+            operation
+            for operation in meter_operations
+            if _obsolete_orion_channel_meter_operation(profile, "meter_report", operation)
+        ]
+        if obsolete_operations and not _operations_fit_report(profile, obsolete_operations):
+            blockers.append("frame.meter_report operation geometry exceeds report bounds")
 
     readback, startup = _readback_definition(profile)
     expected_counts = {
@@ -848,11 +1022,17 @@ def orion_readiness_blockers(profile: NormalizedProfile) -> list[str]:
             )
             break
 
-    adat_link = profile.params.get("adat_channel_link", {})
-    if isinstance(adat_link, Mapping) and "byte-for-byte identical" in str(
-        adat_link.get("notes", "")
+    if not _orion_state_meter_operations(profile):
+        blockers.append("frame.state_report lacks confirmed physical channel meter mapping")
+    raw_topology = profile.raw.get("runtime_topology")
+    raw_link_domains = raw_topology.get("link_domains", []) if isinstance(raw_topology, Mapping) else []
+    if _orion_has_confirmed_ambiguous_input_link(profile) or any(
+        isinstance(domain, Mapping)
+        and domain.get("kind") in {"physical", "adat"}
+        and _normalized_status(str(domain.get("status", ""))) == "confirmed"
+        for domain in raw_link_domains
     ):
-        blockers.append("params.adat_channel_link has ambiguous physical/ADAT space=0 semantics")
+        blockers.append("physical/ADAT link action has ambiguous space=0 semantics")
     return blockers
 
 
@@ -860,9 +1040,9 @@ def classify_readiness(profile: NormalizedProfile) -> Readiness:
     """Classify runtime readiness without conflating it with source status."""
 
     identity = (profile.identity.vid, profile.identity.pid)
+    if _is_orion(profile):
+        return Readiness.SUPPORTED if not orion_readiness_blockers(profile) else Readiness.DISABLED
     if identity == (0x23E5, 0xA221):
-        # Task 5 compiles confirmed Orion protocol data, but promotion remains
-        # fail-closed while any canonical readiness blocker exists.
         return Readiness.DISABLED
     known = _KNOWN_READINESS.get(identity)
     if known is not None:
@@ -1773,7 +1953,7 @@ def _evidence_has_negative_qualifier(
     text: str, *, include_untested: bool = True
 ) -> bool:
     negative_tokens = (
-        r"\b(?:partial|partly|unconfirmed|unverified|unknown|ambiguous|incomplete"
+        r"\b(?:partial|partly|unconfirmed|unverified|unknown|ambiguous|incomplete|conflicting|superseded"
         + (r"|untested" if include_untested else "")
         + r")\b|\bhost[-\s]+dependent\b"
     )
@@ -2191,21 +2371,28 @@ def _build_link_domains(profile: NormalizedProfile) -> list[dict[str, Any]]:
     if not isinstance(records, list):
         raise ProfileError("runtime_topology.link_domains must be an array")
     result: list[dict[str, Any]] = []
-    seen: set[int] = set()
+    seen: dict[int, Any] = {}
     for index, record in enumerate(records):
         context = f"runtime_topology.link_domains[{index}]"
         if not isinstance(record, Mapping):
             raise ProfileError(f"{context} must be an object")
         protocol_space = _checked_u8(record.get("protocol_space"), f"{context}.protocol_space")
         kind = record.get("kind")
-        if kind != "mixer":
-            raise ProfileError(f"{context}.kind is not a supported closed link-domain kind")
         pair_count = _checked_u16(record.get("pair_count"), f"{context}.pair_count")
         status = str(record.get("status", ""))
         evidence = record.get("evidence")
+        if kind not in {"mixer", "physical", "adat"}:
+            raise ProfileError(f"{context}.kind is not a supported closed link-domain kind")
         if (
             protocol_space in seen
-            or not 1 <= pair_count <= 256
+            and not (
+                _is_orion(profile)
+                and protocol_space == 0
+                and kind in {"physical", "adat"}
+                and seen[protocol_space] in {"physical", "adat"}
+            )
+        ) or (
+            not 1 <= pair_count <= 256
             or _normalized_status(status) != "confirmed"
             or not isinstance(evidence, str)
             or not evidence.strip()
@@ -2213,7 +2400,13 @@ def _build_link_domains(profile: NormalizedProfile) -> list[dict[str, Any]]:
             raise ProfileError(
                 f"{context} requires a unique protocol space, confirmed evidence, and pair_count within 1..=256"
             )
-        seen.add(protocol_space)
+        seen[protocol_space] = kind
+        if _is_orion(profile) and kind == "mixer" and protocol_space != 3:
+            continue
+        if kind in {"physical", "adat"}:
+            if _is_orion(profile):
+                continue
+            raise ProfileError(f"{context}.kind is not a supported closed link-domain kind")
         result.append(
             {
                 "protocol_space": protocol_space,
@@ -2644,7 +2837,18 @@ def _build_frames(profile: NormalizedProfile) -> list[dict[str, Any]]:
             if frame_name in _TOPOLOGY_CONTROL_FRAME_NAMES:
                 raise ProfileError(f"frame.{frame_name} must be an object")
             continue
-        status = _section_status(value, profile.profile_status or "unknown")
+        status = _effective_frame_status(profile, frame_name, value)
+        kind = _frame_kind(frame_name)
+        # Selectable packs reject unconfirmed command frames.  These whole-state
+        # Orion shapes have no generic parameter mapping; retain their raw frame
+        # metadata as decoder records instead of exposing unsafe actions.
+        if (
+            _is_orion(profile)
+            and kind == "Command"
+            and _status_variant(status) != "Confirmed"
+            and frame_name in {"auraverb_command", "micmodeling_command"}
+        ):
+            kind = "Decoder"
         magic_offset_value = value.get("magic_offset")
         magic_value = value.get("magic")
         opcode_offset_value = value.get("opcode_offset")
@@ -2664,7 +2868,7 @@ def _build_frames(profile: NormalizedProfile) -> list[dict[str, Any]]:
         result.append(
             {
                 "id": frame_name,
-                "kind": _frame_kind(frame_name),
+                "kind": kind,
                 "status": status,
                 "status_text": status,
                 "magic_offset": magic_offset,
@@ -2815,6 +3019,93 @@ def _range_form_entry(name: str, value: Any, context: str) -> dict[str, Any]:
     return {"name": name, "range": None, "text": normalized}
 
 
+def _orion_runtime_parameter_defaults(name: str) -> dict[str, Any] | None:
+    """Return source-backed runtime shape for Orion command parameters.
+
+    Orion's canonical parameter records predate this typed runtime schema.  Keep
+    those records untouched, but fill only mappings whose command and readback
+    offsets are explicitly described by the profile evidence.
+    """
+
+    command = {
+        "text": "frame.command SET_PARAM: parameter @16, target @17, value @18",
+        "offsets": [
+            {"name": "param_id", "offset": 16},
+            {"name": "channel", "offset": 17},
+            {"name": "value", "offset": 18},
+        ],
+    }
+    global_command = {
+        "text": "frame.global_command SET_GLOBAL: parameter @16, value @17",
+        "offsets": [
+            {"name": "param_id", "offset": 16},
+            {"name": "value", "offset": 17},
+        ],
+    }
+    state = {
+        "input_mode": ("state_report status byte offset 61 + channel, bits 0-1", 61),
+        "gain": ("state_report gain_base_offset 49 + channel", 49),
+        "phantom": ("state_report status byte offset 61 + channel, bit 0x10", 61),
+        "phase_invert": ("state_report status byte offset 61 + channel, bit 0x40", 61),
+        "bus_level": ("state_report bus_block level offset 28 + 3 * bus_id", 28),
+        "bus_dim": ("state_report bus_block status offset 29 + 3 * bus_id, bit 0x08", 29),
+        "bus_mute": ("state_report bus_block status offset 29 + 3 * bus_id, bit 0x04", 29),
+        "bus_mono": ("state_report bus_block status offset 29 + 3 * bus_id, bit 0x10", 29),
+        "sample_rate": ("state_report sample-rate byte offset 18", 18),
+        "screen_brightness": ("state_report screen-brightness byte offset 26", 26),
+        "adat_gain": ("state_report adat_gain_base_offset 75 + ADAT channel", 75),
+        "talkback_button": ("state_report talkback status offset 73, bit 0x40", 73),
+        "talkback_source": ("state_report talkback status offset 73, source bits 0-1", 73),
+        "talkback_gain": ("state_report talkback gain offset 74", 74),
+        "talkback_dest_assign": ("state_report talkback status offset 73, destination bits 2-5", 73),
+        "spdif_gain": ("state_report spdif_gain_base_offset 91 + S/PDIF channel", 91),
+    }
+    applies_to = {
+        "input_mode": "physical_inputs",
+        "gain": "physical_inputs",
+        "phantom": "physical_inputs",
+        "phase_invert": "physical_inputs",
+        "bus_level": "outputs",
+        "bus_dim": "outputs",
+        "bus_mute": "outputs",
+        "bus_mono": "outputs",
+        "sample_rate": "globals",
+        "screen_brightness": "globals",
+        "adat_gain": "adat_inputs",
+        "talkback_button": "globals",
+        "talkback_source": "globals",
+        "talkback_gain": "globals",
+        "talkback_dest_assign": "globals",
+        "spdif_gain": "spdif_inputs",
+    }
+    readback = state.get(name)
+    target = applies_to.get(name)
+    if readback is None or target is None:
+        return None
+    text, offset = readback
+    return {
+        "applies_to": target,
+        "frame": command if target not in {"globals"} else global_command,
+        "readback": {
+            "text": text,
+            "offsets": [{"name": "offset", "offset": offset}],
+        },
+    }
+
+
+def _orion_source_only_parameter(name: str) -> bool:
+    """Return whether Orion ID lacks a safe generic command mapping."""
+
+    return name in {
+        "output_trim",
+        "routing",
+        "oscillator",
+        "surround_monitor",
+        "dc_coupling",
+        "talkback_dest_assign",
+    }
+
+
 def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     runtime_profile = profile.raw.get("runtime_profile", {})
@@ -2829,7 +3120,12 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
         if compile_confirmed_only and value.get("runtime_available") is not True:
             continue
         status = _section_status(value, profile.profile_status or "unknown")
+        runtime_defaults = (
+            _orion_runtime_parameter_defaults(name) if _is_orion(profile) else None
+        )
         range_source = value.get("runtime_range", value.get("range"))
+        if range_source is None and name == "gain" and _is_orion(profile):
+            range_source = [0, 75]
         parameter_range = _range(range_source, f"params.{name}.runtime_range")
         range_by_mode: dict[str, tuple[int, int] | str] = {}
         per_mode_range: dict[str, tuple[int, int] | str] = {}
@@ -2883,6 +3179,13 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 )
         values: list[dict[str, Any]] = []
         enum_values = value.get("values")
+        if enum_values is None and _is_orion(profile) and name in {"output_trim", "talkback_source"}:
+            if name == "output_trim":
+                enum_values = {str(index): f"raw_{index}" for index in range(7)}
+            else:
+                enum_values = {"0": "INT"} | {
+                    str(index): f"input_{index}" for index in range(1, 13)
+                }
         if isinstance(enum_values, Mapping):
             for raw_key, raw_value in enum_values.items():
                 number = _checked_i32(raw_key, f"params.{name}.values.key")
@@ -2893,16 +3196,35 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
             raise ProfileError(f"params.{name}.values must be an object")
         frame_value = value.get("runtime_frame", value.get("frame"))
         readback_value = value.get("runtime_readback", value.get("readback"))
+        applies_to = str(value.get("runtime_applies_to", value.get("applies_to", "")))
+        if runtime_defaults is not None:
+            if frame_value is None:
+                frame_value = runtime_defaults["frame"]
+            if readback_value is None:
+                readback_value = runtime_defaults["readback"]
+            if not applies_to:
+                applies_to = runtime_defaults["applies_to"]
         if readback_value is None and "state_report_offset_formula" in value:
             readback_value = value.get("state_report_offset_formula")
         result.append(
             {
                 "name": name,
-                "id": _checked_u16(value["id"], f"params.{name}.id") if value.get("id") is not None else None,
+                # Unconfirmed Orion IDs are source evidence only. Omitting ID keeps
+                # strict selectable-pack validation from treating them as actions;
+                # raw ID remains in metadata above.
+                "id": (
+                    _checked_u16(value["id"], f"params.{name}.id")
+                    if value.get("id") is not None
+                    and (not _is_orion(profile) or (
+                        _status_variant(status) == "Confirmed"
+                        and not _orion_source_only_parameter(name)
+                    ))
+                    else None
+                ),
                 "value_type": _param_type(value.get("type")),
                 "status": status,
                 "status_text": status,
-                "applies_to": str(value.get("runtime_applies_to", value.get("applies_to", ""))),
+                "applies_to": applies_to,
                 "range": parameter_range,
                 "range_by_mode": range_by_mode,
                 "per_mode_range": per_mode_range,
@@ -3055,6 +3377,20 @@ def _build_hazards(profile: NormalizedProfile) -> list[dict[str, Any]]:
     return result
 
 
+def _orion_generated_hazards(profile: NormalizedProfile) -> list[dict[str, Any]]:
+    if not _is_orion(profile):
+        return []
+    return [{
+        "name": "orion_framing_assumption",
+        "status": "pending",
+        "rule": "uses_numbered_reports=false",
+        "effect": "hardware verification pending",
+        "notes": "Source-backed runtime assumption; verify Orion HID report framing on hardware.",
+        "opcodes": [],
+        "metadata": _metadata({"raw": "transport.uses_numbered_reports is absent", "verification": "pending"}),
+    }]
+
+
 def _normalized_status(text: str | None) -> str:
     return _status_variant(text).lower()
 
@@ -3073,11 +3409,14 @@ def _profile_id(profile: NormalizedProfile) -> str:
 def _runtime_driver_kind(profile: NormalizedProfile, readiness: Readiness) -> str:
     if readiness is Readiness.SUPPORTED and (profile.identity.vid, profile.identity.pid) == (0x23E5, 0xA015):
         return "zen_go"
-    # Orion remains disabled until generic driver validation in Task 5.
+    if readiness is Readiness.SUPPORTED and _is_orion(profile):
+        return "profile"
     return "none"
 
 
-def _support_reason(readiness: Readiness) -> str:
+def _support_reason(profile: NormalizedProfile, readiness: Readiness) -> str:
+    if _is_orion(profile) and readiness is Readiness.SUPPORTED:
+        return "validated source-backed profile; assumes unnumbered HID reports pending hardware verification"
     return {
         Readiness.SUPPORTED: "validated built-in driver",
         Readiness.PARTIAL: "profile data is incomplete for safe read/write control",
@@ -3136,6 +3475,90 @@ def _pair_max_index(profile: NormalizedProfile, frame_id: str) -> int:
     if not pair_counts or max(pair_counts) == 0:
         raise ProfileError(f"frame.{frame_id}.pair_index has no proven finite pair domain")
     return max(pair_counts) - 1
+
+
+def _obsolete_orion_channel_meter_operation(
+    profile: NormalizedProfile, frame_id: str, operation: Mapping[str, Any]
+) -> bool:
+    """Exclude superseded 0x75 channel indexing, while retaining other geometry."""
+
+    return (
+        _is_orion(profile)
+        and frame_id == "meter_report"
+        and operation.get("op") == "indexed"
+        and operation.get("index_field") == "channel_meter"
+        and operation.get("max_index", 0) > 0
+    )
+
+
+def _disambiguate_orion_inferred_semantics(
+    profile: NormalizedProfile, frame_id: str, operations: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Suffix only Orion's inferred, non-lookup duplicate semantic fields."""
+
+    if not _is_orion(profile):
+        return operations
+    lookup_names = {
+        "gain_base",
+        "status_base",
+        "adat_gain_base",
+        "spdif_gain_base",
+        "channel_meter_base",
+        "physical_meter",
+        "gain",
+        "state",
+        "input_mode",
+        "input_phantom",
+        "input_phase",
+        "output_mute",
+        "output_dim",
+    }
+    seen: dict[str, int] = {}
+    # Reserve lookup names so generated aliases cannot collide with runtime semantics
+    # emitted later in traversal order.
+    used: set[str] = set(lookup_names)
+    result: list[dict[str, Any]] = []
+    for operation in operations:
+        if operation.get("op") not in {"scalar", "bit_field"}:
+            result.append(operation)
+            continue
+        key = operation.get("field")
+        if key is None or key in lookup_names:
+            if key is not None:
+                used.add(key)
+            result.append(operation)
+            continue
+        count = seen.get(key, 0)
+        candidate = key
+        while candidate in used:
+            count += 1
+            candidate = f"{key}__{count + 1}"
+        seen[key] = count
+        used.add(candidate)
+        if candidate != key:
+            operation = dict(operation)
+            operation["field"] = candidate
+        result.append(operation)
+    return result
+
+
+def _retain_meter_report_operations(
+    profile: NormalizedProfile, frame_id: str, operations: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    obsolete_operations = [
+        operation
+        for operation in operations
+        if _obsolete_orion_channel_meter_operation(profile, frame_id, operation)
+    ]
+    # Keep malformed superseded geometry visible so readiness can fail closed;
+    # only suppress it after report-bound validation succeeds.
+    if obsolete_operations and not _operations_fit_report(profile, obsolete_operations):
+        return operations
+    return [
+        operation
+        for operation in operations
+        if not _obsolete_orion_channel_meter_operation(profile, frame_id, operation)
+    ]
 
 
 def _frame_operations(
@@ -3225,7 +3648,9 @@ def _frame_operations(
             else:
                 raise ProfileError(f"{context}.op {kind!r} is unsupported")
             operations.append(operation)
-        return operations
+        if frame_id == "state_report":
+            operations.extend(_orion_state_meter_operations(profile))
+        return _retain_meter_report_operations(profile, frame_id, operations)
 
     operations: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -3377,7 +3802,10 @@ def _frame_operations(
                 )
 
     walk(frame, "frame")
-    return operations
+    if frame_id == "state_report":
+        operations.extend(_orion_state_meter_operations(profile))
+    operations = _disambiguate_orion_inferred_semantics(profile, frame_id, operations)
+    return _retain_meter_report_operations(profile, frame_id, operations)
 
 
 def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | None, list[dict[str, int]]]:
@@ -3481,7 +3909,7 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
             "out_endpoint": profile.transport.out_endpoint,
             "in_endpoint": profile.transport.in_endpoint,
             "poll_interval_ms": profile.transport.poll_interval_ms,
-            "uses_numbered_reports": profile.transport.uses_numbered_reports,
+            "uses_numbered_reports": _effective_framing(profile),
             "expected_interface_number": profile.transport.expected_interface_number,
             "expected_usage_page": profile.transport.expected_usage_page,
             "expected_usage": profile.transport.expected_usage,
@@ -3601,7 +4029,7 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
         ],
         "hazards": [
             {**item, "status": _normalized_status(item["status"])}
-            for item in _build_hazards(profile)
+            for item in (_build_hazards(profile) + _orion_generated_hazards(profile))
         ],
         "startup_queries": startup_queries,
         "readback": readback,
@@ -3612,7 +4040,7 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
         },
         "readiness": readiness.value,
         "driver_kind": _runtime_driver_kind(profile, readiness),
-        "support_reason": _support_reason(readiness),
+        "support_reason": _support_reason(profile, readiness),
     }
 
 
@@ -4176,7 +4604,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             f"                out_endpoint: {_rust_option(profile.transport.out_endpoint, _rust_u8)}, in_endpoint: {_rust_option(profile.transport.in_endpoint, _rust_u8)}, "
         )
         lines.append(
-            f"                poll_interval_ms: {_rust_option(profile.transport.poll_interval_ms, _rust_u16)}, uses_numbered_reports: {_rust_option(profile.transport.uses_numbered_reports, lambda value: str(value).lower())}, "
+            f"                poll_interval_ms: {_rust_option(profile.transport.poll_interval_ms, _rust_u16)}, uses_numbered_reports: {_rust_option(_effective_framing(profile), lambda value: str(value).lower())}, "
         )
         lines.append(
             f"                expected_interface_number: {_rust_option(profile.transport.expected_interface_number)}, expected_usage_page: {_rust_option(profile.transport.expected_usage_page, _rust_u16)}, expected_usage: {_rust_option(profile.transport.expected_usage, _rust_u16)}, "
