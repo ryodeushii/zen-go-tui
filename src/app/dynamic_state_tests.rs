@@ -123,7 +123,7 @@ fn dynamic_state_snapshot_keeps_owned_raw_bytes() {
         zen_go_compatibility: None,
     };
 
-    assert!(state.apply_dynamic_state(snapshot, raw.clone()));
+    assert!(!state.apply_dynamic_state(snapshot, raw.clone()));
     assert_eq!(state.raw_view.latest_raw_73, Some(raw));
 }
 

@@ -27,6 +27,8 @@ pub use controller::Controller;
 mod dynamic_state_tests;
 #[cfg(test)]
 mod picker_tests;
+#[cfg(test)]
+mod zen_go_dynamic_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StructuralSnapshot {
@@ -73,6 +75,8 @@ pub struct AppState {
     pub popup: PopupState,
     pub raw_view: RawViewState,
     latest_structural_snapshot: Option<StructuralSnapshot>,
+    /// Selected profile owns topology and decoder-derived ranges for normalized state.
+    runtime_profile: Option<RuntimeProfile>,
 }
 
 impl AppState {
@@ -186,10 +190,13 @@ impl AppState {
             .find(|space| space.space_id == 0)
             .map_or(0, |space| space.inputs.len());
 
-        let globals = profile
+        let mut globals: Vec<DynamicGlobalState> = profile
             .params
             .iter()
-            .filter(|parameter| parameter.applies_to == "globals")
+            .filter(|parameter| {
+                parameter.applies_to == "globals"
+                    || matches!(parameter.name.as_str(), "sample_rate" | "clock_source")
+            })
             .filter_map(|parameter| {
                 let control = match parameter.name.as_str() {
                     "sample_rate" => GlobalControl::SampleRate,
@@ -207,9 +214,20 @@ impl AppState {
                 })
             })
             .collect();
+        if !globals
+            .iter()
+            .any(|global| global.control == GlobalControl::Surface)
+            && !profile.mixers.is_empty()
+        {
+            globals.push(DynamicGlobalState {
+                control: GlobalControl::Surface,
+                value: ControlValue::Enum(0),
+            });
+        }
 
         Self {
             ui_profile: UiProfileState::compatibility(profile),
+            runtime_profile: Some(profile.clone()),
             input_spaces,
             globals,
             routing_capabilities: profile
@@ -915,183 +933,343 @@ impl AppState {
         self.preamp.state.input2.observed_meter = observed_meter_input2;
     }
 
-    /// Apply a complete normalized snapshot without fixed-report conversion.
+    /// Apply complete normalized snapshot. Profile topology is validated before mutation.
     pub fn apply_dynamic_state(&mut self, state: DynamicDeviceState, raw: Vec<u8>) -> bool {
-        let was_connected = self.device.connection.connected;
-        let compatibility_changed = state
-            .zen_go_compatibility
-            .as_deref()
-            .map(|compatibility| self.zen_go_dynamic_structurally_differs(compatibility));
         let raw_changed =
             self.popup.raw_view_open && self.raw_view.latest_raw_73.as_ref() != Some(&raw);
-        let changed = compatibility_changed.map_or_else(
-            || {
-                !was_connected
-                    || self.globals != state.globals
-                    || self.output.dynamic != state.outputs
-                    || self.mixer.surfaces != state.mixers
-                    || self.routing != state.routing
-                    || raw_changed
-                    || self
-                        .input_spaces
-                        .iter()
-                        .flat_map(|space| &space.inputs)
-                        .ne(state.inputs.iter())
-            },
-            |structural_changed| !was_connected || structural_changed || raw_changed,
-        );
+        if !self.validate_dynamic_state(&state) {
+            self.device.connection.connected = true;
+            self.device.connection.last_snapshot_at = Some(Instant::now());
+            self.device.connection.last_frame_type = Some("0x73 snapshot");
+            self.raw_view.latest_raw_73 = Some(raw);
+            return false;
+        }
+
+        let was_connected = self.device.connection.connected;
+        let mut changed = !was_connected || raw_changed;
         self.device.connection.connected = true;
         self.device.connection.last_snapshot_at = Some(Instant::now());
         self.device.connection.last_frame_type = Some("0x73 snapshot");
-        self.globals = state.globals;
-        self.apply_input_patch(state.inputs);
-        self.apply_output_patch(state.outputs);
-        self.apply_mixer_snapshot(state.mixers);
-        self.apply_routing_snapshot(state.routing);
+        for global in state.globals {
+            if let Some(slot) = self
+                .globals
+                .iter_mut()
+                .find(|slot| slot.control == global.control)
+            {
+                changed |= *slot != global;
+                *slot = global;
+            }
+        }
+        for input in state.inputs {
+            changed |= self.merge_input_state(input);
+        }
+        for output in state.outputs {
+            changed |= self.merge_output_state(output);
+        }
+        for mixer in state.mixers {
+            changed |= self.merge_mixer_surface(mixer);
+        }
+        for group in state.routing {
+            changed |= self.merge_routing_group(group);
+        }
+        self.sync_compatibility_views();
         self.apply_dynamic_globals_to_status();
         self.raw_view.latest_raw_73 = Some(raw);
         changed
     }
 
-    fn zen_go_dynamic_structurally_differs(
-        &self,
-        state: &antelope_protocol::driver::ZenGoCompatibilityState,
-    ) -> bool {
-        let Some(previous) = &self.latest_structural_snapshot else {
-            return true;
-        };
-        if previous.sample_rate != state.sample_rate
-            || previous.sample_rate_hz != state.sample_rate_hz
-            || previous.clock_source != state.clock_source
-            || previous.status_flags.as_slice() != state.status_flags
-            || previous.front_panel_bytes.as_slice() != state.front_panel_bytes
-            || previous.outputs.as_slice() != state.outputs
-            || previous.dsp_cluster.as_slice() != state.dsp_cluster
-            || previous.surface != state.surface
-        {
-            return true;
-        }
-        for (surface, strips) in &state.mixer_surfaces {
-            let Some(previous_surface) = previous.mixer_surfaces.get(surface.index()) else {
-                return true;
-            };
-            if previous_surface.len() != strips.len() {
-                return true;
-            }
-            if previous_surface
+    fn validate_dynamic_state(&self, state: &DynamicDeviceState) -> bool {
+        self.validate_input_snapshot(&state.inputs)
+            && self.validate_output_snapshot(&state.outputs)
+            && self.validate_mixer_snapshot(&state.mixers)
+            && state
+                .routing
                 .iter()
-                .zip(strips)
-                .any(|(previous, current)| {
-                    previous.meter != current.meter
-                        || previous.muted != current.muted
-                        || previous.pan.unwrap_or_default() != current.pan
-                        || previous.linked != current.linked
-                })
-            {
-                return true;
-            }
+                .all(|group| self.valid_routing_group(group))
+            && state.globals.iter().all(|global| {
+                self.globals
+                    .iter()
+                    .any(|slot| slot.control == global.control)
+            })
+    }
+
+    fn validate_input_snapshot(&self, inputs: &[DynamicInputState]) -> bool {
+        self.input_spaces.iter().all(|space| {
+            space.inputs.iter().all(|declared| {
+                inputs
+                    .iter()
+                    .filter(|input| input.address == declared.address)
+                    .count()
+                    == 1
+            })
+        }) && inputs
+            .iter()
+            .all(|input| self.valid_input_address(input.address))
+    }
+
+    fn validate_output_snapshot(&self, outputs: &[DynamicOutputState]) -> bool {
+        outputs.len() == self.output.dynamic.len()
+            && self.output.dynamic.iter().all(|declared| {
+                outputs
+                    .iter()
+                    .filter(|output| output.address == declared.address)
+                    .count()
+                    == 1
+            })
+            && outputs
+                .iter()
+                .all(|output| self.valid_output_address(output.address))
+    }
+
+    fn validate_mixer_snapshot(&self, mixers: &[DynamicMixerSurface]) -> bool {
+        mixers.len() == self.mixer.surfaces.len()
+            && self.mixer.surfaces.iter().all(|declared| {
+                mixers
+                    .iter()
+                    .filter(|mixer| mixer.surface == declared.surface)
+                    .count()
+                    == 1
+            })
+            && mixers.iter().all(|mixer| self.valid_mixer_surface(mixer))
+    }
+
+    fn valid_input_address(&self, address: antelope_protocol::InputAddress) -> bool {
+        let Some(space) = self
+            .input_spaces
+            .iter()
+            .find(|space| space.space_id == address.space)
+        else {
+            return false;
+        };
+        if usize::from(address.index) >= space.inputs.len() {
+            return false;
         }
-        false
+        space.inputs.iter().any(|input| {
+            let candidate = antelope_protocol::InputAddress {
+                space: address.space,
+                index: address.index,
+            };
+            input.address == candidate
+        })
+    }
+
+    fn valid_output_address(&self, address: antelope_protocol::OutputAddress) -> bool {
+        if usize::from(address.id) >= self.output.dynamic.len() {
+            return false;
+        }
+        self.output
+            .dynamic
+            .iter()
+            .any(|output| output.address == address)
+    }
+
+    fn valid_mixer_surface(&self, incoming: &DynamicMixerSurface) -> bool {
+        let Some(declared) = self
+            .mixer
+            .surfaces
+            .iter()
+            .find(|surface| surface.surface == incoming.surface)
+        else {
+            return false;
+        };
+        declared.master.is_some() == incoming.master.is_some()
+            && declared.strips.len() == incoming.strips.len()
+            && declared
+                .strips
+                .iter()
+                .zip(&incoming.strips)
+                .all(|(declared, strip)| {
+                    declared.strip == strip.strip
+                        && self.valid_mixer_address(MixerAddress {
+                            surface: incoming.surface,
+                            strip: strip.strip,
+                        })
+                })
+            && match (&declared.master, &incoming.master) {
+                (Some(declared), Some(master)) => {
+                    declared.strip == master.strip
+                        && master.strip == 0
+                        && self.valid_mixer_address(MixerAddress {
+                            surface: incoming.surface,
+                            strip: 0,
+                        })
+                }
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
+    fn valid_mixer_address(&self, address: MixerAddress) -> bool {
+        let Some(surface) = self
+            .mixer
+            .surfaces
+            .iter()
+            .find(|surface| surface.surface == address.surface)
+        else {
+            return false;
+        };
+        if address.strip == 0 {
+            return surface
+                .master
+                .as_ref()
+                .is_some_and(|master| master.strip == 0);
+        }
+        let index = usize::from(address.strip - 1);
+        if index >= surface.strips.len() {
+            return false;
+        }
+        surface.strips.iter().any(|strip| {
+            strip.strip == address.strip && usize::from(strip.strip - 1) < surface.strips.len()
+        })
+    }
+
+    fn valid_routing_group(&self, group: &DynamicRoutingGroup) -> bool {
+        self.routing_capabilities
+            .iter()
+            .find(|capability| capability.destination == group.destination)
+            .is_some_and(|capability| group.sources.len() == usize::from(capability.channel_count))
     }
 
     fn apply_input_patch(&mut self, inputs: Vec<DynamicInputState>) {
-        for input in inputs {
-            let Some(space) = self
-                .input_spaces
-                .iter_mut()
-                .find(|space| space.space_id == input.address.space)
-            else {
-                continue;
-            };
-            let Some(slot) = space
-                .inputs
-                .iter_mut()
-                .find(|slot| slot.address == input.address)
-            else {
-                continue;
-            };
-            *slot = input;
-        }
-        if let Some(space) = self.input_spaces.iter().find(|space| space.space_id == 0) {
-            for input in &space.inputs {
-                let index = usize::from(input.address.index);
-                let Some(cluster_gain) = self.device.dsp_cluster.get_mut(index) else {
-                    continue;
-                };
-                if let Some(gain) = input.gain.and_then(|gain| u8::try_from(gain).ok()) {
-                    *cluster_gain = gain;
-                }
-                let Some(mode_slot) = index
-                    .checked_add(2)
-                    .and_then(|offset| self.device.dsp_cluster.get_mut(offset))
-                else {
-                    continue;
-                };
-                if let Some(mode) = input.mode.and_then(|mode| u8::try_from(mode).ok()) {
-                    *mode_slot = mode & 0x0f;
-                }
-                if input.phantom == Some(true) {
-                    *mode_slot |= 0x10;
-                }
-                if input.phase == Some(true) {
-                    *mode_slot |= 0x40;
-                }
-            }
-            self.refresh_preamp_from_cluster_preserving_observed_meter();
-        }
+        let _ = self.apply_dynamic_patch(DynamicStatePatch::Inputs(inputs));
     }
 
     fn apply_meter_patch(&mut self, inputs: Vec<DynamicInputState>) {
-        for input in inputs {
-            let Some(space) = self
-                .input_spaces
-                .iter_mut()
-                .find(|space| space.space_id == input.address.space)
-            else {
-                continue;
-            };
-            let Some(slot) = space
-                .inputs
-                .iter_mut()
-                .find(|slot| slot.address == input.address)
-            else {
-                continue;
-            };
-            slot.meter = input.meter;
-        }
+        let _ = self.apply_dynamic_patch(DynamicStatePatch::Inputs(inputs));
     }
 
     fn apply_output_patch(&mut self, outputs: Vec<DynamicOutputState>) {
-        for output in outputs {
-            let Some(slot) = self
-                .output
-                .dynamic
-                .iter_mut()
-                .find(|slot| slot.address == output.address)
-            else {
-                continue;
-            };
-            *slot = output;
-        }
-        for output in &self.output.dynamic {
-            let index = usize::from(output.address.id);
-            let Some(slot) = self.output.states.get_mut(index) else {
-                continue;
-            };
-            if let Some(level) = output.level.and_then(|level| u8::try_from(level).ok()) {
-                slot.volume = level;
-            }
-            slot.mode = if output.muted == Some(true) {
-                OutputMode::Mute
-            } else if output.dimmed == Some(true) {
-                OutputMode::Dim
-            } else {
-                OutputMode::Normal
-            };
-        }
+        let _ = self.apply_dynamic_patch(DynamicStatePatch::Outputs(outputs));
     }
 
-    fn merge_mixer_strip(existing: &mut DynamicMixerStrip, incoming: DynamicMixerStrip) {
+    fn merge_input_state(&mut self, incoming: DynamicInputState) -> bool {
+        if !self.valid_input_address(incoming.address) {
+            return false;
+        }
+        let Some(space) = self
+            .input_spaces
+            .iter_mut()
+            .find(|space| space.space_id == incoming.address.space)
+        else {
+            return false;
+        };
+        let index = usize::from(incoming.address.index);
+        if index >= space.inputs.len() {
+            return false;
+        }
+        let address = antelope_protocol::InputAddress {
+            space: incoming.address.space,
+            index: incoming.address.index,
+        };
+        let Some(target) = space
+            .inputs
+            .iter_mut()
+            .find(|input| input.address == address)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        if !incoming.name.is_empty() && target.name != incoming.name {
+            target.name = incoming.name;
+            changed = true;
+        }
+        for (current, value) in [
+            (&mut target.mode, incoming.mode),
+            (&mut target.gain, incoming.gain),
+        ] {
+            if let Some(value) = value {
+                if *current != Some(value) {
+                    *current = Some(value);
+                    changed = true;
+                }
+            }
+        }
+        for (current, value) in [
+            (&mut target.phantom, incoming.phantom),
+            (&mut target.phase, incoming.phase),
+        ] {
+            if let Some(value) = value {
+                if *current != Some(value) {
+                    *current = Some(value);
+                    changed = true;
+                }
+            }
+        }
+        if let Some(value) = incoming.meter {
+            if target.meter != Some(value) {
+                target.meter = Some(value);
+                changed = true;
+            }
+        }
+        for (id, value) in incoming.parameters {
+            if let Some((_, current)) = target.parameters.iter_mut().find(|(key, _)| *key == id) {
+                if *current != value {
+                    *current = value;
+                    changed = true;
+                }
+            } else {
+                target.parameters.push((id, value));
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn merge_output_state(&mut self, incoming: DynamicOutputState) -> bool {
+        if !self.valid_output_address(incoming.address) {
+            return false;
+        }
+        let address = antelope_protocol::OutputAddress {
+            id: incoming.address.id,
+        };
+        let Some(target) = self
+            .output
+            .dynamic
+            .iter_mut()
+            .find(|output| output.address == address)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        if !incoming.name.is_empty() && target.name != incoming.name {
+            target.name = incoming.name;
+            changed = true;
+        }
+        for (current, value) in [(&mut target.level, incoming.level)] {
+            if let Some(value) = value {
+                if *current != Some(value) {
+                    *current = Some(value);
+                    changed = true;
+                }
+            }
+        }
+        for (current, value) in [
+            (&mut target.muted, incoming.muted),
+            (&mut target.dimmed, incoming.dimmed),
+        ] {
+            if let Some(value) = value {
+                if *current != Some(value) {
+                    *current = Some(value);
+                    changed = true;
+                }
+            }
+        }
+        for (id, value) in incoming.parameters {
+            if let Some((_, current)) = target.parameters.iter_mut().find(|(key, _)| *key == id) {
+                if *current != value {
+                    *current = value;
+                    changed = true;
+                }
+            } else {
+                target.parameters.push((id, value));
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    fn merge_mixer_strip(existing: &mut DynamicMixerStrip, incoming: DynamicMixerStrip) -> bool {
+        let before = existing.clone();
         if !incoming.name.is_empty() {
             existing.name = incoming.name;
         }
@@ -1116,67 +1294,77 @@ impl AppState {
         if incoming.meter.is_some() {
             existing.meter = incoming.meter;
         }
-        if !incoming.parameters.is_empty() {
-            existing.parameters = incoming.parameters;
+        for (id, value) in incoming.parameters {
+            if let Some((_, current)) = existing.parameters.iter_mut().find(|(key, _)| *key == id) {
+                *current = value;
+            } else {
+                existing.parameters.push((id, value));
+            }
         }
+        *existing != before
     }
 
-    fn apply_mixer_snapshot(&mut self, mixers: Vec<DynamicMixerSurface>) {
-        for mixer in mixers {
-            let Some(slot) = self
-                .mixer
-                .surfaces
-                .iter_mut()
-                .find(|slot| slot.surface == mixer.surface)
-            else {
-                continue;
+    fn merge_mixer_surface(&mut self, incoming: DynamicMixerSurface) -> bool {
+        if !self.valid_mixer_surface(&incoming) {
+            return false;
+        }
+        let Some(target) = self
+            .mixer
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.surface == incoming.surface)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        if !incoming.name.is_empty() && target.name != incoming.name {
+            target.name = incoming.name;
+            changed = true;
+        }
+        if let (Some(existing), Some(incoming)) = (&mut target.master, incoming.master) {
+            changed |= Self::merge_mixer_strip(existing, incoming);
+        }
+        for incoming in incoming.strips {
+            let address = MixerAddress {
+                surface: target.surface,
+                strip: incoming.strip,
             };
-            let topology_matches = slot.master.is_some() == mixer.master.is_some()
-                && slot.strips.len() == mixer.strips.len()
-                && slot
-                    .strips
-                    .iter()
-                    .zip(&mixer.strips)
-                    .all(|(declared, incoming)| declared.strip == incoming.strip)
-                && match (&slot.master, &mixer.master) {
-                    (Some(declared), Some(incoming)) => declared.strip == incoming.strip,
-                    (None, None) => true,
-                    _ => false,
-                };
-            if !topology_matches {
-                continue;
+            let index = usize::from(incoming.strip - 1);
+            if index >= target.strips.len() {
+                return false;
             }
-
-            if !mixer.name.is_empty() {
-                slot.name = mixer.name;
-            }
-            if let (Some(existing), Some(incoming)) = (&mut slot.master, mixer.master) {
-                Self::merge_mixer_strip(existing, incoming);
-            }
-            for incoming in mixer.strips {
-                if let Some(existing) = slot
-                    .strips
-                    .iter_mut()
-                    .find(|existing| existing.strip == incoming.strip)
-                {
-                    Self::merge_mixer_strip(existing, incoming);
-                }
+            if let Some(existing) = target.strips.iter_mut().find(|strip| {
+                MixerAddress {
+                    surface: target.surface,
+                    strip: strip.strip,
+                } == address
+            }) {
+                changed |= Self::merge_mixer_strip(existing, incoming);
             }
         }
-        self.sync_compatibility_views();
-        self.clamp_dynamic_selection();
+        changed
     }
 
     pub(crate) fn sync_compatibility_views(&mut self) {
+        let previous_channels = std::mem::take(&mut self.mixer.channels);
         self.mixer.channels = self
             .mixer
             .surfaces
             .iter()
-            .map(|surface| {
+            .enumerate()
+            .map(|(surface_index, surface)| {
                 surface
                     .strips
                     .iter()
-                    .filter_map(Self::compatibility_channel)
+                    .enumerate()
+                    .filter_map(|(strip_index, strip)| {
+                        let mut channel = Self::compatibility_channel(strip)?;
+                        channel.assignment = previous_channels
+                            .get(surface_index)
+                            .and_then(|channels| channels.get(strip_index))
+                            .and_then(|channel| channel.assignment);
+                        Some(channel)
+                    })
                     .collect()
             })
             .collect();
@@ -1186,68 +1374,190 @@ impl AppState {
         for (peaks, channels) in self.mixer.peaks.iter_mut().zip(&self.mixer.channels) {
             peaks.resize(channels.len(), None);
         }
+        for output in &self.output.dynamic {
+            let index = usize::from(output.address.id);
+            let Some(state) = self.output.states.get_mut(index) else {
+                continue;
+            };
+            if let Some(level) = output.level.and_then(|level| u8::try_from(level).ok()) {
+                state.volume = level;
+            }
+            if output.muted == Some(true) {
+                state.mode = OutputMode::Mute;
+            } else if output.dimmed == Some(true) {
+                state.mode = OutputMode::Dim;
+            } else if output.muted.is_some() || output.dimmed.is_some() {
+                state.mode = OutputMode::Normal;
+            }
+        }
+        self.sync_preamp_compatibility();
     }
 
-    fn apply_routing_snapshot(&mut self, groups: Vec<DynamicRoutingGroup>) {
-        let mut observed = Vec::new();
-        for group in groups {
-            let Some(capability) = self
-                .routing_capabilities
-                .iter()
-                .find(|capability| capability.destination == group.destination)
+    fn sync_preamp_compatibility(&mut self) {
+        let physical_inputs: Vec<_> = self
+            .input_spaces
+            .iter()
+            .find(|space| space.space_id == 0)
+            .map(|space| space.inputs.clone())
+            .unwrap_or_default();
+        for input in &physical_inputs {
+            let index = usize::from(input.address.index);
+            if let Some(gain) = input.gain.and_then(|gain| u8::try_from(gain).ok()) {
+                if let Some(cluster_gain) = self.device.dsp_cluster.get_mut(index) {
+                    *cluster_gain = gain;
+                }
+            }
+            let Some(mode_slot) = index
+                .checked_add(2)
+                .and_then(|offset| self.device.dsp_cluster.get_mut(offset))
             else {
                 continue;
             };
-            if group.sources.len() == usize::from(capability.channel_count) {
-                observed.push(group);
+            if let Some(mode) = input.mode.and_then(|mode| u8::try_from(mode).ok()) {
+                *mode_slot = (*mode_slot & 0xf0) | (mode & 0x0f);
+            }
+            if let Some(phantom) = input.phantom {
+                if phantom {
+                    *mode_slot |= 0x10;
+                } else {
+                    *mode_slot &= !0x10;
+                }
+            }
+            if let Some(phase) = input.phase {
+                if phase {
+                    *mode_slot |= 0x40;
+                } else {
+                    *mode_slot &= !0x40;
+                }
             }
         }
-        self.routing = observed;
+        self.refresh_preamp_from_cluster_preserving_observed_meter();
+        for input in &physical_inputs {
+            let Some(meter) = input.meter else {
+                continue;
+            };
+            let Some(profile) = &self.runtime_profile else {
+                continue;
+            };
+            if profile
+                .candidate_preamp_meter(input.address.index)
+                .is_none()
+            {
+                continue;
+            }
+            match input.address.index {
+                0 => self.preamp.state.input1.observed_meter = Some(meter),
+                1 => self.preamp.state.input2.observed_meter = Some(meter),
+                _ => {}
+            }
+        }
     }
 
-    fn apply_routing_patch(&mut self, group: DynamicRoutingGroup) {
-        let Some(capability) = self
-            .routing_capabilities
-            .iter()
-            .find(|capability| capability.destination == group.destination)
-        else {
-            return;
-        };
-        if group.sources.len() != usize::from(capability.channel_count) {
-            return;
+    fn merge_routing_group(&mut self, group: DynamicRoutingGroup) -> bool {
+        if !self.valid_routing_group(&group) {
+            return false;
         }
         if let Some(slot) = self
             .routing
             .iter_mut()
             .find(|slot| slot.destination == group.destination)
         {
-            *slot = group;
+            if *slot == group {
+                false
+            } else {
+                *slot = group;
+                true
+            }
         } else {
             self.routing.push(group);
             self.routing.sort_by_key(|group| group.destination);
+            true
         }
     }
 
-    fn apply_patch(&mut self, patch: DynamicStatePatch) {
-        match patch {
-            DynamicStatePatch::Inputs(inputs) => self.apply_input_patch(inputs),
-            DynamicStatePatch::Outputs(outputs) => self.apply_output_patch(outputs),
-            DynamicStatePatch::Mixer(mixer) => self.apply_mixer_snapshot(vec![mixer]),
-            DynamicStatePatch::Mixers(mixers) => self.apply_mixer_snapshot(mixers),
-            DynamicStatePatch::Routing(group) => self.apply_routing_patch(group),
+    fn apply_dynamic_patch(&mut self, patch: DynamicStatePatch) -> bool {
+        let changed = match patch {
+            DynamicStatePatch::Inputs(inputs) => {
+                if !inputs.iter().enumerate().all(|(index, input)| {
+                    self.valid_input_address(input.address)
+                        && inputs[..index]
+                            .iter()
+                            .all(|previous| previous.address != input.address)
+                }) {
+                    return false;
+                }
+                let mut changed = false;
+                for input in inputs {
+                    changed |= self.merge_input_state(input);
+                }
+                changed
+            }
+            DynamicStatePatch::Outputs(outputs) => {
+                if !outputs.iter().enumerate().all(|(index, output)| {
+                    self.valid_output_address(output.address)
+                        && outputs[..index]
+                            .iter()
+                            .all(|previous| previous.address != output.address)
+                }) {
+                    return false;
+                }
+                let mut changed = false;
+                for output in outputs {
+                    changed |= self.merge_output_state(output);
+                }
+                changed
+            }
+            DynamicStatePatch::Mixer(mixer) => {
+                let changed = self.merge_mixer_surface(mixer);
+                if changed {
+                    self.clamp_dynamic_selection();
+                }
+                changed
+            }
+            DynamicStatePatch::Mixers(mixers) => {
+                if !mixers.iter().enumerate().all(|(index, mixer)| {
+                    self.valid_mixer_surface(mixer)
+                        && mixers[..index]
+                            .iter()
+                            .all(|previous| previous.surface != mixer.surface)
+                }) {
+                    return false;
+                }
+                let mut changed = false;
+                for mixer in mixers {
+                    changed |= self.merge_mixer_surface(mixer);
+                }
+                self.clamp_dynamic_selection();
+                changed
+            }
+            DynamicStatePatch::Routing(group) => self.merge_routing_group(group),
             DynamicStatePatch::Globals(globals) => {
+                if !globals.iter().all(|global| {
+                    self.globals
+                        .iter()
+                        .any(|slot| slot.control == global.control)
+                }) {
+                    return false;
+                }
+                let mut changed = false;
                 for global in globals {
                     if let Some(slot) = self
                         .globals
                         .iter_mut()
                         .find(|slot| slot.control == global.control)
                     {
+                        changed |= *slot != global;
                         *slot = global;
                     }
                 }
                 self.apply_dynamic_globals_to_status();
+                changed
             }
+        };
+        if changed {
+            self.sync_compatibility_views();
         }
+        changed
     }
 
     fn apply_dynamic_globals_to_status(&mut self) {
@@ -1309,7 +1619,7 @@ impl AppState {
                 self.device.connection.last_frame_type = Some("0x75 query reply");
                 self.raw_view.latest_raw_75 = Some(raw.clone());
                 if let Some(patch) = patch {
-                    self.apply_patch(patch);
+                    self.apply_dynamic_patch(patch);
                 }
                 let reply = QueryResponse {
                     query_id,
@@ -3652,7 +3962,7 @@ mod tests {
 
         transport.push_read(raw.to_vec());
 
-        assert!(!controller.poll_device(Duration::ZERO).expect("poll"));
+        assert!(controller.poll_device(Duration::ZERO).expect("poll"));
     }
 
     #[test]

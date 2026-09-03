@@ -37,17 +37,18 @@ impl Controller {
         }
 
         let catalog = crate::device::ProfileCatalog::builtin();
-        let state = catalog
-            .find(driver.definition().vid, driver.definition().pid)
-            .map(AppState::from_entry)
-            .unwrap_or_default();
-        Ok(Self {
-            transport,
-            driver,
-            state,
-            pending_mutation: None,
-            command_queue: CommandQueue::new(),
-        })
+        let Some(entry) = catalog.find(driver.definition().vid, driver.definition().pid) else {
+            // Unknown drivers remain available for protocol-fixture tests; runtime sessions must
+            // use `new_for_entry` so selected profile topology cannot be replaced by this state.
+            return Ok(Self {
+                transport,
+                driver,
+                state: AppState::default(),
+                pending_mutation: None,
+                command_queue: CommandQueue::new(),
+            });
+        };
+        Self::new_for_entry(transport, driver, entry)
     }
 
     pub fn new_for_entry(
