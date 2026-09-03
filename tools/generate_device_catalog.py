@@ -2592,7 +2592,8 @@ def _fader_domain(profile: NormalizedProfile) -> dict[str, Any] | None:
     direction = fader["direction"]
     if not isinstance(direction, str) or not direction.strip():
         raise ProfileError("mixer.fader.direction must be a non-empty string")
-    if direction.strip().lower() not in {"direct", "attenuation"}:
+    direction = direction.strip().lower()
+    if direction not in {"direct", "attenuation"}:
         raise ProfileError("mixer.fader.direction must be direct or attenuation")
     unity = _checked_i32(fader["unity"], "mixer.fader.unity")
     if not minimum <= unity <= maximum:
@@ -3958,8 +3959,9 @@ def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | N
                 for index in range(item["count"])
                 if index <= 0xFF
             ]
-    if has_explicit_safe_queries:
-        readback["safe_queries"] = safe_queries
+    # Preserve ordered startup walks even when derived from category counts or
+    # legacy startup_queries. Explicit sparse pairs remain authoritative.
+    readback["safe_queries"] = safe_queries
 
     layouts_raw = raw.get("layouts", [])
     if not isinstance(layouts_raw, list):
@@ -4002,12 +4004,13 @@ def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | N
             }
         )
         for field in ("level_offset", "state_offset"):
-            if field in raw_layout:
-                offset = _checked_u16(raw_layout[field], f"{context}.{field}")
-                final_byte = (record_count - 1) * record_stride + offset + 1
-                if final_byte > body_size:
-                    raise ProfileError(f"{context}.{field} final record span exceeds body_size")
-                normalized_layout[field] = offset
+            if field not in raw_layout:
+                raise ProfileError(f"{context}.{field} is required")
+            offset = _checked_u16(raw_layout[field], f"{context}.{field}")
+            final_byte = (record_count - 1) * record_stride + offset + 1
+            if final_byte > body_size:
+                raise ProfileError(f"{context}.{field} final record span exceeds body_size")
+            normalized_layout[field] = offset
         if "surface_stride" in raw_layout:
             surface_stride = _checked_u16(raw_layout["surface_stride"], f"{context}.surface_stride")
             if surface_stride == 0:

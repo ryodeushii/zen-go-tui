@@ -322,6 +322,95 @@ class GeneratorTests(unittest.TestCase):
                 )
             )
 
+    def test_explicit_sparse_queries_escape_empty_bounds_and_derived_queries_are_emitted(self) -> None:
+        def readback(category_counts: dict[str, int], **extra: Any) -> dict[str, Any]:
+            value = {
+                "request_magic": "0x74",
+                "subcmd": "0x10",
+                "response_magic": "0x75",
+                "response_discriminator_offset": 1,
+                "response_discriminator": 0,
+                "category_offset": 8,
+                "index_offset": 12,
+                "data_offset": 16,
+                "category_counts": category_counts,
+                **extra,
+            }
+            return value
+
+        data = profile_data("Antelope Zen Go Synergy Core", "0xa015")
+        data["frame"]["readback"] = readback(
+            {},
+            safe_queries=[{"category": 0x04, "index": 3}],
+            layouts=[{
+                "category": 0x04,
+                "index": 3,
+                "kind": "mixer_state",
+                "body_size": 34,
+                "record_count": 16,
+                "record_stride": 2,
+                "level_offset": 2,
+                "state_offset": 3,
+                "status": "observed",
+            }],
+        )
+        normalized = generator._normalized_profile_record(
+            generator.normalize_profile(data, path=Path("zen_go_sc.json"))
+        )
+        assert normalized["readback"]["safe_queries"] == [{"category": 4, "index": 3}]
+        data["frame"]["readback"] = readback(
+            {"0x04": 4},
+            layouts=[{
+                "category": 0x04,
+                "index": 0,
+                "kind": "mixer_state",
+                "body_size": 34,
+                "record_count": 16,
+                "record_stride": 2,
+                "level_offset": 2,
+                "state_offset": 3,
+                "status": "observed",
+            }],
+        )
+        normalized = generator._normalized_profile_record(
+            generator.normalize_profile(data, path=Path("zen_go_sc.json"))
+        )
+        assert normalized["readback"]["safe_queries"] == [
+            {"category": 4, "index": index} for index in range(4)
+        ]
+
+    def test_fader_direction_is_normalized_for_generated_rust(self) -> None:
+        data = json.loads((REPO_ROOT / "modules/Antelope-Ctl/profiles/zen_go_sc.json").read_text())
+        data["mixer"]["fader"]["direction"] = "  ATTENUATION  "
+        profile = generator.normalize_profile(data, path=Path("zen_go_sc.json"))
+        assert generator._normalized_profile_record(profile)["mixers"][0]["fader"]["direction"] == "attenuation"
+
+    def test_readback_layout_requires_level_and_state_offsets(self) -> None:
+        data = profile_data("Antelope Zen Go Synergy Core", "0xa015")
+        data["frame"]["readback"] = {
+            "request_magic": "0x74",
+            "subcmd": "0x10",
+            "response_magic": "0x75",
+            "response_discriminator_offset": 1,
+            "response_discriminator": 0,
+            "category_offset": 8,
+            "index_offset": 12,
+            "data_offset": 16,
+            "category_counts": {},
+            "safe_queries": [{"category": 0x04, "index": 0}],
+            "layouts": [{
+                "category": 0x04,
+                "index": 0,
+                "kind": "mixer_state",
+                "body_size": 34,
+                "record_count": 16,
+                "record_stride": 2,
+                "status": "observed",
+            }],
+        }
+        with self.assertRaisesRegex(generator.ProfileError, r"level_offset is required"):
+            generator.normalize_profile(data)
+
     def test_readback_layout_offsets_and_surface_stride_fit_body_geometry(self) -> None:
         def layout_profile(layout: dict[str, Any]) -> dict[str, Any]:
             data = profile_data("Antelope Zen Go Synergy Core", "0xa015")

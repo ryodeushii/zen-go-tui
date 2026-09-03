@@ -101,3 +101,44 @@ This task did not broaden generator parser scope. Generated artifacts were rende
 - Added `antelope-protocol/tests/zen_go_profile_model.rs`.
 
 Open blocker: generator CLI/check path remains blocked by existing Orion/source-bank prose parser issue and mismatched brief check invocation; no parser widening included.
+
+## Fix round 1 review resolution
+
+Review findings resolved:
+
+1. Explicit sparse safe queries now remain authoritative even when `category_counts` is empty or lacks that category. Codec acceptance remains `explicitly_safe OR bounded`; absent pairs reject.
+2. Generator always emits computed safe queries, including fallback walks derived from category counts or legacy startup queries. Layouts cannot produce an empty runtime safety list unnoticed.
+3. Generator requires both `level_offset` and `state_offset` and reports missing fields as `ProfileError` before rendering.
+4. Fader direction is trimmed and lowercased during normalization, producing Rust-compatible `direct`/`attenuation` values.
+5. Added codec coverage for Zen Go q04/3 encoding and q04/4 rejection with empty category counts; authoritative 47-entry ordered safe sequence and duplicates remain unchanged.
+
+Fix-round commands and outputs:
+
+```text
+cargo test -p antelope-protocol --test zen_go_profile_model
+3 passed
+
+cargo test -p antelope-protocol profile_codec::tests::zen_go_sparse_safe_query_codec_preserves_frame_and_rejects_absent_pair
+1 passed
+
+python3 -m unittest tools.test_generate_device_catalog.GeneratorTests.test_explicit_sparse_queries_escape_empty_bounds_and_derived_queries_are_emitted tools.test_generate_device_catalog.GeneratorTests.test_fader_direction_is_normalized_for_generated_rust tools.test_generate_device_catalog.GeneratorTests.test_readback_layout_requires_level_and_state_offsets
+Ran 3 tests ... OK
+
+cargo test -p antelope-protocol
+57 unit tests, 69 profile-driver tests, 21 profile-pack tests, and 3 model tests passed; doc-test passed.
+
+cargo test -p zen-go-tui
+329 library tests passed, 40 binary tests passed, 2 ignored.
+
+git diff --check
+passed
+
+python3 -m unittest tools.test_generate_device_catalog
+Ran 96 tests in 1.103s
+FAILED (failures=1, errors=23)
+profile error: frame.routing_command.source_banks.0x02 contains a non-contiguous index range
+```
+
+Generator full-suite failure remains unrelated pre-existing Orion/source-bank prose parsing. Generated artifact drift comparison passed with process-local compatibility shim and canonical submodule `ede7bfd2bb1dfa9fb2252749be6742148a259096`.
+
+Fix-round concern: no new concerns beyond known Orion parser blocker.
