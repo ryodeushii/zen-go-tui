@@ -322,6 +322,56 @@ class GeneratorTests(unittest.TestCase):
                 )
             )
 
+    def test_readback_layout_offsets_and_surface_stride_fit_body_geometry(self) -> None:
+        def layout_profile(layout: dict[str, Any]) -> dict[str, Any]:
+            data = profile_data("Antelope Zen Go Synergy Core", "0xa015")
+            data["frame"]["readback"] = {
+                "request_magic": "0x74",
+                "subcmd": "0x10",
+                "response_magic": "0x75",
+                "response_discriminator_offset": 1,
+                "response_discriminator": 0,
+                "category_offset": 8,
+                "index_offset": 12,
+                "data_offset": 16,
+                "category_counts": {},
+                "safe_queries": [{"category": "0x04", "index": 0}],
+                "layouts": [layout],
+            }
+            return data
+
+        for field in ("level_offset", "state_offset"):
+            with self.subTest(field=field):
+                layout = {
+                    "category": "0x04",
+                    "index": 0,
+                    "kind": "mixer_state",
+                    "body_size": 34,
+                    "record_count": 16,
+                    "record_stride": 2,
+                    "level_offset": 2,
+                    "state_offset": 3,
+                    "status": "capture-confirmed",
+                }
+                layout[field] = 34
+                with self.assertRaisesRegex(generator.ProfileError, field):
+                    generator.normalize_profile(layout_profile(layout))
+
+        layout = {
+            "category": "0x04",
+            "index": 0,
+            "kind": "mixer_state",
+            "body_size": 64,
+            "record_count": 32,
+            "record_stride": 2,
+            "level_offset": 0,
+            "state_offset": 1,
+            "surface_stride": 33,
+            "status": "observed",
+        }
+        with self.assertRaisesRegex(generator.ProfileError, "surface_stride"):
+            generator.normalize_profile(layout_profile(layout))
+
     def test_cli_defaults_to_pinned_repository_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

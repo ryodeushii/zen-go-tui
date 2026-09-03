@@ -3999,9 +3999,20 @@ def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | N
                 "record_stride": record_stride,
             }
         )
-        for field in ("level_offset", "state_offset", "surface_stride"):
+        for field in ("level_offset", "state_offset"):
             if field in raw_layout:
-                normalized_layout[field] = _checked_u16(raw_layout[field], f"{context}.{field}")
+                offset = _checked_u16(raw_layout[field], f"{context}.{field}")
+                final_byte = (record_count - 1) * record_stride + offset + 1
+                if final_byte > body_size:
+                    raise ProfileError(f"{context}.{field} final record span exceeds body_size")
+                normalized_layout[field] = offset
+        if "surface_stride" in raw_layout:
+            surface_stride = _checked_u16(raw_layout["surface_stride"], f"{context}.surface_stride")
+            if surface_stride == 0:
+                raise ProfileError(f"{context}.surface_stride must be positive")
+            if surface_stride > record_count or surface_stride * record_stride > body_size:
+                raise ProfileError(f"{context}.surface_stride final span exceeds body_size")
+            normalized_layout["surface_stride"] = surface_stride
         if "surface" in raw_layout:
             normalized_layout["surface"] = _checked_u8(raw_layout["surface"], f"{context}.surface")
         if "supported_fields" in raw_layout:
