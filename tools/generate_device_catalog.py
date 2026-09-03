@@ -894,9 +894,9 @@ def _orion_has_confirmed_ambiguous_input_link(profile: NormalizedProfile) -> boo
     link_parameters = {"channel_link", "adat_channel_link"}
     topology = profile.raw.get("runtime_topology")
     if not isinstance(topology, Mapping):
-        return []
+        return False
     if _normalized_status(str(topology.get("status", ""))) != "confirmed":
-        return []
+        return False
     records = topology.get("input_spaces", [])
     for record in records:
         if not isinstance(record, Mapping) or record.get("space") not in {
