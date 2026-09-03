@@ -67,6 +67,21 @@ pub use profile::{
     PROFILE_PACK_SCHEMA_VERSION,
 };
 pub use query::{control_panel_startup_queries, DeviceMetadata, QueryRequest, QueryResponse};
+
+/// Encode one query using profile-declared sparse safety or bounded categories.
+///
+/// This narrow wrapper keeps profile query safety available to callers without
+/// exposing the generic profile codec implementation module.
+pub fn encode_profile_query(
+    profile: &RuntimeProfile,
+    query: QueryRequest,
+) -> Result<Vec<u8>, DriverError> {
+    let readback = profile.readback.as_ref().ok_or_else(|| {
+        DriverError::UnsupportedAction("profile has no readback safety data".into())
+    })?;
+    profile_codec::encode_query(profile, readback, query)
+}
+
 pub use types::{
     meter_db_ratio,
     meter_display_db,

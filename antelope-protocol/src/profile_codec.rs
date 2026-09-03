@@ -284,44 +284,6 @@ mod tests {
         );
         assert!(result.is_err(), "duplicate bit semantic must be rejected");
     }
-
-    #[test]
-    fn zen_go_sparse_safe_query_codec_preserves_frame_and_rejects_absent_pair() {
-        let profile = crate::load_profile_pack(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../src/device/generated_profiles.json"
-        )))
-        .expect("generated profile pack")
-        .profiles
-        .into_iter()
-        .find(|entry| entry.profile.identity.pid == 0xa015)
-        .expect("Zen Go profile")
-        .profile;
-        let readback = profile.readback.as_ref().expect("readback metadata");
-        let frame = super::encode_query(
-            &profile,
-            readback,
-            QueryRequest {
-                query_id: 0x04,
-                sub_id: 3,
-            },
-        )
-        .expect("explicitly safe query");
-        assert_eq!(&frame[0..8], &[0x74, 0, 0, 0, 0x10, 0, 0, 0]);
-        assert_eq!(frame[8], 0x04);
-        assert_eq!(frame[12], 3);
-        assert!(matches!(
-            super::encode_query(
-                &profile,
-                readback,
-                QueryRequest {
-                    query_id: 0x04,
-                    sub_id: 4,
-                },
-            ),
-            Err(DriverError::UnsupportedAction(_))
-        ));
-    }
 }
 
 pub(crate) fn allocate(

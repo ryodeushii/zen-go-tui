@@ -1,4 +1,4 @@
-use antelope_protocol::{QueryRequest, RuntimeProfile};
+use antelope_protocol::{encode_profile_query, QueryRequest, RuntimeProfile};
 
 mod test_support {
     use antelope_protocol::{load_profile_pack, RuntimeProfile};
@@ -73,4 +73,30 @@ fn zen_go_profile_exposes_candidate_preamp_meters_and_attenuation_fader() {
     assert_eq!(profile.candidate_preamp_meter(1), Some(0xcf));
     assert_eq!(profile.mixer_fader(0).expect("fader").unity, 0);
     assert_eq!(profile.mixer_fader(0).expect("fader").max, 90);
+}
+
+#[test]
+fn zen_go_profile_codec_encodes_explicit_q04_3_and_rejects_q04_4() {
+    let profile = zen_go_profile();
+    let readback = profile.readback.as_ref().expect("readback metadata");
+    assert!(readback.category_counts.is_empty());
+    let frame = encode_profile_query(
+        &profile,
+        QueryRequest {
+            query_id: 0x04,
+            sub_id: 3,
+        },
+    )
+    .expect("explicitly safe q04/3");
+    assert_eq!(&frame[0..8], &[0x74, 0, 0, 0, 0x10, 0, 0, 0]);
+    assert_eq!(frame[8], 0x04);
+    assert_eq!(frame[12], 3);
+    assert!(encode_profile_query(
+        &profile,
+        QueryRequest {
+            query_id: 0x04,
+            sub_id: 4,
+        },
+    )
+    .is_err());
 }

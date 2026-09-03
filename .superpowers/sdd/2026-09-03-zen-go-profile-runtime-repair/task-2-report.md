@@ -185,3 +185,27 @@ Review closure:
 - Added `profile_driver_encodes_q04_3_and_rejects_q04_4` integration test; codec unit test covers empty category counts and explicit q04/3 safety.
 
 Residual concern remains unchanged: full generator suite still has known Orion/source-bank prose parsing failure (1 failure, 23 errors). No parser scope expansion performed.
+
+## Fix round 2: Zen Go q04 integration coverage
+
+Reviewer P1 required q04/3 and q04/4 coverage to load Zen Go generated metadata rather than Orion fixture bounds. Applied approved ruling: expose narrow `encode_profile_query` wrapper around existing profile codec; do not alter `ProfileDriver` or Orion/source-bank parsing. Zen Go integration test asserts empty `category_counts`, encodes explicit safe pair q04/3, checks frame bytes, and rejects absent q04/4. Existing redundant Orion-only test and duplicate codec unit coverage removed. Ordered duplicate-containing 47-query startup sequence unchanged.
+
+Exact commands and outputs:
+
+```text
+cargo fmt --all
+cargo test -p antelope-protocol --test zen_go_profile_model zen_go_profile_codec_encodes_explicit_q04_3_and_rejects_q04_4
+running 1 test
+... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out
+
+cargo test -p antelope-protocol --test profile_driver query_bounds_and_layout_are_profile_driven
+running 1 test
+... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 68 filtered out
+
+git diff --check
+passed
+```
+
+Concern unchanged: full generator suite remains blocked by pre-existing Orion/source-bank prose parser issue (1 failure, 23 errors). Cargo emits pre-existing unused `offset` warning in `profile_codec.rs`; no behavior impact.
