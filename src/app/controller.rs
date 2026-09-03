@@ -2636,6 +2636,24 @@ mod correction_tests {
             .apply_intent(Intent::AdjustFocused(false), Rect::default())
             .expect("adjust fourth output");
         assert_eq!(controller.state.outputs()[3].level, Some(20));
+
+        controller
+            .apply_intent(
+                Intent::SetOutputLevel { index: 3, step: 0 },
+                Rect::default(),
+            )
+            .expect("clamp fourth output level to profile minimum");
+        assert_eq!(controller.state.outputs()[3].level, Some(10));
+        controller
+            .apply_intent(
+                Intent::SetOutputLevel {
+                    index: 3,
+                    step: u8::MAX,
+                },
+                Rect::default(),
+            )
+            .expect("clamp fourth output level to profile maximum");
+        assert_eq!(controller.state.outputs()[3].level, Some(20));
         let queued = controller.command_queue.len();
 
         controller
@@ -2650,14 +2668,25 @@ mod correction_tests {
 
         controller
             .apply_intent(
+                Intent::SetOutputLevel {
+                    index: usize::MAX,
+                    step: 15,
+                },
+                Rect::default(),
+            )
+            .expect("missing output set is a no-op");
+        controller
+            .apply_intent(
                 Intent::AdjustOutputLevel {
                     index: usize::MAX,
                     increase: true,
                 },
                 Rect::default(),
             )
-            .expect("missing output is a no-op");
+            .expect("missing output adjust is a no-op");
         assert_eq!(controller.state.output.selected, 3);
+        assert_eq!(controller.state.outputs()[3].level, Some(20));
+        assert_eq!(controller.command_queue.len(), queued);
         assert!(transport.take_writes().is_empty());
     }
 

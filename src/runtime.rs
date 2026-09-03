@@ -1101,31 +1101,48 @@ mod tests {
             &entry,
         )
         .expect("synthetic controller");
+        let area = ratatui::layout::Rect::new(0, 0, 120, 50);
 
         controller.state.ui.focus = FocusArea::Outputs;
-        controller.state.output.selected = 2;
-        move_selection(&mut controller, true, ratatui::layout::Rect::default());
+        assert_eq!(controller.state.output.selected, 0);
+        for _ in 0..3 {
+            handle_key_press(&mut controller, key(AppKeyCode::Right), area)
+                .expect("navigate output selection");
+        }
         assert_eq!(controller.state.output.selected, 3);
+        assert_eq!(controller.state.outputs()[3].name, "Output 4");
 
         controller.state.ui.focus = FocusArea::Preamp;
-        controller.state.preamp.selected_input = 2;
-        controller
+        assert_eq!(controller.state.preamp.selected_input, 0);
+        for _ in 0..2 {
+            handle_key_press(&mut controller, key(AppKeyCode::Right), area)
+                .expect("navigate preamp selection");
+        }
+        assert_eq!(controller.state.preamp.selected_input, 2);
+        let third_input_address = controller
             .state
             .inputs_for_space("physical_inputs")
             .get(2)
-            .expect("third physical input");
-        handle_key_press(
-            &mut controller,
-            key(AppKeyCode::Char('3')),
-            ratatui::layout::Rect::new(0, 0, 120, 50),
-        )
-        .expect("open third-input mode selector");
+            .expect("third physical input")
+            .address;
+
+        handle_key_press(&mut controller, key(AppKeyCode::Char('3')), area)
+            .expect("open third-input mode selector");
         assert_eq!(
             controller.state.popup.selector_popup,
             Some(SelectorPopupState {
                 kind: SelectorPopupKind::PreampMode { input: 2 }
             })
         );
+        let third_input = controller
+            .state
+            .inputs_for_space("physical_inputs")
+            .iter()
+            .find(|input| input.address == third_input_address)
+            .expect("addressed third physical input");
+        assert_eq!(third_input.address, third_input_address);
+        assert_eq!(third_input_address.space, 0);
+        assert_eq!(third_input_address.index, 2);
         assert!(transport.take_writes().is_empty());
     }
 }
