@@ -1025,9 +1025,62 @@ pub fn handle_mouse_event(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
+    use antelope_protocol::{
+        CommandBatch, DeviceDriver, DeviceEvent, DriverDefinition, DriverError, InputAddress,
+        QueryRequest,
+    };
     use zen_go_tui::terminal::AppModifiers;
     use zen_go_tui::transport::MockTransport;
+
+    struct RecordingDriver {
+        definition: DriverDefinition,
+        actions: Arc<Mutex<Vec<Action>>>,
+    }
+
+    impl RecordingDriver {
+        fn new() -> (Self, Arc<Mutex<Vec<Action>>>) {
+            let actions = Arc::new(Mutex::new(Vec::new()));
+            let definition = zen_go_tui::device::builtin_zen_go_driver()
+                .expect("Zen Go driver")
+                .definition()
+                .clone();
+            (
+                Self {
+                    definition,
+                    actions: actions.clone(),
+                },
+                actions,
+            )
+        }
+    }
+
+    impl DeviceDriver for RecordingDriver {
+        fn definition(&self) -> &DriverDefinition {
+            &self.definition
+        }
+
+        fn startup_requests(&self) -> &[QueryRequest] {
+            &[]
+        }
+
+        fn encode(&self, action: Action) -> std::result::Result<CommandBatch, DriverError> {
+            self.actions
+                .lock()
+                .expect("recording driver actions")
+                .push(action);
+            Ok(CommandBatch {
+                frames: vec![vec![0; 64]],
+                refresh_requests: Vec::new(),
+            })
+        }
+
+        fn decode(&self, _bytes: &[u8]) -> std::result::Result<Option<DeviceEvent>, DriverError> {
+            Ok(None)
+        }
+    }
 
     fn synthetic_entry() -> antelope_protocol::RuntimeEntry {
         let mut entry = zen_go_tui::device::ProfileCatalog::builtin()
@@ -1095,12 +1148,10 @@ mod tests {
     fn synthetic_profile_keyboard_reaches_third_input_and_fourth_output() {
         let entry = synthetic_entry();
         let transport = MockTransport::default();
-        let mut controller = Controller::new_for_entry(
-            Box::new(transport.clone()),
-            Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
-            &entry,
-        )
-        .expect("synthetic controller");
+        let (driver, actions) = RecordingDriver::new();
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+                .expect("synthetic controller");
         let area = ratatui::layout::Rect::new(0, 0, 120, 50);
 
         controller.state.ui.focus = FocusArea::Outputs;
@@ -1144,5 +1195,23 @@ mod tests {
         assert_eq!(third_input_address.space, 0);
         assert_eq!(third_input_address.index, 2);
         assert!(transport.take_writes().is_empty());
+
+        handle_key_press(&mut controller, key(AppKeyCode::Enter), area)
+            .expect("activate third-input mode selector");
+        assert!(transport.take_writes().is_empty());
+        let action = actions
+            .lock()
+            .expect("recording driver actions")
+            .last()
+            .cloned()
+            .expect("third-input mode action");
+        assert_eq!(
+            action,
+            Action::SetInput {
+                address: InputAddress { space: 0, index: 2 },
+                control: InputControl::Mode,
+                value: ControlValue::Enum(0),
+            }
+        );
     }
 }

@@ -242,7 +242,7 @@ mod tests {
         let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Preamp;
         controller.state.preamp.selected_input = 1;
-        controller.state.preamp.state.input2.mode = PreampMode::Line;
+        controller.state.input_spaces[0].inputs[1].mode = Some(i32::from(PreampMode::Line.code()));
 
         let action = handle_key_press(
             &mut controller,
@@ -267,8 +267,7 @@ mod tests {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Outputs;
-        controller.state.output.states[0] =
-            OutputState::new(OutputTarget::Monitor, 0x30, OutputMode::Normal);
+        controller.state.output.dynamic[0].level = Some(0x30);
 
         let action = handle_key_press(
             &mut controller,
@@ -290,8 +289,8 @@ mod tests {
         let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Preamp;
         controller.state.preamp.selected_input = 1;
-        controller.state.preamp.state.input2.mode = PreampMode::Mic;
-        controller.state.preamp.state.input2.gain_raw = 0x10;
+        controller.state.input_spaces[0].inputs[1].mode = Some(i32::from(PreampMode::Mic.code()));
+        controller.state.input_spaces[0].inputs[1].gain = Some(0x10);
 
         let action = handle_key_press(
             &mut controller,
@@ -575,8 +574,7 @@ mod tests {
     fn handle_mouse_event_scroll_up_on_output_slider_sends_adjustment() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        controller.state.output.states[0] =
-            OutputState::new(OutputTarget::Monitor, 0x30, OutputMode::Normal);
+        controller.state.output.dynamic[0].level = Some(0x30);
         let area = ratatui::layout::Rect::new(0, 0, 120, 50);
         let chunks = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Vertical)
