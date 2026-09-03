@@ -8,7 +8,8 @@ use tui_slider::{Slider, SliderOrientation};
 use crate::app::{AppState, FocusArea};
 use crate::terminal;
 use antelope_protocol::{
-    meter_display_db, DynamicMixerStrip, OutputMode, OutputState, PreampInputState, PreampMode,
+    meter_display_db, DynamicMixerStrip, FaderDirection, FaderSemantics, OutputMode, OutputState,
+    PreampInputState, PreampMode,
 };
 
 use super::super::layouts::*;
@@ -84,6 +85,48 @@ pub(crate) fn render_dynamic_output_card_widget(
     } else {
         Color::LightBlue
     };
+    if controls.row.height >= output_card_height() {
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(controls.row);
+        Paragraph::new(Line::from(vec![chip(&output.name, Color::Black, accent)]))
+            .render(rows[0], buffer);
+        if controls.level.is_some() {
+            render_labeled_slider(
+                rows[1],
+                buffer,
+                &format!("LVL {}", output.level.unwrap_or_default()),
+                output.level.map(|value| 1.0 - value as f64 / 96.0),
+                Color::LightGreen,
+                true,
+            );
+        }
+        let dim = output.dimmed == Some(true);
+        let mute = output.muted == Some(true);
+        let buttons = output_control_rects(controls.row);
+        if controls.dim.is_some() {
+            Paragraph::new(Line::from(chip(
+                "DIM",
+                Color::Black,
+                if dim { Color::Yellow } else { Color::Gray },
+            )))
+            .render(buttons[2], buffer);
+        }
+        if controls.mute.is_some() {
+            Paragraph::new(Line::from(chip(
+                "MUTE",
+                Color::Black,
+                if mute { Color::LightRed } else { Color::Gray },
+            )))
+            .render(buttons[3], buffer);
+        }
+        return;
+    }
     Paragraph::new(Line::from(chip(&output.name, Color::Black, accent))).render(
         Rect::new(
             controls.row.x,
@@ -513,14 +556,36 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
         )))
         .render(mixer_strip_rows(controls.card)[1], buffer);
     }
+    let semantics = state
+        .mixer_fader(address.surface)
+        .unwrap_or(FaderSemantics {
+            min: 0,
+            max: 90,
+            direction: FaderDirection::Direct,
+            unity: 0,
+        });
+    let rows = mixer_strip_rows(controls.card);
+    Paragraph::new(Line::from(Span::styled(
+        strip
+            .meter
+            .and_then(meter_display_db)
+            .map_or_else(|| "MTR ?".into(), |value| format!("MTR {value} dB")),
+        strong_style(Color::LightGreen),
+    )))
+    .alignment(Alignment::Center)
+    .render(rows[4], buffer);
+    render_vertical_combo_strip(
+        rows[5],
+        buffer,
+        strip.meter.and_then(meter_display_db),
+        strip.fader.map(|value| fader_ratio(value, semantics)),
+        None,
+    );
     if let Some(rect) = controls.fader {
-        let ratio = strip
-            .fader
-            .map(|value| 1.0 - (value as f64 / 90.0).clamp(0.0, 1.0));
         render_level_slider(
             rect,
             buffer,
-            ratio,
+            strip.fader.map(|value| fader_ratio(value, semantics)),
             if enabled(antelope_protocol::MixerControl::Fader) {
                 Color::Yellow
             } else {
@@ -528,12 +593,13 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
             },
         );
         Paragraph::new(Line::from(Span::styled(
-            strip
-                .fader
-                .map_or_else(|| "LVL ?".into(), |value| format!("LVL {value}")),
+            strip.fader.map_or_else(
+                || "LVL ?".into(),
+                |value| format!("LVL {} dB", fader_display_db(value, semantics)),
+            ),
             strong_style(Color::Yellow),
         )))
-        .render(mixer_strip_rows(controls.card)[6], buffer);
+        .render(rows[6], buffer);
     }
     if let Some(rect) = controls.send {
         Paragraph::new(Line::from(chip(

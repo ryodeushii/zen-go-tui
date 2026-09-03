@@ -3,7 +3,8 @@ use ratatui::widgets::{Block, Borders};
 
 use crate::app::{AppState, RawMapScope, RawPacketTab, MIXER_STRIP_PAGE_SIZE};
 use antelope_protocol::{
-    MixerAddress, MixerControl, OutputControl, RuntimeDriverKind, RuntimeInputControlKind,
+    FaderDirection, FaderSemantics, MixerAddress, MixerControl, OutputControl, RuntimeDriverKind,
+    RuntimeInputControlKind,
 };
 
 use super::styles::chip_width;
@@ -119,9 +120,6 @@ pub(crate) fn mixer_main_layout(area: Rect) -> [Rect; 2] {
 }
 
 pub(crate) fn mixer_main_layout_for_state(area: Rect, state: &AppState) -> [Rect; 2] {
-    if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
-        return mixer_main_layout(area);
-    }
     let input_rows = state
         .input_spaces
         .iter()
@@ -188,16 +186,13 @@ pub(crate) fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
 }
 
 pub(crate) fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize, usize) {
-    let visible = if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
-        mixer_strip_viewport_capacity_for_inner(area)
-    } else {
-        MIXER_STRIP_PAGE_SIZE.min(usize::from(area.width.max(1)))
-    };
+    let visible = MIXER_STRIP_PAGE_SIZE.min(usize::from(area.width.max(1)));
     let total = state
         .active_mixer_surface()
         .and_then(|index| state.mixers().get(index))
         .map_or(0, |surface| surface.strips.len());
-    let start = state.mixer.strip_scroll.min(total.saturating_sub(visible));
+    let profile_visible = visible_mixer_strips(state);
+    let start = profile_visible.start.min(total.saturating_sub(visible));
     let end = usize::min(start + visible, total);
     (start, end)
 }
@@ -235,7 +230,11 @@ pub(crate) fn dynamic_mixer_strip_card_area(
     slot: usize,
     visible: usize,
 ) -> Rect {
-    if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo || visible == 0 {
+    let total = state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))
+        .map_or(0, |surface| surface.strips.len());
+    if visible == 0 || total <= MIXER_STRIP_PAGE_SIZE * 2 {
         return mixer_strip_card_area(area, slot);
     }
     let visible = u16::try_from(visible).unwrap_or(u16::MAX).max(1);
@@ -274,7 +273,7 @@ pub(crate) fn centered_inline_chip_rects(area: Rect, labels: &[&str]) -> Vec<Rec
 
 pub(crate) fn mixer_header_chip_rects(area: Rect, source: &str) -> (Rect, Rect) {
     let inner = mixer_strip_inner_area(area);
-    let channel_rect = Rect::new(inner.x, inner.y, chip_width("CH 16").min(inner.width), 1);
+    let channel_rect = Rect::new(inner.x, inner.y, chip_width("CH 00").min(inner.width), 1);
     let source_width = chip_width(source).min(inner.width);
     let source_rect = Rect::new(
         inner.x + inner.width.saturating_sub(source_width),
@@ -878,6 +877,24 @@ pub(crate) fn dynamic_output_control_rects(
     index: usize,
 ) -> Option<DynamicOutputControlRects> {
     let output = state.outputs().get(index)?;
+    if row.height >= output_card_height() {
+        let buttons = output_control_rects(row);
+        return Some(DynamicOutputControlRects {
+            row,
+            level: state
+                .ui_profile
+                .declares_output(output.address, OutputControl::Level)
+                .then(|| output_level_slider_rect(row)),
+            dim: state
+                .ui_profile
+                .declares_output(output.address, OutputControl::Dim)
+                .then_some(buttons[2]),
+            mute: state
+                .ui_profile
+                .declares_output(output.address, OutputControl::Mute)
+                .then_some(buttons[3]),
+        });
+    }
     let mut x = row.x.saturating_add(row.width.min(20));
     let end = row.x.saturating_add(row.width);
     let mut take = |width: u16| {
@@ -928,6 +945,15 @@ pub(crate) fn dynamic_input_rows(area: Rect, state: &AppState) -> Vec<(usize, us
         } else {
             column_width
         };
+        if state.input_spaces.len() == 1 && space.inputs.len() <= 2 {
+            for (input_index, card) in preamp_bar_layout(area).into_iter().enumerate() {
+                if input_index >= space.inputs.len() {
+                    break;
+                }
+                rows.push((space_index, input_index, card));
+            }
+            continue;
+        }
         for input_index in 0..space
             .inputs
             .len()
@@ -959,6 +985,17 @@ pub(crate) fn dynamic_input_control_rects(
         .get(space_index)?
         .inputs
         .get(input_index)?;
+    if row.height >= 3 {
+        let buttons = preamp_button_rects(row, antelope_protocol::PreampInputState::from_raw(0, 0));
+        return Some(DynamicInputControlRects {
+            row,
+            gain: Some(preamp_gain_slider_rect(row)),
+            mode: Some(buttons[2]),
+            phantom: Some(buttons[3]),
+            phase: Some(buttons[4]),
+            link: None,
+        });
+    }
     let mut x = row.x.saturating_add(row.width.min(10));
     let end = row.x.saturating_add(row.width);
     let mut take = |width: u16| {
@@ -1330,8 +1367,55 @@ pub(crate) fn output_step_from_ratio(ratio: f64) -> u8 {
     ((1.0 - ratio.clamp(0.0, 1.0)) * 96.0).round() as u8
 }
 
-pub(crate) fn mixer_level_from_ratio(ratio: f64) -> u8 {
-    ((1.0 - ratio.clamp(0.0, 1.0)) * 90.0).round() as u8
+pub(crate) fn fader_ratio(value: i32, semantics: FaderSemantics) -> f64 {
+    let value = value.clamp(semantics.min, semantics.max);
+    let span = (semantics.max - semantics.min) as f64;
+    if span == 0.0 {
+        return 0.0;
+    }
+    let ratio = (value - semantics.min) as f64 / span;
+    match semantics.direction {
+        FaderDirection::Direct => ratio,
+        FaderDirection::Attenuation => 1.0 - ratio,
+    }
+}
+
+pub(crate) fn fader_display_db(value: i32, semantics: FaderSemantics) -> i16 {
+    let value = value.clamp(semantics.min, semantics.max);
+    let displayed = match semantics.direction {
+        FaderDirection::Direct => value,
+        FaderDirection::Attenuation => semantics.unity - value,
+    };
+    displayed.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+}
+
+pub(crate) fn mixer_level_from_ratio(ratio: f64, semantics: FaderSemantics) -> u8 {
+    let ratio = ratio.clamp(0.0, 1.0);
+    let value = match semantics.direction {
+        FaderDirection::Direct => {
+            semantics.min as f64 + ratio * (semantics.max - semantics.min) as f64
+        }
+        FaderDirection::Attenuation => {
+            semantics.max as f64 - ratio * (semantics.max - semantics.min) as f64
+        }
+    }
+    .round()
+    .clamp(0.0, f64::from(u8::MAX)) as u8;
+    value
+}
+
+pub(crate) fn visible_mixer_strips(state: &AppState) -> std::ops::Range<usize> {
+    let Some(surface) = state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))
+    else {
+        return 0..0;
+    };
+    let start = state.mixer.strip_scroll.min(surface.strips.len());
+    let end = start
+        .saturating_add(state.mixer.visible_strip_count.max(1))
+        .min(surface.strips.len());
+    start..end
 }
 
 pub(crate) fn pan_from_ratio(ratio: f64) -> antelope_protocol::PanState {

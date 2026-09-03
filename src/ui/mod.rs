@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod dynamic_profile_tests;
+#[cfg(test)]
 mod dynamic_tests;
 mod layouts;
 mod mouse;

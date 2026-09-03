@@ -323,6 +323,11 @@ impl AppState {
         &mut self.mixer.surfaces
     }
 
+    /// Return fader semantics declared by selected runtime profile for mixer surface.
+    pub(crate) fn mixer_fader(&self, surface: u8) -> Option<antelope_protocol::FaderSemantics> {
+        self.runtime_profile.as_ref()?.mixer_fader(surface)
+    }
+
     pub fn routing_group(&self, destination: u16) -> Option<&DynamicRoutingGroup> {
         self.routing
             .iter()
