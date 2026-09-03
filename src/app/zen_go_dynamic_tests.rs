@@ -1,6 +1,6 @@
 use antelope_protocol::{
-    load_profile_pack, DeviceEvent, DynamicDeviceState, DynamicInputState, DynamicMixerStrip,
-    DynamicMixerSurface, DynamicOutputState, DynamicStatePatch,
+    load_profile_pack, DeviceEvent, DeviceSnapshot, DynamicDeviceState, DynamicInputState,
+    DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicStatePatch, QueryResponse,
 };
 
 use super::AppState;
@@ -130,4 +130,73 @@ fn invalid_patch_address_is_rejected_without_mutation() {
     };
     assert!(!state.apply_dynamic_patch(DynamicStatePatch::Outputs(vec![invalid])));
     assert_eq!(state.outputs(), before);
+}
+
+#[test]
+fn legacy_readback_ignores_indexes_outside_profile_geometry() {
+    let mut state = AppState::from_profile(&test_support::zen_go_profile());
+    state.mixer.channels[0].truncate(1);
+    state.mixer.channels[1].truncate(1);
+    let body = vec![
+        0x06, 0x03, 0x00, 0x03, 0x01, 0x03, 0x02, 0x03, 0x03, 0x01, 0x02, 0x01, 0x03, 0x01, 0x04,
+        0x01, 0x05, 0x01, 0x06, 0x01, 0x07, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08, 0x00, 0x08,
+        0x00, 0x08, 0x00,
+    ];
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        state.observe_frame(
+            DeviceSnapshot::QueryReply(QueryResponse {
+                query_id: 0x03,
+                sub_id: 0x06,
+                body,
+            }),
+            vec![0x75; 320],
+        )
+    }));
+    assert!(result.is_ok());
+}
+
+#[test]
+fn q18_patch_preserves_omitted_surface_fields_and_applies_supported_fields() {
+    let mut state = AppState::from_profile(&test_support::zen_go_profile());
+    for (surface_index, surface) in state.mixers_mut().iter_mut().enumerate() {
+        let strip = &mut surface.strips[0];
+        strip.name = format!("Existing {surface_index}");
+        strip.fader = Some(0x21 + surface_index as i32);
+        strip.pan = Some(0x22 + surface_index as i32);
+        strip.muted = Some(true);
+        strip.meter = Some(0x23 + surface_index as u8);
+        strip.linked = Some(true);
+    }
+    let before = state.mixers().to_vec();
+    let mut q18 = before.clone();
+    for (surface_index, surface) in q18.iter_mut().enumerate() {
+        surface.name.clear();
+        for strip in &mut surface.strips {
+            strip.name.clear();
+            strip.fader = None;
+            strip.pan = None;
+            strip.send = None;
+            strip.muted = None;
+            strip.soloed = None;
+            strip.linked = None;
+            strip.meter = None;
+            strip.parameters.clear();
+        }
+        surface.strips[0].soloed = Some(surface_index == 0);
+        surface.strips[1].fader = Some(0x30 + surface_index as i32);
+    }
+
+    assert!(state.apply_dynamic_patch(DynamicStatePatch::Mixers(q18)));
+    for (surface_index, surface) in state.mixers().iter().enumerate() {
+        let existing = &before[surface_index].strips[0];
+        let merged = &surface.strips[0];
+        assert_eq!(merged.name, existing.name);
+        assert_eq!(merged.fader, existing.fader);
+        assert_eq!(merged.pan, existing.pan);
+        assert_eq!(merged.muted, existing.muted);
+        assert_eq!(merged.meter, existing.meter);
+        assert_eq!(merged.linked, existing.linked);
+        assert_eq!(merged.soloed, Some(surface_index == 0));
+        assert_eq!(surface.strips[1].fader, Some(0x30 + surface_index as i32));
+    }
 }

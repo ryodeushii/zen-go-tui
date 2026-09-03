@@ -1762,7 +1762,9 @@ impl AppState {
                     continue;
                 };
                 for channels in &mut self.mixer.channels {
-                    channels[index].assignment = Some(assignment);
+                    if let Some(slot) = channels.get_mut(index) {
+                        slot.assignment = Some(assignment);
+                    }
                 }
             }
         }
@@ -1773,7 +1775,12 @@ impl AppState {
                     let Some(linked) = linked else {
                         continue;
                     };
-                    let Some(slot) = self.mixer.channels[mixer.index()].get_mut(index) else {
+                    let Some(slot) = self
+                        .mixer
+                        .channels
+                        .get_mut(mixer.index())
+                        .and_then(|channels| channels.get_mut(index))
+                    else {
                         continue;
                     };
                     slot.linked = Some(linked);
@@ -1786,7 +1793,12 @@ impl AppState {
                 let Some(state) = state else {
                     continue;
                 };
-                let Some(slot) = self.mixer.channels[mixer.index()].get_mut(index) else {
+                let Some(slot) = self
+                    .mixer
+                    .channels
+                    .get_mut(mixer.index())
+                    .and_then(|channels| channels.get_mut(index))
+                else {
                     continue;
                 };
                 slot.level = Some(state.level);
@@ -1799,7 +1811,12 @@ impl AppState {
         if let Some(readback) = reply.mixer_strip_readback() {
             for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
                 for (index, state) in readback.surfaces[mixer.index()].into_iter().enumerate() {
-                    let Some(slot) = self.mixer.channels[mixer.index()].get_mut(index) else {
+                    let Some(slot) = self
+                        .mixer
+                        .channels
+                        .get_mut(mixer.index())
+                        .and_then(|channels| channels.get_mut(index))
+                    else {
                         continue;
                     };
                     slot.soloed = Some(state.soloed);
