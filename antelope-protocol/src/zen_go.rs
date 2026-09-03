@@ -9,23 +9,63 @@ use crate::driver::{
 use crate::encoder::{encode_command, encode_query, Command, EncodeResult};
 use crate::frame::Frame;
 use crate::mixer::{MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface};
-use crate::query::control_panel_startup_queries;
+use crate::profile::RuntimeProfile;
+use crate::query::QueryRequest;
 use crate::types::{ClockSource, DeviceStateSnapshot, PanState, PreampMode, SampleRate, Surface};
 
 #[derive(Debug, Clone)]
 pub struct ZenGoDriver {
     definition: DriverDefinition,
-}
-
-impl Default for ZenGoDriver {
-    fn default() -> Self {
-        Self::new()
-    }
+    profile: RuntimeProfile,
+    startup_requests: Vec<QueryRequest>,
 }
 
 impl ZenGoDriver {
-    pub fn new() -> Self {
-        Self {
+    pub fn new(profile: RuntimeProfile) -> Result<Self, DriverError> {
+        let physical_inputs = profile
+            .address_spaces
+            .iter()
+            .find(|space| space.kind == "physical_inputs")
+            .and_then(|space| space.count)
+            .unwrap_or_else(|| profile.inputs_in("physical_inputs") as u16);
+        let valid_mixers = profile.mixers.len() == 2
+            && profile
+                .mixers
+                .iter()
+                .all(|mixer| mixer.mix_index < 2 && mixer.strip_count == 16 && !mixer.has_master)
+            && profile
+                .mixers
+                .iter()
+                .map(|mixer| mixer.mix_index)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                == 2;
+        if (profile.identity.vid, profile.identity.pid) != (0x23e5, 0xa015) {
+            return Err(DriverError::InvalidAction(
+                "Zen Go driver requires identity 0x23e5:0xa015".into(),
+            ));
+        }
+        if physical_inputs != 2
+            || profile.inputs_in("physical_inputs") != 2
+            || profile.outputs.len() != 3
+            || !valid_mixers
+        {
+            return Err(DriverError::InvalidAction(
+                "Zen Go driver requires two physical inputs, three outputs, and two 16-strip mixer surfaces".into(),
+            ));
+        }
+        let readback = profile.readback.as_ref().ok_or_else(|| {
+            DriverError::InvalidAction("Zen Go driver requires profile readback metadata".into())
+        })?;
+        let startup_requests = readback
+            .safe_queries
+            .iter()
+            .map(|query| QueryRequest {
+                query_id: query.category,
+                sub_id: query.index,
+            })
+            .collect();
+        Ok(Self {
             definition: DriverDefinition {
                 id: "zen-go-synergy-core".into(),
                 name: "Antelope Zen Go Synergy Core".into(),
@@ -33,7 +73,28 @@ impl ZenGoDriver {
                 pid: 0xa015,
                 supported: true,
             },
+            profile,
+            startup_requests,
+        })
+    }
+
+    pub fn profile(&self) -> &RuntimeProfile {
+        &self.profile
+    }
+
+    fn validate_fader(&self, surface: u8, value: i32) -> Result<u8, DriverError> {
+        let semantics = self.profile.mixer_fader(surface).ok_or_else(|| {
+            DriverError::InvalidAction(format!(
+                "Zen Go mixer surface {surface} has no fader semantics"
+            ))
+        })?;
+        if !(semantics.min..=semantics.max).contains(&value) {
+            return Err(DriverError::InvalidAction(format!(
+                "Zen Go mixer fader {value} outside {}..={}",
+                semantics.min, semantics.max
+            )));
         }
+        Self::byte(value, "mixer fader")
     }
 
     fn encode_command_result(&self, result: EncodeResult) -> CommandBatch {
@@ -114,7 +175,10 @@ impl ZenGoDriver {
         Ok(assignment)
     }
 
-    fn state_from_snapshot(snapshot: DeviceStateSnapshot) -> DynamicDeviceState {
+    fn state_from_snapshot(
+        snapshot: DeviceStateSnapshot,
+        profile: &RuntimeProfile,
+    ) -> DynamicDeviceState {
         let compatibility_surfaces: Vec<_> = snapshot
             .mixer_decode
             .surfaces
@@ -141,30 +205,92 @@ impl ZenGoDriver {
                 (mixer, states)
             })
             .collect();
-        let mixers = compatibility_surfaces
+        let mixers = profile
+            .mixers
             .iter()
-            .map(|(mixer, strips)| DynamicMixerSurface {
-                surface: mixer.code(),
-                name: format!("Mix {}", mixer.index() + 1),
-                master: None,
-                strips: strips
-                    .iter()
-                    .map(|strip| DynamicMixerStrip {
-                        strip: u16::from(strip.channel),
-                        name: format!("CH {:02}", strip.channel),
-                        fader: strip.level.map(i32::from),
-                        pan: Some(i32::from(strip.pan.raw())),
-                        send: None,
-                        muted: strip.muted,
-                        soloed: strip.soloed,
-                        linked: strip.linked,
-                        meter: strip.meter,
-                        parameters: Vec::new(),
-                    })
-                    .collect(),
+            .map(|mixer| {
+                let passive = snapshot
+                    .mixer_decode
+                    .surfaces
+                    .get(usize::from(mixer.mix_index));
+                DynamicMixerSurface {
+                    // Capture-scoped readback patches intentionally carry no
+                    // official names; snapshots use profile-owned names.
+                    surface: mixer.mix_index,
+                    name: mixer.name.clone(),
+                    master: None,
+                    strips: (0..usize::from(mixer.strip_count))
+                        .map(|index| {
+                            let strip = passive.and_then(|surface| surface.get(index));
+                            DynamicMixerStrip {
+                                strip: (index + 1) as u16,
+                                name: format!("CH {:02}", index + 1),
+                                fader: None,
+                                pan: strip
+                                    .and_then(|state| state.pan.map(|pan| i32::from(pan.raw()))),
+                                send: None,
+                                muted: strip.and_then(|state| state.muted),
+                                soloed: None,
+                                linked: strip.and_then(|state| state.linked),
+                                meter: strip.and_then(|state| state.meter),
+                                parameters: Vec::new(),
+                            }
+                        })
+                        .collect(),
+                }
             })
             .collect();
         let preamps = [snapshot.preamp.input1, snapshot.preamp.input2];
+        let inputs = profile
+            .inputs
+            .iter()
+            .map(|input| {
+                let physical = input.space == "physical_inputs";
+                let legacy = physical
+                    .then(|| preamps.get(usize::from(input.index)))
+                    .flatten();
+                let meter = if physical && profile.candidate_preamp_meter(input.index).is_some() {
+                    match input.index {
+                        0 => snapshot.mixer_decode.observed_preamp1_meter,
+                        1 => snapshot.mixer_decode.observed_preamp2_meter,
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                DynamicInputState {
+                    address: InputAddress {
+                        space: input.space_id,
+                        index: input.index,
+                    },
+                    name: input.name.clone(),
+                    mode: legacy.map(|value| i32::from(value.mode.code())),
+                    gain: legacy.map(|value| i32::from(value.gain_raw)),
+                    phantom: legacy.map(|value| value.phantom_on),
+                    phase: legacy.map(|value| value.mode_raw & 0x40 != 0),
+                    meter,
+                    parameters: Vec::new(),
+                }
+            })
+            .collect();
+        let outputs = profile
+            .outputs
+            .iter()
+            .map(|declared| {
+                let output = snapshot
+                    .outputs
+                    .iter()
+                    .find(|output| u16::from(output.target.index()) == declared.id);
+                DynamicOutputState {
+                    address: OutputAddress { id: declared.id },
+                    name: declared.name.clone(),
+                    level: output.map(|value| i32::from(value.volume)),
+                    muted: output.map(|value| matches!(value.mode, crate::types::OutputMode::Mute)),
+                    dimmed: output.map(|value| matches!(value.mode, crate::types::OutputMode::Dim)),
+                    parameters: Vec::new(),
+                }
+            })
+            .collect();
         DynamicDeviceState {
             globals: vec![
                 DynamicGlobalState {
@@ -180,37 +306,8 @@ impl ZenGoDriver {
                     value: ControlValue::Enum(i32::from(snapshot.surface.code())),
                 },
             ],
-            inputs: preamps
-                .iter()
-                .enumerate()
-                .map(|(index, input)| DynamicInputState {
-                    address: InputAddress {
-                        space: 0,
-                        index: index as u16,
-                    },
-                    name: format!("Input {}", index + 1),
-                    mode: Some(i32::from(input.mode.code())),
-                    gain: Some(i32::from(input.gain_raw)),
-                    phantom: Some(input.phantom_on),
-                    phase: Some(input.mode_raw & 0x40 != 0),
-                    meter: input.observed_meter,
-                    parameters: Vec::new(),
-                })
-                .collect(),
-            outputs: snapshot
-                .outputs
-                .iter()
-                .map(|output| DynamicOutputState {
-                    address: OutputAddress {
-                        id: u16::from(output.target.index()),
-                    },
-                    name: format!("{:?}", output.target),
-                    level: Some(i32::from(output.volume)),
-                    muted: Some(matches!(output.mode, crate::types::OutputMode::Mute)),
-                    dimmed: Some(matches!(output.mode, crate::types::OutputMode::Dim)),
-                    parameters: Vec::new(),
-                })
-                .collect(),
+            inputs,
+            outputs,
             mixers,
             routing: Vec::new(),
             zen_go_compatibility: Some(Box::new(ZenGoCompatibilityState {
@@ -228,6 +325,96 @@ impl ZenGoDriver {
             })),
         }
     }
+
+    fn patch_for_query_reply(
+        &self,
+        query_id: u8,
+        sub_id: u8,
+        reply: &crate::query::QueryResponse,
+    ) -> Option<crate::driver::DynamicStatePatch> {
+        let query = QueryRequest { query_id, sub_id };
+        let layout = self.profile.readback.as_ref()?.layout_for(query)?;
+        if reply.body.len() < layout.body_size {
+            return None;
+        }
+        let is_q04 = query_id == 0x04;
+        let is_q18 = query_id == 0x18;
+        if !is_q04 && !is_q18 {
+            return None;
+        }
+        let (surface, records) = if is_q04 {
+            let surface = layout.surface?;
+            if self
+                .profile
+                .mixers
+                .iter()
+                .all(|mixer| mixer.mix_index != surface)
+            {
+                return None;
+            }
+            (surface, 0..layout.record_count)
+        } else {
+            // DynamicStatePatch carries one surface. q18's 32-record block is
+            // retained raw; expose first surface's declared fields here.
+            let stride = layout.surface_stride?;
+            if stride == 0 {
+                return None;
+            }
+            (0, 0..stride.min(layout.record_count))
+        };
+        let fader = self.profile.mixer_fader(surface);
+        let strips = records
+            .map(|index| {
+                let (level, state_code) = reply.readback_record(layout, index)?;
+                let pan = PanState::from_state_code(state_code);
+                Some(DynamicMixerStrip {
+                    strip: (index % layout.surface_stride.unwrap_or(layout.record_count) + 1)
+                        as u16,
+                    name: String::new(),
+                    fader: if is_q04 {
+                        fader.map(|semantics| i32::from(level).clamp(semantics.min, semantics.max))
+                    } else if layout.supported_fields.iter().any(|field| field == "fader") {
+                        Some(i32::from(level))
+                    } else {
+                        None
+                    },
+                    pan: if is_q04 || layout.supported_fields.iter().any(|field| field == "pan") {
+                        Some(i32::from(pan.raw()))
+                    } else {
+                        None
+                    },
+                    send: None,
+                    muted: if is_q04 || layout.supported_fields.iter().any(|field| field == "mute")
+                    {
+                        Some(PanState::state_code_is_muted(state_code))
+                    } else {
+                        None
+                    },
+                    soloed: if is_q04 || layout.supported_fields.iter().any(|field| field == "solo")
+                    {
+                        Some(PanState::state_code_is_soloed(state_code))
+                    } else {
+                        None
+                    },
+                    linked: None,
+                    meter: if layout.supported_fields.iter().any(|field| field == "meter") {
+                        Some(level)
+                    } else {
+                        None
+                    },
+                    parameters: Vec::new(),
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(crate::driver::DynamicStatePatch::Mixer(
+            DynamicMixerSurface {
+                surface,
+                name: String::new(),
+                master: None,
+                strips,
+            },
+        ))
+    }
 }
 
 impl DeviceDriver for ZenGoDriver {
@@ -235,7 +422,7 @@ impl DeviceDriver for ZenGoDriver {
         &self.definition
     }
     fn startup_requests(&self) -> &[crate::query::QueryRequest] {
-        control_panel_startup_queries()
+        &self.startup_requests
     }
 
     fn encode(&self, action: Action) -> Result<CommandBatch, DriverError> {
@@ -379,7 +566,7 @@ impl DeviceDriver for ZenGoDriver {
                 Command::SetMixerLevel {
                     mixer: Self::mixer(surface)?,
                     channel: strip as u8,
-                    level: Self::byte(fader, "mixer fader")?,
+                    level: self.validate_fader(surface, fader)?,
                     pan_state: PanState::from_raw(pan as u8),
                     muted,
                     soloed,
@@ -437,16 +624,19 @@ impl DeviceDriver for ZenGoDriver {
         let frame = Frame::parse_owned(bytes.to_vec())?;
         Ok(Some(match frame {
             Frame::Snapshot { snapshot, raw } => DeviceEvent::Snapshot {
-                state: Self::state_from_snapshot(snapshot),
+                state: Self::state_from_snapshot(snapshot, &self.profile),
                 raw: raw.to_vec(),
             },
-            Frame::QueryReply { reply, raw } => DeviceEvent::QueryReply {
-                query_id: reply.query_id,
-                sub_id: reply.sub_id,
-                body: reply.body,
-                patch: None,
-                raw: raw.to_vec(),
-            },
+            Frame::QueryReply { reply, raw } => {
+                let patch = self.patch_for_query_reply(reply.query_id, reply.sub_id, &reply);
+                DeviceEvent::QueryReply {
+                    query_id: reply.query_id,
+                    sub_id: reply.sub_id,
+                    body: reply.body,
+                    patch,
+                    raw: raw.to_vec(),
+                }
+            }
             Frame::Auxiliary { bytes, raw } => DeviceEvent::Auxiliary {
                 bytes: bytes.to_vec(),
                 raw: raw.to_vec(),

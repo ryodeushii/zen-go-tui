@@ -469,7 +469,7 @@ fn decode_preamp_meter(payload: &[u8], offset: usize) -> Option<u8> {
     payload
         .get(offset)
         .copied()
-        .filter(|raw| *raw != 0x00 && *raw <= 0x49)
+        .filter(|raw| *raw != 0x00 && (*raw <= 0x49 || *raw == 0x52))
 }
 
 fn decode_mute_from_group(

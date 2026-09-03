@@ -1606,7 +1606,7 @@ mod tests {
         DeviceEvent, DeviceSnapshot, DeviceStateSnapshot, DriverError, Frame, GlobalControl,
         InputAddress, InputControl, MixerAddress, MixerAssignment, MixerChannelState,
         MixerLinkTarget, MixerStrip, MixerSurface, OutputMode, OutputState, OutputTarget, PanState,
-        PreampMode, PreampState, QueryRequest, QueryResponse, SampleRate, Surface, ZenGoDriver,
+        PreampMode, PreampState, QueryRequest, QueryResponse, SampleRate, Surface,
     };
 
     use super::controller::MAX_FRAMES_PER_POLL;
@@ -1619,7 +1619,11 @@ mod tests {
     }
 
     fn zen_go_controller(transport: Box<dyn Transport>) -> Controller {
-        Controller::new(transport, Box::new(ZenGoDriver::new())).expect("Zen Go controller")
+        Controller::new(
+            transport,
+            Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller")
     }
 
     fn seed_complete_dynamic_mixer(

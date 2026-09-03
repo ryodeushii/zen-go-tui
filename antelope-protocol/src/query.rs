@@ -454,6 +454,24 @@ impl QueryResponse {
         self.body[..4].try_into().ok()
     }
 
+    /// Reads one record from a profile-declared capture-scoped readback layout.
+    ///
+    /// Returns the level and state bytes without assigning protocol meaning to
+    /// fields not declared by that layout.
+    pub fn readback_record(
+        &self,
+        layout: &crate::profile::MixerReadbackLayout,
+        index: usize,
+    ) -> Option<(u8, u8)> {
+        if self.body.len() < layout.body_size || index >= layout.record_count {
+            return None;
+        }
+        let base = index.checked_mul(layout.record_stride)?;
+        let level_offset = base.checked_add(layout.level_offset)?;
+        let state_offset = base.checked_add(layout.state_offset)?;
+        Some((*self.body.get(level_offset)?, *self.body.get(state_offset)?))
+    }
+
     /// Decodes full dual-surface mixer strip state from query 0x18/0x00.
     ///
     /// Returns level, pan, mute, and solo for all 32 strips (16 per surface).

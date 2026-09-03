@@ -103,7 +103,7 @@ mod tests {
     use crate::transport::MockTransport;
     use antelope_protocol::{
         Action, ClockSource, ControlValue, GlobalControl, InputAddress, InputControl, MixerAddress,
-        OutputAddress, OutputControl, RoutingSource, SampleRate, ZenGoDriver,
+        OutputAddress, OutputControl, RoutingSource, SampleRate,
     };
 
     fn mixer(fader: i32, strip: u16) -> Action {
@@ -125,7 +125,12 @@ mod tests {
         assert!(queue.enqueue(mixer(0x30, 2)));
         assert_eq!(queue.len(), 2);
         let transport = MockTransport::default();
-        queue.flush(&transport, &ZenGoDriver::new()).expect("flush");
+        queue
+            .flush(
+                &transport,
+                &crate::device::builtin_zen_go_driver().expect("Zen Go driver"),
+            )
+            .expect("flush");
         let writes = transport.take_writes();
         assert_eq!(
             &writes[0][0x10..0x16],
@@ -226,7 +231,12 @@ mod tests {
         let transport = MockTransport::default();
         let mut queue = CommandQueue::new();
         assert_eq!(
-            queue.flush(&transport, &ZenGoDriver::new()).expect("flush"),
+            queue
+                .flush(
+                    &transport,
+                    &crate::device::builtin_zen_go_driver().expect("Zen Go driver"),
+                )
+                .expect("flush"),
             0
         );
         assert!(queue.is_empty());

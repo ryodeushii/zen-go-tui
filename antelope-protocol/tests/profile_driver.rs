@@ -38,6 +38,20 @@ fn profile_driver_from_fixture() -> ProfileDriver {
     ProfileDriver::new(fixture_entry()).expect("profile driver")
 }
 
+fn zen_go_driver() -> ZenGoDriver {
+    let profile = load_profile_pack(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/device/generated_profiles.json"
+    )))
+    .expect("generated profile pack")
+    .profiles
+    .into_iter()
+    .find(|entry| entry.profile.identity.pid == 0xa015)
+    .expect("Zen Go profile")
+    .profile;
+    ZenGoDriver::new(profile).expect("Zen Go driver")
+}
+
 fn non_orion_fixture_entry() -> RuntimeEntry {
     let mut entry = fixture_entry();
     entry.id = "synthetic_other_profile".into();
@@ -1228,7 +1242,7 @@ fn globals_and_routing_group_validate_before_writing() {
 
 #[test]
 fn zen_go_normalized_actions_preserve_representative_bytes() {
-    let driver = ZenGoDriver::new();
+    let driver = zen_go_driver();
     let output = driver
         .encode(Action::SetOutput {
             address: OutputAddress { id: 0 },
@@ -1275,7 +1289,7 @@ fn zen_go_normalized_actions_preserve_representative_bytes() {
 
 #[test]
 fn zen_go_routing_group_preserves_complete_assignment_table_bytes() {
-    let driver = ZenGoDriver::new();
+    let driver = zen_go_driver();
     let mut sources = vec![
         RoutingSource {
             bank: 0x08,
@@ -2081,7 +2095,7 @@ fn inbound_readback_bounds_and_complete_patches_are_enforced() {
 
 #[test]
 fn zen_go_normalized_actions_equal_existing_full_frames() {
-    let driver = ZenGoDriver::new();
+    let driver = zen_go_driver();
     let output_action = Action::SetOutput {
         address: OutputAddress { id: 0 },
         control: OutputControl::Level,

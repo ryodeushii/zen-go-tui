@@ -15,10 +15,10 @@ use crate::app::{
 use antelope_protocol::{
     ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
     OutputState, OutputTarget, PanState, PreampInputState, PreampMode, SampleRate, Surface,
-    ZenGoDriver, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
-    OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
-    OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2,
-    OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
+    OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX1_MIRROR_A,
+    OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_SHARED_SHADOW_0,
+    OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2, OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E,
+    SNAPSHOT_PAYLOAD_OFFSET,
 };
 
 use crate::transport::MockTransport;
@@ -983,7 +983,7 @@ fn raw_content_layout_keeps_map_and_dump_visible_at_target_sizes() {
 fn raw_scroll_intent_moves_map_and_dump_by_one_page() {
     let mut controller = Controller::new(
         Box::new(MockTransport::default()),
-        Box::new(ZenGoDriver::new()),
+        Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
     )
     .expect("Zen Go controller");
     controller.state.popup.raw_view_open = true;

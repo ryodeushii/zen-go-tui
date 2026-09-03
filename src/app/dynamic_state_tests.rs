@@ -5,7 +5,7 @@ use antelope_protocol::{
     DynamicInputState, DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState,
     DynamicRoutingGroup, DynamicStatePatch, GlobalControl, InputAddress, MixerAddress,
     OutputAddress, OutputControl, ProfileDriver, RoutingSource, RuntimeDriverKind, RuntimeEntry,
-    RuntimeProfile, RuntimeReadiness, ZenGoDriver,
+    RuntimeProfile, RuntimeReadiness,
 };
 
 use ratatui::layout::Rect;
@@ -482,7 +482,7 @@ fn dynamic_state_complete_mixer_mutation_preserves_companions() {
 fn successful_output_actions_project_immediately_to_dynamic_and_compatibility_state() {
     let mut controller = Controller::new(
         Box::new(MockTransport::default()),
-        Box::new(ZenGoDriver::new()),
+        Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
     )
     .expect("Zen Go controller");
 

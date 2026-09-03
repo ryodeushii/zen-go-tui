@@ -31,9 +31,9 @@ pub use discovery::{
 pub use generated::DEVICE_CATALOG;
 pub use profile::{catalog_readiness, ProfileCatalog};
 pub use session::{
-    classify_runtime_candidates, replace_session, select_candidate, select_reconnect_candidate,
-    DevicePickerState, DeviceSelection, DeviceSession, PickerEntry, RuntimeDeviceState,
-    SelectionMatch,
+    builtin_zen_go_driver, classify_runtime_candidates, replace_session, select_candidate,
+    select_reconnect_candidate, DevicePickerState, DeviceSelection, DeviceSession, PickerEntry,
+    RuntimeDeviceState, SelectionMatch,
 };
 
 #[cfg(test)]

@@ -2421,7 +2421,7 @@ mod correction_tests {
     use antelope_protocol::{
         CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition, DriverError,
         DynamicOutputState, InputAddress, MixerAddress, MixerControl, OutputAddress, OutputControl,
-        QueryRequest, RuntimeDriverKind, ZenGoDriver,
+        QueryRequest, RuntimeDriverKind,
     };
 
     use super::*;
@@ -2434,7 +2434,10 @@ mod correction_tests {
     impl AcceptingDriver {
         fn new() -> Self {
             Self {
-                definition: ZenGoDriver::new().definition().clone(),
+                definition: crate::device::builtin_zen_go_driver()
+                    .expect("Zen Go driver")
+                    .definition()
+                    .clone(),
             }
         }
     }
@@ -2575,9 +2578,11 @@ mod correction_tests {
     #[test]
     fn profile_mixer_surface_selection_is_navigation_only() {
         let transport = MockTransport::default();
-        let mut controller =
-            Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
-                .expect("Zen Go controller");
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller");
         let target = controller.state.mixers()[1].surface;
 
         controller
@@ -2603,9 +2608,11 @@ mod correction_tests {
     #[test]
     fn assignment_picker_with_empty_mixer_geometry_is_safe_and_does_not_write() {
         let transport = MockTransport::default();
-        let mut controller =
-            Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
-                .expect("Zen Go controller");
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller");
         controller.state.mixer.surfaces.clear();
         controller.state.mixer.channels.clear();
 
@@ -2624,9 +2631,11 @@ mod correction_tests {
     #[test]
     fn saturated_queue_rejects_partial_mixer_without_state_mutation() {
         let transport = MockTransport::default();
-        let mut controller =
-            Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
-                .expect("Zen Go controller");
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller");
         for strip in 1..=64 {
             assert!(controller
                 .command_queue
@@ -2686,9 +2695,11 @@ mod correction_tests {
     #[test]
     fn full_command_queue_rejects_output_before_projection() {
         let transport = MockTransport::default();
-        let mut controller =
-            Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
-                .expect("Zen Go controller");
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller");
         for strip in 1..=64 {
             assert!(controller
                 .command_queue

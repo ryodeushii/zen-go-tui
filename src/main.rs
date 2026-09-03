@@ -34,7 +34,7 @@ mod tests {
 
     use antelope_protocol::{
         control_panel_startup_queries, ClockSource, MixerAssignment, MixerSurface, OutputMode,
-        OutputState, OutputTarget, PanState, PreampMode, SampleRate, Surface, ZenGoDriver,
+        OutputState, OutputTarget, PanState, PreampMode, SampleRate, Surface,
     };
     use zen_go_tui::app::{
         AssignmentPickerState, Controller, FocusArea, ProfileEditorMode, ProfileEditorState,
@@ -56,7 +56,11 @@ mod tests {
     use crate::timing::{device_poll_interval, should_draw_frame, should_probe_reconnect};
 
     fn test_controller(transport: Box<dyn Transport>) -> Controller {
-        Controller::new(transport, Box::new(ZenGoDriver::new())).expect("Zen Go controller")
+        Controller::new(
+            transport,
+            Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller")
     }
 
     fn seed_first_mixer_strip_state(

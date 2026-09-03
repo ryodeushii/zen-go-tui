@@ -452,7 +452,7 @@ impl DeviceSession {
             .clone();
         let controller = Controller::new_for_entry(
             Box::new(MockTransport::default()),
-            Box::new(ZenGoDriver::new()),
+            Box::new(ZenGoDriver::new(entry.profile().clone()).map_err(|error| anyhow!(error))?),
             &entry,
         )?;
         Ok(Self {
@@ -631,6 +631,14 @@ where
     open()
 }
 
+pub fn builtin_zen_go_driver() -> Result<ZenGoDriver> {
+    let catalog = ProfileCatalog::builtin();
+    let entry = catalog
+        .find(0x23e5, 0xa015)
+        .expect("built-in Zen Go profile");
+    ZenGoDriver::new(entry.profile().clone()).map_err(|error| anyhow!(error))
+}
+
 fn driver_for_entry(entry: &RuntimeEntry) -> Result<Box<dyn DeviceDriver>> {
     if entry.readiness != RuntimeReadiness::Supported {
         bail!(
@@ -640,7 +648,9 @@ fn driver_for_entry(entry: &RuntimeEntry) -> Result<Box<dyn DeviceDriver>> {
         );
     }
     match entry.driver_kind {
-        RuntimeDriverKind::ZenGo => Ok(Box::new(ZenGoDriver::new())),
+        RuntimeDriverKind::ZenGo => Ok(Box::new(
+            ZenGoDriver::new(entry.profile().clone()).map_err(|error| anyhow!(error))?,
+        )),
         RuntimeDriverKind::Profile => Ok(Box::new(
             ProfileDriver::new(entry.clone()).map_err(|error| anyhow!(error))?,
         )),

@@ -9,8 +9,6 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-#[cfg(test)]
-use antelope_protocol::ZenGoDriver;
 use antelope_protocol::{
     Action, ClockSource, ControlValue, GlobalControl, MixerAddress, MixerAssignment, PanState,
     PreampMode, SampleRate,
@@ -998,9 +996,11 @@ mod tests {
     fn empty_mixer_pan_keys_are_stable_no_ops() {
         for code in [AppKeyCode::Char('['), AppKeyCode::Char(']')] {
             let transport = MockTransport::default();
-            let mut controller =
-                Controller::new(Box::new(transport.clone()), Box::new(ZenGoDriver::new()))
-                    .expect("controller");
+            let mut controller = Controller::new(
+                Box::new(transport.clone()),
+                Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+            )
+            .expect("controller");
             controller.state.ui.focus = FocusArea::Mixer;
             controller.state.mixer.surfaces.clear();
             controller.state.mixer.channels.clear();
