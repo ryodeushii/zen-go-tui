@@ -142,3 +142,46 @@ profile error: frame.routing_command.source_banks.0x02 contains a non-contiguous
 Generator full-suite failure remains unrelated pre-existing Orion/source-bank prose parsing. Generated artifact drift comparison passed with process-local compatibility shim and canonical submodule `ede7bfd2bb1dfa9fb2252749be6742148a259096`.
 
 Fix-round concern: no new concerns beyond known Orion parser blocker.
+
+## Fix round 1 resumed: reviewer findings closure
+
+Commands and outputs:
+
+```text
+cargo test -p antelope-protocol --test profile_driver profile_driver_encodes_q04_3_and_rejects_q04_4
+running 1 test
+... ok
+test result: ok. 1 passed
+
+cargo test -p antelope-protocol --test zen_go_profile_model
+running 3 tests
+... ok
+test result: ok. 3 passed
+
+cargo test -p antelope-protocol profile_codec::tests::zen_go_sparse_safe_query_codec_preserves_frame_and_rejects_absent_pair
+running 1 test
+... ok
+test result: ok. 1 passed
+
+python3 -m unittest tools.test_generate_device_catalog.GeneratorTests.test_explicit_sparse_queries_escape_empty_bounds_and_derived_queries_are_emitted tools.test_generate_device_catalog.GeneratorTests.test_fader_direction_is_normalized_for_generated_rust tools.test_generate_device_catalog.GeneratorTests.test_readback_layout_requires_level_and_state_offsets
+Ran 3 tests ... OK
+
+cargo test -p antelope-protocol
+57 unit tests, 70 profile-driver integration tests, 21 profile-pack tests, 3 model tests, and doc-test passed.
+
+cargo test -p zen-go-tui
+329 library tests, 40 binary tests passed; 2 ignored.
+
+git diff --check
+passed
+```
+
+Review closure:
+
+- Explicit safe pairs accepted independently of contiguous category bounds; absent pairs remain rejected.
+- Derived safe queries always serialized into normalized readback records; valid layouts cannot silently produce empty runtime safety data.
+- `level_offset` and `state_offset` now required before rendering.
+- Fader direction normalized to exact `direct`/`attenuation` representation.
+- Added `profile_driver_encodes_q04_3_and_rejects_q04_4` integration test; codec unit test covers empty category counts and explicit q04/3 safety.
+
+Residual concern remains unchanged: full generator suite still has known Orion/source-bank prose parsing failure (1 failure, 23 errors). No parser scope expansion performed.

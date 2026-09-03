@@ -351,6 +351,22 @@ fn query_bounds_and_layout_are_profile_driven() {
 }
 
 #[test]
+fn profile_driver_encodes_q04_3_and_rejects_q04_4() {
+    let driver = profile_driver_from_fixture();
+    let frame = driver
+        .encode(Action::Query(QueryRequest::new(0x04, 3)))
+        .expect("q04/3 is safe")
+        .frames
+        .remove(0);
+    assert_eq!(&frame[0..8], &[0x74, 0, 0, 0, 0x10, 0, 0, 0]);
+    assert_eq!(frame[8], 0x04);
+    assert_eq!(frame[12], 3);
+    assert!(driver
+        .encode(Action::Query(QueryRequest::new(0x04, 4)))
+        .is_err());
+}
+
+#[test]
 fn profile_derived_startup_walk_is_exactly_113_bounded_requests() {
     let driver = profile_driver_from_fixture();
     let mut expected = Vec::new();
