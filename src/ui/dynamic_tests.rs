@@ -356,8 +356,23 @@ fn zen_go_geometry_and_names_remain_unchanged() {
         3
     );
     let text = render_to_string(&state);
-    for name in ["Monitor", "HP1", "HP2", "Preamp 1", "Preamp 2"] {
-        assert!(text.contains(name), "missing Zen Go label {name}");
+    for output in state.outputs() {
+        assert!(
+            text.contains(&output.name),
+            "missing profile output label {}",
+            output.name
+        );
+    }
+    for input in state
+        .input_spaces
+        .iter()
+        .flat_map(|space| space.inputs.iter())
+    {
+        assert!(
+            text.contains(&input.name),
+            "missing profile input label {}",
+            input.name
+        );
     }
 }
 
@@ -479,6 +494,13 @@ fn non_first_input_space_uses_stable_address_intent() {
     input.index = 0;
     input.name = "Second 1".into();
     entry.profile.inputs.push(input);
+    entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|param| param.name == "gain")
+        .expect("gain parameter")
+        .range = Some((0, 65));
     let state = AppState::from_entry(&entry);
     let address = InputAddress { space: 9, index: 0 };
     assert!(available_intents(&state).iter().any(|intent| matches!(
@@ -498,8 +520,8 @@ fn dynamic_mixer_uses_authoritative_strip_and_optional_capabilities() {
     };
     let text = render_to_string(&state);
     assert!(
-        text.contains("LVL 17"),
-        "dynamic fader must drive rendered value"
+        text.contains("LVL -17 dB"),
+        "dynamic fader must drive rendered attenuation value"
     );
     assert!(!text.contains("LVL 88"));
     let geometry = super::layouts::dynamic_mixer_control_rects_for_test(&state, address)

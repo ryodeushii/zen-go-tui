@@ -319,8 +319,14 @@ impl AppState {
         self.runtime_profile.as_ref()?.mixer_fader(surface)
     }
 
-    pub(crate) fn routing_assignment_available(&self) -> bool {
-        self.runtime_profile.is_none() || self.ui_profile.supports_any_routing()
+    pub(crate) fn routing_assignment_available(&self, surface: u8, strip: u16) -> bool {
+        self.runtime_profile.is_none() || self.ui_profile.supports_assignment(surface, strip)
+    }
+
+    pub(crate) fn legacy_routing_assignment_available(&self) -> bool {
+        self.runtime_profile.is_none()
+            || self.ui_profile.supports_any_routing()
+            || self.routing_group(0).is_none()
     }
 
     pub(crate) fn mixer_range(
@@ -338,7 +344,10 @@ impl AppState {
             antelope_protocol::MixerControl::Fader => self
                 .mixer_fader(surface)
                 .map(|fader| (fader.min, fader.max)),
-            antelope_protocol::MixerControl::Pan => mixer.pan_range,
+            antelope_protocol::MixerControl::Pan => mixer.pan_range.and_then(|(min, max)| {
+                let center = mixer.pan_center?;
+                Some((center.saturating_add(min), center.saturating_add(max)))
+            }),
             antelope_protocol::MixerControl::Send => mixer.send_range,
             _ => None,
         }
@@ -388,21 +397,24 @@ impl AppState {
             .params
             .iter()
             .find(|param| param.name == capability.parameter)?;
-        mode.and_then(|mode| {
-            let mode_name = match mode {
-                0 => "mic",
-                1 => "line",
-                2 => "hiz",
-                _ => return None,
-            };
-            parameter
-                .range_by_mode
-                .iter()
-                .find(|(name, _)| name == mode_name)
-                .map(|(_, range)| *range)
-        })
-        .or(parameter.range)
-        .or_else(|| parameter.range_by_mode.first().map(|(_, range)| *range))
+        match mode {
+            Some(mode) => {
+                let mode_name = match mode {
+                    0 => "mic",
+                    1 => "line",
+                    2 => "hiz",
+                    _ => return None,
+                };
+                parameter
+                    .range_by_mode
+                    .iter()
+                    .find(|(name, _)| name == mode_name)
+                    .map(|(_, range)| *range)
+            }
+            None => parameter
+                .range
+                .or_else(|| parameter.range_by_mode.first().map(|(_, range)| *range)),
+        }
     }
 
     pub fn routing_group(&self, destination: u16) -> Option<&DynamicRoutingGroup> {

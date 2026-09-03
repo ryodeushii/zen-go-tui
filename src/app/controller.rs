@@ -339,11 +339,11 @@ impl Controller {
             })
     }
 
-    fn shared_assignment_sources(&self) -> Result<Vec<RoutingSource>> {
+    fn shared_assignment_sources(&self, destination: u16) -> Result<Vec<RoutingSource>> {
         let channel_count = self
-            .routing_channel_count(0)
-            .ok_or_else(|| anyhow::anyhow!("routing destination 0 unavailable"))?;
-        if let Some(group) = self.state.routing_group(0) {
+            .routing_channel_count(destination)
+            .ok_or_else(|| anyhow::anyhow!("routing destination {destination} unavailable"))?;
+        if let Some(group) = self.state.routing_group(destination) {
             if group.sources.len() == channel_count {
                 return Ok(group.sources.clone());
             }
@@ -883,9 +883,16 @@ impl Controller {
             Intent::ToggleMixerSoloAt { address } => self.handle_toggle_mixer_solo_at(address)?,
             Intent::ToggleMixerLinkAt { address } => self.handle_toggle_mixer_link_at(address)?,
             Intent::OpenAssignmentPicker(strip) => self.handle_open_assignment_picker(strip)?,
+            Intent::OpenAssignmentPickerAt { address } => {
+                self.handle_open_assignment_picker_at(address, false)?
+            }
             Intent::PickAssignment { strip, assignment } => {
                 self.handle_pick_assignment(strip, assignment, pending)?
             }
+            Intent::PickAssignmentAt {
+                address,
+                assignment,
+            } => self.handle_pick_assignment_at(address, assignment, pending)?,
             Intent::CloseAssignmentPicker => self.handle_close_assignment_picker(),
             Intent::CloseSelectorPopup => self.handle_close_selector_popup(),
             Intent::SelectPreampInput(input) => self.handle_select_preamp_input(input),
@@ -1966,15 +1973,57 @@ impl Controller {
                 .ok_or_else(|| anyhow::anyhow!("mixer strip must be one-based"))?,
         );
         let (address, _) = self.mixer_strip_at_ui(strip_index)?;
-        if !self.state.routing_assignment_available() {
+        if !self.state.legacy_routing_assignment_available() {
             bail!("routing assignment control is unsupported");
         }
-        let surface_index = self
+        self.handle_open_assignment_picker_at(address, true)
+    }
+
+    fn handle_open_assignment_picker_at(
+        &mut self,
+        address: MixerAddress,
+        legacy: bool,
+    ) -> Result<()> {
+        let strip = u8::try_from(address.strip)
+            .map_err(|_| anyhow::anyhow!("mixer strip {} is out of range", address.strip))?;
+        let (surface_index, strip_index) = self
             .state
             .mixers()
             .iter()
-            .position(|surface| surface.surface == address.surface)
-            .ok_or_else(|| anyhow::anyhow!("mixer surface {} is unavailable", address.surface))?;
+            .enumerate()
+            .find(|(_, surface)| {
+                surface.surface == address.surface
+                    && surface
+                        .strips
+                        .iter()
+                        .any(|strip| strip.strip == address.strip)
+            })
+            .map(|(index, surface)| {
+                (
+                    index,
+                    surface
+                        .strips
+                        .iter()
+                        .position(|strip| strip.strip == address.strip)
+                        .expect("strip found above"),
+                )
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mixer address {}:{} is unavailable",
+                    address.surface,
+                    address.strip
+                )
+            })?;
+        if if legacy {
+            !self.state.legacy_routing_assignment_available()
+        } else {
+            !self
+                .state
+                .routing_assignment_available(address.surface, address.strip)
+        } {
+            bail!("routing assignment control is unsupported");
+        }
         let current_assignment = self
             .state
             .mixer
@@ -1999,6 +2048,7 @@ impl Controller {
             })
             .unwrap_or(0);
         self.state.popup.assignment_picker = Some(AssignmentPickerState { strip });
+        self.state.popup.assignment_picker_address = Some(address);
         self.state.ui.last_message = format!("Pick source assignment for CH {strip:02}");
         Ok(())
     }
@@ -2009,24 +2059,74 @@ impl Controller {
         assignment: MixerAssignment,
         pending: Option<PendingMutation>,
     ) -> Result<()> {
-        if !self.state.routing_assignment_available() {
+        if !self.state.legacy_routing_assignment_available() {
+            bail!("routing assignment control is unsupported");
+        }
+        let address = self
+            .state
+            .popup
+            .assignment_picker_address
+            .unwrap_or(MixerAddress {
+                surface: self
+                    .state
+                    .active_mixer_surface()
+                    .and_then(|index| self.state.mixers().get(index))
+                    .map_or(0, |surface| surface.surface),
+                strip: u16::from(strip),
+            });
+        self.handle_pick_assignment_for(address, assignment, pending, 0, true)
+    }
+
+    fn handle_pick_assignment_at(
+        &mut self,
+        address: MixerAddress,
+        assignment: MixerAssignment,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        self.handle_pick_assignment_for(
+            address,
+            assignment,
+            pending,
+            u16::from(address.surface),
+            false,
+        )
+    }
+
+    fn handle_pick_assignment_for(
+        &mut self,
+        address: MixerAddress,
+        assignment: MixerAssignment,
+        pending: Option<PendingMutation>,
+        destination: u16,
+        legacy: bool,
+    ) -> Result<()> {
+        let strip = u8::try_from(address.strip)
+            .map_err(|_| anyhow::anyhow!("routing strip {} is out of range", address.strip))?;
+        if if legacy {
+            !self.state.legacy_routing_assignment_available()
+        } else {
+            !self
+                .state
+                .routing_assignment_available(address.surface, address.strip)
+        } {
             bail!("routing assignment control is unsupported");
         }
         self.state.popup.assignment_picker = None;
+        self.state.popup.assignment_picker_address = None;
         self.state.popup.selected_index = 0;
         let changed_channel = u16::from(
             strip
                 .checked_sub(1)
                 .ok_or_else(|| anyhow::anyhow!("routing strip must be one-based"))?,
         );
-        let mut sources = self.shared_assignment_sources()?;
+        let mut sources = self.shared_assignment_sources(destination)?;
         let slot = sources
             .get_mut(usize::from(changed_channel))
             .ok_or_else(|| anyhow::anyhow!("invalid routing strip {strip}"))?;
         *slot = routing_source_from_assignment(assignment);
         self.send(
             Action::SetRoutingGroup {
-                destination: 0,
+                destination,
                 changed_channel: Some(changed_channel),
                 sources,
             },
@@ -2037,6 +2137,7 @@ impl Controller {
 
     fn handle_close_assignment_picker(&mut self) {
         self.state.popup.assignment_picker = None;
+        self.state.popup.assignment_picker_address = None;
         self.state.popup.selected_index = 0;
         self.state.ui.last_message = "Closed assignment picker".to_string();
     }

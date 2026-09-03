@@ -6,8 +6,8 @@ use crate::app::{
 };
 use crate::device::DevicePickerState;
 use antelope_protocol::{
-    ClockSource, GlobalControl, InputControl, MixerAssignment, MixerControl, OutputControl,
-    PreampMode, SampleRate,
+    ClockSource, GlobalControl, InputControl, MixerAddress, MixerAssignment, MixerControl,
+    OutputControl, PreampMode, SampleRate,
 };
 use antelope_protocol::{
     OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
@@ -82,7 +82,35 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
         Intent::OpenAssignmentPicker(strip) | Intent::PickAssignment { strip, .. } => {
             *strip > 0
                 && antelope_protocol::MixerStrip::assignment_write_is_grounded(*strip)
-                && state.ui_profile.supports_any_routing()
+                && state
+                    .active_mixer_surface()
+                    .and_then(|index| state.mixers().get(index))
+                    .and_then(|mixer| {
+                        mixer
+                            .strips
+                            .get(state.mixer.selected_channel)
+                            .map(|strip| (mixer.surface, strip.strip))
+                    })
+                    .is_some_and(|(surface, strip)| {
+                        state.routing_assignment_available(surface, strip)
+                    })
+        }
+        Intent::OpenAssignmentPickerAt { address } | Intent::PickAssignmentAt { address, .. } => {
+            address.strip > 0
+                && state
+                    .mixers()
+                    .iter()
+                    .find(|surface| surface.surface == address.surface)
+                    .is_some_and(|surface| {
+                        surface
+                            .strips
+                            .iter()
+                            .any(|strip| strip.strip == address.strip)
+                    })
+                && antelope_protocol::MixerStrip::assignment_write_is_grounded(
+                    u8::try_from(address.strip).unwrap_or(0),
+                )
+                && state.routing_assignment_available(address.surface, address.strip)
         }
         Intent::AdjustMixerLevelAt { address, .. } | Intent::SetMixerLevelAt { address, .. } => {
             state
@@ -197,7 +225,12 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
     }
 
     if let Some(picker) = state.popup.assignment_picker {
-        return assignment_picker_mouse_action(area, picker, point);
+        return assignment_picker_mouse_action(
+            area,
+            picker,
+            state.popup.assignment_picker_address,
+            point,
+        );
     }
 
     if state.popup.routing_open {
@@ -301,9 +334,12 @@ fn routing_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     if !contains_point(popup, point) {
         return Some(Intent::CloseRoutingPopup);
     }
-    if state.routing_assignment_available() {
+    if state.routing_capabilities.is_empty() && state.ui_profile.supports_any_routing() {
+        // Compatibility-only AFX layout for legacy state with no profile topology.
         afx_routing_mouse_action(popup, state, point)
     } else {
+        // Profile routing rows are summary-only; assignment editing lives on
+        // profile-addressed mixer source controls.
         None
     }
 }
@@ -561,6 +597,7 @@ pub(crate) fn raw_dump_wheel_action(
 fn assignment_picker_mouse_action(
     area: Rect,
     picker: AssignmentPickerState,
+    address: Option<MixerAddress>,
     point: (u16, u16),
 ) -> Option<Intent> {
     let popup = assignment_picker_area(area);
@@ -574,10 +611,18 @@ fn assignment_picker_mouse_action(
     }
     let index = point.1.saturating_sub(inner.y) as usize;
     let assignment = *MixerAssignment::grounded_choices().get(index)?;
-    Some(Intent::PickAssignment {
-        strip: picker.strip,
-        assignment,
-    })
+    address.map_or(
+        Some(Intent::PickAssignment {
+            strip: picker.strip,
+            assignment,
+        }),
+        |address| {
+            Some(Intent::PickAssignmentAt {
+                address,
+                assignment,
+            })
+        },
+    )
 }
 
 fn selector_popup_mouse_action(
@@ -791,9 +836,7 @@ fn dynamic_mixer_mouse_action(
                     .source
                     .is_some_and(|rect| contains_point(rect, point))
             {
-                return u8::try_from(address.strip)
-                    .ok()
-                    .map(Intent::OpenAssignmentPicker);
+                return Some(Intent::OpenAssignmentPickerAt { address });
             }
             return dynamic_mixer_control_action(
                 controls,
@@ -825,9 +868,7 @@ fn dynamic_mixer_mouse_action(
                 .source
                 .is_some_and(|rect| contains_point(rect, point))
         {
-            return u8::try_from(address.strip)
-                .ok()
-                .map(Intent::OpenAssignmentPicker);
+            return Some(Intent::OpenAssignmentPickerAt { address });
         }
         return dynamic_mixer_control_action(
             controls,
@@ -1211,10 +1252,20 @@ fn afx_routing_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
         let rects = afx_routing_row_rects(row_area, state, pair);
         let (left_index, right_index) = afx_routing_pair_channels(pair);
         if contains_point(rects[2], point) {
-            return Some(Intent::OpenAssignmentPicker((left_index + 1) as u8));
+            return Some(Intent::OpenAssignmentPickerAt {
+                address: MixerAddress {
+                    surface: state.active_mixer_surface()? as u8,
+                    strip: (left_index + 1) as u16,
+                },
+            });
         }
         if contains_point(rects[4], point) {
-            return Some(Intent::OpenAssignmentPicker((right_index + 1) as u8));
+            return Some(Intent::OpenAssignmentPickerAt {
+                address: MixerAddress {
+                    surface: state.active_mixer_surface()? as u8,
+                    strip: (right_index + 1) as u16,
+                },
+            });
         }
         if point.0 < rects[3].x {
             return Some(Intent::SelectMixerChannel(left_index));

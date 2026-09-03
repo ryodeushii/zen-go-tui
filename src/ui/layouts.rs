@@ -615,8 +615,7 @@ pub(crate) fn routing_popup_area(area: Rect) -> Rect {
 }
 
 pub(crate) fn dynamic_routing_popup_area(area: Rect, state: &AppState) -> Rect {
-    let compatibility_defaults =
-        state.routing_assignment_available() && state.routing_capabilities.is_empty();
+    let compatibility_defaults = state.routing_capabilities.is_empty();
     let width = if compatibility_defaults {
         area.width.clamp(44, 58)
     } else {
@@ -1110,7 +1109,7 @@ pub(crate) fn dynamic_mixer_control_rects(
             .find(|strip| strip.strip == address.strip)?;
     }
     let rows = mixer_strip_rows(card);
-    let source = address.strip != 0 && state.routing_assignment_available();
+    let source = state.routing_assignment_available(address.surface, address.strip);
     let fader = (state
         .ui_profile
         .declares_mixer(address.surface, MixerControl::Fader)
@@ -1450,6 +1449,20 @@ pub(crate) fn output_step_from_ratio(ratio: f64, range: (i32, i32)) -> u8 {
     let (min, max) = range;
     let value = max as f64 - ratio.clamp(0.0, 1.0) * (max - min) as f64;
     value.round().clamp(0.0, f64::from(u8::MAX)) as u8
+}
+
+pub(crate) fn output_ratio(value: i32, range: (i32, i32)) -> f64 {
+    let (min, max) = range;
+    let span = (max - min) as f64;
+    if span == 0.0 {
+        return 0.0;
+    }
+    (value.clamp(min, max) - min) as f64 / span
+}
+
+pub(crate) fn output_display_db(value: i32, range: (i32, i32)) -> i32 {
+    let (min, max) = range;
+    value.clamp(min, max) - max
 }
 
 pub(crate) fn fader_ratio(value: i32, semantics: FaderSemantics) -> f64 {

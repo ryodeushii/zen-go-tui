@@ -99,9 +99,17 @@ pub enum Intent {
     ToggleMixerMute(u8),
     ToggleMixerSolo(u8),
     ToggleMixerLink(u8),
+    /// Compatibility path for callers that already provide one-based strip numbers.
     OpenAssignmentPicker(u8),
+    OpenAssignmentPickerAt {
+        address: MixerAddress,
+    },
     PickAssignment {
         strip: u8,
+        assignment: MixerAssignment,
+    },
+    PickAssignmentAt {
+        address: MixerAddress,
         assignment: MixerAssignment,
     },
     AdjustMixerLevelAt {

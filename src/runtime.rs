@@ -542,18 +542,23 @@ pub fn handle_key_press(
         }
         AppKeyCode::Char('a') => {
             if controller.state.ui.focus == FocusArea::Mixer {
-                if let Some(strip) = controller
+                if let Some(address) = controller
                     .state
                     .active_mixer_surface()
                     .and_then(|index| controller.state.mixers().get(index))
                     .and_then(|surface| surface.strips.get(controller.state.mixer.selected_channel))
-                    .and_then(|strip| u8::try_from(strip.strip).ok())
+                    .map(|strip| MixerAddress {
+                        surface: controller
+                            .state
+                            .active_mixer_surface()
+                            .and_then(|index| controller.state.mixers().get(index))
+                            .map_or(0, |surface| surface.surface),
+                        strip: strip.strip,
+                    })
                 {
-                    if !antelope_protocol::MixerStrip::assignment_write_is_grounded(strip) {
-                        controller.state.ui.last_message =
-                            "Assignment picking is not grounded for the selected strip."
-                                .to_string();
-                    } else {
+                    // Keep keyboard assignment shortcut compatibility; mouse uses
+                    // profile-addressed OpenAssignmentPickerAt.
+                    if let Ok(strip) = u8::try_from(address.strip) {
                         controller.apply_intent(Intent::OpenAssignmentPicker(strip), area)?;
                     }
                 }
@@ -898,13 +903,17 @@ pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
             .get(controller.state.popup.selected_index)
             .copied()
         {
-            return controller.apply_intent(
+            let intent = controller.state.popup.assignment_picker_address.map_or(
                 ui::Intent::PickAssignment {
                     strip: picker.strip,
                     assignment,
                 },
-                ratatui::layout::Rect::new(0, 0, 160, 50),
+                |address| ui::Intent::PickAssignmentAt {
+                    address,
+                    assignment,
+                },
             );
+            return controller.apply_intent(intent, ratatui::layout::Rect::new(0, 0, 160, 50));
         }
     }
 

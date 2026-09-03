@@ -13,12 +13,12 @@ use crate::app::{
     SelectorPopupKind, SelectorPopupState,
 };
 use antelope_protocol::{
-    ClockSource, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface, OutputMode,
-    OutputState, OutputTarget, PanState, PreampInputState, PreampMode, SampleRate, Surface,
-    OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX1_MIRROR_A,
-    OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_SHARED_SHADOW_0,
-    OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2, OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E,
-    SNAPSHOT_PAYLOAD_OFFSET,
+    ClockSource, MixerAddress, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface,
+    OutputMode, OutputState, OutputTarget, PanState, PreampInputState, PreampMode, SampleRate,
+    Surface, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
+    OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
+    OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2,
+    OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
 };
 
 use crate::transport::MockTransport;
@@ -1267,7 +1267,12 @@ fn mouse_action_opens_assignment_picker_from_afx_routing_source_chip() {
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
-        Some(Intent::OpenAssignmentPicker(1))
+        Some(Intent::OpenAssignmentPickerAt {
+            address: MixerAddress {
+                surface: 0,
+                strip: 1,
+            },
+        })
     );
 }
 
@@ -1871,7 +1876,12 @@ fn mouse_action_opens_assignment_picker_from_src_button() {
 
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
-        Some(Intent::OpenAssignmentPicker(4))
+        Some(Intent::OpenAssignmentPickerAt {
+            address: MixerAddress {
+                surface: 0,
+                strip: 4,
+            },
+        })
     );
 }
 

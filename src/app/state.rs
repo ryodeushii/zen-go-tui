@@ -3,9 +3,10 @@ use std::time::{Duration, Instant};
 
 use antelope_protocol::{
     ClockSource, DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState,
-    GlobalControl, InputAddress, InputControl, MixerChannelState, MixerControl, OutputAddress,
-    OutputControl, OutputMode, OutputState, OutputTarget, PreampState, RuntimeDriverKind,
-    RuntimeEntry, RuntimeInputControlKind, RuntimeProfile, RuntimeReadiness, SampleRate, Surface,
+    GlobalControl, InputAddress, InputControl, MixerAddress, MixerChannelState, MixerControl,
+    OutputAddress, OutputControl, OutputMode, OutputState, OutputTarget, PreampState,
+    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeProfile, RuntimeReadiness,
+    SampleRate, Surface,
 };
 
 use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
@@ -176,6 +177,7 @@ pub struct UiProfileState {
     link_surfaces: HashSet<u8>,
     global_controls: HashSet<GlobalControl>,
     routing_destinations: HashSet<u16>,
+    routing_channel_counts: HashMap<u16, u16>,
 }
 
 impl UiProfileState {
@@ -302,6 +304,11 @@ impl UiProfileState {
             })
             .map(|group| group.destination)
             .collect();
+        let routing_channel_counts = profile
+            .routing_groups
+            .iter()
+            .map(|group| (group.destination, group.channel_count))
+            .collect();
 
         Self {
             id: entry.id.clone(),
@@ -317,6 +324,7 @@ impl UiProfileState {
             link_surfaces,
             global_controls,
             routing_destinations,
+            routing_channel_counts,
         }
     }
 
@@ -335,6 +343,7 @@ impl UiProfileState {
             link_surfaces: HashSet::new(),
             global_controls: HashSet::new(),
             routing_destinations: HashSet::new(),
+            routing_channel_counts: HashMap::new(),
         }
     }
 
@@ -397,6 +406,15 @@ impl UiProfileState {
     pub fn supports_any_routing(&self) -> bool {
         self.actionable && !self.routing_destinations.is_empty()
     }
+
+    pub fn supports_assignment(&self, surface: u8, strip: u16) -> bool {
+        self.actionable
+            && self.routing_destinations.contains(&u16::from(surface))
+            && self
+                .routing_channel_counts
+                .get(&u16::from(surface))
+                .is_some_and(|count| strip > 0 && strip <= *count)
+    }
 }
 
 impl Default for UiProfileState {
@@ -449,6 +467,7 @@ impl Default for UiProfileState {
                 .into_iter()
                 .collect(),
             routing_destinations: [0].into_iter().collect(),
+            routing_channel_counts: [(0, 16)].into_iter().collect(),
         }
     }
 }
@@ -471,6 +490,7 @@ pub struct PopupState {
     pub profiles_open: bool,
     pub raw_view_open: bool,
     pub assignment_picker: Option<AssignmentPickerState>,
+    pub assignment_picker_address: Option<MixerAddress>,
     pub selector_popup: Option<SelectorPopupState>,
     pub profile_names: Vec<String>,
     pub profile_editor: Option<ProfileEditorState>,

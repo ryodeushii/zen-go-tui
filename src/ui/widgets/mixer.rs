@@ -95,12 +95,16 @@ pub(crate) fn render_dynamic_output_card_widget(
             .split(controls.row);
         Paragraph::new(Line::from(vec![chip(&output.name, Color::Black, accent)]))
             .render(rows[0], buffer);
-        if controls.level.is_some() {
+        if let (Some(_), Some(range)) = (
+            controls.level,
+            state.output_range(antelope_protocol::OutputControl::Level),
+        ) {
+            let value = output.level.unwrap_or(range.0);
             render_labeled_slider(
                 rows[1],
                 buffer,
-                &format!("LVL {}", output.level.unwrap_or_default()),
-                output.level.map(|value| 1.0 - value as f64 / 96.0),
+                &format!("LVL {} dB", output_display_db(value, range)),
+                Some(output_ratio(value, range)),
                 Color::LightGreen,
                 true,
             );
@@ -139,9 +143,15 @@ pub(crate) fn render_dynamic_output_card_widget(
         let enabled = state
             .ui_profile
             .supports_output(output.address, antelope_protocol::OutputControl::Level);
-        let label = output
-            .level
-            .map_or_else(|| "LVL ?".into(), |value| format!("LVL {value}"));
+        let label = match (
+            output.level,
+            state.output_range(antelope_protocol::OutputControl::Level),
+        ) {
+            (Some(value), Some(range)) => {
+                format!("LVL {} dB", output_display_db(value, range))
+            }
+            _ => "LVL ?".into(),
+        };
         Paragraph::new(Line::from(chip(
             &label,
             Color::Black,
