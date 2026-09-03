@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "antelope-protocol",
-    "zen-go-slint",
     ".",
 ]
 resolver = "2"
