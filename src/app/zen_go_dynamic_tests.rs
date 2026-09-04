@@ -1,6 +1,7 @@
 use antelope_protocol::{
     load_profile_pack, DeviceEvent, DeviceSnapshot, DynamicDeviceState, DynamicInputState,
-    DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicStatePatch, QueryResponse,
+    DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicStatePatch, MixerAssignment,
+    QueryResponse,
 };
 
 use super::AppState;
@@ -8,14 +9,17 @@ use super::AppState;
 mod test_support {
     use super::*;
 
-    pub fn zen_go_profile() -> antelope_protocol::RuntimeProfile {
+    pub fn zen_go_entry() -> antelope_protocol::RuntimeEntry {
         let pack = load_profile_pack(include_bytes!("../device/generated_profiles.json"))
             .expect("generated profile pack");
         pack.profiles
             .into_iter()
             .find(|entry| entry.profile.identity.pid == 0xa015)
             .expect("Zen Go profile")
-            .profile
+    }
+
+    pub fn zen_go_profile() -> antelope_protocol::RuntimeProfile {
+        zen_go_entry().profile
     }
 
     pub fn q04_surface_patch(surface: u8, fader: i32) -> DynamicMixerSurface {
@@ -130,6 +134,52 @@ fn invalid_patch_address_is_rejected_without_mutation() {
     };
     assert!(!state.apply_dynamic_patch(DynamicStatePatch::Outputs(vec![invalid])));
     assert_eq!(state.outputs(), before);
+}
+
+#[test]
+fn active_query_event_updates_mixer_assignments() {
+    let mut state = AppState::from_profile(&test_support::zen_go_profile());
+    assert!(state.observe_event(DeviceEvent::QueryReply {
+        query_id: 0x03,
+        sub_id: 0x05,
+        body: vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x01, 0x01],
+        patch: None,
+        raw: vec![0x75; 320],
+    }));
+
+    assert_eq!(
+        state.mixer.channels[0][0].assignment,
+        Some(MixerAssignment::Preamp(1))
+    );
+    assert_eq!(
+        state.mixer.channels[1][1].assignment,
+        Some(MixerAssignment::Preamp(2))
+    );
+}
+
+#[test]
+fn active_query_event_updates_visible_mixer_links() {
+    let mut state = AppState::from_profile(&test_support::zen_go_profile());
+    let mut body = vec![0; 24];
+    body[0] = 1;
+    assert!(state.observe_event(DeviceEvent::QueryReply {
+        query_id: 0x0b,
+        sub_id: 0x03,
+        body,
+        patch: None,
+        raw: vec![0x75; 320],
+    }));
+
+    assert_eq!(state.mixer.channels[0][0].linked, Some(true));
+    assert_eq!(state.mixers()[0].strips[0].linked, Some(true));
+}
+
+#[test]
+fn zen_go_profile_exposes_mixer_assignment_controls() {
+    let state = AppState::from_entry(&test_support::zen_go_entry());
+
+    assert!(state.routing_assignment_available(0, 1));
+    assert!(state.routing_assignment_available(1, 16));
 }
 
 #[test]

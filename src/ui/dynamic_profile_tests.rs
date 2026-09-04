@@ -71,10 +71,10 @@ fn fader_helpers_preserve_profile_attenuation_direction() {
     let pan_range = state
         .mixer_range(0, antelope_protocol::MixerControl::Pan)
         .expect("profile pan range");
-    assert_eq!(pan_range, (2, 62));
-    assert_eq!(layouts::pan_from_ratio(0.0, pan_range).raw(), 2);
-    assert_eq!(layouts::pan_from_ratio(0.5, pan_range).raw(), 32);
-    assert_eq!(layouts::pan_from_ratio(1.0, pan_range).raw(), 62);
+    assert_eq!(pan_range, (-30, 30));
+    assert_eq!(layouts::pan_from_ratio(0.0, pan_range), -30);
+    assert_eq!(layouts::pan_from_ratio(0.5, pan_range), 0);
+    assert_eq!(layouts::pan_from_ratio(1.0, pan_range), 30);
 }
 
 #[test]
@@ -106,39 +106,48 @@ fn profile_vectors_render_second_mixer_surface_label() {
     let state = AppState::from_entry(&zen_go_entry());
     let text = render_text(&state);
     assert_eq!(state.mixers().len(), 2);
-    assert!(text.contains("Mix 2"));
+    assert!(text.contains("MIX 2 / HP2"));
 }
 
 #[test]
 fn output_render_and_mouse_use_profile_range() {
     let mut entry = synthetic_topology_entry();
-    entry
+    let parameter = entry
         .profile
         .params
         .iter_mut()
         .find(|param| param.name == "bus_level")
-        .expect("output level parameter")
-        .range = Some((0, 42));
+        .expect("output level parameter");
+    parameter.range = Some((0, 42));
+    parameter.direction = Some(FaderDirection::Attenuation);
+    parameter.unity = Some(0);
+    let semantics = FaderSemantics {
+        min: 0,
+        max: 42,
+        direction: FaderDirection::Attenuation,
+        unity: 0,
+    };
     let mut state = AppState::from_entry(&entry);
-    state.output.dynamic[3].level = Some(21);
+    state.output.dynamic[3].level = Some(10);
     let text = render_text(&state);
-    assert!(text.contains("LVL -21 dB"));
-    assert_eq!(layouts::output_ratio(0, (0, 42)), 0.0);
-    assert_eq!(layouts::output_ratio(42, (0, 42)), 1.0);
-    assert_eq!(layouts::output_step_from_ratio(0.0, (0, 42)), 0);
-    assert_eq!(layouts::output_step_from_ratio(1.0, (0, 42)), 42);
-    assert_eq!(layouts::output_ratio(21, (0, 42)), 0.5);
-    assert_eq!(layouts::output_step_from_ratio(0.5, (0, 42)), 21);
+    assert!(text.contains("LVL -10 dB"));
+    assert_eq!(layouts::output_ratio(0, semantics), 1.0);
+    assert_eq!(layouts::output_ratio(42, semantics), 0.0);
+    assert_eq!(layouts::output_step_from_ratio(0.0, semantics), 42);
+    assert_eq!(layouts::output_step_from_ratio(1.0, semantics), 0);
+    assert_eq!(layouts::output_ratio(21, semantics), 0.5);
+    assert_eq!(layouts::output_step_from_ratio(0.5, semantics), 21);
 }
 
 #[test]
-fn dynamic_strip_renders_profile_meter_and_attenuation_label() {
+fn dynamic_strip_renders_profile_meter_value_without_mtr_prefix() {
     let mut state = AppState::from_entry(&zen_go_entry());
     state.mixers_mut()[0].strips[0].fader = Some(18);
-    state.mixers_mut()[0].strips[0].meter = Some(0x52);
+    state.mixers_mut()[0].strips[0].meter = Some(21);
     let text = render_text(&state);
     assert!(text.contains("LVL -18 dB"));
-    assert!(text.contains("MTR"));
+    assert!(text.contains("-21 dB"));
+    assert!(!text.contains("MTR"));
 }
 
 #[test]
@@ -195,7 +204,7 @@ fn dynamic_mouse_rejects_out_of_profile_addresses() {
     )
     .expect("first mixer strip")
     .source
-    .is_none());
+    .is_some());
     assert!(mouse_action(area, &state, 159, 49).is_none());
 }
 

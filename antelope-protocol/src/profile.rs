@@ -1,6 +1,6 @@
 //! Owned, validated runtime profile packs.
 
-use crate::QueryRequest;
+use crate::{types::PanState, QueryRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -254,6 +254,43 @@ pub struct RuntimeMixer {
     pub metadata: String,
 }
 
+impl RuntimeMixer {
+    /// Convert a raw wire pan position to the profile's semantic value.
+    pub fn pan_value_from_raw(&self, pan: PanState) -> Option<i32> {
+        let (min, max) = self.pan_range?;
+        let center = self.pan_center?;
+        if min > max {
+            return None;
+        }
+        let raw_min = center.checked_add(min)?;
+        let raw_max = center.checked_add(max)?;
+        let raw = i32::from(pan.raw());
+        if raw_min < i32::from(PanState::MIN)
+            || raw_max > i32::from(PanState::MAX)
+            || raw_min > raw_max
+            || !(raw_min..=raw_max).contains(&raw)
+        {
+            return None;
+        }
+        let value = raw.checked_sub(center)?;
+        (min..=max).contains(&value).then_some(value)
+    }
+
+    /// Convert a semantic pan value to its raw wire position.
+    pub fn pan_raw_from_value(&self, value: i32) -> Option<PanState> {
+        let (min, max) = self.pan_range?;
+        let center = self.pan_center?;
+        if min > max || !((min..=max).contains(&value)) {
+            return None;
+        }
+        let raw = center.checked_add(value)?;
+        if !(i32::from(PanState::MIN)..=i32::from(PanState::MAX)).contains(&raw) {
+            return None;
+        }
+        Some(PanState::from_raw(u8::try_from(raw).ok()?))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeLinkDomainKind {
@@ -315,10 +352,116 @@ pub struct RuntimeParam {
     pub range: Option<(i32, i32)>,
     #[serde(default)]
     pub range_by_mode: Vec<(String, (i32, i32))>,
+    #[serde(default)]
+    pub direction: Option<FaderDirection>,
+    #[serde(default)]
+    pub unity: Option<i32>,
     pub values: Vec<(i32, String)>,
     pub frame: ParamReference,
     pub readback: ParamReference,
     pub metadata: String,
+}
+
+impl RuntimeParam {
+    pub fn scalar_semantics(&self) -> Option<FaderSemantics> {
+        let (min, max) = self.range?;
+        Some(FaderSemantics {
+            min,
+            max,
+            direction: self.direction?,
+            unity: self.unity?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod runtime_param_tests {
+    use super::{FaderDirection, FaderSemantics, ParamReference, RuntimeParam};
+
+    #[test]
+    fn runtime_param_scalar_semantics() {
+        let parameter = RuntimeParam {
+            name: "bus_level".into(),
+            id: Some(0x47),
+            value_type: "int".into(),
+            status: "confirmed".into(),
+            applies_to: "output".into(),
+            range: Some((0, 96)),
+            range_by_mode: Vec::new(),
+            direction: Some(FaderDirection::Attenuation),
+            unity: Some(0),
+            values: Vec::new(),
+            frame: ParamReference {
+                text: String::new(),
+                formula: String::new(),
+                offsets: Vec::new(),
+            },
+            readback: ParamReference {
+                text: String::new(),
+                formula: String::new(),
+                offsets: Vec::new(),
+            },
+            metadata: String::new(),
+        };
+
+        assert_eq!(
+            parameter.scalar_semantics(),
+            Some(FaderSemantics {
+                min: 0,
+                max: 96,
+                direction: FaderDirection::Attenuation,
+                unity: 0,
+            })
+        );
+    }
+}
+
+#[cfg(test)]
+mod runtime_mixer_tests {
+    use super::RuntimeMixer;
+    use crate::types::PanState;
+
+    fn mixer() -> RuntimeMixer {
+        RuntimeMixer {
+            id: "mix_1".into(),
+            name: "Mix 1".into(),
+            mix_index: 0,
+            strip_count: 16,
+            has_master: false,
+            fader_range: Some((0, 90)),
+            fader: None,
+            pan_range: Some((-30, 30)),
+            pan_center: Some(32),
+            send_range: None,
+            status: "confirmed".into(),
+            status_text: "confirmed".into(),
+            notes: String::new(),
+            metadata: String::new(),
+        }
+    }
+
+    #[test]
+    fn runtime_mixer_pan_conversion() {
+        let mixer = mixer();
+
+        assert_eq!(mixer.pan_value_from_raw(PanState::left()), Some(-30));
+        assert_eq!(mixer.pan_value_from_raw(PanState::center()), Some(0));
+        assert_eq!(mixer.pan_value_from_raw(PanState::right()), Some(30));
+        assert_eq!(mixer.pan_raw_from_value(-30), Some(PanState::left()));
+        assert_eq!(mixer.pan_raw_from_value(0), Some(PanState::center()));
+        assert_eq!(mixer.pan_raw_from_value(30), Some(PanState::right()));
+    }
+
+    #[test]
+    fn runtime_mixer_pan_conversion_rejects_out_of_domain_values() {
+        let mut mixer = mixer();
+        mixer.pan_range = Some((-29, 29));
+
+        assert_eq!(mixer.pan_value_from_raw(PanState::left()), None);
+        assert_eq!(mixer.pan_value_from_raw(PanState::right()), None);
+        assert_eq!(mixer.pan_raw_from_value(-30), None);
+        assert_eq!(mixer.pan_raw_from_value(30), None);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -619,11 +762,12 @@ impl RuntimeProfile {
             .map(|meter| meter.offset)
     }
 
+    pub fn mixer(&self, surface: u8) -> Option<&RuntimeMixer> {
+        self.mixers.iter().find(|mixer| mixer.mix_index == surface)
+    }
+
     pub fn mixer_fader(&self, surface: u8) -> Option<FaderSemantics> {
-        self.mixers
-            .iter()
-            .find(|mixer| mixer.mix_index == surface)
-            .and_then(|mixer| mixer.fader)
+        self.mixer(surface).and_then(|mixer| mixer.fader)
     }
 }
 

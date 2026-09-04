@@ -352,16 +352,21 @@ pub fn preamp_mode_raw(mode: PreampModeProfile, phantom_on: bool, phase_inverted
         | if phase_inverted { 0x40 } else { 0x00 }
 }
 
+/// Returns whether a character is allowed in a saved profile name.
+pub fn is_profile_name_character(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ' ')
+}
+
 fn validated_profile_stem(name: &str) -> Result<&str> {
-    let stem = name.strip_suffix(".toml").unwrap_or(name);
+    let name = name.trim();
+    let stem = name.strip_suffix(".toml").unwrap_or(name).trim();
     if stem.is_empty() {
         bail!("profile name cannot be empty")
     }
-    if !stem
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    {
-        bail!("profile name may only contain ASCII letters, digits, '-' and '_' characters")
+    if !stem.chars().all(is_profile_name_character) {
+        bail!(
+            "profile name may only contain ASCII letters, digits, spaces, '-', '_' and '.' characters"
+        )
     }
     Ok(stem)
 }
@@ -623,16 +628,37 @@ mod tests {
     }
 
     #[test]
+    fn profile_names_allow_safe_punctuation_and_spaces_with_trimmed_boundaries() {
+        assert_eq!(
+            validated_profile_stem("  Session 1_A-B.v2  ").expect("valid profile name"),
+            "Session 1_A-B.v2"
+        );
+        assert_eq!(
+            validated_profile_stem("  Session 1_A-B.v2.toml  ").expect("valid profile filename"),
+            "Session 1_A-B.v2"
+        );
+        assert!("Az09_-. ".chars().all(is_profile_name_character));
+
+        for invalid in ["bad/name", "bad\tname", "café"] {
+            assert!(
+                validated_profile_stem(invalid).is_err(),
+                "{invalid:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn profile_helpers_list_rename_and_delete_profiles() {
         let dir = temp_profile_dir();
         fs::create_dir_all(&dir).expect("create temp profile dir");
         fs::write(dir.join("b.toml"), "[outputs]\n").expect("write b");
         fs::write(dir.join("a.toml"), "[outputs]\n").expect("write a");
+        fs::write(dir.join("mix 1.v2.toml"), "[outputs]\n").expect("write spaced name");
         fs::write(dir.join("ignore.txt"), "x").expect("write ignore");
 
         assert_eq!(
             list_profile_names_in_dir(&dir).expect("list profiles"),
-            vec!["a".to_string(), "b".to_string()]
+            vec!["a".to_string(), "b".to_string(), "mix 1.v2".to_string()]
         );
 
         let renamed = rename_profile_at_paths(&dir.join("a.toml"), &dir.join("c.toml"))

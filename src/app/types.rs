@@ -126,7 +126,7 @@ pub enum Intent {
     },
     SetMixerPanAt {
         address: MixerAddress,
-        pan: PanState,
+        pan: i32,
     },
     SetMixerSendAt {
         address: MixerAddress,
@@ -297,9 +297,7 @@ impl Intent {
                 })
             }
             Intent::SetMixerPanAt { address, pan } => {
-                pending_mixer_change_at(state, *address, |strip| {
-                    strip.pan = Some(i32::from(pan.raw()));
-                })
+                pending_mixer_change_at(state, *address, |strip| strip.pan = Some(*pan))
             }
             Intent::SetMixerSendAt { address, send } => {
                 pending_mixer_change_at(state, *address, |strip| strip.send = Some(*send))

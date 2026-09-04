@@ -65,7 +65,7 @@ pub(crate) fn append_profile_editor_text(controller: &mut Controller, text: &str
     };
 
     for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+        if zen_go_tui::profile::is_profile_name_character(ch) {
             editor.value.push(ch);
         }
     }

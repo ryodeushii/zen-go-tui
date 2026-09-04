@@ -86,7 +86,7 @@ mod tests {
     fn seed_first_mixer_strip_state(
         controller: &mut Controller,
         fader: i32,
-        pan: PanState,
+        pan: i32,
         muted: bool,
         soloed: bool,
     ) {
@@ -95,7 +95,7 @@ mod tests {
             .get_mut(0)
             .expect("first mixer strip");
         strip.fader = Some(fader);
-        strip.pan = Some(i32::from(pan.raw()));
+        strip.pan = Some(pan);
         strip.muted = Some(muted);
         strip.soloed = Some(soloed);
     }
@@ -337,7 +337,7 @@ mod tests {
         let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.ui.focus = FocusArea::Mixer;
         controller.state.mixer.selected_channel = 0;
-        seed_first_mixer_strip_state(&mut controller, 0, PanState::center(), false, false);
+        seed_first_mixer_strip_state(&mut controller, 0, 0, false, false);
 
         let action = handle_key_press(
             &mut controller,
@@ -474,7 +474,7 @@ mod tests {
     fn mouse_mixer_level_action_sends_exact_level() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        seed_first_mixer_strip_state(&mut controller, 0, PanState::center(), false, false);
+        seed_first_mixer_strip_state(&mut controller, 0, 0, false, false);
 
         controller
             .apply_intent(
@@ -499,7 +499,7 @@ mod tests {
     fn mouse_mixer_pan_action_sends_exact_pan() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        seed_first_mixer_strip_state(&mut controller, 0, PanState::center(), false, false);
+        seed_first_mixer_strip_state(&mut controller, 0, 0, false, false);
 
         controller
             .apply_intent(
@@ -524,7 +524,7 @@ mod tests {
     fn mouse_adjust_mixer_level_action_sends_single_step_change() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        seed_first_mixer_strip_state(&mut controller, 0x20, PanState::center(), false, false);
+        seed_first_mixer_strip_state(&mut controller, 0x20, 0, false, false);
 
         controller
             .apply_intent(
@@ -549,7 +549,7 @@ mod tests {
     fn mouse_adjust_mixer_pan_action_sends_single_step_change() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        seed_first_mixer_strip_state(&mut controller, 0, PanState::center(), false, false);
+        seed_first_mixer_strip_state(&mut controller, 0, 0, false, false);
 
         controller
             .apply_intent(

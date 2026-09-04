@@ -3,9 +3,10 @@ use std::time::Instant;
 use antelope_protocol::{
     Action, ClockSource, ControlValue, DeviceEvent, DeviceSnapshot, DeviceStateSnapshot,
     DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMixerStrip,
-    DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup, DynamicStatePatch, GlobalControl,
-    MixerAddress, MixerChannelState, MixerPassiveStripState, MixerSurface, OutputMode, OutputState,
-    OutputTarget, PreampState, QueryResponse, RuntimeEntry, RuntimeProfile, SampleRate, Surface,
+    DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup, DynamicStatePatch,
+    FaderSemantics, GlobalControl, MixerAddress, MixerChannelState, MixerPassiveStripState,
+    MixerSurface, OutputMode, OutputState, OutputTarget, PreampState, QueryResponse, RuntimeEntry,
+    RuntimeProfile, SampleRate, Surface,
 };
 
 mod types;
@@ -93,6 +94,7 @@ impl AppState {
         let input_spaces: Vec<InputSpaceState> = profile
             .address_spaces
             .iter()
+            .filter(|space| space.kind != "outputs")
             .map(|space| {
                 let mut inputs: Vec<_> = profile
                     .inputs
@@ -117,6 +119,7 @@ impl AppState {
                     id: space.id.clone(),
                     space_id: space.space_id,
                     name: space.name.clone(),
+                    kind: space.kind.clone(),
                     inputs,
                 }
             })
@@ -285,7 +288,8 @@ impl AppState {
         state.level = strip.fader.and_then(|value| u8::try_from(value).ok());
         state.pan = strip
             .pan
-            .and_then(|value| u8::try_from(value).ok())
+            .and_then(|value| value.checked_add(i32::from(antelope_protocol::PanState::CENTER)))
+            .and_then(|raw| u8::try_from(raw).ok())
             .map(antelope_protocol::PanState::from_raw)
             .unwrap_or_default();
         state.muted = strip.muted;
@@ -353,10 +357,7 @@ impl AppState {
             antelope_protocol::MixerControl::Fader => self
                 .mixer_fader(surface)
                 .map(|fader| (fader.min, fader.max)),
-            antelope_protocol::MixerControl::Pan => mixer.pan_range.and_then(|(min, max)| {
-                let center = mixer.pan_center?;
-                Some((center.saturating_add(min), center.saturating_add(max)))
-            }),
+            antelope_protocol::MixerControl::Pan => mixer.pan_range,
             antelope_protocol::MixerControl::Send => mixer.send_range,
             _ => None,
         }
@@ -376,6 +377,22 @@ impl AppState {
             .iter()
             .find(|param| param.name == name)
             .and_then(|param| param.range)
+    }
+
+    pub(crate) fn output_semantics(
+        &self,
+        control: antelope_protocol::OutputControl,
+    ) -> Option<FaderSemantics> {
+        let name = match control {
+            antelope_protocol::OutputControl::Level => "bus_level",
+            _ => return None,
+        };
+        self.runtime_profile
+            .as_ref()?
+            .params
+            .iter()
+            .find(|param| param.name == name)?
+            .scalar_semantics()
     }
 
     pub(crate) fn input_range(
@@ -420,9 +437,7 @@ impl AppState {
                     .find(|(name, _)| name == mode_name)
                     .map(|(_, range)| *range)
             }
-            None => parameter
-                .range
-                .or_else(|| parameter.range_by_mode.first().map(|(_, range)| *range)),
+            None => parameter.range,
         }
     }
 
@@ -842,8 +857,7 @@ impl AppState {
     pub fn page_mixer_strip_viewport(&mut self, right: bool, page_size: usize) {
         let total = self.active_mixer_channels().len();
         let page_size = page_size.max(1);
-        let max_page_start =
-            total.saturating_sub(1).checked_div(page_size).unwrap_or(0) * page_size;
+        let max_page_start = total.saturating_sub(page_size);
 
         self.mixer.strip_scroll = if right {
             self.mixer
@@ -1684,9 +1698,8 @@ impl AppState {
                     control: GlobalControl::Surface,
                     value: ControlValue::Enum(value),
                 } => {
-                    if let Ok(index) = usize::try_from(*value) {
-                        self.mixer.surface_index =
-                            index.min(self.mixer.surfaces.len().saturating_sub(1));
+                    if let Ok(code) = u8::try_from(*value) {
+                        self.mixer.surface = Surface::from_code(code);
                     }
                 }
                 _ => {}
@@ -1729,6 +1742,7 @@ impl AppState {
                     sub_id,
                     body,
                 };
+                self.apply_query_reply_readback(&reply);
                 self.store_startup_query_summary(&reply);
                 self.push_query_reply_log(&reply, raw);
                 !was_connected || true
@@ -1887,6 +1901,14 @@ impl AppState {
                         continue;
                     };
                     slot.linked = Some(linked);
+                    if let Some(strip) = self
+                        .mixer
+                        .surfaces
+                        .get_mut(mixer.index())
+                        .and_then(|surface| surface.strips.get_mut(index))
+                    {
+                        strip.linked = Some(linked);
+                    }
                 }
             }
         }
@@ -2115,7 +2137,7 @@ mod tests {
                 .find(|strip| strip.strip == u16::from(channel))
                 .expect("dynamic mixer strip");
             strip.fader = Some(i32::from(legacy.level.unwrap_or(0)));
-            strip.pan = Some(i32::from(legacy.pan.raw()));
+            strip.pan = Some(i32::from(legacy.pan.display_percent()));
             strip.muted = Some(legacy.muted.unwrap_or(false));
             strip.soloed = Some(legacy.soloed.unwrap_or(false));
             strip.linked = legacy.linked;
@@ -3183,7 +3205,7 @@ mod tests {
                         strip: 3,
                     },
                     fader: 0x2c,
-                    pan: i32::from((antelope_protocol::PanState::left()).raw()),
+                    pan: -30,
                     muted: false,
                     soloed: false,
                     send: None,
@@ -3773,7 +3795,7 @@ mod tests {
                         strip: 4,
                     },
                     fader: 0,
-                    pan: i32::from((PanState::from_raw(0x08)).raw()),
+                    pan: -24,
                     muted: false,
                     soloed: false,
                     send: None,
@@ -3795,7 +3817,7 @@ mod tests {
                         strip: 4,
                     },
                     fader: 0,
-                    pan: i32::from((PanState::from_raw(0x36)).raw()),
+                    pan: 22,
                     muted: false,
                     soloed: false,
                     send: None,
@@ -3836,7 +3858,7 @@ mod tests {
                         strip: 7,
                     },
                     fader: 0,
-                    pan: i32::from((antelope_protocol::PanState::center()).raw()),
+                    pan: 0,
                     muted: true,
                     soloed: false,
                     send: None,
@@ -3868,7 +3890,7 @@ mod tests {
                         strip: 7,
                     },
                     fader: 0,
-                    pan: i32::from((antelope_protocol::PanState::center()).raw()),
+                    pan: 0,
                     muted: false,
                     soloed: false,
                     send: None,
@@ -3906,7 +3928,7 @@ mod tests {
                         strip: 3,
                     },
                     fader: 0x2c,
-                    pan: i32::from((antelope_protocol::PanState::center()).raw()),
+                    pan: 0,
                     muted: false,
                     soloed: false,
                     send: None,
@@ -3930,7 +3952,7 @@ mod tests {
                         strip: 3,
                     },
                     fader: 0x10,
-                    pan: i32::from((antelope_protocol::PanState::center()).raw()),
+                    pan: 0,
                     muted: false,
                     soloed: false,
                     send: None,
@@ -3972,7 +3994,7 @@ mod tests {
                         strip: u16::from(channel),
                     },
                     fader: 0x1f,
-                    pan: i32::from(antelope_protocol::PanState::center().raw()),
+                    pan: 0,
                     muted: false,
                     soloed: false,
                     send: None,
@@ -4504,6 +4526,13 @@ mod tests {
 
         state.page_mixer_strip_viewport(true, page);
         assert_eq!(state.mixer.strip_scroll, 8);
+
+        state.page_mixer_strip_viewport(false, page);
+        assert_eq!(state.mixer.strip_scroll, 0);
+
+        let page = 10;
+        state.page_mixer_strip_viewport(true, page);
+        assert_eq!(state.mixer.strip_scroll, 6);
 
         state.page_mixer_strip_viewport(false, page);
         assert_eq!(state.mixer.strip_scroll, 0);

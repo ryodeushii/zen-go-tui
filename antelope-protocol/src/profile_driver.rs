@@ -13,6 +13,7 @@ use crate::profile::{
     RuntimeReadiness,
 };
 use crate::profile_codec;
+use crate::types::PanState;
 use crate::QueryRequest;
 
 #[derive(Debug)]
@@ -72,7 +73,11 @@ impl ProfileDriver {
                     frame.id
                 )));
             }
-            profile_codec::validate_operations(frame, report_size)?;
+            // Observation-only decoder frames may contain alternative wire maps
+            // for one byte. They are not used by this command driver.
+            if profile_codec::is_confirmed(&frame.status) || frame.kind != "decoder" {
+                profile_codec::validate_operations(frame, report_size)?;
+            }
             if frame.report_size.map(usize::from).unwrap_or(report_size) != report_size {
                 return Err(DriverError::InvalidAction(format!(
                     "frame {} report geometry differs from transport",
@@ -963,9 +968,18 @@ impl ProfileDriver {
         profile_codec::write_scalar(frame, &mut bytes, channel_field, i32::from(address.strip))?;
         profile_codec::write_scalar(frame, &mut bytes, "fader", fader)?;
         if profile_codec::scalar_offset(frame, "pan_flags").is_ok() {
-            // Canonical pan parameter is signed degrees; wire low six bits
-            // encode degrees with center at 0x20.
-            let pan_flags = (pan + 32) | (i32::from(muted) << 6) | (i32::from(soloed) << 7);
+            let pan = self
+                .profile
+                .mixer(address.surface)
+                .and_then(|mixer| mixer.pan_raw_from_value(pan))
+                .ok_or_else(|| {
+                    DriverError::InvalidAction(format!(
+                        "mixer surface {} pan value {} outside profile domain",
+                        address.surface, pan
+                    ))
+                })?;
+            let pan_flags =
+                i32::from(pan.raw()) | (i32::from(muted) << 6) | (i32::from(soloed) << 7);
             profile_codec::write_scalar(frame, &mut bytes, "pan_flags", pan_flags)?;
         } else {
             profile_codec::write_bit_field(frame, &mut bytes, "pan", pan)?;
@@ -1607,6 +1621,8 @@ impl ProfileDriver {
         let has_typed_layout = readback_frame.operations.iter().any(|operation| {
             matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == "mixer_slot")
         });
+        let mix_command = self.frame("mix_command")?;
+        let has_pan_flags = profile_codec::scalar_offset(mix_command, "pan_flags").is_ok();
         let (base, stride, width, max) = self.indexed_layout(readback_frame, "mixer_slot")?;
         let required_slots = usize::from(mixer.strip_count) + 1;
         let has_send = self.parameter("mixers", "mix_send").is_ok();
@@ -1631,6 +1647,11 @@ impl ProfileDriver {
                     self.mixer_readback_category
                 ))
             })?;
+            let pan = if has_pan_flags {
+                mixer.pan_value_from_raw(PanState::from_raw(record[1] & 0x3f))
+            } else {
+                Some(self.bit_value("pan", record[1])?)
+            };
             decoded.push(DynamicMixerStrip {
                 strip: slot as u16,
                 name: if slot == 0 {
@@ -1639,24 +1660,14 @@ impl ProfileDriver {
                     format!("CH {slot:02}")
                 },
                 fader: Some(i32::from(record[0])),
-                pan: if profile_codec::scalar_offset(self.frame("mix_command")?, "pan_flags")
-                    .is_ok()
-                {
-                    Some(i32::from(record[1] & 0x3f) - 32)
-                } else {
-                    Some(self.bit_value("pan", record[1])?)
-                },
+                pan,
                 send: has_send.then(|| i32::from(record[2])),
-                muted: if profile_codec::scalar_offset(self.frame("mix_command")?, "pan_flags")
-                    .is_ok()
-                {
+                muted: if has_pan_flags {
                     Some(record[1] & 0x40 != 0)
                 } else {
                     Some(self.bit_value("mute", record[1])? != 0)
                 },
-                soloed: if profile_codec::scalar_offset(self.frame("mix_command")?, "pan_flags")
-                    .is_ok()
-                {
+                soloed: if has_pan_flags {
                     Some(record[1] & 0x80 != 0)
                 } else {
                     Some(self.bit_value("solo", record[1])? != 0)

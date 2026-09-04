@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 
 use antelope_protocol::{
-    InputAddress, InputControl, MixerAddress, MixerControl, OutputControl, RuntimeDriverKind,
-    RuntimeEntry, RuntimeInputControlKind, RuntimeReadiness,
+    InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl, OutputControl,
+    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeReadiness,
 };
 use ratatui::{
     backend::TestBackend,
     layout::Rect,
+    style::Color,
     widgets::{Block, Borders},
     Terminal,
 };
@@ -35,7 +36,7 @@ fn orion_ui_state() -> AppState {
 }
 
 fn discrete_4_ui_state() -> AppState {
-    AppState::from_entry(&entry("discrete_4_synergy_core"))
+    AppState::from_entry(&entry("discrete_4"))
 }
 
 fn zen_go_ui_state() -> AppState {
@@ -89,7 +90,7 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
 fn selected_device_title_uses_runtime_profile_name() {
     let state = orion_ui_state();
     let title = super::render::render_device_header(&state).to_string();
-    assert!(title.contains("Antelope Orion Studio III"));
+    assert!(title.contains("Antelope Orion Studio Synergy Core"));
 }
 
 #[test]
@@ -192,7 +193,7 @@ fn render_to_string(state: &AppState) -> String {
 #[test]
 fn orion_header_includes_device_name_and_supported_readiness() {
     let text = render_orion_screen();
-    assert!(text.contains("Antelope Orion Studio III"));
+    assert!(text.contains("Antelope Orion Studio Synergy Core"));
     assert!(text.to_lowercase().contains("supported"));
     assert!(!text.to_lowercase().contains("disabled"));
 }
@@ -293,8 +294,8 @@ fn orion_input_spaces_use_only_canonical_typed_controls_and_expose_intents() {
         assert!(geometry.link.is_none());
     }
     for space_index in [1, 2] {
-        let geometry =
-            super::layouts::dynamic_input_control_rects_for_test(&state, space_index, 0).unwrap();
+        let geometry = super::layouts::dynamic_input_control_rects_for_test(&state, space_index, 0)
+            .expect("input control geometry");
         assert!(geometry.mode.is_none() && geometry.phantom.is_none() && geometry.phase.is_none());
         assert!(geometry.gain.is_some() && geometry.link.is_none());
     }
@@ -335,6 +336,55 @@ fn orion_master_is_separate_from_input_strip_pages() {
     assert!(text.contains("CH 25"));
     assert!(text.contains("CH 32"));
     assert!(!state.visible_mixer_strip_bounds().contains(&32));
+}
+
+#[test]
+fn dynamic_input_mode_uses_profile_value_label() {
+    let mut state = zen_go_ui_state();
+    state.input_spaces[0].inputs[0].mode = Some(0);
+
+    let text = render_to_string(&state);
+
+    assert!(text.contains("Mic"));
+    assert!(!text.contains("M0"));
+}
+
+#[test]
+fn zen_go_mixer_uses_full_200_column_viewport() {
+    let state = zen_go_ui_state();
+    let mut terminal = test_terminal(200, 55);
+
+    draw_page(&mut terminal, &state);
+    let text = terminal_text(&terminal);
+
+    assert!(text.contains("Mixer Strips 1-10 / 16"), "{text}");
+    assert!(text.contains("CH 10"), "{text}");
+}
+
+#[test]
+fn zen_go_mixer_source_chip_uses_compact_assignment_label() {
+    let mut state = zen_go_ui_state();
+    state.mixer.channels[0][0].assignment = Some(MixerAssignment::Preamp(1));
+
+    let text = render_to_string(&state);
+
+    assert!(text.contains("P1"));
+    assert_eq!(text.matches("Preamp 1").count(), 1);
+}
+
+#[test]
+fn zen_go_routing_popup_shows_recording_assignments() {
+    let mut state = zen_go_ui_state();
+    state.mixer.channels[0][0].assignment = Some(MixerAssignment::Preamp(1));
+    state.popup.routing_open = true;
+
+    let text = render_to_string(&state);
+
+    assert!(text.contains("Zen Go USB recordings mirror mixer strip assignments"));
+    assert!(text.contains("USB 1/2"), "{text}");
+    assert!(text.contains("REC 1"));
+    assert!(text.contains("P1"));
+    assert!(!text.contains("destination_6"));
 }
 
 #[test]
@@ -389,7 +439,7 @@ fn routing_lists_every_destination_and_declared_finite_row_count() {
 
 #[test]
 fn disabled_profiles_are_visible_but_produce_no_hardware_intents() {
-    let mut entry = entry("discrete_4_synergy_core");
+    let mut entry = entry("discrete_4");
     entry.readiness = RuntimeReadiness::Disabled;
     entry.driver_kind = RuntimeDriverKind::None;
     let state = AppState::from_entry(&entry);
@@ -461,7 +511,8 @@ fn dynamic_output_capability_geometry_matches_renderer_and_mouse() {
 
 #[test]
 fn dynamic_input_optional_control_geometry_and_addresses_match_mouse() {
-    let state = supported_dynamic_state_without("phantom");
+    let mut state = supported_dynamic_state_without("phantom");
+    state.input_spaces[0].inputs[0].mode = Some(0);
     let input = state.input_spaces[0].inputs[0].address;
     let geometry = super::layouts::dynamic_input_control_rects_for_test(&state, 0, 0)
         .expect("first input geometry");
@@ -475,6 +526,109 @@ fn dynamic_input_optional_control_geometry_and_addresses_match_mouse() {
         intent,
         Intent::ToggleInputPhantomAt { address } if *address == input
     )));
+}
+
+#[test]
+fn rich_preamp_gain_slider_uses_mode_specific_profile_endpoints() {
+    let area = Rect::new(0, 0, 200, 55);
+    let mut state = zen_go_ui_state();
+    let page = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1]);
+    let main = super::layouts::mixer_main_layout_for_state(page[0], &state);
+    let row = super::layouts::dynamic_input_rows(main[0], &state)[0].2;
+    let gain = super::layouts::dynamic_input_control_rects(row, &state, 0, 0)
+        .and_then(|controls| controls.gain)
+        .expect("rich preamp gain slider");
+    let address = state.input_spaces[0].inputs[0].address;
+
+    for (mode, min, max) in [(0, 0, 65), (2, 0, 45)] {
+        state.input_spaces[0].inputs[0].mode = Some(mode);
+        assert_eq!(
+            slider_mouse_action(area, &state, gain.x, gain.y),
+            Some(Intent::SetInputGainAt { address, raw: min })
+        );
+        assert_eq!(
+            slider_mouse_action(
+                area,
+                &state,
+                gain.x.saturating_add(gain.width.saturating_sub(1)),
+                gain.y,
+            ),
+            Some(Intent::SetInputGainAt { address, raw: max })
+        );
+    }
+
+    state.input_spaces[0].inputs[0].mode = Some(1);
+    assert_eq!(slider_mouse_action(area, &state, gain.x, gain.y), None);
+
+    state.input_spaces[0].inputs[0].mode = None;
+    assert_eq!(slider_mouse_action(area, &state, gain.x, gain.y), None);
+    let gain_down =
+        super::layouts::dynamic_preamp_button_rects(row, &state, &state.input_spaces[0].inputs[0])
+            [0]
+        .1;
+    assert!(!matches!(
+        mouse_action(area, &state, gain_down.x, gain_down.y),
+        Some(Intent::AdjustInputGainAt { .. })
+    ));
+    assert_eq!(
+        slider_wheel_action(area, &state, gain.x, gain.y, true),
+        None
+    );
+}
+
+#[test]
+fn rich_preamp_gain_slider_requires_a_grounded_mode_range() {
+    let area = Rect::new(0, 0, 200, 55);
+    let state = zen_go_ui_state();
+    let page = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1]);
+    let main = super::layouts::mixer_main_layout_for_state(page[0], &state);
+    let row = super::layouts::dynamic_input_rows(main[0], &state)[0].2;
+    let gain = super::layouts::dynamic_input_control_rects(row, &state, 0, 0)
+        .and_then(|controls| controls.gain)
+        .expect("rich preamp gain slider");
+    let address = state.input_spaces[0].inputs[0].address;
+
+    assert_eq!(state.input_range(address, None), None);
+    assert_eq!(slider_mouse_action(area, &state, gain.x, gain.y), None);
+}
+
+#[test]
+fn orion_rich_preamp_controls_stay_inside_each_card() {
+    let area = Rect::new(0, 0, 200, 55);
+    let state = orion_ui_state();
+    let page = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1]);
+    let main = super::layouts::mixer_main_layout_for_state(page[0], &state);
+
+    for (space_index, input_index, card) in super::layouts::dynamic_input_rows(main[0], &state) {
+        if state.input_spaces[space_index].kind != "physical_inputs" {
+            continue;
+        }
+        let input = &state.input_spaces[space_index].inputs[input_index];
+        let controls =
+            super::layouts::dynamic_input_control_rects(card, &state, space_index, input_index)
+                .expect("physical preamp controls");
+        let mut rects = vec![
+            controls.gain,
+            controls.mode,
+            controls.phantom,
+            controls.phase,
+            controls.link,
+        ];
+        rects.extend(
+            super::layouts::dynamic_preamp_button_rects(card, &state, input)
+                .into_iter()
+                .map(|(_, rect)| Some(rect)),
+        );
+        for rect in rects.into_iter().flatten() {
+            assert!(
+                rect.x >= card.x
+                    && rect.y >= card.y
+                    && rect.right() <= card.right()
+                    && rect.bottom() <= card.bottom(),
+                "control {rect:?} escaped card {card:?}",
+            );
+        }
+    }
 }
 
 #[test]
@@ -503,10 +657,22 @@ fn non_first_input_space_uses_stable_address_intent() {
         .range = Some((0, 65));
     let state = AppState::from_entry(&entry);
     let address = InputAddress { space: 9, index: 0 };
-    assert!(available_intents(&state).iter().any(|intent| matches!(
-        intent,
-        Intent::SetInputGainAt { address: found, .. } if *found == address
-    )));
+    let area = Rect::new(0, 0, 140, 48);
+    let page = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1]);
+    let main = super::layouts::mixer_main_layout_for_state(page[0], &state);
+    let row = super::layouts::dynamic_input_rows(main[0], &state)
+        .into_iter()
+        .find(|(space_index, input_index, _)| *space_index == 1 && *input_index == 0)
+        .expect("second input-space row")
+        .2;
+    let gain = super::layouts::dynamic_input_control_rects(row, &state, 1, 0)
+        .and_then(|controls| controls.gain)
+        .expect("second input-space gain control");
+
+    assert!(matches!(
+        slider_mouse_action(area, &state, gain.x, gain.y),
+        Some(Intent::SetInputGainAt { address: found, .. }) if found == address
+    ));
 }
 
 #[test]
@@ -539,11 +705,56 @@ fn dynamic_mixer_uses_authoritative_strip_and_optional_capabilities() {
 }
 
 #[test]
+fn dynamic_mixer_source_chip_stays_inside_strip_border() {
+    for state in [zen_go_ui_state(), orion_ui_state()] {
+        let address = MixerAddress {
+            surface: 0,
+            strip: 1,
+        };
+        let geometry = super::layouts::dynamic_mixer_control_rects_for_test(&state, address)
+            .expect("strip geometry");
+        let source = geometry.source.expect("source control");
+        let inner_right = geometry
+            .card
+            .x
+            .saturating_add(geometry.card.width)
+            .saturating_sub(1);
+        let channel = super::layouts::mixer_header_chip_rects(geometry.card, "").0;
+
+        assert!(source.x > geometry.card.x);
+        assert!(source.x >= channel.x.saturating_add(channel.width));
+        assert!(source.x.saturating_add(source.width) <= inner_right);
+    }
+}
+
+#[test]
+fn dynamic_mixer_renders_meter_value_without_mtr_prefix() {
+    assert_eq!(super::render::dynamic_meter_value_label(Some(21)), "-21 dB");
+    assert_eq!(super::render::dynamic_meter_value_label(Some(127)), "-∞ dB");
+    assert_eq!(super::render::dynamic_meter_value_label(None), "?");
+
+    let mut state = supported_dynamic_state_without("mix_solo");
+    state.mixer.surfaces[0].strips[0].meter = Some(21);
+    let active_text = render_to_string(&state);
+
+    state.mixer.surfaces[0].strips[0].meter = None;
+    let absent_text = render_to_string(&state);
+
+    assert!(!active_text.contains("MTR"));
+    assert!(active_text.contains("-21 dB"));
+    assert_ne!(active_text, absent_text, "meter state must remain rendered");
+}
+
+#[test]
 fn dynamic_master_controls_are_separate_and_addressed_as_strip_zero() {
     let mut state = supported_dynamic_state();
     state.mixer.surfaces[0].master = Some(state.mixer.surfaces[0].strips[0].clone());
-    state.mixer.surfaces[0].master.as_mut().unwrap().strip = 0;
-    state.mixer.surfaces[0].master.as_mut().unwrap().name = "Master".into();
+    let master = state.mixer.surfaces[0]
+        .master
+        .as_mut()
+        .expect("master strip");
+    master.strip = 0;
+    master.name = "Master".into();
     let address = MixerAddress {
         surface: 0,
         strip: 0,
@@ -565,6 +776,104 @@ fn supported_orion_has_all_dynamic_rows_and_control_intents() {
     assert!(available_intents(&state)
         .iter()
         .any(Intent::writes_hardware));
+}
+
+#[test]
+fn physical_inputs_use_rich_cards_while_digital_inputs_stay_compact() {
+    let area = Rect::new(0, 0, 140, 48);
+    let state = orion_ui_state();
+    assert_eq!(state.input_spaces[0].kind, "physical_inputs");
+
+    let page = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1]);
+    let main = super::layouts::mixer_main_layout_for_state(page[0], &state);
+    let rows = super::layouts::dynamic_input_rows(main[0], &state);
+    let physical = rows
+        .iter()
+        .filter(|(space, _, _)| *space == 0)
+        .collect::<Vec<_>>();
+    assert_eq!(physical.len(), 12);
+    assert!(physical.iter().all(|(_, _, rect)| rect.height == 5));
+    for (space_index, input_index, card) in physical {
+        let input = &state.input_spaces[*space_index].inputs[*input_index];
+        for (_, control) in super::layouts::dynamic_preamp_button_rects(*card, &state, input) {
+            assert!(
+                control.x.saturating_add(control.width) <= card.x.saturating_add(card.width),
+                "control {control:?} overruns card {card:?}",
+            );
+        }
+    }
+    assert!(rows
+        .iter()
+        .filter(|(space, _, _)| *space != 0)
+        .all(|(_, _, rect)| rect.height == 1));
+}
+
+#[test]
+fn zen_go_uses_one_rich_card_per_physical_preamp() {
+    let area = Rect::new(0, 0, 200, 55);
+    let state = zen_go_ui_state();
+    let page = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1]);
+    let main = super::layouts::mixer_main_layout_for_state(page[0], &state);
+    let rows = super::layouts::dynamic_input_rows(main[0], &state);
+
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|(_, _, rect)| rect.height == 5));
+    assert_eq!(rows[0].2.y, rows[1].2.y);
+}
+
+#[test]
+fn zen_go_physical_inputs_render_rich_preamp_cards() {
+    let mut state = zen_go_ui_state();
+    state.input_spaces[0].inputs[0].gain = Some(43);
+    state.input_spaces[0].inputs[0].meter = Some(127);
+    let mut terminal = test_terminal(200, 55);
+    draw_page(&mut terminal, &state);
+    let text = terminal_text(&terminal);
+
+    assert!(text.contains("Preamp 1"));
+    assert!(text.contains("Preamp 2"));
+    assert_eq!(text.matches("OBS").count(), 2);
+    assert!(text.contains("GAIN 43 dB"));
+    assert!(text.contains("-∞ dB"));
+}
+
+#[test]
+fn dynamic_preamp_phase_chip_reflects_active_state() {
+    let mut state = zen_go_ui_state();
+    for (active, expected) in [(false, Color::Green), (true, Color::Yellow)] {
+        state.input_spaces[0].inputs[0].phase = Some(active);
+        assert_eq!(
+            super::render::dynamic_input_control_color(
+                &state,
+                &state.input_spaces[0].inputs[0],
+                RuntimeInputControlKind::Phase,
+            ),
+            expected,
+        );
+    }
+
+    let unsupported = supported_dynamic_state_without("phase_invert");
+    assert_eq!(
+        super::render::dynamic_input_control_color(
+            &unsupported,
+            &unsupported.input_spaces[0].inputs[0],
+            RuntimeInputControlKind::Phase,
+        ),
+        Color::DarkGray,
+    );
+}
+
+#[test]
+fn orion_renders_a_rich_card_for_each_physical_preamp_only() {
+    let state = orion_ui_state();
+    let mut terminal = test_terminal(200, 55);
+    draw_page(&mut terminal, &state);
+    let text = terminal_text(&terminal);
+
+    assert_eq!(text.matches("OBS").count(), 12);
+    assert!(text.matches("GAIN").count() >= 12);
+    assert!(text.contains("ADAT 1"));
+    assert!(text.contains("S/PDIF L"));
 }
 
 #[test]

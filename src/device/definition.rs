@@ -388,6 +388,8 @@ pub struct ParamDefinition {
     pub status_text: &'static str,
     pub applies_to: &'static str,
     pub range: Option<(i32, i32)>,
+    pub direction: Option<FaderDirectionDefinition>,
+    pub unity: Option<i32>,
     pub range_by_mode: &'static [ParamRangeDefinition],
     pub range_forms: &'static [ParamRangeDefinition],
     pub values: &'static [ParamValueDefinition],

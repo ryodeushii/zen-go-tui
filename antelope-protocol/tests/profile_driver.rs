@@ -3,8 +3,8 @@ use antelope_protocol::{
     Action, Command, ControlValue, DeviceDriver, DeviceEvent, DriverError, DynamicMixerSurface,
     DynamicStatePatch, FrameEndian, FrameOperation, GlobalControl, InputAddress, InputControl,
     MixerAddress, MixerControl, OutputAddress, OutputControl, ProfileDriver, QueryRequest,
-    RoutingSource, RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeReadiness,
-    WholeStateField, ZenGoDriver,
+    RoutingSource, RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
+    RuntimeReadiness, WholeStateField, ZenGoDriver,
 };
 
 fn stored_orion_entry() -> RuntimeEntry {
@@ -163,6 +163,30 @@ fn promoted_canonical_orion_rejects_unconfirmed_report_framing() {
 #[test]
 fn synthetic_unnumbered_fixture_constructs_for_generic_codec_tests() {
     ProfileDriver::new(fixture_entry()).expect("synthetic unnumbered fixture");
+}
+
+#[test]
+fn observation_only_decoder_with_overlapping_fields_does_not_block_driver() {
+    let mut entry = fixture_entry();
+    entry.profile.frames.push(RuntimeFrame {
+        id: "observation_only".into(),
+        kind: "decoder".into(),
+        status: "observed".into(),
+        report_size: Some(320),
+        operations: vec![
+            FrameOperation::FixedByte {
+                offset: 16,
+                value: 0xd7,
+            },
+            FrameOperation::FixedByte {
+                offset: 16,
+                value: 0x98,
+            },
+        ],
+        metadata: String::new(),
+    });
+
+    ProfileDriver::new(entry).expect("observation-only decoder must not block driver");
 }
 
 #[test]
@@ -1268,7 +1292,7 @@ fn zen_go_normalized_actions_preserve_representative_bytes() {
                 strip: 7,
             },
             fader: 0x22,
-            pan: 0x3e,
+            pan: 30,
             muted: true,
             soloed: false,
             send: None,
@@ -1753,6 +1777,54 @@ fn complete_mixer_frame(fader: i32, pan: i32, muted: bool, soloed: bool, send: i
 }
 
 #[test]
+fn generic_mixer_pan_uses_profile_center() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|parameter| parameter.name == "mix_pan")
+        .expect("mix_pan parameter")
+        .range = Some((-30, 22));
+    for mixer in &mut entry.profile.mixers {
+        mixer.pan_range = Some((-30, 22));
+        mixer.pan_center = Some(40);
+    }
+    let driver = ProfileDriver::new(entry).expect("profile driver");
+    let frame = driver
+        .encode(Action::SetMixerStripState {
+            address: MixerAddress {
+                surface: 2,
+                strip: 17,
+            },
+            fader: 44,
+            pan: -10,
+            muted: false,
+            soloed: false,
+            send: Some(55),
+        })
+        .expect("semantic pan")
+        .frames
+        .remove(0);
+
+    assert_eq!(frame[21] & 0x3f, 30);
+
+    let mut readback = hex_fixture(include_str!("fixtures/orion/readback_75.hex"));
+    readback[17] = 30;
+    let DeviceEvent::QueryReply {
+        patch: Some(DynamicStatePatch::Mixer(surface)),
+        ..
+    } = driver
+        .decode(&readback)
+        .expect("mixer readback")
+        .expect("mixer event")
+    else {
+        panic!("mixer patch")
+    };
+    assert_eq!(surface.master.expect("master").pan, Some(-10));
+}
+
+#[test]
 fn complete_mixer_mutations_preserve_all_companion_fields() {
     let cases = [
         (44, 12, true, true, 55),
@@ -2132,7 +2204,7 @@ fn zen_go_normalized_actions_equal_existing_full_frames() {
             strip: 7,
         },
         fader: 0x22,
-        pan: 0x3e,
+        pan: 30,
         muted: true,
         soloed: false,
         send: None,

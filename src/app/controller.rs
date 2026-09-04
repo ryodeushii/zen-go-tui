@@ -302,7 +302,7 @@ impl Controller {
                         strip: current.strip,
                     },
                     fader: i32::from(strip.level_raw),
-                    pan: i32::from(PanState::from_raw(strip.pan_raw).raw()),
+                    pan: i32::from(PanState::from_raw(strip.pan_raw).display_percent()),
                     muted: strip.muted,
                     soloed: strip.soloed,
                     send,
@@ -1788,14 +1788,13 @@ impl Controller {
         self.send_complete_mixer_change(address, |strip| strip.pan = Some(next))
     }
 
-    fn handle_set_mixer_pan_at(&mut self, address: MixerAddress, pan: PanState) -> Result<()> {
+    fn handle_set_mixer_pan_at(&mut self, address: MixerAddress, pan: i32) -> Result<()> {
         self.ensure_mixer_control(address, MixerControl::Pan)?;
         let (min, max) = self
             .state
             .mixer_range(address.surface, MixerControl::Pan)
             .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
-        let value = i32::from(pan.raw()).clamp(min, max);
-        self.send_complete_mixer_change(address, |strip| strip.pan = Some(value))
+        self.send_complete_mixer_change(address, |strip| strip.pan = Some(pan.clamp(min, max)))
     }
 
     fn handle_set_mixer_send_at(&mut self, address: MixerAddress, send: i32) -> Result<()> {
@@ -1925,7 +1924,7 @@ impl Controller {
             .state
             .mixer_range(address.surface, MixerControl::Pan)
             .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
-        let value = i32::from(pan.raw()).clamp(min, max);
+        let value = i32::from(pan.display_percent()).clamp(min, max);
         self.send_complete_mixer_change(address, |strip| strip.pan = Some(value))
     }
 
@@ -2820,7 +2819,7 @@ mod correction_tests {
                 .enqueue(Action::SetMixerStripState {
                     address: MixerAddress { surface: 1, strip },
                     fader: 32,
-                    pan: 32,
+                    pan: 0,
                     muted: false,
                     soloed: false,
                     send: None,
@@ -2833,7 +2832,7 @@ mod correction_tests {
         };
         let strip = &mut controller.state.mixers_mut()[0].strips[0];
         strip.fader = Some(20);
-        strip.pan = Some(31);
+        strip.pan = Some(30);
         strip.muted = Some(false);
         strip.soloed = Some(true);
         controller.state.sync_compatibility_views();
@@ -2884,7 +2883,7 @@ mod correction_tests {
                 .enqueue(Action::SetMixerStripState {
                     address: MixerAddress { surface: 0, strip },
                     fader: 32,
-                    pan: 32,
+                    pan: 0,
                     muted: false,
                     soloed: false,
                     send: None,

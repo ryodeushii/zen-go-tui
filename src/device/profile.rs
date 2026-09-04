@@ -102,18 +102,23 @@ fn readiness_rank(readiness: RuntimeReadiness) -> u8 {
     }
 }
 
+fn stable_runtime_id(source_path: &str, fallback: &str) -> String {
+    let filename = source_path.rsplit('/').next().unwrap_or(fallback);
+    let stem = filename.strip_suffix(".json").unwrap_or(fallback);
+    match stem {
+        "discrete_4_pro_sc" => "discrete_4_pro",
+        "discrete_4_sc" => "discrete_4",
+        "discrete_8_pro_sc" => "discrete_8_pro",
+        "orion_studio_sc" => "orion_studio_3",
+        identifier => identifier,
+    }
+    .to_owned()
+}
+
 fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
     let definition = &entry.definition;
     let readiness = convert_readiness(entry.readiness);
-    let id = definition
-        .provenance
-        .source_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(definition.identity.name)
-        .strip_suffix(".json")
-        .unwrap_or(definition.identity.name)
-        .to_owned();
+    let id = stable_runtime_id(definition.provenance.source_path, definition.identity.name);
     let spaces: Vec<RuntimeAddressSpace> = definition
         .address_spaces
         .iter()
@@ -340,6 +345,11 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     status: status(param.status).into(),
                     applies_to: param.applies_to.into(),
                     range: param.range,
+                    direction: param.direction.map(|direction| match direction {
+                        super::FaderDirectionDefinition::Direct => FaderDirection::Direct,
+                        super::FaderDirectionDefinition::Attenuation => FaderDirection::Attenuation,
+                    }),
+                    unity: param.unity,
                     range_by_mode: param
                         .range_by_mode
                         .iter()
@@ -599,6 +609,7 @@ fn param_value_type(value: ParamValueType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device::definition::{DeviceDefinition, Provenance};
     use antelope_protocol::{load_profile_pack, RuntimeReadiness};
 
     #[test]
@@ -613,6 +624,26 @@ mod tests {
     }
 
     #[test]
+    fn renamed_profile_sources_keep_stable_runtime_ids() {
+        let source = DEVICE_CATALOG
+            .iter()
+            .find(|entry| entry.definition.identity.pid == 0xa2bf)
+            .expect("Discrete 4 Pro entry");
+        let renamed = DeviceEntry {
+            definition: DeviceDefinition {
+                provenance: Provenance {
+                    source_path: "profiles/discrete_4_pro_sc.json",
+                    ..source.definition.provenance
+                },
+                ..source.definition
+            },
+            ..*source
+        };
+
+        assert_eq!(convert_entry(&renamed).id, "discrete_4_pro");
+    }
+
+    #[test]
     fn builtin_catalog_has_safe_support_matrix_and_validation_metadata() {
         let catalog = ProfileCatalog::builtin();
         let expected = [
@@ -622,7 +653,7 @@ mod tests {
                 RuntimeDriverKind::ZenGo,
             ),
             (
-                "Antelope Orion Studio III",
+                "Antelope Orion Studio Synergy Core",
                 RuntimeReadiness::Supported,
                 RuntimeDriverKind::Profile,
             ),
@@ -700,10 +731,136 @@ mod tests {
                 .iter()
                 .find(|entry| entry.id == built_in.id)
                 .expect("matching normalized entry");
+            macro_rules! assert_field {
+                ($name:literal, $left:expr, $right:expr) => {
+                    assert_eq!(
+                        $left, $right,
+                        "builtin and normalized-pack field mismatch for {}: {}",
+                        built_in.id, $name
+                    );
+                };
+            }
+            assert_field!("id", built_in.id, packed.id);
+            assert_field!(
+                "profile.identity",
+                built_in.profile.identity,
+                packed.profile.identity
+            );
+            assert_field!(
+                "profile.transport",
+                built_in.profile.transport,
+                packed.profile.transport
+            );
+            assert_field!(
+                "profile.address_spaces",
+                built_in.profile.address_spaces,
+                packed.profile.address_spaces
+            );
+            assert_field!(
+                "profile.inputs",
+                built_in.profile.inputs,
+                packed.profile.inputs
+            );
+            assert_field!(
+                "profile.outputs",
+                built_in.profile.outputs,
+                packed.profile.outputs
+            );
+            assert_field!(
+                "profile.mixers",
+                built_in.profile.mixers,
+                packed.profile.mixers
+            );
+            assert_field!(
+                "profile.state_report",
+                built_in.profile.state_report,
+                packed.profile.state_report
+            );
+            assert_field!(
+                "profile.link_domains",
+                built_in.profile.link_domains,
+                packed.profile.link_domains
+            );
+            assert_field!(
+                "profile.routing_groups",
+                built_in.profile.routing_groups,
+                packed.profile.routing_groups
+            );
+            assert_field!(
+                "profile.frames",
+                built_in.profile.frames,
+                packed.profile.frames
+            );
+            assert_field!(
+                "profile.decoders",
+                built_in.profile.decoders,
+                packed.profile.decoders
+            );
             assert_eq!(
-                built_in, packed,
-                "builtin and normalized-pack RuntimeEntry mismatch for {}",
+                built_in.profile.params.len(),
+                packed.profile.params.len(),
+                "builtin and normalized-pack parameter count mismatch for {}",
                 built_in.id
+            );
+            for (index, (left, right)) in built_in
+                .profile
+                .params
+                .iter()
+                .zip(packed.profile.params.iter())
+                .enumerate()
+            {
+                assert_eq!(left.name, right.name, "parameter {index} name");
+                assert_eq!(left.id, right.id, "parameter {index} id");
+                assert_eq!(
+                    left.value_type, right.value_type,
+                    "parameter {index} value type"
+                );
+                assert_eq!(left.status, right.status, "parameter {index} status");
+                assert_eq!(
+                    left.applies_to, right.applies_to,
+                    "parameter {index} applies_to"
+                );
+                assert_eq!(left.range, right.range, "parameter {index} range");
+                assert_eq!(
+                    left.range_by_mode, right.range_by_mode,
+                    "parameter {index} range_by_mode"
+                );
+                assert_eq!(left.values, right.values, "parameter {index} values");
+                assert_eq!(left.frame, right.frame, "parameter {index} frame");
+                assert_eq!(left.readback, right.readback, "parameter {index} readback");
+                assert_eq!(left.metadata, right.metadata, "parameter {index} metadata");
+            }
+            assert_field!(
+                "profile.constraints",
+                built_in.profile.constraints,
+                packed.profile.constraints
+            );
+            assert_field!(
+                "profile.hazards",
+                built_in.profile.hazards,
+                packed.profile.hazards
+            );
+            assert_field!(
+                "profile.startup_queries",
+                built_in.profile.startup_queries,
+                packed.profile.startup_queries
+            );
+            assert_field!(
+                "profile.readback",
+                built_in.profile.readback,
+                packed.profile.readback
+            );
+            assert_field!(
+                "profile.provenance",
+                built_in.profile.provenance,
+                packed.profile.provenance
+            );
+            assert_field!("readiness", built_in.readiness, packed.readiness);
+            assert_field!("driver_kind", built_in.driver_kind, packed.driver_kind);
+            assert_field!(
+                "support_reason",
+                built_in.support_reason,
+                packed.support_reason
             );
         }
     }

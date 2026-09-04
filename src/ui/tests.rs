@@ -1487,7 +1487,8 @@ fn mouse_action_selects_recent_query_reply_entry_when_raw_query_tab_is_open() {
 #[test]
 fn mouse_action_hits_preamp_gain_control() {
     let area = Rect::new(0, 0, 120, 50);
-    let state = zen_go_state();
+    let mut state = zen_go_state();
+    state.input_spaces[0].inputs[0].mode = Some(0);
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
     let main = layouts::mixer_main_layout_for_state(page[0], &state);
     let (_, _, row) = layouts::dynamic_input_rows(main[0], &state)
@@ -1503,7 +1504,7 @@ fn mouse_action_hits_preamp_gain_control() {
         mouse_action(area, &state, point.0, point.1),
         Some(Intent::SetInputGainAt {
             address,
-            raw: state.input_range(address, None).expect("input range").1,
+            raw: state.input_range(address, Some(0)).expect("input range").1,
         })
     );
 }
@@ -1552,7 +1553,8 @@ fn slider_wheel_action_adjusts_output_level_one_step() {
 #[test]
 fn slider_wheel_action_adjusts_preamp_gain_one_step() {
     let area = Rect::new(0, 0, 120, 50);
-    let state = zen_go_state();
+    let mut state = zen_go_state();
+    state.input_spaces[0].inputs[0].mode = Some(0);
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
     let main = layouts::mixer_main_layout_for_state(page[0], &state);
     let (_, _, row) = layouts::dynamic_input_rows(main[0], &state)
@@ -1649,14 +1651,15 @@ fn mouse_action_hits_visible_output_level_slider_position() {
             track.x + track.width.saturating_sub(1),
             track.y
         ),
-        Some(Intent::SetOutputLevel { index: 0, step: 96 })
+        Some(Intent::SetOutputLevel { index: 0, step: 0 })
     );
 }
 
 #[test]
 fn mouse_action_hits_visible_preamp_gain_slider_position() {
     let area = Rect::new(0, 0, 120, 50);
-    let state = zen_go_state();
+    let mut state = zen_go_state();
+    state.input_spaces[0].inputs[0].mode = Some(0);
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
     let main = layouts::mixer_main_layout_for_state(page[0], &state);
     let (_, _, row) = layouts::dynamic_input_rows(main[0], &state)
@@ -1676,7 +1679,7 @@ fn mouse_action_hits_visible_preamp_gain_slider_position() {
         ),
         Some(Intent::SetInputGainAt {
             address,
-            raw: state.input_range(address, None).expect("input range").1,
+            raw: state.input_range(address, Some(0)).expect("input range").1,
         })
     );
 }
@@ -1699,11 +1702,27 @@ fn mouse_action_hits_visible_mixer_pan_slider_position() {
             track.x + track.width.saturating_sub(1),
             track.y
         ),
-        Some(Intent::SetMixerPanAt {
-            address,
-            pan: PanState::right(),
-        })
+        Some(Intent::SetMixerPanAt { address, pan: 30 })
     );
+}
+
+#[test]
+fn dynamic_mixer_fader_renders_only_ratio_positioned_handle() {
+    let area = Rect::new(0, 0, 200, 55);
+    let mut state = zen_go_state();
+    state.mixer.surfaces[0].strips[0].fader = Some(0);
+    state.mixer.surfaces[0].strips[0].meter = None;
+    let controls = zen_mixer_controls(area, &state, 0);
+    let track = controls.fader.expect("mixer fader control");
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).expect("terminal");
+
+    terminal
+        .draw(|frame| render::draw(frame, &state))
+        .expect("render mixer");
+
+    let buffer = terminal.backend().buffer();
+    assert_eq!(buffer[(track.x, track.y)].symbol(), "●");
+    assert_ne!(buffer[(track.x, track.y + track.height / 2)].symbol(), "●");
 }
 
 #[test]
@@ -1848,16 +1867,12 @@ fn mouse_action_hits_visible_mixer_solo_chip_position() {
 #[test]
 fn mouse_action_opens_assignment_picker_from_src_button() {
     let area = Rect::new(0, 0, 120, 60);
-    let chunks = layouts::root_chunks(area);
-    let page = layouts::mixer_page_layout(chunks[1]);
-    let main = layouts::mixer_main_layout(page[0]);
-    let mixer = layouts::mixer_layout(main[1]);
-    let list_inner = layouts::mixer_strip_panel_layout(mixer[1], false)[0];
     let mut state = AppState::default();
     state.mixer.selected_channel = 3;
     state.mixer.channels[0][3].assignment = Some(MixerAssignment::ComputerPlay(2));
-    let card = layouts::mixer_strip_card_area(list_inner, 3);
-    let (_, source_rect) = layouts::mixer_header_chip_rects(card, "C2");
+    let source_rect = zen_mixer_controls(area, &state, 3)
+        .source
+        .expect("assignment source control");
     let point = (source_rect.x + source_rect.width / 2, source_rect.y);
 
     assert_eq!(

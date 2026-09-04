@@ -11,7 +11,7 @@ use crate::app::{
 };
 use crate::device::DevicePickerState;
 use crate::terminal;
-use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, SampleRate};
+use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate};
 
 use super::layouts::*;
 use super::mouse::mix_meter;
@@ -169,6 +169,10 @@ fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     if !state.popup.routing_open {
         return;
     }
+    if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
+        draw_zen_go_routing_popup(frame, area, state);
+        return;
+    }
 
     let popup = dynamic_routing_popup_area(area, state);
     frame.render_widget(Clear, popup);
@@ -215,6 +219,56 @@ fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         );
     }
     // Routing groups are profile-defined; assignment editing happens from each strip source chip.
+}
+
+fn draw_zen_go_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let popup = routing_popup_area(area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(panel_block("Routing", Color::Magenta, true), popup);
+
+    let rows = afx_routing_layout(popup);
+    Paragraph::new(Line::from(vec![chip(
+        "ROUTING",
+        Color::Black,
+        Color::LightMagenta,
+    )]))
+    .render(rows[0], frame.buffer_mut());
+    Paragraph::new(Line::from(
+        "Zen Go USB recordings mirror mixer strip assignments instead of using a separate routing matrix.",
+    ))
+    .wrap(Wrap { trim: false })
+    .render(rows[1], frame.buffer_mut());
+    Paragraph::new(Line::from("Edit here and mixer strips update immediately."))
+        .wrap(Wrap { trim: false })
+        .render(rows[2], frame.buffer_mut());
+    Paragraph::new(Line::from(vec![
+        Span::styled("PAIR", subdued_style()),
+        Span::raw("  "),
+        Span::styled("REC 1", strong_style(Color::LightCyan)),
+        Span::raw(" / "),
+        Span::styled("REC 2", strong_style(Color::LightCyan)),
+    ]))
+    .render(rows[3], frame.buffer_mut());
+
+    for pair in 0..4 {
+        render_afx_routing_row(rows[4 + pair], frame.buffer_mut(), state, pair);
+    }
+
+    Paragraph::new(Line::from(vec![
+        Span::styled("TIP ", subdued_style()),
+        Span::styled(
+            "click a source chip or press `a` for the selected channel",
+            muted_style(),
+        ),
+    ]))
+    .wrap(Wrap { trim: false })
+    .render(rows[8], frame.buffer_mut());
+    Paragraph::new(Line::from(vec![
+        Span::styled("STATUS ", subdued_style()),
+        Span::styled(&state.ui.last_message, strong_style(Color::LightCyan)),
+    ]))
+    .wrap(Wrap { trim: false })
+    .render(rows[9], frame.buffer_mut());
 }
 
 fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -319,7 +373,7 @@ fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         )))
         .render(rows[0], frame.buffer_mut());
         Paragraph::new(Line::from(Span::styled(
-            "letters, digits, - and _",
+            "letters, digits, spaces, -, _ and .",
             muted_style(),
         )))
         .render(rows[1], frame.buffer_mut());
@@ -383,19 +437,19 @@ fn draw_dynamic_input_banks(frame: &mut Frame<'_>, area: Rect, state: &AppState)
     );
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let columns = state.input_spaces.len().max(1);
-    let column_width = inner.width / u16::try_from(columns).unwrap_or(u16::MAX).max(1);
-    for (space_index, space) in state.input_spaces.iter().enumerate() {
-        let x = inner.x.saturating_add(
-            u16::try_from(space_index)
-                .unwrap_or(u16::MAX)
-                .saturating_mul(column_width),
-        );
+    for (space, column) in state
+        .input_spaces
+        .iter()
+        .zip(dynamic_input_space_areas(inner, state))
+    {
         Paragraph::new(Line::from(Span::styled(
             &space.name,
             strong_style(Color::LightMagenta),
         )))
-        .render(Rect::new(x, inner.y, column_width, 1), frame.buffer_mut());
+        .render(
+            Rect::new(column.x, inner.y, column.width, 1),
+            frame.buffer_mut(),
+        );
     }
     for (space_index, input_index, row) in dynamic_input_rows(area, state) {
         let Some(controls) = dynamic_input_control_rects(row, state, space_index, input_index)
@@ -409,6 +463,29 @@ fn draw_dynamic_input_banks(frame: &mut Frame<'_>, area: Rect, state: &AppState)
             input_index,
             controls,
         );
+    }
+}
+
+pub(crate) fn dynamic_input_control_color(
+    state: &AppState,
+    input: &antelope_protocol::DynamicInputState,
+    kind: antelope_protocol::RuntimeInputControlKind,
+) -> Color {
+    let control = state
+        .ui_profile
+        .input_capabilities(input.address)
+        .iter()
+        .find(|capability| capability.kind == kind)
+        .and_then(|capability| capability.control);
+    if !control.is_some_and(|control| state.ui_profile.supports_input(input.address, control)) {
+        return Color::DarkGray;
+    }
+    if kind == antelope_protocol::RuntimeInputControlKind::Phase && input.phase == Some(true) {
+        Color::Yellow
+    } else if kind == antelope_protocol::RuntimeInputControlKind::Phase {
+        Color::Green
+    } else {
+        Color::LightGreen
     }
 }
 
@@ -426,55 +503,88 @@ fn render_dynamic_input_row(
     else {
         return;
     };
-    let input_label = input
-        .meter
-        .and_then(antelope_protocol::meter_display_db)
-        .map_or_else(
-            || input.name.clone(),
-            |meter| format!("{} {} dB", input.name, meter),
-        );
-    Paragraph::new(Line::from(chip(
-        &input_label,
-        Color::Black,
-        Color::LightBlue,
-    )))
-    .render(
-        Rect::new(
-            controls.row.x,
-            controls.row.y,
-            controls.row.width.min(10),
-            1,
-        ),
-        buffer,
-    );
-    let color = |kind| {
-        let control = state
-            .ui_profile
-            .input_capabilities(input.address)
-            .iter()
-            .find(|capability| capability.kind == kind)
-            .and_then(|capability| capability.control);
-        if control.is_some_and(|control| state.ui_profile.supports_input(input.address, control)) {
-            Color::LightGreen
+    let rich_card = controls.row.height >= PREAMP_CARD_HEIGHT;
+    if rich_card {
+        let focused =
+            state.ui.focus == FocusArea::Preamp && state.preamp.selected_input == input_index;
+        let block = if input.phantom == Some(true) {
+            warning_section_block(&input.name, focused)
         } else {
-            Color::DarkGray
-        }
-    };
-    if let Some(rect) = controls.gain {
-        let label = input
+            section_block(&input.name, focused)
+        };
+        block.render(controls.row, buffer);
+        let sections = preamp_card_inner_layout(controls.row);
+        let meter_db = input.meter.and_then(antelope_protocol::meter_display_db);
+        let gain_range = state.input_range(input.address, input.mode);
+        let gain_label = input
             .gain
-            .map_or_else(|| "GAIN ?".into(), |value| format!("GAIN {value}"));
+            .map_or_else(|| "? dB".to_string(), |value| format!("{value} dB"));
+        let gain_ratio = input
+            .gain
+            .zip(gain_range)
+            .map(|(value, range)| value_ratio(value, range));
+        let gain_color = match input.mode {
+            Some(0) => style_for_preamp_mode(PreampMode::Mic),
+            Some(1) => style_for_preamp_mode(PreampMode::Line),
+            Some(2) => style_for_preamp_mode(PreampMode::HiZ),
+            _ => Color::LightGreen,
+        };
+        render_stacked_signal_rows(
+            sections[0],
+            buffer,
+            &meter_slider_label("OBS", meter_db),
+            input.meter.map(antelope_protocol::meter_ratio),
+            &signal_slider_label("GAIN", Some(gain_label)),
+            gain_ratio,
+            gain_color,
+        );
+    } else {
+        let input_label = input
+            .meter
+            .and_then(antelope_protocol::meter_display_db)
+            .map_or_else(
+                || input.name.clone(),
+                |meter| format!("{} {} dB", input.name, meter),
+            );
         Paragraph::new(Line::from(chip(
-            &label,
+            &input_label,
             Color::Black,
-            color(antelope_protocol::RuntimeInputControlKind::Gain),
+            Color::LightBlue,
         )))
-        .render(rect, buffer);
+        .render(
+            Rect::new(
+                controls.row.x,
+                controls.row.y,
+                controls.row.width.min(10),
+                1,
+            ),
+            buffer,
+        );
+    }
+    let color = |kind| dynamic_input_control_color(state, input, kind);
+    if !rich_card {
+        if let Some(rect) = controls.gain {
+            let label = input
+                .gain
+                .map_or_else(|| "GAIN ?".into(), |value| format!("GAIN {value}"));
+            Paragraph::new(Line::from(chip(
+                &label,
+                Color::Black,
+                color(antelope_protocol::RuntimeInputControlKind::Gain),
+            )))
+            .render(rect, buffer);
+        }
     }
     if let Some(rect) = controls.mode {
-        let label = input
-            .mode
-            .map_or_else(|| "MODE".into(), |value| format!("M{value}"));
+        let label = input.mode.map_or_else(
+            || "MODE".into(),
+            |value| {
+                state
+                    .ui_profile
+                    .input_value_label(input.address, antelope_protocol::InputControl::Mode, value)
+                    .map_or_else(|| format!("M{value}"), str::to_owned)
+            },
+        );
         Paragraph::new(Line::from(chip(
             &label,
             Color::Black,

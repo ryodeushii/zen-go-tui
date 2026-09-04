@@ -22,6 +22,10 @@ pub(crate) const MIX_METER_YELLOW_START_RATIO: f64 = 0.8;
 pub(crate) const MIX_METER_RED_START_RATIO: f64 = 0.95;
 pub(crate) const MIX_METER_CHANNEL_LABEL_WIDTH: u16 = 2;
 pub(crate) const MIX_METER_DB_WIDTH: u16 = 7;
+pub(crate) const PREAMP_CARD_HEIGHT: u16 = 5;
+const PREAMP_CARD_MIN_WIDTH: u16 = 27;
+const PREAMP_CARD_MAX_COLUMNS: usize = 6;
+const COMPACT_INPUT_SPACE_WIDTH: u16 = 15;
 
 pub(crate) fn root_chunks(area: Rect) -> [Rect; 2] {
     let chunks = Layout::default()
@@ -120,16 +124,8 @@ pub(crate) fn mixer_main_layout(area: Rect) -> [Rect; 2] {
 }
 
 pub(crate) fn mixer_main_layout_for_state(area: Rect, state: &AppState) -> [Rect; 2] {
-    let input_rows = state
-        .input_spaces
-        .iter()
-        .map(|space| space.inputs.len())
-        .max()
-        .unwrap_or(0);
-    let input_height = u16::try_from(input_rows)
-        .unwrap_or(u16::MAX)
-        .saturating_add(3)
-        .min(area.height.saturating_sub(8));
+    let input_height =
+        dynamic_input_panel_height(area.width, state).min(area.height.saturating_sub(8));
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(input_height), Constraint::Min(8)])
@@ -137,12 +133,118 @@ pub(crate) fn mixer_main_layout_for_state(area: Rect, state: &AppState) -> [Rect
     [sections[0], sections[1]]
 }
 
-pub(crate) fn preamp_bar_layout(area: Rect) -> [Rect; 2] {
-    let sections = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-    [sections[0], sections[1]]
+fn dynamic_input_panel_height(width: u16, state: &AppState) -> u16 {
+    let inner = Rect::new(0, 0, width.saturating_sub(2), u16::MAX);
+    dynamic_input_space_areas(inner, state)
+        .into_iter()
+        .zip(&state.input_spaces)
+        .map(|(area, space)| {
+            let content_height = if space.kind == "physical_inputs" {
+                let columns = preamp_card_columns(area.width, space.inputs.len(), usize::MAX);
+                let rows = space.inputs.len().saturating_add(columns - 1) / columns;
+                u16::try_from(rows)
+                    .unwrap_or(u16::MAX)
+                    .saturating_mul(PREAMP_CARD_HEIGHT)
+            } else {
+                u16::try_from(space.inputs.len()).unwrap_or(u16::MAX)
+            };
+            content_height.saturating_add(1)
+        })
+        .max()
+        .unwrap_or(0)
+        .saturating_add(2)
+}
+
+pub(crate) fn dynamic_input_space_areas(area: Rect, state: &AppState) -> Vec<Rect> {
+    let count = state.input_spaces.len();
+    if count == 0 || area.width == 0 {
+        return Vec::new();
+    }
+    let physical_count = state
+        .input_spaces
+        .iter()
+        .filter(|space| space.kind == "physical_inputs")
+        .count();
+    let other_count = count.saturating_sub(physical_count);
+    let widths = if physical_count == 1 && other_count > 0 {
+        let compact_width = COMPACT_INPUT_SPACE_WIDTH.min(area.width / count as u16);
+        let physical_width = area
+            .width
+            .saturating_sub(compact_width.saturating_mul(other_count as u16));
+        state
+            .input_spaces
+            .iter()
+            .map(|space| {
+                if space.kind == "physical_inputs" {
+                    physical_width
+                } else {
+                    compact_width
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let width = area.width / count as u16;
+        vec![width; count]
+    };
+    let mut offset = 0_u16;
+    widths
+        .into_iter()
+        .enumerate()
+        .map(|(index, width)| {
+            let width = if index + 1 == count {
+                area.width.saturating_sub(offset)
+            } else {
+                width
+            };
+            let rect = Rect::new(area.x.saturating_add(offset), area.y, width, area.height);
+            offset = offset.saturating_add(width);
+            rect
+        })
+        .collect()
+}
+
+fn preamp_card_columns(width: u16, count: usize, max_rows: usize) -> usize {
+    if count == 0 {
+        return 1;
+    }
+    let width_columns = usize::from((width / PREAMP_CARD_MIN_WIDTH).max(1))
+        .min(PREAMP_CARD_MAX_COLUMNS)
+        .min(count);
+    let height_columns = count.saturating_add(max_rows.saturating_sub(1)) / max_rows.max(1);
+    width_columns.max(height_columns).min(count)
+}
+
+fn preamp_card_areas(area: Rect, count: usize) -> Vec<Rect> {
+    if count == 0 || area.width == 0 || area.height <= 1 {
+        return Vec::new();
+    }
+    let max_rows = usize::from(area.height.saturating_sub(1) / PREAMP_CARD_HEIGHT).max(1);
+    let columns = preamp_card_columns(area.width, count, max_rows);
+    let column_width = area.width / u16::try_from(columns).unwrap_or(u16::MAX).max(1);
+    (0..count)
+        .map(|index| {
+            let row = index / columns;
+            let column = index % columns;
+            let x_offset = u16::try_from(column)
+                .unwrap_or(u16::MAX)
+                .saturating_mul(column_width);
+            let width = if column + 1 == columns {
+                area.width.saturating_sub(x_offset)
+            } else {
+                column_width
+            };
+            Rect::new(
+                area.x.saturating_add(x_offset),
+                area.y.saturating_add(1).saturating_add(
+                    u16::try_from(row)
+                        .unwrap_or(u16::MAX)
+                        .saturating_mul(PREAMP_CARD_HEIGHT),
+                ),
+                width,
+                PREAMP_CARD_HEIGHT,
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn mixer_layout(area: Rect) -> [Rect; 2] {
@@ -185,10 +287,28 @@ pub(crate) fn mixer_strip_viewport_capacity_for_inner(area: Rect) -> usize {
     ((area.width.saturating_add(MIXER_STRIP_GAP)) / stride).clamp(1, u16::MAX) as usize
 }
 
+fn active_mixer_strip_count(state: &AppState) -> usize {
+    state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))
+        .map_or(0, |surface| surface.strips.len())
+}
+
+pub(crate) fn mixer_strip_viewport_capacity_for_state(area: Rect, state: &AppState) -> usize {
+    let total = active_mixer_strip_count(state);
+    if total > MIXER_STRIP_PAGE_SIZE * 2 {
+        state.mixer.visible_strip_count.max(1)
+    } else {
+        mixer_strip_viewport_capacity_for_inner(area)
+    }
+}
+
 pub(crate) fn mixer_strip_visible_bounds(area: Rect, state: &AppState) -> (usize, usize) {
-    let _ = area;
-    let visible = visible_mixer_strips(state);
-    (visible.start, visible.end)
+    let total = active_mixer_strip_count(state);
+    let strip_area = mixer_input_strip_area(area, state);
+    let capacity = mixer_strip_viewport_capacity_for_state(strip_area, state);
+    let start = state.mixer.strip_scroll.min(total.saturating_sub(capacity));
+    (start, start.saturating_add(capacity).min(total))
 }
 
 pub(crate) fn mixer_strip_card_area(area: Rect, slot: usize) -> Rect {
@@ -268,7 +388,7 @@ pub(crate) fn centered_inline_chip_rects(area: Rect, labels: &[&str]) -> Vec<Rec
 pub(crate) fn mixer_header_chip_rects(area: Rect, source: &str) -> (Rect, Rect) {
     let inner = mixer_strip_inner_area(area);
     let channel_rect = Rect::new(inner.x, inner.y, chip_width("CH 00").min(inner.width), 1);
-    let source_width = chip_width(source).min(inner.width);
+    let source_width = chip_width(source).min(inner.width.saturating_sub(channel_rect.width));
     let source_rect = Rect::new(
         inner.x + inner.width.saturating_sub(source_width),
         inner.y,
@@ -737,7 +857,7 @@ pub(crate) fn afx_routing_row_columns(area: Rect) -> Vec<Rect> {
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(7),
+            Constraint::Length(9),
             Constraint::Length(6),
             Constraint::Length(6),
             Constraint::Length(6),
@@ -936,39 +1056,37 @@ pub(crate) fn dynamic_input_rows(area: Rect, state: &AppState) -> Vec<(usize, us
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     );
-    let columns = state.input_spaces.len().max(1);
-    let column_width = inner.width / u16::try_from(columns).unwrap_or(u16::MAX).max(1);
     let mut rows = Vec::new();
-    for (space_index, space) in state.input_spaces.iter().enumerate() {
-        let offset = u16::try_from(space_index)
-            .unwrap_or(u16::MAX)
-            .saturating_mul(column_width);
-        let width = if space_index + 1 == columns {
-            inner.width.saturating_sub(offset)
-        } else {
-            column_width
-        };
-        if state.input_spaces.len() == 1 && space.inputs.len() <= 2 {
-            for (input_index, card) in preamp_bar_layout(area).into_iter().enumerate() {
-                if input_index >= space.inputs.len() {
-                    break;
-                }
-                rows.push((space_index, input_index, card));
-            }
+    for (space_index, (space, space_area)) in state
+        .input_spaces
+        .iter()
+        .zip(dynamic_input_space_areas(inner, state))
+        .enumerate()
+    {
+        if space.kind == "physical_inputs" {
+            rows.extend(
+                preamp_card_areas(space_area, space.inputs.len())
+                    .into_iter()
+                    .enumerate()
+                    .map(|(input_index, card)| (space_index, input_index, card)),
+            );
             continue;
         }
         for input_index in 0..space
             .inputs
             .len()
-            .min(usize::from(inner.height.saturating_sub(1)))
+            .min(usize::from(space_area.height.saturating_sub(1)))
         {
             rows.push((
                 space_index,
                 input_index,
                 Rect::new(
-                    inner.x.saturating_add(offset),
-                    inner.y.saturating_add(1).saturating_add(input_index as u16),
-                    width,
+                    space_area.x,
+                    space_area
+                        .y
+                        .saturating_add(1)
+                        .saturating_add(input_index as u16),
+                    space_area.width,
                     1,
                 ),
             ));
@@ -1167,18 +1285,10 @@ pub(crate) fn dynamic_mixer_control_rects(
                 .and_then(|index| state.mixer.channels.get(surface)?.get(usize::from(index)))
         })
         .and_then(|channel| channel.assignment)
-        .map_or("SOURCE ?", |assignment| assignment.label());
+        .map_or("SOURCE ?", |assignment| assignment.short_label());
     Some(DynamicMixerControlRects {
         card,
-        source: source.then(|| {
-            let (_, rect) = mixer_header_chip_rects(card, source_label);
-            Rect {
-                x: card.x.saturating_add(card.width / 2),
-                y: rect.y,
-                width: card.width.saturating_sub(card.width / 2),
-                height: rect.height.max(3),
-            }
-        }),
+        source: source.then(|| mixer_header_chip_rects(card, source_label).1),
         fader,
         pan,
         send,
@@ -1445,24 +1555,16 @@ pub(crate) fn bounded_signal_area(area: Rect) -> Rect {
     )
 }
 
-pub(crate) fn output_step_from_ratio(ratio: f64, range: (i32, i32)) -> u8 {
-    let (min, max) = range;
-    let value = min as f64 + ratio.clamp(0.0, 1.0) * (max - min) as f64;
-    value.round().clamp(0.0, f64::from(u8::MAX)) as u8
+pub(crate) fn output_step_from_ratio(ratio: f64, semantics: FaderSemantics) -> u8 {
+    mixer_level_from_ratio(ratio, semantics)
 }
 
-pub(crate) fn output_ratio(value: i32, range: (i32, i32)) -> f64 {
-    let (min, max) = range;
-    let span = (max - min) as f64;
-    if span == 0.0 {
-        return 0.0;
-    }
-    (value.clamp(min, max) - min) as f64 / span
+pub(crate) fn output_ratio(value: i32, semantics: FaderSemantics) -> f64 {
+    fader_ratio(value, semantics)
 }
 
-pub(crate) fn output_display_db(value: i32, range: (i32, i32)) -> i32 {
-    let (min, max) = range;
-    value.clamp(min, max) - max
+pub(crate) fn output_display_db(value: i32, semantics: FaderSemantics) -> i16 {
+    fader_display_db(value, semantics)
 }
 
 pub(crate) fn fader_ratio(value: i32, semantics: FaderSemantics) -> f64 {
@@ -1516,10 +1618,8 @@ pub(crate) fn visible_mixer_strips(state: &AppState) -> std::ops::Range<usize> {
     start..end
 }
 
-pub(crate) fn pan_from_ratio(ratio: f64, range: (i32, i32)) -> antelope_protocol::PanState {
-    let (min, max) = range;
-    let raw = min as f64 + (max - min) as f64 * ratio.clamp(0.0, 1.0);
-    antelope_protocol::PanState::from_raw(raw.round().clamp(0.0, f64::from(u8::MAX)) as u8)
+pub(crate) fn pan_from_ratio(ratio: f64, range: (i32, i32)) -> i32 {
+    value_from_ratio(ratio, range)
 }
 
 pub(crate) fn value_from_ratio(ratio: f64, range: (i32, i32)) -> i32 {
@@ -1527,6 +1627,15 @@ pub(crate) fn value_from_ratio(ratio: f64, range: (i32, i32)) -> i32 {
     (min as f64 + (max - min) as f64 * ratio.clamp(0.0, 1.0))
         .round()
         .clamp(min as f64, max as f64) as i32
+}
+
+pub(crate) fn value_ratio(value: i32, range: (i32, i32)) -> f64 {
+    let (min, max) = range;
+    let span = (max - min) as f64;
+    if span == 0.0 {
+        return 0.0;
+    }
+    (value.clamp(min, max) - min) as f64 / span
 }
 
 pub(crate) fn preamp_gain_from_ratio(range: (i32, i32), ratio: f64) -> Option<i32> {

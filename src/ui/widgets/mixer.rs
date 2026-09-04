@@ -95,16 +95,16 @@ pub(crate) fn render_dynamic_output_card_widget(
             .split(controls.row);
         Paragraph::new(Line::from(vec![chip(&output.name, Color::Black, accent)]))
             .render(rows[0], buffer);
-        if let (Some(_), Some(range)) = (
+        if let (Some(_), Some(semantics)) = (
             controls.level,
-            state.output_range(antelope_protocol::OutputControl::Level),
+            state.output_semantics(antelope_protocol::OutputControl::Level),
         ) {
-            let value = output.level.unwrap_or(range.0);
+            let value = output.level.unwrap_or(semantics.min);
             render_labeled_slider(
                 rows[1],
                 buffer,
-                &format!("LVL {} dB", output_display_db(value, range)),
-                Some(output_ratio(value, range)),
+                &format!("LVL {} dB", output_display_db(value, semantics)),
+                Some(output_ratio(value, semantics)),
                 Color::LightGreen,
                 true,
             );
@@ -145,10 +145,10 @@ pub(crate) fn render_dynamic_output_card_widget(
             .supports_output(output.address, antelope_protocol::OutputControl::Level);
         let label = match (
             output.level,
-            state.output_range(antelope_protocol::OutputControl::Level),
+            state.output_semantics(antelope_protocol::OutputControl::Level),
         ) {
-            (Some(value), Some(range)) => {
-                format!("LVL {} dB", output_display_db(value, range))
+            (Some(value), Some(semantics)) => {
+                format!("LVL {} dB", output_display_db(value, semantics))
             }
             _ => "LVL ?".into(),
         };
@@ -514,6 +514,15 @@ pub(crate) fn render_mixer_strip_widget(
         .render(rows[7], buffer);
 }
 
+pub(crate) fn dynamic_meter_value_label(raw: Option<u8>) -> String {
+    match raw {
+        None => "?".into(),
+        Some(raw) => {
+            meter_display_db(raw).map_or_else(|| "-∞ dB".into(), |value| format!("{value} dB"))
+        }
+    }
+}
+
 pub(crate) fn render_dynamic_mixer_strip_widget(
     controls: DynamicMixerControlRects,
     buffer: &mut Buffer,
@@ -559,7 +568,7 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
             .and_then(|channel| channel.assignment)
             .map_or_else(
                 || "SOURCE ?".to_string(),
-                |assignment| assignment.label().to_string(),
+                |assignment| assignment.short_label().to_string(),
             );
         Paragraph::new(Line::from(chip(&source, Color::Black, Color::LightCyan)))
             .alignment(Alignment::Right)
@@ -591,10 +600,7 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
     let semantics = state.mixer_fader(address.surface);
     let rows = mixer_strip_rows(controls.card);
     Paragraph::new(Line::from(Span::styled(
-        strip
-            .meter
-            .and_then(meter_display_db)
-            .map_or_else(|| "MTR ?".into(), |value| format!("MTR {value} dB")),
+        dynamic_meter_value_label(strip.meter),
         strong_style(Color::LightGreen),
     )))
     .alignment(Alignment::Center)
@@ -606,17 +612,7 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
         semantics.and_then(|semantics| strip.fader.map(|value| fader_ratio(value, semantics))),
         None,
     );
-    if let Some(rect) = controls.fader {
-        render_level_slider(
-            rect,
-            buffer,
-            semantics.and_then(|semantics| strip.fader.map(|value| fader_ratio(value, semantics))),
-            if enabled(antelope_protocol::MixerControl::Fader) {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            },
-        );
+    if controls.fader.is_some() {
         Paragraph::new(Line::from(Span::styled(
             semantics.map_or_else(
                 || "LVL ?".into(),

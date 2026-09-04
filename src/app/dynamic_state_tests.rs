@@ -5,7 +5,7 @@ use antelope_protocol::{
     DynamicInputState, DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState,
     DynamicRoutingGroup, DynamicStatePatch, GlobalControl, InputAddress, MixerAddress,
     OutputAddress, OutputControl, ProfileDriver, RoutingSource, RuntimeDriverKind, RuntimeEntry,
-    RuntimeProfile, RuntimeReadiness,
+    RuntimeProfile, RuntimeReadiness, Surface,
 };
 
 use ratatui::layout::Rect;
@@ -70,6 +70,21 @@ fn unsupported_input_action() -> Action {
 }
 
 #[test]
+fn hardware_surface_global_does_not_reset_ui_mixer_surface() {
+    let mut state = AppState::from_profile(&zen_go_profile());
+    state.mixer.surface_index = 0;
+    state.globals = vec![DynamicGlobalState {
+        control: GlobalControl::Surface,
+        value: ControlValue::Enum(0x0c),
+    }];
+
+    state.apply_dynamic_globals_to_status();
+
+    assert_eq!(state.mixer.surface_index, 0);
+    assert_eq!(state.mixer.surface, Surface::Hp2);
+}
+
+#[test]
 fn dynamic_state_orion_allocates_profile_geometry() {
     let state = AppState::from_profile(&orion_profile());
     assert_eq!(state.inputs_for_space("physical_inputs").len(), 12);
@@ -84,12 +99,20 @@ fn dynamic_state_orion_allocates_profile_geometry() {
 #[test]
 fn dynamic_state_zen_go_preserves_geometry_and_labels() {
     let state = AppState::from_profile(&zen_go_profile());
+    assert_eq!(
+        state
+            .input_spaces
+            .iter()
+            .map(|space| space.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["physical_inputs"]
+    );
     assert_eq!(state.inputs_for_space("physical_inputs").len(), 2);
     assert_eq!(state.outputs().len(), 3);
     assert_eq!(state.mixers().len(), 2);
     assert!(state.mixers().iter().all(|mixer| mixer.strips.len() == 16));
-    assert_eq!(state.outputs()[0].name, "bus_0");
-    assert_eq!(state.mixers()[0].name, "Mix 1");
+    assert_eq!(state.outputs()[0].name, "Monitor");
+    assert_eq!(state.mixers()[0].name, "MIX 1 / Monitor-HP1");
 }
 
 #[test]
@@ -139,7 +162,7 @@ fn dynamic_state_query_patches_use_stable_addresses() {
                 strip,
                 name: format!("CH {strip:02}"),
                 fader: Some(i32::from(strip)),
-                pan: Some(32),
+                pan: Some(0),
                 send: Some(96),
                 muted: Some(false),
                 soloed: Some(false),
@@ -190,7 +213,7 @@ fn dynamic_state_query_patches_use_stable_addresses() {
         raw: vec![0x75; 320],
     });
     let merged = &zen_go.mixers()[0].strips[0];
-    assert_eq!(zen_go.mixers()[0].name, "Mix 1");
+    assert_eq!(zen_go.mixers()[0].name, "MIX 1 / Monitor-HP1");
     assert_eq!(merged.name, original_name);
     assert_eq!(merged.fader, Some(7));
     assert_eq!(merged.pan, Some(17));

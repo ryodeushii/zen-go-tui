@@ -101,6 +101,7 @@ pub struct InputSpaceState {
     pub id: String,
     pub space_id: u16,
     pub name: String,
+    pub kind: String,
     pub inputs: Vec<DynamicInputState>,
 }
 
@@ -172,6 +173,7 @@ pub struct UiProfileState {
     pub actionable: bool,
     input_controls: HashSet<(InputAddress, InputControl)>,
     input_capabilities: HashMap<InputAddress, Vec<UiInputCapability>>,
+    parameter_values: HashMap<String, HashMap<i32, String>>,
     output_controls: HashSet<(OutputAddress, OutputControl)>,
     mixer_controls: HashSet<(u8, MixerControl)>,
     link_surfaces: HashSet<u8>,
@@ -191,6 +193,16 @@ impl UiProfileState {
                 .iter()
                 .any(|param| param.name == name && param.status.eq_ignore_ascii_case("confirmed"))
         };
+        let parameter_values = profile
+            .params
+            .iter()
+            .map(|parameter| {
+                (
+                    parameter.name.clone(),
+                    parameter.values.iter().cloned().collect(),
+                )
+            })
+            .collect();
 
         let mut input_capabilities = HashMap::new();
         let mut input_controls = HashSet::new();
@@ -319,6 +331,7 @@ impl UiProfileState {
             actionable,
             input_controls,
             input_capabilities,
+            parameter_values,
             output_controls,
             mixer_controls,
             link_surfaces,
@@ -338,6 +351,7 @@ impl UiProfileState {
             actionable: false,
             input_controls: HashSet::new(),
             input_capabilities: HashMap::new(),
+            parameter_values: HashMap::new(),
             output_controls: HashSet::new(),
             mixer_controls: HashSet::new(),
             link_surfaces: HashSet::new(),
@@ -361,6 +375,20 @@ impl UiProfileState {
         self.input_capabilities
             .get(&address)
             .map_or(&[], Vec::as_slice)
+    }
+
+    pub fn input_value_label(
+        &self,
+        address: InputAddress,
+        control: InputControl,
+        value: i32,
+    ) -> Option<&str> {
+        self.input_capabilities(address)
+            .iter()
+            .find(|capability| capability.control == Some(control))
+            .and_then(|capability| self.parameter_values.get(&capability.parameter))
+            .and_then(|values| values.get(&value))
+            .map(String::as_str)
     }
 
     pub fn declares_input(&self, address: InputAddress, control: InputControl) -> bool {
@@ -408,12 +436,17 @@ impl UiProfileState {
     }
 
     pub fn supports_assignment(&self, surface: u8, strip: u16) -> bool {
-        self.actionable
-            && self.routing_destinations.contains(&u16::from(surface))
+        if !self.actionable || strip == 0 {
+            return false;
+        }
+        if self.driver_kind == RuntimeDriverKind::ZenGo && surface < 2 && strip <= 16 {
+            return true;
+        }
+        self.routing_destinations.contains(&u16::from(surface))
             && self
                 .routing_channel_counts
                 .get(&u16::from(surface))
-                .is_some_and(|count| strip > 0 && strip <= *count)
+                .is_some_and(|count| strip <= *count)
     }
 }
 
@@ -460,6 +493,7 @@ impl Default for UiProfileState {
             actionable: true,
             input_controls,
             input_capabilities: HashMap::new(),
+            parameter_values: HashMap::new(),
             output_controls,
             mixer_controls,
             link_surfaces: [0, 1].into_iter().collect(),
@@ -557,7 +591,7 @@ impl Default for MixerState {
                         strip,
                         name: format!("CH {strip:02}"),
                         fader: None,
-                        pan: Some(0x20),
+                        pan: Some(0),
                         send: None,
                         muted: None,
                         soloed: None,

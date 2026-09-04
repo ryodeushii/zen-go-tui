@@ -110,7 +110,7 @@ mod tests {
         Action::SetMixerStripState {
             address: MixerAddress { surface: 0, strip },
             fader,
-            pan: 0x20,
+            pan: 0,
             muted: false,
             soloed: false,
             send: None,

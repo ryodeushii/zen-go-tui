@@ -62,7 +62,7 @@ mod tests {
             Readiness::Supported
         );
         assert_eq!(
-            entry("Antelope Orion Studio III").readiness,
+            entry("Antelope Orion Studio Synergy Core").readiness,
             Readiness::Supported
         );
         assert_eq!(
@@ -83,7 +83,7 @@ mod tests {
     fn canonical_catalog_records_profile_driven_control_interfaces() {
         for name in [
             "Antelope Zen Go Synergy Core",
-            "Antelope Orion Studio III",
+            "Antelope Orion Studio Synergy Core",
             "Antelope Discrete 8 Pro Synergy Core",
         ] {
             assert_eq!(
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn orion_catalog_preserves_full_profile_geometry() {
-        let orion = entry("Antelope Orion Studio III");
+        let orion = entry("Antelope Orion Studio Synergy Core");
         let physical_inputs = orion
             .definition
             .inputs

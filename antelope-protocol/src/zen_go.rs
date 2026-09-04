@@ -227,7 +227,8 @@ impl ZenGoDriver {
                                 name: format!("CH {:02}", index + 1),
                                 fader: None,
                                 pan: strip
-                                    .and_then(|state| state.pan.map(|pan| i32::from(pan.raw()))),
+                                    .and_then(|state| state.pan)
+                                    .and_then(|pan| mixer.pan_value_from_raw(pan)),
                                 send: None,
                                 muted: strip.and_then(|state| state.muted),
                                 soloed: None,
@@ -344,7 +345,8 @@ impl ZenGoDriver {
         }
         let supports = |field: &str| layout.supported_fields.iter().any(|value| value == field);
         let decode_surface = |surface: u8, records: Vec<usize>| {
-            let fader = self.profile.mixer_fader(surface);
+            let mixer = self.profile.mixer(surface);
+            let fader = mixer.and_then(|mixer| mixer.fader);
             let strips = records
                 .into_iter()
                 .map(|index| {
@@ -364,7 +366,7 @@ impl ZenGoDriver {
                             None
                         },
                         pan: if is_q04 || supports("pan") {
-                            Some(i32::from(pan.raw()))
+                            mixer.and_then(|mixer| mixer.pan_value_from_raw(pan))
                         } else {
                             None
                         },
@@ -566,9 +568,16 @@ impl DeviceDriver for ZenGoDriver {
                 soloed,
                 send: None,
             } => {
-                if !(1..=16).contains(&strip)
-                    || !(i32::from(PanState::MIN)..=i32::from(PanState::MAX)).contains(&pan)
-                {
+                let pan_state = self
+                    .profile
+                    .mixer(surface)
+                    .and_then(|mixer| mixer.pan_raw_from_value(pan))
+                    .ok_or_else(|| {
+                        DriverError::InvalidAction(format!(
+                            "Zen Go mixer address/pan {surface}:{strip}/{pan}"
+                        ))
+                    })?;
+                if !(1..=16).contains(&strip) {
                     return Err(DriverError::InvalidAction(format!(
                         "Zen Go mixer address/pan {surface}:{strip}/{pan}"
                     )));
@@ -577,7 +586,7 @@ impl DeviceDriver for ZenGoDriver {
                     mixer: Self::mixer(surface)?,
                     channel: strip as u8,
                     level: self.validate_fader(surface, fader)?,
-                    pan_state: PanState::from_raw(pan as u8),
+                    pan_state,
                     muted,
                     soloed,
                 }

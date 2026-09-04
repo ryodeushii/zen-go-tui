@@ -564,13 +564,13 @@ def _validate_section_objects(data: Mapping[str, Any]) -> None:
 def _profile_source_path(path: Path, profiles_dir: Path | None) -> str:
     """Return stable source provenance independent of checkout absolute path."""
 
-    if profiles_dir is not None:
-        try:
-            relative = path.resolve().relative_to(profiles_dir.resolve())
-            return (Path("profiles") / relative).as_posix()
-        except ValueError:
-            pass
-    return path.name
+    if profiles_dir is None:
+        return path.name
+    try:
+        relative = path.resolve().relative_to(profiles_dir.resolve())
+        return (Path("profiles") / relative).as_posix()
+    except ValueError:
+        return path.name
 
 
 def normalize_profile(
@@ -761,7 +761,7 @@ def source_sha256(path: Path | str) -> str:
 
 def _is_orion(profile: NormalizedProfile) -> bool:
     return (
-        profile.path.stem == "orion_studio_3"
+        profile.path.stem in {"orion_studio_3", "orion_studio_sc"}
         and (profile.identity.vid, profile.identity.pid) == (0x23E5, 0xA221)
     )
 
@@ -1172,6 +1172,12 @@ def _rust_string(value: Any) -> str:
 
 def _rust_option(value: int | bool | str | None, renderer: Any = str) -> str:
     return "None" if value is None else f"Some({renderer(value)})"
+
+
+def _rust_fader_direction(value: str | None) -> str:
+    if value is None:
+        return "None"
+    return f"Some(FaderDirectionDefinition::{value.title()})"
 
 
 def _rust_i32(value: int) -> str:
@@ -1950,21 +1956,33 @@ def _index_count_from_raw(value: Any, context: str) -> tuple[int | None, str]:
     return expected, evidence
 
 
+_NEGATIVE_QUALIFIER_PATTERN = re.compile(
+    r"\b(?:partial|partly|unconfirmed|unverified|unknown|ambiguous|incomplete|conflicting|superseded|untested)\b"
+    r"|\bhost[-\s]+dependent\b",
+    re.IGNORECASE,
+)
+_NEGATIVE_QUALIFIER_WITHOUT_UNTESTED_PATTERN = re.compile(
+    r"\b(?:partial|partly|unconfirmed|unverified|unknown|ambiguous|incomplete|conflicting|superseded)\b"
+    r"|\bhost[-\s]+dependent\b",
+    re.IGNORECASE,
+)
+_CONFIRMATION_NEGATION_PATTERN = re.compile(
+    r"\b(?:not|never|no)\b(?:\W+\w+){0,4}\W+\b(?:confirmed|fully\s+decoded)\b",
+    re.IGNORECASE,
+)
+
+
 def _evidence_has_negative_qualifier(
     text: str, *, include_untested: bool = True
 ) -> bool:
-    negative_tokens = (
-        r"\b(?:partial|partly|unconfirmed|unverified|unknown|ambiguous|incomplete|conflicting|superseded"
-        + (r"|untested" if include_untested else "")
-        + r")\b|\bhost[-\s]+dependent\b"
+    negative_qualifier_pattern = (
+        _NEGATIVE_QUALIFIER_PATTERN
+        if include_untested
+        else _NEGATIVE_QUALIFIER_WITHOUT_UNTESTED_PATTERN
     )
     return bool(
-        re.search(negative_tokens, text, re.IGNORECASE)
-        or re.search(
-            r"\b(?:not|never|no)\b(?:\W+\w+){0,4}\W+\b(?:confirmed|fully\s+decoded)\b",
-            text,
-            re.IGNORECASE,
-        )
+        negative_qualifier_pattern.search(text)
+        or _CONFIRMATION_NEGATION_PATTERN.search(text)
     )
 
 
@@ -2196,6 +2214,10 @@ def _derived_routing_source_domains(
             )
         seen_banks.add(bank)
         bank_context = f"frame.routing_command.source_banks.{bank:#04x}"
+        # Orion bank 0x02 is host-dependent: Windows exposes 24 channels while
+        # native macOS exposes up to 32. Keep its raw evidence metadata-only.
+        if bank == 0x02 and _is_orion(profile):
+            continue
         count, evidence = _index_count_from_raw(raw_evidence, bank_context)
         if count is None:
             # Source record remains available in frame metadata, but no safe
@@ -2217,11 +2239,7 @@ def _derived_routing_source_domains(
             continue
         if any(_source_bound_evidence_is_negative(qualifier) for qualifier in qualifications):
             continue
-        # Bank 0x02 is host-dependent: Windows exposes 24 channels while
-        # native macOS exposes up to 32.  Keep its raw evidence metadata-only.
         evidence_text = evidence.lower()
-        if bank == 0x02:
-            continue
         # Oscillator has a finite-looking note but no confirmation.  It is a
         # pseudo-source, so keep it metadata-only until raw evidence confirms it.
         if bank == 0x0C and not re.search(r"\bconfirmed\b", evidence_text):
@@ -2627,13 +2645,22 @@ def _build_mixers(profile: NormalizedProfile) -> list[dict[str, Any]]:
         else _section_status(frame_mixer, profile.profile_status or "unknown")
     )
     status = "observed" if inferred_geometry else mixer_status
+    names = profile.mixer.get("names")
+    if names is None:
+        names = [f"Mix {mix_index + 1}" for mix_index in range(mix_count)]
+    elif (
+        not isinstance(names, list)
+        or len(names) != mix_count
+        or any(not isinstance(name, str) or not name for name in names)
+    ):
+        raise ProfileError("mixer.names must contain one non-empty string per mix")
     result = []
     for mix_index in range(mix_count):
         _checked_u8(mix_index, "mixer.mix_index")
         result.append(
             {
                 "id": f"mix_{mix_index + 1}",
-                "name": f"Mix {mix_index + 1}",
+                "name": names[mix_index],
                 "mix_index": mix_index,
                 "strip_count": strip_count,
                 "has_master": has_master,
@@ -3131,6 +3158,7 @@ def _orion_source_only_parameter(name: str) -> bool:
         "routing",
         "oscillator",
         "surround_monitor",
+        "surround_speaker",
         "dc_coupling",
         "talkback_dest_assign",
     }
@@ -3157,6 +3185,37 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
         if range_source is None and name == "gain" and _is_orion(profile):
             range_source = [0, 75]
         parameter_range = _range(range_source, f"params.{name}.runtime_range")
+        scalar_domain_keys = {"direction", "unity"}
+        scalar_domain_present = scalar_domain_keys.intersection(value)
+        direction: str | None = None
+        unity: int | None = None
+        if scalar_domain_present:
+            missing = scalar_domain_keys - value.keys()
+            if missing:
+                missing_text = ", ".join(sorted(missing))
+                raise ProfileError(
+                    f"params.{name} scalar domain requires both direction and unity; missing: {missing_text}"
+                )
+            if parameter_range is None:
+                raise ProfileError(
+                    f"params.{name} scalar domain requires a normalized range"
+                )
+            raw_direction = value["direction"]
+            if not isinstance(raw_direction, str) or not raw_direction.strip():
+                raise ProfileError(
+                    f"params.{name}.direction must be a non-empty string"
+                )
+            direction = raw_direction.strip().lower()
+            if direction not in {"direct", "attenuation"}:
+                raise ProfileError(
+                    f"params.{name}.direction must be direct or attenuation"
+                )
+            unity = _checked_i32(value["unity"], f"params.{name}.unity")
+            minimum, maximum = parameter_range
+            if not minimum <= unity <= maximum:
+                raise ProfileError(
+                    f"params.{name}.unity must fit params.{name} range"
+                )
         range_by_mode: dict[str, tuple[int, int] | str] = {}
         per_mode_range: dict[str, tuple[int, int] | str] = {}
         range_forms: list[dict[str, Any]] = []
@@ -3256,6 +3315,8 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 "status_text": status,
                 "applies_to": applies_to,
                 "range": parameter_range,
+                "direction": direction,
+                "unity": unity,
                 "range_by_mode": range_by_mode,
                 "per_mode_range": per_mode_range,
                 "range_forms": range_forms,
@@ -3429,11 +3490,19 @@ def _normalized_kind(variant: str) -> str:
     return re.sub(r"(?<!^)(?=[A-Z])", "_", variant).lower()
 
 
+_PROFILE_ID_ALIASES = {
+    "discrete_4_pro_sc": "discrete_4_pro",
+    "discrete_4_sc": "discrete_4",
+    "discrete_8_pro_sc": "discrete_8_pro",
+    "orion_studio_sc": "orion_studio_3",
+}
+
+
 def _profile_id(profile: NormalizedProfile) -> str:
     identifier = re.sub(r"[^a-z0-9]+", "_", profile.path.stem.lower()).strip("_")
     if not identifier:
         raise ProfileError(f"cannot derive stable profile id from {profile.path}")
-    return identifier
+    return _PROFILE_ID_ALIASES.get(identifier, identifier)
 
 
 def _runtime_driver_kind(profile: NormalizedProfile, readiness: Readiness) -> str:
@@ -4152,6 +4221,13 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
                 "status": _normalized_status(param["status"]),
                 "applies_to": param["applies_to"],
                 "range": param["range"],
+                "direction": param["direction"],
+                "unity": param["unity"],
+                "range_by_mode": [
+                    [mode, list(range_value)]
+                    for mode, range_value in param["range_by_mode"].items()
+                    if isinstance(range_value, tuple)
+                ],
                 "values": [[value["value"], value["name"]] for value in param["values"]],
                 "frame": {
                     "text": param["frame_reference"]["text"],
@@ -4639,7 +4715,8 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 f"name: {_rust_string(param['name'])}, id: {_rust_option(param['id'], _rust_u16)}, "
                 f"value_type: ParamValueType::{param['value_type']}, status: Status::{_status_variant(param['status'])}, "
                 f"status_text: {_rust_string(param['status_text'])}, applies_to: {_rust_string(param['applies_to'])}, "
-                f"range: {_render_range(param['range'])}, range_by_mode: {param_range_helpers[index]}, "
+                f"range: {_render_range(param['range'])}, direction: {_rust_fader_direction(param['direction'])}, "
+                f"unity: {_rust_option(param['unity'], _rust_i32)}, range_by_mode: {param_range_helpers[index]}, "
                 f"range_forms: {param_range_form_helpers[index]}, values: {param_value_helpers[index]}, "
                 f"frame: {param_frame_helpers[index]}, readback: {param_readback_helpers[index]}, "
                 f"encoding: {_rust_string(param['encoding'])}, metadata: {_rust_string(param['metadata'])} }},"

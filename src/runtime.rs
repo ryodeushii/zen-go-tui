@@ -296,7 +296,7 @@ fn handle_profile_editor(
             let valid: String = ch
                 .to_string()
                 .chars()
-                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .filter(|c| zen_go_tui::profile::is_profile_name_character(*c))
                 .collect();
             if !valid.is_empty() {
                 controller.apply_intent(Intent::ProfileEditorChar(valid), area)?;
@@ -607,22 +607,13 @@ pub fn handle_key_press(
                 else {
                     return Ok(KeyAction::Continue);
                 };
-                let current = strip
-                    .pan
-                    .and_then(|value| u8::try_from(value).ok())
-                    .unwrap_or_else(|| PanState::center().raw());
-                let next = if key_code == AppKeyCode::Char('[') {
-                    current.saturating_sub(1).max(PanState::MIN)
-                } else {
-                    current.saturating_add(1).min(PanState::MAX)
-                };
                 controller.apply_intent(
-                    Intent::SetMixerPanAt {
+                    Intent::AdjustMixerPanAt {
                         address: MixerAddress {
                             surface: surface.surface,
                             strip: strip.strip,
                         },
-                        pan: PanState::from_raw(next),
+                        right: key_code == AppKeyCode::Char(']'),
                     },
                     area,
                 )?;

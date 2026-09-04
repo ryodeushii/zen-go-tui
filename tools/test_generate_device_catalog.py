@@ -15,6 +15,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TOOLS_DIR.parent
 GENERATOR = TOOLS_DIR / "generate_device_catalog.py"
 ZEN_GO_PROFILE = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "zen_go_sc.json"
+ORION_PROFILE = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
 sys.path.insert(0, str(TOOLS_DIR))
 
 import generate_device_catalog as generator  # noqa: E402
@@ -282,6 +283,51 @@ class GeneratorTests(unittest.TestCase):
             {"min": 0, "max": 90, "direction": "attenuation", "unity": 0},
         )
 
+    def test_zen_go_profile_declares_attenuation_output_domain(self) -> None:
+        bus_level = next(
+            param for param in normalized_zen_go()["params"] if param["name"] == "bus_level"
+        )
+
+        self.assertEqual(bus_level["direction"], "attenuation")
+        self.assertEqual(bus_level["unity"], 0)
+        self.assertEqual(
+            json.loads(bus_level["metadata"])["encoding"],
+            "raw = dB attenuation below unity: 0 = 0 dB, 96 = -96 dB",
+        )
+
+    def test_zen_go_profile_preserves_confirmed_ui_labels(self) -> None:
+        profile = normalized_zen_go()
+
+        self.assertEqual(
+            [
+                (input_["index"], input_["name"])
+                for input_ in profile["inputs"]
+                if input_["space"] == "physical_inputs"
+            ],
+            [(0, "Preamp 1"), (1, "Preamp 2")],
+        )
+        self.assertEqual(
+            [(output["id"], output["name"]) for output in profile["outputs"]],
+            [(0, "Monitor"), (1, "HP1"), (2, "HP2")],
+        )
+        self.assertEqual(
+            [(mixer["mix_index"], mixer["name"]) for mixer in profile["mixers"]],
+            [(0, "MIX 1 / Monitor-HP1"), (1, "MIX 2 / HP2")],
+        )
+
+    def test_parameter_scalar_domain_requires_complete_valid_metadata(self) -> None:
+        for partial in ({"direction": "attenuation"}, {"unity": 0}):
+            with self.subTest(partial=partial):
+                data = profile_data("Test", "0xa001")
+                data["params"]["gain"].update(partial)
+                with self.assertRaisesRegex(generator.ProfileError, "direction and unity"):
+                    generator._build_params(generator.normalize_profile(data))
+
+        data = profile_data("Test", "0xa001")
+        data["params"]["gain"].update({"direction": "attenuation", "unity": 76})
+        with self.assertRaisesRegex(generator.ProfileError, "unity.*range"):
+            generator._build_params(generator.normalize_profile(data))
+
     def test_readback_declarations_validate_sparse_query_and_layout_geometry(self) -> None:
         def profile_with_readback(safe_queries: list[dict[str, Any]], layout: dict[str, Any]) -> dict[str, Any]:
             data = profile_data("Antelope Zen Go Synergy Core", "0xa015")
@@ -517,6 +563,16 @@ class GeneratorTests(unittest.TestCase):
         with self.assertRaises(generator.ProfileError):
             generator.parse_int(True, "pid")
 
+    def test_upstream_sc_filenames_keep_stable_runtime_ids(self) -> None:
+        profiles_dir = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
+        discrete = generator.load_profile(profiles_dir / "discrete_4_pro_sc.json", profiles_dir)
+        self.assertEqual(generator._profile_id(discrete), "discrete_4_pro")
+
+        orion_data = profile_data("Antelope Orion Studio III", "0xa221")
+        orion = generator.normalize_profile(orion_data, path=Path("orion_studio_sc.json"))
+        self.assertTrue(generator._is_orion(orion))
+        self.assertEqual(generator._profile_id(orion), "orion_studio_3")
+
     def test_records_source_sha256_and_provenance(self) -> None:
         with fixture_profiles() as temporary:
             profile_path = Path(temporary) / "orion_studio_3.json"
@@ -534,7 +590,7 @@ class GeneratorTests(unittest.TestCase):
             profiles = {profile.path.name: profile for profile in generator.discover_profiles(temporary)}
             zen = generator.load_profile(profiles["zen_go_sc.json"].path, temporary)
             orion = generator.load_profile(
-                REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+                REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json",
                 REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
             )
             discrete_8 = generator.load_profile(profiles["discrete_8_pro_synergy_core.json"].path, temporary)
@@ -552,7 +608,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(generator.classify_readiness(incomplete_orion), generator.Readiness.DISABLED)
 
     def test_orion_explicit_numbered_reports_is_unrepresentable_blocker(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         data["transport"]["uses_numbered_reports"] = True
         profile = generator.normalize_profile(data, path=path)
@@ -563,7 +619,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_orion_readiness_reports_confirmed_transport_blocker(self) -> None:
         canonical = generator.load_profile(
-            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json",
             REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
         )
         blockers = generator.orion_readiness_blockers(canonical)
@@ -572,7 +628,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_builtin_catalog_uses_effective_orion_framing(self) -> None:
         canonical = generator.load_profile(
-            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json",
             REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
         )
         rendered = generator.render_catalog([canonical])
@@ -580,7 +636,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_orion_normal_support_policy(self) -> None:
         profiles_dir = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
-        canonical_path = profiles_dir / "orion_studio_3.json"
+        canonical_path = profiles_dir / "orion_studio_sc.json"
         canonical = generator.load_profile(canonical_path, profiles_dir)
         normalized = json.loads(generator.render_profile_pack([canonical]))["profiles"][0]
         blockers = generator.orion_readiness_blockers(canonical)
@@ -593,21 +649,26 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(normalized["identity"]["status"], "unknown")
         self.assertEqual(
             normalized["provenance"]["source_sha256"],
-            "3ed69b5efa7070e8f43af7967c64e58afed4bc99f013350f82057bea58972c0b",
+            "971a1f25d55d502f15bc2a1f86dbed682ebea2d4c5bf1d1ba361baf96c4015fa",
         )
 
-    def test_orion_unconfirmed_source_only_params_are_non_actionable(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+    def test_orion_source_only_params_are_non_actionable(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         profile = generator.load_profile(path, REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles")
         normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
         params = {param["name"]: param for param in normalized["params"]}
-        for name in ("oscillator", "surround_monitor", "dc_coupling", "routing_batch_marker"):
-            self.assertNotEqual(generator._normalized_status(params[name]["status"]), "confirmed")
+        for name in (
+            "oscillator",
+            "surround_monitor",
+            "surround_speaker",
+            "dc_coupling",
+            "routing_batch_marker",
+        ):
             self.assertIsNone(params[name]["id"])
             self.assertIn("id", json.loads(params[name]["metadata"]))
 
     def test_orion_actionable_params_have_complete_runtime_shape(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         profile = generator.load_profile(path, REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles")
         normalized = json.loads(generator.render_profile_pack([profile]))["profiles"][0]
         params = {param["name"]: param for param in normalized["params"]}
@@ -648,14 +709,15 @@ class GeneratorTests(unittest.TestCase):
 
     def test_orion_identity_requires_profile_stem(self) -> None:
         data = json.loads(
-            (REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json").read_text()
+            (REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json").read_text()
         )
+        data["frame"]["routing_command"]["source_banks"].pop("0x02", None)
         profile = generator.normalize_profile(data, path=Path("same_vid_pid.json"))
         self.assertFalse(generator._is_orion(profile))
         self.assertEqual(generator.classify_readiness(profile), generator.Readiness.DISABLED)
 
     def test_orion_frame_promotion_matches_exact_identifiers(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         for value in data["params"].values():
             if not isinstance(value, dict):
@@ -673,7 +735,7 @@ class GeneratorTests(unittest.TestCase):
         )
 
     def test_orion_auraverb_and_micmodeling_never_promote(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         for frame_id in ("auraverb_command", "micmodeling_command"):
             data["frame"][frame_id]["runtime_status"] = "confirmed"
@@ -688,7 +750,7 @@ class GeneratorTests(unittest.TestCase):
             )
 
     def test_orion_inferred_semantics_are_unique_without_renaming_lookups(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         profile = generator.normalize_profile(data, path=path)
         operations = generator._frame_operations(profile, "state_report", profile.frame["state_report"])
@@ -702,7 +764,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn("byte__2", names)
 
     def test_orion_inferred_scalar_bit_field_collisions_share_namespace(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         profile = generator.normalize_profile(json.loads(path.read_text()), path=path)
         operations = generator._disambiguate_orion_inferred_semantics(
             profile,
@@ -720,7 +782,7 @@ class GeneratorTests(unittest.TestCase):
         )
 
     def test_orion_parameter_qualifiers_block_referenced_promotion(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         for name, value in data["params"].items():
             if not isinstance(value, dict):
@@ -740,7 +802,7 @@ class GeneratorTests(unittest.TestCase):
         )
 
     def test_orion_geometry_blocker_is_emitted_once(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["frame"]["command"]["runtime_operations"] = [
             {"op": "scalar", "field": "bad", "offset": 320, "width": 1, "endian": "not_applicable"}
@@ -750,7 +812,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(sum("frame.command operation geometry exceeds" in blocker for blocker in blockers), 1)
 
     def test_orion_rejects_superseded_evidence_and_out_of_bounds_operation(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["frame"]["command"]["notes"] = "superseded mapping"
         profile = generator.normalize_profile(data, path=path)
@@ -764,14 +826,14 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(any("operation geometry exceeds" in blocker for blocker in generator.orion_readiness_blockers(profile)))
 
     def test_orion_state_meter_requires_confirmed_complete_physical_indices(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["channels"].pop("confirmed_indices")
         profile = generator.normalize_profile(data, path=path)
         self.assertTrue(any("physical channel meter" in blocker for blocker in generator.orion_readiness_blockers(profile)))
 
     def test_orion_physical_meter_is_scoped_to_state_report(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         profile = generator.normalize_profile(data, path=path)
         normalized = generator._normalized_profile_record(profile)
@@ -798,7 +860,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(leaked_frames, set())
 
     def test_orion_meter_removes_only_obsolete_channel_indexing(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["frame"]["meter_report"]["channel_meter_stride"] = 1
         profile = generator.normalize_profile(data, path=path)
@@ -825,7 +887,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn("channel_meter_base_offset", meter["metadata"])
 
     def test_orion_rejects_out_of_bounds_obsolete_meter_operation(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["frame"]["meter_report"]["channel_meter_base_offset"] = 320
         data["frame"]["meter_report"]["channel_meter_stride"] = 1
@@ -873,7 +935,7 @@ class GeneratorTests(unittest.TestCase):
         )
 
     def test_orion_skipped_physical_link_validates_protocol_space(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["runtime_topology"] = {
             "status": "confirmed",
@@ -892,7 +954,7 @@ class GeneratorTests(unittest.TestCase):
             generator.normalize_profile(data, path=path)
 
     def test_orion_skipped_adat_link_validates_pair_count(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["runtime_topology"] = {
             "status": "confirmed",
@@ -911,7 +973,7 @@ class GeneratorTests(unittest.TestCase):
             generator.normalize_profile(data, path=path)
 
     def test_orion_confirmed_physical_adat_link_capabilities_are_actionable_blocker(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["runtime_topology"] = {
             "status": "confirmed",
@@ -929,7 +991,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(any("physical/ADAT link action" in blocker for blocker in blockers))
 
     def test_orion_physical_link_domain_is_actionable_blocker(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["runtime_topology"] = {
             "status": "confirmed",
@@ -950,7 +1012,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(any("physical/ADAT link action" in blocker for blocker in blockers))
 
     def test_orion_combined_physical_adat_space_zero_is_disabled_not_rejected(self) -> None:
-        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["runtime_topology"] = {
             "status": "confirmed",
@@ -1010,7 +1072,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_orion_unsupported_formula_and_unsafe_startup_bound_are_blockers(self) -> None:
         canonical_path = (
-            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json"
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         )
         data = json.loads(canonical_path.read_text(encoding="utf-8"))
         data["frame"]["command"]["formula"] = "unknown(channel)"
@@ -1041,7 +1103,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_canonical_orion_startup_walk_preserves_all_113_markers(self) -> None:
         canonical = generator.load_profile(
-            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json",
             REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
         )
         normalized = json.loads(generator.render_profile_pack([canonical]))["profiles"][0]
@@ -1074,7 +1136,7 @@ class GeneratorTests(unittest.TestCase):
             )
             return generator._normalized_profile_record(normalized), raw
 
-        orion, orion_raw = record("orion_studio_3.json")
+        orion, orion_raw = record("orion_studio_sc.json")
         self.assertNotIn("runtime_topology", orion_raw)
         self.assertEqual(
             [item["strip_count"] for item in orion["mixers"]], [32, 32, 32, 32]
@@ -1252,6 +1314,24 @@ class GeneratorTests(unittest.TestCase):
                 self.assertEqual(
                     generator._derived_routing_source_domains(profile, routing, True), []
                 )
+
+    def test_orion_host_dependent_source_bank_remains_metadata_only(self) -> None:
+        profiles_dir = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
+        profile = generator.load_profile(ORION_PROFILE, profiles_dir)
+        domains = generator._derived_routing_source_domains(
+            profile, profile.frame["routing_command"], True
+        )
+
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.SUPPORTED)
+        self.assertTrue(domains)
+        self.assertNotIn(
+            0x02,
+            {
+                bank["bank"]
+                for domain in domains
+                for bank in domain["banks"]
+            },
+        )
 
     def test_duplicate_normalized_source_banks_are_rejected(self) -> None:
         data = profile_data("Antelope Orion Studio III", "0xa221")
@@ -1966,7 +2046,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_canonical_orion_emits_no_input_links_and_only_confirmed_mixer_link_domain(self) -> None:
         canonical = generator.load_profile(
-            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_3.json",
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json",
             REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
         )
         normalized = json.loads(generator.render_profile_pack([canonical]))["profiles"][0]

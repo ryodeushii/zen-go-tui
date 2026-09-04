@@ -1,6 +1,6 @@
 use antelope_protocol::{
     load_profile_pack, Action, DeviceDriver, DeviceEvent, DynamicStatePatch, MixerAddress,
-    QueryRequest, ZenGoDriver,
+    PanState, QueryRequest, ZenGoDriver,
 };
 
 mod test_support {
@@ -57,7 +57,7 @@ fn zen_go_fader_encoding_preserves_attenuation_domain() {
                 strip: 1,
             },
             fader: 0,
-            pan: 32,
+            pan: 0,
             muted: false,
             soloed: false,
             send: None,
@@ -71,7 +71,7 @@ fn zen_go_fader_encoding_preserves_attenuation_domain() {
                 strip: 1
             },
             fader: 91,
-            pan: 32,
+            pan: 0,
             muted: false,
             soloed: false,
             send: None,
@@ -105,10 +105,29 @@ fn zen_go_q04_readback_emits_profile_surface_patch() {
         assert_eq!(surface.strips[1].fader, Some(0x12));
         assert_eq!(surface.strips[2].fader, Some(0x1e));
         assert_eq!(surface.strips[3].fader, Some(0x5a));
-        assert_eq!(surface.strips[0].pan, Some(0x20));
+        assert_eq!(surface.strips[0].pan, Some(0));
         assert_eq!(surface.strips[0].muted, Some(false));
         assert_eq!(surface.strips[0].soloed, Some(false));
     }
+}
+
+#[test]
+fn zen_go_q04_readback_converts_pan_to_semantic_values() {
+    let driver = ZenGoDriver::new(test_support::zen_go_profile()).expect("driver");
+    let mut bytes = test_support::hex_fixture(include_str!("fixtures/zen_go/q04_mix1_reply.hex"));
+    bytes[19] = PanState::left().raw();
+    bytes[21] = PanState::right().raw();
+
+    let event = driver.decode(&bytes).expect("decode").expect("event");
+    let DeviceEvent::QueryReply {
+        patch: Some(DynamicStatePatch::Mixer(surface)),
+        ..
+    } = event
+    else {
+        panic!("expected mixer patch");
+    };
+    assert_eq!(surface.strips[0].pan, Some(-30));
+    assert_eq!(surface.strips[1].pan, Some(30));
 }
 
 #[test]

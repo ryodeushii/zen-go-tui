@@ -927,6 +927,9 @@ pub(crate) fn mixer_list_slider_wheel_action(
 
 fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     for (space_index, input_index, row) in dynamic_input_rows(area, state) {
+        if !contains_point(row, point) {
+            continue;
+        }
         let input = state
             .input_spaces
             .get(space_index)?
@@ -934,9 +937,9 @@ fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
             .get(input_index)?;
         let controls = dynamic_input_control_rects(row, state, space_index, input_index)?;
         if row.height >= 3 {
-            let range = state.input_range(input.address, input.mode)?;
             if let Some(gain) = controls.gain {
                 if let Some(ratio) = slider_ratio_for_horizontal_point(gain, point) {
+                    let range = state.input_range(input.address, input.mode)?;
                     return Some(Intent::SetInputGainAt {
                         address: input.address,
                         raw: preamp_gain_from_ratio(range, ratio)?,
@@ -947,6 +950,7 @@ fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
             if buttons
                 .first()
                 .is_some_and(|(_, rect)| contains_point(*rect, point))
+                && state.input_range(input.address, input.mode).is_some()
             {
                 return Some(Intent::AdjustInputGainAt {
                     address: input.address,
@@ -956,6 +960,7 @@ fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
             if buttons
                 .get(1)
                 .is_some_and(|(_, rect)| contains_point(*rect, point))
+                && state.input_range(input.address, input.mode).is_some()
             {
                 return Some(Intent::AdjustInputGainAt {
                     address: input.address,
@@ -1081,6 +1086,7 @@ fn preamp_slider_wheel_action(
             if controls
                 .gain
                 .is_some_and(|rect| contains_point(wheel_hitbox(rect), point))
+                && state.input_range(input.address, input.mode).is_some()
             {
                 return Some(Intent::AdjustInputGainAt {
                     address: input.address,
@@ -1136,7 +1142,10 @@ fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
             if let Some(ratio) = slider_ratio_for_horizontal_point(level, point) {
                 return Some(Intent::SetOutputLevel {
                     index,
-                    step: output_step_from_ratio(ratio, state.output_range(OutputControl::Level)?),
+                    step: output_step_from_ratio(
+                        ratio,
+                        state.output_semantics(OutputControl::Level)?,
+                    ),
                 });
             }
         }
@@ -1174,7 +1183,10 @@ fn output_list_slider_mouse_action(
             if let Some(ratio) = slider_ratio_for_horizontal_point(level, point) {
                 return Some(Intent::SetOutputLevel {
                     index,
-                    step: output_step_from_ratio(ratio, state.output_range(OutputControl::Level)?),
+                    step: output_step_from_ratio(
+                        ratio,
+                        state.output_semantics(OutputControl::Level)?,
+                    ),
                 });
             }
         }
@@ -1225,7 +1237,7 @@ pub fn mixer_strip_viewport_capacity(area: Rect, state: &AppState) -> usize {
     let main = mixer_main_layout_for_state(page[0], state);
     let mixer = mixer_layout(main[1]);
     let inner = mixer_strip_inner_area(mixer[1]);
-    mixer_strip_viewport_capacity_for_inner(inner)
+    mixer_strip_viewport_capacity_for_state(inner, state)
 }
 
 pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) -> bool {
