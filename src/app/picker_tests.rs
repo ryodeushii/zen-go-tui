@@ -48,6 +48,50 @@ fn non_control_peer_does_not_make_control_candidate_ambiguous() {
 }
 
 #[test]
+fn active_picker_marks_same_model_serial_and_selects_it() {
+    let catalog = ProfileCatalog::builtin();
+    let active = candidate(b"zen-active", 0xa015, Some("ZEN-A"));
+    let other = candidate(b"zen-other", 0xa015, Some("ZEN-B"));
+    let same_serial_other_model = candidate(b"orion", 0xa221, Some("ZEN-A"));
+    let mut picker = DevicePickerState::new(
+        vec![other, same_serial_other_model, active.clone()],
+        &catalog,
+    );
+
+    picker.set_active_candidate(Some(active.clone()));
+
+    assert_eq!(picker.selected_candidate(), Some(&active));
+    assert!(picker.is_active(&active));
+    assert_eq!(
+        picker
+            .entries()
+            .iter()
+            .filter(|entry| picker.is_active(&entry.candidate))
+            .count(),
+        1
+    );
+    assert!(picker
+        .entries()
+        .iter()
+        .any(|entry| entry.candidate.serial() == Some("ZEN-B")
+            && !picker.is_active(&entry.candidate)));
+}
+
+#[test]
+fn missing_serial_uses_exact_hid_path_for_active_identity() {
+    let catalog = ProfileCatalog::builtin();
+    let active = candidate(b"hid-active", 0xa015, None);
+    let same_path = candidate(b"hid-active", 0xa015, Some("now-known"));
+    let different_path = candidate(b"hid-other", 0xa015, None);
+    let mut picker = DevicePickerState::new(vec![same_path, different_path], &catalog);
+
+    picker.set_active_candidate(Some(active));
+
+    assert!(picker.is_active(&picker.entries()[0].candidate));
+    assert!(!picker.is_active(&picker.entries()[1].candidate));
+}
+
+#[test]
 fn promoted_orion_picker_entry_supports_activation() {
     let catalog = ProfileCatalog::builtin();
     let picker =
@@ -91,6 +135,27 @@ fn mock_session_constructs_zen_go_driver_without_discovery() {
     let session = DeviceSession::open_mock().expect("mock session");
     assert_eq!(session.driver_definition().pid, 0xa015);
     assert_eq!(session.device_name(), "Antelope Zen Go Synergy Core");
+}
+
+#[test]
+fn replacement_session_starts_with_isolated_device_state() {
+    let mut old = DeviceSession::open_mock().expect("old mock session");
+    old.controller_mut().state.ui.last_message = "stale old-device state".into();
+
+    let replacement =
+        crate::device::replace_session(old, DeviceSession::open_mock).expect("replacement session");
+
+    assert_ne!(
+        replacement.controller().state.ui.last_message,
+        "stale old-device state"
+    );
+    assert!(replacement
+        .controller()
+        .state
+        .device
+        .status
+        .metadata
+        .is_none());
 }
 
 #[test]

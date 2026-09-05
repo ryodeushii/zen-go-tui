@@ -52,7 +52,7 @@ pub(crate) use text::selected_query_reply_bytes;
 pub fn draw_device_picker(frame: &mut Frame<'_>, picker: &DevicePickerState) {
     let area = device_picker_area(frame.area());
     frame.render_widget(Clear, area);
-    let rows = if picker.entries().is_empty() {
+    let mut rows = if picker.entries().is_empty() {
         vec![ListItem::new(
             "Waiting for an Antelope HID control interface…",
         )]
@@ -67,15 +67,25 @@ pub fn draw_device_picker(frame: &mut Frame<'_>, picker: &DevicePickerState) {
                 } else {
                     " "
                 };
-                let serial = entry.candidate.serial().unwrap_or("serial ?");
+                let identity = entry
+                    .candidate
+                    .serial()
+                    .filter(|serial| !serial.is_empty())
+                    .map(|serial| format!("serial {serial}"))
+                    .unwrap_or_else(|| format!("path {}", entry.candidate.path));
+                let active = if picker.is_active(&entry.candidate) {
+                    " | ACTIVE"
+                } else {
+                    ""
+                };
                 let reason = if entry.diagnostic.is_empty() {
                     "ready"
                 } else {
                     entry.diagnostic.as_str()
                 };
                 let line = format!(
-                    "{marker} {} | {} | {} | {} | {reason}",
-                    entry.profile_name, serial, entry.candidate.path, entry.status,
+                    "{marker} {} | {identity} | {} | {}{active} | {reason}",
+                    entry.profile_name, entry.status, entry.candidate.path,
                 );
                 let style = if entry.is_selectable() {
                     Style::default().fg(Color::LightGreen)
@@ -86,6 +96,9 @@ pub fn draw_device_picker(frame: &mut Frame<'_>, picker: &DevicePickerState) {
             })
             .collect()
     };
+    if let Some(notice) = picker.notice() {
+        rows.push(ListItem::new(notice).style(Style::default().fg(Color::Yellow)));
+    }
     frame.render_widget(List::new(rows).block(device_picker_block()), area);
 }
 
@@ -96,9 +109,12 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
         return;
     }
 
-    let chunks = root_chunks(frame.area());
+    let area = frame.area();
+    let chunks = root_chunks(area);
+    let device_area = device_header_area(area);
+    let system_area = titlebar_layout(chunks[0])[1];
 
-    draw_titlebar(frame, chunks[0], state);
+    draw_titlebar(frame, device_area, system_area, state);
     draw_mixer_page(frame, chunks[1], state);
     draw_routing_popup(frame, frame.area(), state);
     draw_profiles_popup(frame, frame.area(), state);
@@ -134,10 +150,9 @@ pub fn profile_editor_cursor(area: Rect, state: &AppState) -> Option<(u16, u16)>
     Some((x, row.y))
 }
 
-fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
-    let sections = titlebar_layout(area);
-    frame.render_widget(panel_block("Device", Color::DarkGray, true), sections[0]);
-    let device_sections = device_panel_layout(sections[0], state);
+fn draw_titlebar(frame: &mut Frame<'_>, device_area: Rect, system_area: Rect, state: &AppState) {
+    frame.render_widget(panel_block("Device", Color::DarkGray, true), device_area);
+    let device_sections = device_panel_layout(device_area, state);
     frame.render_widget(
         Paragraph::new(render_device_header(state)).wrap(Wrap { trim: false }),
         device_sections[0],
@@ -152,7 +167,7 @@ fn draw_titlebar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         Paragraph::new(render_system_summary(state))
             .block(panel_block("System", Color::LightRed, false))
             .wrap(Wrap { trim: false }),
-        sections[1],
+        system_area,
     );
 }
 

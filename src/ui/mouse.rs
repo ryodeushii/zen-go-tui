@@ -200,7 +200,7 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
         return Some(Intent::ToggleHotkeysPopup);
     }
 
-    if let Some(action) = device_header_mouse_action(titlebar_layout(chunks[0])[0], state, point) {
+    if let Some(action) = device_header_mouse_action(area, state, point) {
         return Some(action);
     }
 
@@ -688,18 +688,26 @@ fn system_panel_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) ->
     None
 }
 
+pub fn device_header_name_hit(area: Rect, state: &AppState, x: u16, y: u16) -> bool {
+    contains_point(
+        device_header_name_hit_area(device_header_area(area), state),
+        (x, y),
+    )
+}
+
 fn device_header_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
+    let area = device_header_area(area);
     if !contains_point(area, point) {
         return None;
     }
-    let chips = device_header_hit_areas(area, state);
-    if contains_point(chips[1], point) {
+    let geometry = device_header_geometry(area, state);
+    if contains_point(geometry.sample_rate, point) {
         if state.device.status.clock_source == Some(ClockSource::Internal) {
             Some(Intent::OpenSampleRateSelector)
         } else {
             None
         }
-    } else if contains_point(chips[2], point) {
+    } else if contains_point(geometry.clock_source, point) {
         Some(Intent::OpenClockSourceSelector)
     } else {
         None

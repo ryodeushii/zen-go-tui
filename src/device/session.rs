@@ -129,6 +129,8 @@ impl PickerEntry {
 pub struct DevicePickerState {
     entries: Vec<PickerEntry>,
     selected: Option<usize>,
+    active: Option<DeviceCandidate>,
+    notice: Option<String>,
     pub last_discovery_at: Instant,
     pub retry_after: Duration,
 }
@@ -146,13 +148,28 @@ impl DevicePickerState {
         Self {
             selected: (!entries.is_empty()).then_some(0),
             entries,
+            active: None,
+            notice: None,
             last_discovery_at: Instant::now(),
             retry_after: Duration::from_millis(500),
         }
     }
 
+    /// Start a new retry window after attempting discovery.
+    pub fn mark_discovery_attempt(&mut self) {
+        self.last_discovery_at = Instant::now();
+    }
+
     pub fn entries(&self) -> &[PickerEntry] {
         &self.entries
+    }
+
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    pub fn set_notice(&mut self, notice: impl Into<String>) {
+        self.notice = Some(notice.into());
     }
 
     pub fn selected_index(&self) -> Option<usize> {
@@ -161,6 +178,43 @@ impl DevicePickerState {
 
     pub fn selected_entry(&self) -> Option<&PickerEntry> {
         self.selected.and_then(|index| self.entries.get(index))
+    }
+
+    /// Mark the currently connected candidate without changing the discovered entries.
+    /// Serial identity is preferred; HID path is used only when serial metadata is absent.
+    pub fn set_active_candidate(&mut self, candidate: Option<DeviceCandidate>) {
+        self.active = candidate;
+        if let Some(active) = self.active.as_ref() {
+            if let Some(index) = self
+                .entries
+                .iter()
+                .position(|entry| same_selector_identity(active, &entry.candidate))
+            {
+                self.selected = Some(index);
+            }
+        }
+    }
+
+    pub fn is_active(&self, candidate: &DeviceCandidate) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| same_selector_identity(active, candidate))
+    }
+
+    pub fn selected_candidate(&self) -> Option<&DeviceCandidate> {
+        self.selected_entry().map(|entry| &entry.candidate)
+    }
+
+    pub fn select_candidate(&mut self, candidate: &DeviceCandidate) -> bool {
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| same_selector_identity(candidate, &entry.candidate))
+        else {
+            return false;
+        };
+        self.selected = Some(index);
+        true
     }
 
     pub fn select_next(&mut self) {
@@ -236,6 +290,25 @@ pub fn select_reconnect_candidate<'a>(
 
 fn nonempty_candidate_serial(candidate: &DeviceCandidate) -> Option<&str> {
     candidate.serial().filter(|serial| !serial.is_empty())
+}
+
+fn same_selector_identity(active: &DeviceCandidate, candidate: &DeviceCandidate) -> bool {
+    if (active.vid, active.pid) != (candidate.vid, candidate.pid) {
+        return false;
+    }
+
+    match (
+        nonempty_candidate_serial(active),
+        nonempty_candidate_serial(candidate),
+    ) {
+        (Some(left), Some(right)) => {
+            left == right
+                && active.interface_number == candidate.interface_number
+                && active.usage_page == candidate.usage_page
+                && active.usage == candidate.usage
+        }
+        _ => active.path_bytes == candidate.path_bytes,
+    }
 }
 
 fn same_reconnect_identity(previous: &DeviceCandidate, candidate: &DeviceCandidate) -> bool {
@@ -492,6 +565,8 @@ pub struct RuntimeDeviceState {
     selection: Option<DeviceSelection>,
     picker: DevicePickerState,
     session: Option<DeviceSession>,
+    selector: Option<DevicePickerState>,
+    selector_active: Option<DeviceCandidate>,
 }
 
 impl RuntimeDeviceState {
@@ -503,17 +578,22 @@ impl RuntimeDeviceState {
             selection,
             picker,
             session: None,
+            selector: None,
+            selector_active: None,
         };
         state.open_resolved_selection()?;
         Ok(state)
     }
 
     pub fn mock(catalog: ProfileCatalog) -> Result<Self> {
+        let picker = DevicePickerState::new(Vec::new(), &ProfileCatalog::builtin());
         Ok(Self {
             catalog,
             selection: None,
-            picker: DevicePickerState::new(Vec::new(), &ProfileCatalog::builtin()),
+            picker,
             session: Some(DeviceSession::open_mock()?),
+            selector: None,
+            selector_active: None,
         })
     }
 
@@ -527,6 +607,99 @@ impl RuntimeDeviceState {
 
     pub fn picker_mut(&mut self) -> &mut DevicePickerState {
         &mut self.picker
+    }
+
+    pub fn set_picker_notice(&mut self, notice: impl Into<String>) {
+        self.picker.set_notice(notice);
+    }
+
+    pub fn selector(&self) -> Option<&DevicePickerState> {
+        self.selector.as_ref()
+    }
+
+    pub fn selector_mut(&mut self) -> Option<&mut DevicePickerState> {
+        self.selector.as_mut()
+    }
+
+    pub fn open_selector(&mut self) -> Result<()> {
+        let active = self
+            .session
+            .as_ref()
+            .and_then(|session| session.candidate().cloned());
+        self.open_selector_for(active)
+    }
+
+    pub fn open_selector_for(&mut self, active: Option<DeviceCandidate>) -> Result<()> {
+        let candidates = DeviceSession::discover(&self.catalog)?;
+        let mut picker = DevicePickerState::new(candidates, &self.catalog);
+        picker.set_active_candidate(active.clone());
+        self.selector_active = active;
+        self.selector = Some(picker);
+        Ok(())
+    }
+
+    /// Refresh selector rows without resolving startup selections or changing the session.
+    pub fn refresh_selector(&mut self) -> Result<()> {
+        self.refresh_selector_with(DeviceSession::discover)
+    }
+
+    fn refresh_selector_with<F>(&mut self, discover: F) -> Result<()>
+    where
+        F: FnOnce(&ProfileCatalog) -> Result<Vec<DeviceCandidate>>,
+    {
+        if self.selector.is_none() {
+            return Ok(());
+        }
+        let selected = self
+            .selector
+            .as_ref()
+            .and_then(DevicePickerState::selected_candidate)
+            .cloned();
+        // Record the attempt before discovery so failures cannot trigger a tight
+        // retry loop in the selector's 500 ms refresh window.
+        self.selector
+            .as_mut()
+            .expect("selector exists")
+            .mark_discovery_attempt();
+        let candidates = discover(&self.catalog)?;
+        let mut picker = DevicePickerState::new(candidates, &self.catalog);
+        picker.set_active_candidate(self.selector_active.clone());
+        if let Some(selected) = selected {
+            picker.select_candidate(&selected);
+        }
+        self.selector = Some(picker);
+        Ok(())
+    }
+
+    pub fn selector_selected(&self) -> Option<DeviceCandidate> {
+        self.selector
+            .as_ref()
+            .and_then(DevicePickerState::activate_selected)
+            .cloned()
+    }
+
+    pub fn selector_selected_is_active(&self) -> bool {
+        self.selector.as_ref().is_some_and(|picker| {
+            picker
+                .selected_candidate()
+                .is_some_and(|candidate| picker.is_active(candidate))
+        })
+    }
+
+    pub fn close_selector(&mut self) {
+        self.selector = None;
+        self.selector_active = None;
+    }
+
+    pub fn switch_to(&mut self, candidate: DeviceCandidate) -> Result<()> {
+        let old = self.session.take();
+        drop(old);
+        self.close_selector();
+        // A manual choice supersedes only the startup selector; future reconnects use
+        // the explicitly selected session rather than reopening the CLI target.
+        self.selection = None;
+        self.session = Some(DeviceSession::open_candidate(&candidate, &self.catalog)?);
+        Ok(())
     }
 
     pub fn session(&self) -> Option<&DeviceSession> {
@@ -550,6 +723,9 @@ impl RuntimeDeviceState {
     }
 
     pub fn rediscover(&mut self) -> Result<()> {
+        if self.selector.is_some() {
+            return self.refresh_selector();
+        }
         let candidates = DeviceSession::discover(&self.catalog)?;
         self.picker = DevicePickerState::new(candidates, &self.catalog);
         if let Some(selection) = &self.selection {
@@ -572,7 +748,15 @@ impl RuntimeDeviceState {
             .session
             .take()
             .and_then(|session| session.candidate().cloned());
-        // `session` is dropped above before discovery creates a new HIDAPI handle.
+        self.disconnect_and_rediscover_from(previous)
+    }
+
+    pub fn disconnect_and_rediscover_from(
+        &mut self,
+        previous: Option<DeviceCandidate>,
+    ) -> Result<()> {
+        self.close_selector();
+        // `session` is dropped by the caller before discovery creates a new HIDAPI handle.
         let candidates = DeviceSession::discover(&self.catalog)?;
         self.picker = DevicePickerState::new(candidates, &self.catalog);
         let Some(previous) = previous else {
@@ -663,9 +847,10 @@ fn driver_for_entry(entry: &RuntimeEntry) -> Result<Box<dyn DeviceDriver>> {
 
 #[cfg(test)]
 mod tests {
-    use super::driver_for_entry;
+    use super::{driver_for_entry, DevicePickerState, RuntimeDeviceState};
     use crate::device::ProfileCatalog;
     use antelope_protocol::{RuntimeDriverKind, RuntimeReadiness};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn profile_driver_mapping_constructs_profile_driver_for_supported_orion() {
@@ -676,5 +861,31 @@ mod tests {
 
         let driver = driver_for_entry(entry).expect("Profile driver mapping");
         assert_eq!(driver.definition().id, "orion_studio_3");
+    }
+
+    #[test]
+    fn selector_refresh_failure_starts_new_retry_window() {
+        let catalog = ProfileCatalog::builtin();
+        let picker = DevicePickerState::new(Vec::new(), &catalog);
+        let mut state = RuntimeDeviceState {
+            catalog: catalog.clone(),
+            selection: None,
+            picker: DevicePickerState::new(Vec::new(), &catalog),
+            session: None,
+            selector: Some(picker),
+            selector_active: None,
+        };
+        state.selector.as_mut().expect("selector").last_discovery_at =
+            Instant::now() - Duration::from_secs(1);
+        let before_attempt = Instant::now();
+
+        let error = state
+            .refresh_selector_with(|_| Err(anyhow::anyhow!("discovery failed")))
+            .expect_err("discovery failure");
+
+        assert_eq!(error.to_string(), "discovery failed");
+        let picker = state.selector().expect("selector remains open");
+        assert!(picker.last_discovery_at >= before_attempt);
+        assert!(picker.last_discovery_at.elapsed() < picker.retry_after);
     }
 }

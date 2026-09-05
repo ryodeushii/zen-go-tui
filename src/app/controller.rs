@@ -3,7 +3,7 @@ use std::time::Duration;
 use anyhow::{bail, Result};
 use ratatui::layout::Rect;
 
-use crate::command_queue::CommandQueue;
+use crate::command_queue::{CommandQueue, QueueEntryId};
 use crate::profile::DeviceProfile;
 use crate::transport::Transport;
 use antelope_protocol::{
@@ -22,12 +22,24 @@ use super::AppState;
 
 pub(crate) const MAX_FRAMES_PER_POLL: usize = 32;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollWritePolicy {
+    FlushPending,
+    ReceiveOnly,
+}
+
+struct QueuedMutation {
+    id: QueueEntryId,
+    pending: Option<PendingMutation>,
+}
+
 pub struct Controller {
     transport: Box<dyn Transport>,
     driver: Box<dyn DeviceDriver>,
     pub state: AppState,
     pub(crate) pending_mutation: Option<PendingMutation>,
     command_queue: CommandQueue,
+    queued_mutations: Vec<QueuedMutation>,
 }
 
 impl Controller {
@@ -46,6 +58,7 @@ impl Controller {
                 state: AppState::default(),
                 pending_mutation: None,
                 command_queue: CommandQueue::new(),
+                queued_mutations: Vec::new(),
             });
         };
         Self::new_for_entry(transport, driver, entry)
@@ -74,6 +87,7 @@ impl Controller {
             state: AppState::from_entry(entry),
             pending_mutation: None,
             command_queue: CommandQueue::new(),
+            queued_mutations: Vec::new(),
         })
     }
 
@@ -372,17 +386,19 @@ impl Controller {
             && batch.frames.len() == 1
             && batch.refresh_requests.is_empty();
         if queueable {
-            if !self.command_queue.enqueue(action.clone()) {
-                bail!("command queue is full; action was not enqueued");
-            }
+            let id = self
+                .command_queue
+                .enqueue_with_id(action.clone())
+                .ok_or_else(|| anyhow::anyhow!("command queue is full; action was not enqueued"))?;
+            self.remember_queued_mutation(id, pending);
         } else {
             self.flush_commands()?;
             self.write_batch(batch)?;
+            self.pending_mutation = pending;
         }
         if project_completed_mixer || !matches!(action, Action::SetMixerStripState { .. }) {
             self.apply_command_state_update(&action);
         }
-        self.pending_mutation = pending;
         self.state.ui.last_message = format!("Sent {:?}", action);
         Ok(())
     }
@@ -587,11 +603,36 @@ impl Controller {
         }
     }
 
+    fn remember_queued_mutation(&mut self, id: QueueEntryId, pending: Option<PendingMutation>) {
+        if let Some(queued) = self
+            .queued_mutations
+            .iter_mut()
+            .find(|queued| queued.id == id)
+        {
+            queued.pending = pending;
+        } else {
+            self.queued_mutations.push(QueuedMutation { id, pending });
+        }
+    }
+
     /// Flushes all pending commands from the queue to the transport.
     pub fn flush_commands(&mut self) -> Result<()> {
-        self.command_queue
-            .flush(self.transport.as_ref(), self.driver.as_ref())?;
-        Ok(())
+        let mut queued_mutations = std::mem::take(&mut self.queued_mutations);
+        let mut pending_mutation = self.pending_mutation.take();
+        let result =
+            self.command_queue
+                .flush_with(self.transport.as_ref(), self.driver.as_ref(), |id| {
+                    let Some(index) = queued_mutations.iter().position(|queued| queued.id == id)
+                    else {
+                        return;
+                    };
+                    pending_mutation = queued_mutations.swap_remove(index).pending;
+                });
+        self.pending_mutation = pending_mutation;
+        // `flush_with` drains discarded and failed entries too. Any associations
+        // left here therefore belong to commands that were never sent.
+        queued_mutations.clear();
+        result.map(|_| ())
     }
 
     fn mixer_address_from_ui(&self, mixer: MixerSurface, channel: u8) -> Result<MixerAddress> {
@@ -960,8 +1001,28 @@ impl Controller {
     }
 
     pub fn poll_device(&mut self, timeout: Duration) -> Result<bool> {
-        // Flush pending commands before reading so device sees latest state
-        self.flush_commands()?;
+        self.poll_device_with_policy(timeout, PollWritePolicy::FlushPending)
+    }
+
+    /// Drain received device events without sending queued commands.
+    ///
+    /// The runtime uses this while the device selector is open so the current
+    /// session does not accumulate frames, while an explicit switch can still
+    /// discard the old controller and its queued commands before opening the
+    /// replacement session.
+    pub fn poll_device_without_writes(&mut self, timeout: Duration) -> Result<bool> {
+        self.poll_device_with_policy(timeout, PollWritePolicy::ReceiveOnly)
+    }
+
+    fn poll_device_with_policy(
+        &mut self,
+        timeout: Duration,
+        write_policy: PollWritePolicy,
+    ) -> Result<bool> {
+        if write_policy == PollWritePolicy::FlushPending {
+            // Flush pending commands before reading so device sees latest state.
+            self.flush_commands()?;
+        }
 
         let mut next_timeout = timeout;
         let mut state_dirty = false;
@@ -975,6 +1036,8 @@ impl Controller {
 
             if let Some(event) = self.driver.decode(&bytes)? {
                 if matches!(event, DeviceEvent::Snapshot { .. }) {
+                    // Confirmation only updates the current session's state; it
+                    // does not send a command and is safe in receive-only mode.
                     state_dirty |= self.confirm_pending_write();
                 }
                 state_dirty |= self.state.observe_event(event);
@@ -2503,15 +2566,16 @@ mod correction_tests {
 
     use antelope_protocol::{
         CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition, DriverError,
-        DynamicOutputState, InputAddress, MixerAddress, MixerControl, OutputAddress, OutputControl,
-        QueryRequest, RuntimeDriverKind,
+        DynamicDeviceState, DynamicOutputState, InputAddress, MixerAddress, MixerControl,
+        OutputAddress, OutputControl, QueryRequest, RuntimeDriverKind,
     };
 
     use super::*;
-    use crate::transport::MockTransport;
+    use crate::transport::{MockTransport, Transport};
 
     struct AcceptingDriver {
         definition: DriverDefinition,
+        decoded_event: Option<DeviceEvent>,
     }
 
     impl AcceptingDriver {
@@ -2521,8 +2585,37 @@ mod correction_tests {
                     .expect("Zen Go driver")
                     .definition()
                     .clone(),
+                decoded_event: None,
             }
         }
+
+        fn with_event(event: DeviceEvent) -> Self {
+            Self {
+                decoded_event: Some(event),
+                ..Self::new()
+            }
+        }
+    }
+
+    fn empty_snapshot_event() -> DeviceEvent {
+        DeviceEvent::Snapshot {
+            state: DynamicDeviceState {
+                globals: Vec::new(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                mixers: Vec::new(),
+                routing: Vec::new(),
+                zen_go_compatibility: None,
+            },
+            raw: Vec::new(),
+        }
+    }
+
+    fn first_input_pending(controller: &Controller, gain: i32) -> (InputAddress, PendingMutation) {
+        let mut input = controller.state.input_spaces[0].inputs[0].clone();
+        let address = input.address;
+        input.gain = Some(gain);
+        (address, PendingMutation::Input(input))
     }
 
     impl DeviceDriver for AcceptingDriver {
@@ -2542,8 +2635,263 @@ mod correction_tests {
         }
 
         fn decode(&self, _bytes: &[u8]) -> std::result::Result<Option<DeviceEvent>, DriverError> {
+            Ok(self.decoded_event.clone())
+        }
+    }
+
+    #[test]
+    fn receive_only_poll_drains_frames_without_flushing_queued_commands() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        controller
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(0),
+                },
+                None,
+            )
+            .expect("queue command");
+        transport.push_read(vec![0x75]);
+
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("receive-only poll");
+
+        assert!(transport.take_writes().is_empty());
+        assert!(transport
+            .read(Duration::ZERO)
+            .expect("remaining transport read")
+            .is_none());
+    }
+
+    #[test]
+    fn receive_only_poll_does_not_confirm_queued_unsent_mutation() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
+        )
+        .expect("controller");
+        let (address, pending) = first_input_pending(&controller, 17);
+        let before = controller.state.input_spaces[0].inputs[0].gain;
+        controller
+            .send(
+                Action::SetInput {
+                    address,
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(17),
+                },
+                Some(pending),
+            )
+            .expect("queue command");
+        assert!(controller.pending_mutation.is_none());
+        transport.push_read(vec![0x73]);
+
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("receive-only poll");
+
+        assert!(controller.pending_mutation.is_none());
+        assert_eq!(controller.state.input_spaces[0].inputs[0].gain, before);
+        assert!(transport.take_writes().is_empty());
+
+        controller.flush_commands().expect("flush queued command");
+        assert!(controller.pending_mutation.is_some());
+        transport.push_read(vec![0x73]);
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("confirm flushed command");
+        assert_eq!(controller.state.input_spaces[0].inputs[0].gain, Some(17));
+    }
+
+    #[test]
+    fn receive_only_poll_confirms_mutation_after_queue_flush() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
+        )
+        .expect("controller");
+        let (address, pending) = first_input_pending(&controller, 17);
+        controller
+            .send(
+                Action::SetInput {
+                    address,
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(17),
+                },
+                Some(pending),
+            )
+            .expect("queue command");
+        controller.flush_commands().expect("flush command");
+        assert_eq!(transport.take_writes().len(), 1);
+        assert!(controller.pending_mutation.is_some());
+        assert_ne!(controller.state.input_spaces[0].inputs[0].gain, Some(17));
+        transport.push_read(vec![0x73]);
+
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("receive-only poll");
+
+        assert_eq!(controller.state.input_spaces[0].inputs[0].gain, Some(17));
+        assert!(controller.pending_mutation.is_none());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn normal_poll_flushes_queued_mutation_before_confirmation() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
+        )
+        .expect("controller");
+        let (address, pending) = first_input_pending(&controller, 17);
+        controller
+            .send(
+                Action::SetInput {
+                    address,
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(17),
+                },
+                Some(pending),
+            )
+            .expect("queue command");
+        transport.push_read(vec![0x73]);
+
+        controller.poll_device(Duration::ZERO).expect("normal poll");
+
+        assert_eq!(transport.take_writes().len(), 1);
+        assert_eq!(controller.state.input_spaces[0].inputs[0].gain, Some(17));
+        assert!(controller.pending_mutation.is_none());
+    }
+
+    #[test]
+    fn coalesced_queue_replacement_promotes_only_latest_mutation() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        let address = controller.state.outputs()[0].address;
+        for level in [17, 23] {
+            let mut pending_output = controller.state.outputs()[0].clone();
+            pending_output.level = Some(level);
+            controller
+                .send(
+                    Action::SetOutput {
+                        address,
+                        control: OutputControl::Level,
+                        value: ControlValue::Int(level),
+                    },
+                    Some(PendingMutation::Output(pending_output)),
+                )
+                .expect("queue command");
+        }
+        assert!(controller.pending_mutation.is_none());
+
+        controller
+            .flush_commands()
+            .expect("flush coalesced command");
+
+        assert_eq!(transport.take_writes().len(), 1);
+        match controller.pending_mutation.as_ref() {
+            Some(PendingMutation::Output(output)) => assert_eq!(output.level, Some(23)),
+            other => panic!("latest mutation was not promoted: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sent_mutation_remains_confirmable_while_newer_coalesced_mutation_is_queued() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
+        )
+        .expect("controller");
+        let (address, pending) = first_input_pending(&controller, 17);
+        controller
+            .send(
+                Action::SetInput {
+                    address,
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(17),
+                },
+                Some(pending),
+            )
+            .expect("queue sent mutation");
+        controller.flush_commands().expect("flush sent mutation");
+        transport.take_writes();
+        assert!(matches!(
+            controller.pending_mutation.as_ref(),
+            Some(PendingMutation::Input(input)) if input.gain == Some(17)
+        ));
+
+        let (address, pending) = first_input_pending(&controller, 23);
+        controller
+            .send(
+                Action::SetInput {
+                    address,
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(23),
+                },
+                Some(pending),
+            )
+            .expect("queue newer mutation");
+        match controller.pending_mutation.as_ref() {
+            Some(PendingMutation::Input(input)) => assert_eq!(input.gain, Some(17)),
+            other => panic!("sent mutation was replaced early: {other:?}"),
+        }
+        transport.push_read(vec![0x73]);
+
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("receive-only poll");
+
+        assert_eq!(controller.state.input_spaces[0].inputs[0].gain, Some(17));
+        assert!(controller.pending_mutation.is_none());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    struct FailingTransport;
+
+    impl Transport for FailingTransport {
+        fn write(&self, _data: &[u8]) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("write failed"))
+        }
+
+        fn read(&self, _timeout: Duration) -> anyhow::Result<Option<Vec<u8>>> {
             Ok(None)
         }
+    }
+
+    #[test]
+    fn failed_queue_write_does_not_promote_pending_mutation() {
+        let mut controller =
+            Controller::new(Box::new(FailingTransport), Box::new(AcceptingDriver::new()))
+                .expect("controller");
+        let mut pending_output = controller.state.outputs()[0].clone();
+        pending_output.level = Some(17);
+        controller
+            .send(
+                Action::SetOutput {
+                    address: pending_output.address,
+                    control: OutputControl::Level,
+                    value: ControlValue::Int(17),
+                },
+                Some(PendingMutation::Output(pending_output)),
+            )
+            .expect("queue command");
+
+        assert!(controller.flush_commands().is_err());
+        assert!(controller.pending_mutation.is_none());
+        assert_eq!(controller.command_queue.len(), 0);
     }
 
     #[test]

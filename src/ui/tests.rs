@@ -1330,6 +1330,44 @@ fn afx_routing_source_columns_stay_aligned_for_different_label_lengths() {
 }
 
 #[test]
+fn device_header_mouse_actions_follow_visible_status_chip_positions() {
+    let area = Rect::new(0, 0, 180, 50);
+    let mut state = AppState::default();
+    state.device.status.clock_source = Some(ClockSource::Internal);
+    let titlebar = layouts::titlebar_layout(layouts::root_chunks(area)[0])[0];
+    let header = layouts::device_panel_layout(titlebar, &state)[0];
+    let rendered = render_buffer(header, |area, buffer| {
+        Paragraph::new(render::render_device_header(&state))
+            .wrap(Wrap { trim: false })
+            .render(area, buffer);
+    });
+
+    let rendered_offset = |text: &str| {
+        rendered
+            .find(text)
+            .map(|offset| rendered[..offset].chars().count() as u16)
+            .expect("visible device header chip")
+    };
+    let clock_x = header.x + rendered_offset(" Internal ") + 1;
+    let sample_x = header.x + rendered_offset(" rate ? ") + 1;
+    assert_eq!(
+        mouse_action(area, &state, clock_x, header.y),
+        Some(Intent::OpenClockSourceSelector)
+    );
+    assert_eq!(
+        mouse_action(area, &state, sample_x, header.y),
+        Some(Intent::OpenSampleRateSelector)
+    );
+
+    let supported_offset = rendered_offset(" SUPPORTED ");
+    let supported_x = header.x + supported_offset + 1;
+    let adjacent_x = header.x + supported_offset + styles::chip_width("SUPPORTED") + 1;
+    assert_eq!(mouse_action(area, &state, supported_x, header.y), None);
+    assert_eq!(mouse_action(area, &state, adjacent_x, header.y), None);
+    assert!(!device_header_name_hit(area, &state, clock_x, header.y));
+}
+
+#[test]
 fn mouse_action_opens_sample_rate_selector_from_device_chip() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = AppState::default();

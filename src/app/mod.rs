@@ -2867,6 +2867,7 @@ mod tests {
                 }),
             )
             .expect("send preamp gain");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         assert_eq!(controller.state.preamp.state.input2.gain_raw, 0x2d);
@@ -2895,6 +2896,7 @@ mod tests {
                 }),
             )
             .expect("send preamp gain");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         assert_eq!(controller.state.preamp.state.input2.gain_raw, 0x2d);
@@ -2929,6 +2931,7 @@ mod tests {
                 }),
             )
             .expect("send preamp mode");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
         assert_eq!(controller.state.preamp.state.input1.mode, PreampMode::Line);
 
@@ -2948,6 +2951,7 @@ mod tests {
                 }),
             )
             .expect("send preamp phantom");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
         assert!(controller.state.preamp.state.input2.phantom_on);
 
@@ -2967,6 +2971,7 @@ mod tests {
                 }),
             )
             .expect("send preamp phase");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
         assert_eq!(controller.state.device.dsp_cluster[3], 0x40);
     }
@@ -3233,6 +3238,7 @@ mod tests {
                 .is_none()
         );
 
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         assert_eq!(
@@ -3734,6 +3740,7 @@ mod tests {
                     }),
                 )
                 .expect("send grounded link");
+            controller.flush_commands().expect("flush pending command");
             controller.confirm_pending_write();
 
             assert_eq!(
@@ -3814,6 +3821,7 @@ mod tests {
                 }),
             )
             .expect("mix1 pan");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         controller
@@ -3836,6 +3844,7 @@ mod tests {
                 }),
             )
             .expect("mix2 pan");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         assert_eq!(
@@ -3878,6 +3887,7 @@ mod tests {
             )
             .expect("send mute");
 
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         assert_eq!(
@@ -3910,6 +3920,7 @@ mod tests {
             )
             .expect("send unmute");
 
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         assert_eq!(
@@ -3949,6 +3960,7 @@ mod tests {
                 }),
             )
             .expect("mix1 send");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         controller
@@ -3973,6 +3985,7 @@ mod tests {
                 }),
             )
             .expect("mix2 send");
+        controller.flush_commands().expect("flush pending command");
         controller.confirm_pending_write();
 
         assert_eq!(

@@ -11,13 +11,13 @@ use ratatui::Terminal;
 
 use antelope_protocol::{
     Action, ClockSource, ControlValue, GlobalControl, InputControl, MixerAddress, MixerAssignment,
-    PanState, PreampMode, SampleRate,
+    PreampMode, SampleRate,
 };
 use zen_go_tui::app::{
     Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind,
     SelectorPopupState,
 };
-use zen_go_tui::device::RuntimeDeviceState;
+use zen_go_tui::device::{DeviceCandidate, DevicePickerState, RuntimeDeviceState};
 use zen_go_tui::settings;
 use zen_go_tui::terminal::{
     AppKeyCode, AppKeyEvent, AppKeyEventKind, AppMouseButton, AppMouseEvent, AppMouseEventKind,
@@ -47,21 +47,42 @@ pub fn run_app(mut devices: RuntimeDeviceState) -> Result<()> {
                 }
                 continue;
             }
+            let mut session = devices.take_session().expect("checked session");
+            let active_candidate = session.candidate().cloned();
             let exit = {
-                let session = devices.session_mut().expect("checked session");
                 let controller = session.controller_mut();
                 if let Ok(saved) = settings::load_settings() {
                     controller.state.ui.settings = saved;
                 }
                 controller.bootstrap()?;
-                let result = app_loop(&mut terminal, controller, &input_rx);
+                let result = app_loop_with_devices(
+                    &mut terminal,
+                    controller,
+                    &mut devices,
+                    active_candidate.as_ref(),
+                    &input_rx,
+                );
                 let _ = settings::save_settings(&controller.state.ui.settings);
                 result
             };
             match exit {
                 Ok(AppLoopExit::Quit) => return Ok(()),
-                Ok(AppLoopExit::Disconnected) => devices.disconnect_and_rediscover()?,
-                Err(error) if is_device_error(&error) => devices.disconnect_and_rediscover()?,
+                Ok(AppLoopExit::Disconnected) => {
+                    drop(session);
+                    devices.disconnect_and_rediscover_from(active_candidate)?;
+                }
+                Ok(AppLoopExit::Switch(candidate)) => {
+                    drop(session);
+                    if let Err(error) = devices.switch_to(candidate) {
+                        let notice = format!("Device selection failed: {error}");
+                        let _ = devices.rediscover();
+                        devices.set_picker_notice(notice);
+                    }
+                }
+                Err(error) if is_device_error(&error) => {
+                    drop(session);
+                    devices.disconnect_and_rediscover_from(active_candidate)?;
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -98,10 +119,40 @@ pub fn run_headless_app(mut devices: RuntimeDeviceState) -> Result<()> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppLoopExit {
     Quit,
     Disconnected,
+    Switch(DeviceCandidate),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeviceSelectorAction {
+    Continue,
+    Cancel,
+    Switch(DeviceCandidate),
+}
+
+fn handle_device_selector_key(
+    picker: &mut DevicePickerState,
+    key: AppKeyCode,
+) -> DeviceSelectorAction {
+    match key {
+        AppKeyCode::Up => picker.select_previous(),
+        AppKeyCode::Down => picker.select_next(),
+        AppKeyCode::Esc => return DeviceSelectorAction::Cancel,
+        AppKeyCode::Enter => {
+            let Some(candidate) = picker.activate_selected().cloned() else {
+                return DeviceSelectorAction::Continue;
+            };
+            if picker.is_active(&candidate) {
+                return DeviceSelectorAction::Cancel;
+            }
+            return DeviceSelectorAction::Switch(candidate);
+        }
+        _ => return DeviceSelectorAction::Continue,
+    }
+    DeviceSelectorAction::Continue
 }
 
 fn device_picker_loop(
@@ -763,6 +814,97 @@ pub fn app_loop(
     controller: &mut Controller,
     input_rx: &std::sync::mpsc::Receiver<InputThreadMessage>,
 ) -> Result<AppLoopExit> {
+    app_loop_inner(terminal, controller, None, None, input_rx)
+}
+
+fn app_loop_with_devices(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    controller: &mut Controller,
+    devices: &mut RuntimeDeviceState,
+    active_candidate: Option<&DeviceCandidate>,
+    input_rx: &std::sync::mpsc::Receiver<InputThreadMessage>,
+) -> Result<AppLoopExit> {
+    app_loop_inner(
+        terminal,
+        controller,
+        Some(devices),
+        active_candidate,
+        input_rx,
+    )
+}
+
+fn poll_controller_for_runtime(
+    controller: &mut Controller,
+    selector_open: bool,
+    timeout: std::time::Duration,
+) -> Result<bool> {
+    if selector_open {
+        controller.poll_device_without_writes(timeout)
+    } else {
+        controller.poll_device(timeout)
+    }
+}
+
+fn handle_profile_editor_paste(controller: &mut Controller, selector_open: bool, text: &str) {
+    if !selector_open && controller.state.popup.profile_editor.is_some() {
+        append_profile_editor_text(controller, text);
+    }
+}
+
+fn device_header_name_mouse_hit(
+    area: ratatui::layout::Rect,
+    state: &zen_go_tui::app::AppState,
+    mouse: AppMouseEvent,
+) -> bool {
+    !state.popup.raw_view_open
+        && matches!(mouse.kind, AppMouseEventKind::Down(AppMouseButton::Left))
+        && ui::device_header_name_hit(area, state, mouse.column, mouse.row)
+}
+
+fn open_device_selector_for_runtime(
+    runtime: &mut RuntimeDeviceState,
+    controller: &mut Controller,
+    active_candidate: Option<&DeviceCandidate>,
+) {
+    if let Err(error) = runtime.open_selector_for(active_candidate.cloned()) {
+        controller.state.ui.last_message = format!("Device selector unavailable: {error}");
+    }
+}
+
+fn handle_device_selector_hotkey(
+    runtime: &mut RuntimeDeviceState,
+    controller: &mut Controller,
+    active_candidate: Option<&DeviceCandidate>,
+    key: AppKeyCode,
+) -> bool {
+    if key != AppKeyCode::F(2) {
+        return false;
+    }
+    open_device_selector_for_runtime(runtime, controller, active_candidate);
+    true
+}
+
+fn handle_device_selector_header_mouse(
+    runtime: &mut RuntimeDeviceState,
+    controller: &mut Controller,
+    active_candidate: Option<&DeviceCandidate>,
+    area: ratatui::layout::Rect,
+    mouse: AppMouseEvent,
+) -> bool {
+    if !device_header_name_mouse_hit(area, &controller.state, mouse) {
+        return false;
+    }
+    open_device_selector_for_runtime(runtime, controller, active_candidate);
+    true
+}
+
+fn app_loop_inner(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    controller: &mut Controller,
+    mut devices: Option<&mut RuntimeDeviceState>,
+    active_candidate: Option<&DeviceCandidate>,
+    input_rx: &std::sync::mpsc::Receiver<InputThreadMessage>,
+) -> Result<AppLoopExit> {
     let mut last_draw_at = None;
     let mut needs_redraw = true;
     let mut last_runtime_activity_at = Some(std::time::Instant::now());
@@ -779,6 +921,35 @@ pub fn app_loop(
                         if key.kind != AppKeyEventKind::Press {
                             continue;
                         }
+
+                        if let Some(runtime) = devices.as_deref_mut() {
+                            if runtime.selector().is_some() {
+                                let action = runtime
+                                    .selector_mut()
+                                    .map(|picker| handle_device_selector_key(picker, key.code))
+                                    .expect("selector exists");
+                                match action {
+                                    DeviceSelectorAction::Cancel => runtime.close_selector(),
+                                    DeviceSelectorAction::Switch(candidate) => {
+                                        return Ok(AppLoopExit::Switch(candidate));
+                                    }
+                                    DeviceSelectorAction::Continue => {}
+                                }
+                                needs_redraw = true;
+                                continue;
+                            }
+
+                            if handle_device_selector_hotkey(
+                                runtime,
+                                controller,
+                                active_candidate,
+                                key.code,
+                            ) {
+                                needs_redraw = true;
+                                continue;
+                            }
+                        }
+
                         let size = terminal.size()?;
                         let action = handle_key_press(
                             controller,
@@ -798,11 +969,52 @@ pub fn app_loop(
                     }
                     zen_go_tui::terminal::AppInputEvent::Mouse(mouse) => {
                         let size = terminal.size()?;
-                        if let Err(error) = handle_mouse_event(
-                            ratatui::layout::Rect::new(0, 0, size.width, size.height),
-                            controller,
-                            mouse,
-                        ) {
+                        let area = ratatui::layout::Rect::new(0, 0, size.width, size.height);
+
+                        if let Some(runtime) = devices.as_deref_mut() {
+                            if runtime.selector().is_some() {
+                                if matches!(
+                                    mouse.kind,
+                                    AppMouseEventKind::Down(AppMouseButton::Left)
+                                ) {
+                                    let row = runtime.selector().and_then(|picker| {
+                                        ui::device_picker_activation_row(
+                                            area,
+                                            picker,
+                                            mouse.column,
+                                            mouse.row,
+                                        )
+                                    });
+                                    if let Some(row) = row {
+                                        if let Some(picker) = runtime.selector_mut() {
+                                            picker.select_row(row);
+                                        }
+                                        if let Some(candidate) = runtime.selector_selected() {
+                                            if runtime.selector_selected_is_active() {
+                                                runtime.close_selector();
+                                            } else {
+                                                return Ok(AppLoopExit::Switch(candidate));
+                                            }
+                                        }
+                                    }
+                                }
+                                needs_redraw = true;
+                                continue;
+                            }
+
+                            if handle_device_selector_header_mouse(
+                                runtime,
+                                controller,
+                                active_candidate,
+                                area,
+                                mouse,
+                            ) {
+                                needs_redraw = true;
+                                continue;
+                            }
+                        }
+
+                        if let Err(error) = handle_mouse_event(area, controller, mouse) {
                             if is_device_error(&error) {
                                 return Ok(AppLoopExit::Disconnected);
                             }
@@ -814,9 +1026,10 @@ pub fn app_loop(
                         needs_redraw = true;
                     }
                     zen_go_tui::terminal::AppInputEvent::Paste(text) => {
-                        if controller.state.popup.profile_editor.is_some() {
-                            append_profile_editor_text(controller, &text);
-                        }
+                        let selector_open = devices
+                            .as_deref()
+                            .is_some_and(|runtime| runtime.selector().is_some());
+                        handle_profile_editor_paste(controller, selector_open, &text);
                         needs_redraw = true;
                     }
                     zen_go_tui::terminal::AppInputEvent::Resize { .. }
@@ -826,7 +1039,14 @@ pub fn app_loop(
             }
         }
 
-        match controller.poll_device(device_poll_interval(last_runtime_activity_at, true, now)) {
+        let selector_open = devices
+            .as_deref()
+            .is_some_and(|runtime| runtime.selector().is_some());
+        match poll_controller_for_runtime(
+            controller,
+            selector_open,
+            device_poll_interval(last_runtime_activity_at, true, now),
+        ) {
             Ok(observed_frame) => {
                 needs_redraw |= observed_frame;
                 if observed_frame {
@@ -837,12 +1057,29 @@ pub fn app_loop(
             Err(error) => return Err(error),
         }
 
+        if let Some(runtime) = devices.as_deref_mut() {
+            let should_refresh = runtime
+                .selector()
+                .is_some_and(|picker| picker.last_discovery_at.elapsed() >= picker.retry_after);
+            if should_refresh {
+                if let Err(error) = runtime.refresh_selector() {
+                    controller.state.ui.last_message =
+                        format!("Device selector refresh failed: {error}");
+                }
+                needs_redraw = true;
+            }
+        }
+
         let now = std::time::Instant::now();
         controller.state.prune_expired_peaks();
         let fps = controller.state.ui.settings.refresh_rate.fps();
         if should_draw_frame(last_draw_at, needs_redraw, now, fps) {
+            let selector = devices.as_deref().and_then(|runtime| runtime.selector());
             terminal.draw(|frame| {
                 ui::draw(frame, &controller.state);
+                if let Some(picker) = selector {
+                    ui::draw_device_picker(frame, picker);
+                }
                 if let Some((x, y)) = ui::profile_editor_cursor(frame.area(), &controller.state) {
                     frame.set_cursor_position((x, y));
                 }
@@ -1023,8 +1260,9 @@ mod tests {
         CommandBatch, DeviceDriver, DeviceEvent, DriverDefinition, DriverError, InputAddress,
         QueryRequest,
     };
+    use ratatui::{backend::TestBackend, Terminal};
     use zen_go_tui::terminal::AppModifiers;
-    use zen_go_tui::transport::MockTransport;
+    use zen_go_tui::transport::{MockTransport, Transport};
 
     struct RecordingDriver {
         definition: DriverDefinition,
@@ -1101,6 +1339,193 @@ mod tests {
             modifiers: AppModifiers::default(),
             kind: AppKeyEventKind::Press,
         }
+    }
+
+    #[test]
+    fn runtime_header_activation_hits_the_rendered_device_name() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 50);
+        let state = zen_go_tui::app::AppState::default();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| ui::draw(frame, &state))
+            .expect("draw titlebar");
+
+        let device_area = ui::device_header_area(area);
+        let name_x = device_area.x.saturating_add(2);
+        let name_y = device_area.y.saturating_add(1);
+        assert!(!terminal.backend().buffer()[(name_x, name_y)]
+            .symbol()
+            .trim()
+            .is_empty());
+        assert!(device_header_name_mouse_hit(
+            area,
+            &state,
+            AppMouseEvent {
+                kind: AppMouseEventKind::Down(AppMouseButton::Left),
+                column: name_x,
+                row: name_y,
+                modifiers: AppModifiers::default(),
+            }
+        ));
+    }
+
+    #[test]
+    fn runtime_selector_activation_ignores_raw_view_header_click_but_keeps_visible_title_and_f2() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 50);
+        let mut devices = RuntimeDeviceState::mock(zen_go_tui::device::ProfileCatalog::builtin())
+            .expect("mock runtime devices");
+        let mut controller = Controller::new(
+            Box::new(MockTransport::default()),
+            Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("controller");
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| ui::draw(frame, &controller.state))
+            .expect("draw visible titlebar");
+
+        let device_area = ui::device_header_area(area);
+        let name_click = AppMouseEvent {
+            kind: AppMouseEventKind::Down(AppMouseButton::Left),
+            column: device_area.x.saturating_add(2),
+            row: device_area.y.saturating_add(1),
+            modifiers: AppModifiers::default(),
+        };
+
+        assert!(handle_device_selector_header_mouse(
+            &mut devices,
+            &mut controller,
+            None,
+            area,
+            name_click,
+        ));
+        assert!(devices.selector().is_some());
+        devices.close_selector();
+
+        controller.state.popup.raw_view_open = true;
+        assert!(!handle_device_selector_header_mouse(
+            &mut devices,
+            &mut controller,
+            None,
+            area,
+            name_click,
+        ));
+        assert!(devices.selector().is_none());
+
+        assert!(handle_device_selector_hotkey(
+            &mut devices,
+            &mut controller,
+            None,
+            AppKeyCode::F(2),
+        ));
+        assert!(devices.selector().is_some());
+    }
+
+    #[test]
+    fn device_selector_keys_navigate_activate_and_cancel_without_mutating_connection() {
+        let first = DeviceCandidate::new(
+            "selector-first",
+            0x23e5,
+            0xa015,
+            Some("ZEN-FIRST".into()),
+            Some("Zen Go".into()),
+            0,
+            0,
+            3,
+        );
+        let second = DeviceCandidate::new(
+            "selector-second",
+            0x23e5,
+            0xa015,
+            Some("ZEN-SECOND".into()),
+            Some("Zen Go".into()),
+            0,
+            0,
+            3,
+        );
+        let mut picker = DevicePickerState::new(
+            vec![first.clone(), second.clone()],
+            &zen_go_tui::device::ProfileCatalog::builtin(),
+        );
+        picker.set_active_candidate(Some(first));
+
+        assert_eq!(
+            handle_device_selector_key(&mut picker, AppKeyCode::Down),
+            DeviceSelectorAction::Continue
+        );
+        assert_eq!(
+            handle_device_selector_key(&mut picker, AppKeyCode::Enter),
+            DeviceSelectorAction::Switch(second)
+        );
+
+        let selected = picker.selected_index();
+        assert_eq!(
+            handle_device_selector_key(&mut picker, AppKeyCode::Esc),
+            DeviceSelectorAction::Cancel
+        );
+        assert_eq!(picker.selected_index(), selected);
+
+        picker.select_row(0);
+        assert_eq!(
+            handle_device_selector_key(&mut picker, AppKeyCode::Enter),
+            DeviceSelectorAction::Cancel
+        );
+    }
+
+    #[test]
+    fn selector_modal_poll_drains_frames_without_flushing_pending_commands() {
+        let transport = MockTransport::default();
+        let (driver, _actions) = RecordingDriver::new();
+        let mut controller =
+            Controller::new(Box::new(transport.clone()), Box::new(driver)).expect("controller");
+        controller
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(0),
+                },
+                None,
+            )
+            .expect("queue command");
+        transport.push_read(vec![0x75]);
+
+        poll_controller_for_runtime(&mut controller, true, std::time::Duration::ZERO)
+            .expect("selector poll");
+
+        assert!(transport.take_writes().is_empty());
+        assert!(transport
+            .read(std::time::Duration::ZERO)
+            .expect("remaining transport read")
+            .is_none());
+    }
+
+    #[test]
+    fn selector_modal_paste_does_not_mutate_hidden_profile_editor() {
+        let mut controller = Controller::new(
+            Box::new(MockTransport::default()),
+            Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("controller");
+        controller.state.popup.profile_editor = Some(zen_go_tui::app::ProfileEditorState {
+            mode: zen_go_tui::app::ProfileEditorMode::Save,
+            original_name: None,
+            value: "existing".to_string(),
+        });
+
+        handle_profile_editor_paste(&mut controller, true, "pasted");
+
+        assert_eq!(
+            controller
+                .state
+                .popup
+                .profile_editor
+                .as_ref()
+                .expect("profile editor")
+                .value,
+            "existing"
+        );
     }
 
     #[test]

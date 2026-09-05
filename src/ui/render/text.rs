@@ -8,8 +8,10 @@ use antelope_protocol::{
     OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
 };
 
-use super::super::layouts::current_sample_rate_label;
 use super::super::layouts::CONNECTION_STALE_AFTER;
+use super::super::layouts::{
+    device_header_labels, DEVICE_HEADER_CHIP_GAP, DEVICE_HEADER_PRODUCT_GAP,
+};
 use super::super::raw_map::{build_raw_packet_map, Coverage, RawDomain, RawMapEntry, RawPacketMap};
 use super::super::styles::{
     chip, labeled_value_chip, muted_style, raw_coverage_color, strong_style,
@@ -127,53 +129,29 @@ pub(crate) fn render_mix_meter_state_line(state: &AppState) -> String {
 }
 
 pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {
-    let product = state.ui_profile.device_name.clone();
-    let sample = current_sample_rate_label(state);
-    let clock = state
-        .device
-        .status
-        .clock_source
-        .map(|value| value.label().to_string())
-        .unwrap_or_else(|| "clock ?".to_string());
-    let lock = if state.device.status.lock_known {
-        if state.device.status.locked == Some(true) {
-            "locked"
-        } else {
-            "unlocked"
-        }
-    } else {
-        "lock ?"
-    };
-    let connection = if state.device.connection.connected {
-        "connected"
-    } else {
-        "waiting"
-    };
-    let readiness = state.ui_profile.readiness_label().to_uppercase();
+    let labels = device_header_labels(state);
     let readiness_color = if state.ui_profile.actionable {
         Color::LightGreen
     } else {
         Color::LightRed
     };
-    let reason = (!state.ui_profile.support_reason.is_empty())
-        .then(|| format!(" {}", state.ui_profile.support_reason));
     Line::from(vec![
-        Span::styled(product, strong_style(Color::LightGreen)),
-        Span::raw("  "),
-        chip(&readiness, Color::Black, readiness_color),
-        Span::styled(reason.unwrap_or_default(), muted_style()),
-        Span::raw("  "),
+        Span::styled(labels.product, strong_style(Color::LightGreen)),
+        Span::raw(DEVICE_HEADER_PRODUCT_GAP),
+        chip(&labels.readiness, Color::Black, readiness_color),
+        Span::styled(labels.reason, muted_style()),
+        Span::raw(DEVICE_HEADER_PRODUCT_GAP),
         chip(
-            &connection.to_uppercase(),
+            &labels.connection,
             Color::Black,
             connection_badge_color(state),
         ),
-        Span::raw(" "),
-        chip(&sample, Color::Black, Color::Yellow),
-        Span::raw(" "),
-        chip(&clock, Color::Black, Color::LightBlue),
-        Span::raw(" "),
-        chip(&lock.to_uppercase(), Color::Black, Color::Magenta),
+        Span::raw(DEVICE_HEADER_CHIP_GAP),
+        chip(&labels.sample_rate, Color::Black, Color::Yellow),
+        Span::raw(DEVICE_HEADER_CHIP_GAP),
+        chip(&labels.clock_source, Color::Black, Color::LightBlue),
+        Span::raw(DEVICE_HEADER_CHIP_GAP),
+        chip(&labels.lock, Color::Black, Color::Magenta),
     ])
 }
 

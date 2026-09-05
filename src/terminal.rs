@@ -34,6 +34,7 @@ pub enum AppKeyCode {
     PageDown,
     Enter,
     Esc,
+    F(u8),
     Unknown,
 }
 
@@ -167,6 +168,7 @@ fn normalize_key(key: KeyEvent) -> AppKeyEvent {
         KeyCode::PageDown => AppKeyCode::PageDown,
         KeyCode::Enter => AppKeyCode::Enter,
         KeyCode::Esc => AppKeyCode::Esc,
+        KeyCode::F(number) => AppKeyCode::F(number),
         _ => AppKeyCode::Unknown,
     };
 
@@ -407,6 +409,20 @@ mod tests {
                 modifiers: AppModifiers::default(),
                 kind: AppKeyEventKind::Press,
             }
+        );
+    }
+
+    #[test]
+    fn normalize_crossterm_event_maps_f2() {
+        let f2 = CrosstermEvent::Key(KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+
+        assert_eq!(
+            normalize_crossterm_event(f2).expect("normalize F2"),
+            Some(AppInputEvent::Key(AppKeyEvent {
+                code: AppKeyCode::F(2),
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Press,
+            }))
         );
     }
 

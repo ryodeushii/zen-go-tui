@@ -43,6 +43,11 @@ pub(crate) fn titlebar_layout(area: Rect) -> [Rect; 2] {
     [sections[0], sections[1]]
 }
 
+/// The outer device panel rectangle used by both titlebar rendering and hit testing.
+pub fn device_header_area(area: Rect) -> Rect {
+    titlebar_layout(root_chunks(area)[0])[0]
+}
+
 pub(crate) fn device_metadata_width(state: &AppState) -> u16 {
     let Some(metadata) = state.device.status.metadata.as_ref() else {
         return "metadata pending".chars().count() as u16;
@@ -80,31 +85,136 @@ pub(crate) fn current_sample_rate_label(state: &AppState) -> String {
         .unwrap_or_else(|| "rate ?".to_string())
 }
 
-pub(crate) fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
-    let inner = device_panel_layout(area, state)[0];
-    let product = state
-        .device
-        .status
-        .metadata
-        .as_ref()
-        .map(|metadata| metadata.product_name.clone())
-        .unwrap_or_else(|| "ZEN GO SYNERGY CORE".to_string());
-    let sample = current_sample_rate_label(state);
-    let clock = state
+pub(crate) const DEVICE_HEADER_PRODUCT_GAP: &str = "  ";
+pub(crate) const DEVICE_HEADER_CHIP_GAP: &str = " ";
+
+#[derive(Debug, Clone)]
+pub(crate) struct DeviceHeaderLabels {
+    pub product: String,
+    pub readiness: String,
+    pub reason: String,
+    pub connection: String,
+    pub sample_rate: String,
+    pub clock_source: String,
+    pub lock: String,
+}
+
+pub(crate) fn device_header_labels(state: &AppState) -> DeviceHeaderLabels {
+    let clock_source = state
         .device
         .status
         .clock_source
         .map(|value| value.label().to_string())
         .unwrap_or_else(|| "clock ?".to_string());
+    let lock = if state.device.status.lock_known {
+        if state.device.status.locked == Some(true) {
+            "LOCKED"
+        } else {
+            "UNLOCKED"
+        }
+    } else {
+        "LOCK ?"
+    };
+    let connection = if state.device.connection.connected {
+        "CONNECTED"
+    } else {
+        "WAITING"
+    };
 
-    let mut x = inner.x + product.chars().count() as u16 + 2;
-    let connection_rect = Rect::new(x, inner.y, chip_width("CONNECTED"), 1);
-    x = x.saturating_add(connection_rect.width + 1);
-    let sample_rect = Rect::new(x, inner.y, chip_width(&sample), 1);
-    x = x.saturating_add(sample_rect.width + 1);
-    let clock_rect = Rect::new(x, inner.y, chip_width(&clock), 1);
+    DeviceHeaderLabels {
+        product: state.ui_profile.device_name.clone(),
+        readiness: state.ui_profile.readiness_label().to_uppercase(),
+        reason: (!state.ui_profile.support_reason.is_empty())
+            .then(|| format!(" {}", state.ui_profile.support_reason))
+            .unwrap_or_default(),
+        connection: connection.to_string(),
+        sample_rate: current_sample_rate_label(state),
+        clock_source,
+        lock: lock.to_string(),
+    }
+}
 
-    vec![connection_rect, sample_rect, clock_rect]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeviceHeaderGeometry {
+    pub name: Rect,
+    pub readiness: Rect,
+    pub connection: Rect,
+    pub sample_rate: Rect,
+    pub clock_source: Rect,
+    pub lock: Rect,
+}
+
+fn device_header_text_width(text: &str) -> u16 {
+    text.chars().count().min(usize::from(u16::MAX)) as u16
+}
+
+fn device_header_part_rect(inner: Rect, x: u16, width: u16) -> Rect {
+    let right = inner.x.saturating_add(inner.width);
+    let visible_x = x.min(right);
+    Rect::new(
+        visible_x,
+        inner.y,
+        width.min(right.saturating_sub(visible_x)),
+        inner.height.min(1),
+    )
+}
+
+pub(crate) fn device_header_geometry(area: Rect, state: &AppState) -> DeviceHeaderGeometry {
+    let inner = device_panel_layout(area, state)[0];
+    let labels = device_header_labels(state);
+    let product_width = device_header_text_width(&labels.product);
+    let readiness_width = chip_width(&labels.readiness);
+    let reason_width = device_header_text_width(&labels.reason);
+    let connection_width = chip_width(&labels.connection);
+    let sample_rate_width = chip_width(&labels.sample_rate);
+    let clock_source_width = chip_width(&labels.clock_source);
+    let lock_width = chip_width(&labels.lock);
+
+    let name = device_header_part_rect(inner, inner.x, product_width);
+    let mut x = inner
+        .x
+        .saturating_add(product_width)
+        .saturating_add(device_header_text_width(DEVICE_HEADER_PRODUCT_GAP));
+    let readiness = device_header_part_rect(inner, x, readiness_width);
+    x = x
+        .saturating_add(readiness_width)
+        .saturating_add(reason_width)
+        .saturating_add(device_header_text_width(DEVICE_HEADER_PRODUCT_GAP));
+    let connection = device_header_part_rect(inner, x, connection_width);
+    x = x
+        .saturating_add(connection_width)
+        .saturating_add(device_header_text_width(DEVICE_HEADER_CHIP_GAP));
+    let sample_rate = device_header_part_rect(inner, x, sample_rate_width);
+    x = x
+        .saturating_add(sample_rate_width)
+        .saturating_add(device_header_text_width(DEVICE_HEADER_CHIP_GAP));
+    let clock_source = device_header_part_rect(inner, x, clock_source_width);
+    x = x
+        .saturating_add(clock_source_width)
+        .saturating_add(device_header_text_width(DEVICE_HEADER_CHIP_GAP));
+    let lock = device_header_part_rect(inner, x, lock_width);
+
+    DeviceHeaderGeometry {
+        name,
+        readiness,
+        connection,
+        sample_rate,
+        clock_source,
+        lock,
+    }
+}
+
+pub(crate) fn device_header_name_hit_area(area: Rect, state: &AppState) -> Rect {
+    device_header_geometry(area, state).name
+}
+
+pub(crate) fn device_header_hit_areas(area: Rect, state: &AppState) -> Vec<Rect> {
+    let geometry = device_header_geometry(area, state);
+    vec![
+        geometry.connection,
+        geometry.sample_rate,
+        geometry.clock_source,
+    ]
 }
 
 pub(crate) fn mixer_page_layout(area: Rect) -> [Rect; 2] {

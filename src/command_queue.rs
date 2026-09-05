@@ -39,37 +39,51 @@ fn coalesce_key_for_command(command: &Action) -> Option<CoalesceKey> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QueueEntryId(u64);
+
 #[derive(Debug, Clone)]
 pub struct QueuedCommand {
     pub command: Action,
 }
 
+#[derive(Debug, Clone)]
+struct QueueEntry {
+    command: Action,
+    id: QueueEntryId,
+}
+
 #[derive(Debug, Default)]
 pub struct CommandQueue {
-    entries: Vec<QueuedCommand>,
+    entries: Vec<QueueEntry>,
+    next_id: u64,
 }
 
 impl CommandQueue {
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn enqueue(&mut self, command: Action) -> bool {
+        self.enqueue_with_id(command).is_some()
+    }
+
+    pub(crate) fn enqueue_with_id(&mut self, command: Action) -> Option<QueueEntryId> {
         if let Some(key) = coalesce_key_for_command(&command) {
             for entry in &mut self.entries {
                 if coalesce_key_for_command(&entry.command) == Some(key) {
                     entry.command = command;
-                    return true;
+                    return Some(entry.id);
                 }
             }
         }
         if self.entries.len() >= MAX_QUEUE_SIZE {
-            return false;
+            return None;
         }
-        self.entries.push(QueuedCommand { command });
-        true
+        let id = QueueEntryId(self.next_id);
+        self.next_id = self.next_id.wrapping_add(1);
+        self.entries.push(QueueEntry { command, id });
+        Some(id)
     }
 
     pub fn len(&self) -> usize {
@@ -80,7 +94,19 @@ impl CommandQueue {
     }
 
     pub fn flush(&mut self, transport: &dyn Transport, driver: &dyn DeviceDriver) -> Result<usize> {
-        let count = self.entries.len();
+        self.flush_with(transport, driver, |_| {})
+    }
+
+    pub(crate) fn flush_with<F>(
+        &mut self,
+        transport: &dyn Transport,
+        driver: &dyn DeviceDriver,
+        mut on_sent: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(QueueEntryId),
+    {
+        let mut count = 0;
         for entry in self.entries.drain(..) {
             let batch = driver.encode(entry.command)?;
             for frame in batch.frames {
@@ -92,6 +118,8 @@ impl CommandQueue {
                     transport.write(&frame)?;
                 }
             }
+            count += 1;
+            on_sent(entry.id);
         }
         Ok(count)
     }

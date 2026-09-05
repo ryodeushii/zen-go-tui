@@ -94,6 +94,22 @@ fn selected_device_title_uses_runtime_profile_name() {
 }
 
 #[test]
+fn device_header_name_hit_area_covers_only_device_name() {
+    let state = orion_ui_state();
+    let area = Rect::new(0, 0, 140, 48);
+    let header = super::layouts::device_header_area(area);
+    let hit = super::layouts::device_header_name_hit_area(header, &state);
+
+    assert!(super::device_header_name_hit(area, &state, hit.x, hit.y));
+    assert!(!super::device_header_name_hit(
+        area,
+        &state,
+        hit.x.saturating_add(hit.width),
+        hit.y
+    ));
+}
+
+#[test]
 fn selectable_picker_rows_share_rendered_list_geometry() {
     let catalog = ProfileCatalog::builtin();
     let first = DeviceCandidate::new(
@@ -131,6 +147,41 @@ fn selectable_picker_rows_share_rendered_list_geometry() {
     );
     assert!(device_picker_activation_row(area, &picker, popup.x, content.y).is_none());
     assert!(device_picker_activation_row(area, &picker, content.x, content.y + 2).is_none());
+}
+
+#[test]
+fn device_picker_renders_active_serial_and_path_fallback() {
+    let catalog = ProfileCatalog::builtin();
+    let active = DeviceCandidate::new(
+        "hid-active",
+        0x23e5,
+        0xa015,
+        Some("ZEN-A".into()),
+        Some("Zen Go".into()),
+        0,
+        0,
+        3,
+    );
+    let no_serial = DeviceCandidate::new(
+        "hid-no-serial",
+        0x23e5,
+        0xa015,
+        None,
+        Some("Zen Go".into()),
+        0,
+        0,
+        3,
+    );
+    let mut picker = DevicePickerState::new(vec![active.clone(), no_serial], &catalog);
+    picker.set_active_candidate(Some(active));
+    let mut terminal = test_terminal(100, 30);
+    terminal
+        .draw(|frame| draw_device_picker(frame, &picker))
+        .expect("draw selector");
+    let text = terminal_text(&terminal);
+    assert!(text.contains("serial ZEN-A"));
+    assert!(text.contains("ACTIVE"));
+    assert!(text.contains("path hid-no-serial"));
 }
 
 #[test]
