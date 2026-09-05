@@ -72,6 +72,49 @@ cargo build --release
 
 Output: `target/release/zen-go-tui`
 
+### Regenerate device profiles after updates
+
+Normal builds use the checked-in `src/device/generated.rs` and `src/device/generated_profiles.json` files. They do not require profile regeneration or the Antelope-Ctl submodule.
+
+After changing profiles or updating the Antelope-Ctl submodule revision, regenerate both files before compiling. Cargo does not regenerate them automatically. Without regeneration, the binary uses the previous embedded profile data.
+
+Run these commands from the repository root. Regeneration requires Python 3.
+
+1. Initialize the submodule at the revision recorded by this repository:
+
+   ```bash
+   git submodule update --init --recursive modules/Antelope-Ctl
+   ```
+
+   Skip this step if you have intentionally checked out a different submodule revision for an update. This command restores the recorded revision.
+
+2. Generate both embedded profile files:
+
+   ```bash
+   python3 tools/generate_device_catalog.py \
+     --profiles-dir modules/Antelope-Ctl/profiles \
+     --output src/device/generated.rs \
+     --pack-output src/device/generated_profiles.json
+   ```
+
+3. Check that the generated files match the profiles:
+
+   ```bash
+   python3 tools/generate_device_catalog.py \
+     --check modules/Antelope-Ctl/profiles \
+     --generated src/device/generated.rs \
+     --pack-generated src/device/generated_profiles.json
+   ```
+
+4. Review the generated diff before building:
+
+   ```bash
+   git diff -- src/device/generated.rs src/device/generated_profiles.json
+   cargo build --release
+   ```
+
+Commit both generated files with the profile changes or submodule revision update. The drift check reports stale files without rewriting them. Regeneration incorporates profile data but does not verify hardware behavior or resolve conflicting protocol evidence.
+
 ### Windows cross-build (from Linux)
 
 ```bash
