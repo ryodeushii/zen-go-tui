@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use antelope_protocol::{
-    ClockSource, DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState,
-    GlobalControl, InputAddress, InputControl, MixerAddress, MixerChannelState, MixerControl,
-    OutputAddress, OutputControl, OutputMode, OutputState, OutputTarget, PreampState,
-    RoutingSource, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeProfile,
-    RuntimeReadiness, SampleRate, Surface,
+    DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState, GlobalControl,
+    InputAddress, InputControl, MixerAddress, MixerChannelState, MixerControl, OutputAddress,
+    OutputControl, OutputMode, OutputState, OutputTarget, PreampState, RoutingSource,
+    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeProfile, RuntimeReadiness,
+    SampleRate, Surface,
 };
 
 use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
@@ -20,7 +20,8 @@ use super::{
 pub struct DeviceStatus {
     pub sample_rate: Option<SampleRate>,
     pub sample_rate_hz: Option<u32>,
-    pub clock_source: Option<ClockSource>,
+    /// Current profile-defined raw clock-source enum value.
+    pub clock_source: Option<i32>,
     pub lock_known: bool,
     pub locked: Option<bool>,
     pub metadata: Option<DeviceMetadata>,
@@ -162,6 +163,12 @@ pub struct RoutingSourceChoice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockSourceChoice {
+    pub value: i32,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiInputCapability {
     pub kind: RuntimeInputControlKind,
     pub parameter: String,
@@ -183,6 +190,8 @@ pub struct UiProfileState {
     input_controls: HashSet<(InputAddress, InputControl)>,
     input_capabilities: HashMap<InputAddress, Vec<UiInputCapability>>,
     parameter_values: HashMap<String, HashMap<i32, String>>,
+    clock_source_choices: Vec<ClockSourceChoice>,
+    internal_clock_value: Option<i32>,
     output_controls: HashSet<(OutputAddress, OutputControl)>,
     mixer_controls: HashSet<(u8, MixerControl)>,
     link_surfaces: HashSet<u8>,
@@ -213,6 +222,25 @@ impl UiProfileState {
                 )
             })
             .collect();
+        let clock_parameter = profile.params.iter().find(|parameter| {
+            parameter.name == "clock_source"
+                && parameter.id.is_some()
+                && parameter.applies_to == "globals"
+                && parameter.status.eq_ignore_ascii_case("confirmed")
+        });
+        let clock_source_choices = clock_parameter
+            .map(|parameter| {
+                parameter
+                    .values
+                    .iter()
+                    .map(|(value, label)| ClockSourceChoice {
+                        value: *value,
+                        label: label.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let internal_clock_value = clock_parameter.and_then(|parameter| parameter.internal_value);
 
         let mut input_capabilities = HashMap::new();
         let mut input_controls = HashSet::new();
@@ -351,6 +379,8 @@ impl UiProfileState {
             input_controls,
             input_capabilities,
             parameter_values,
+            clock_source_choices,
+            internal_clock_value,
             output_controls,
             mixer_controls,
             link_surfaces,
@@ -372,6 +402,8 @@ impl UiProfileState {
             input_controls: HashSet::new(),
             input_capabilities: HashMap::new(),
             parameter_values: HashMap::new(),
+            clock_source_choices: Vec::new(),
+            internal_clock_value: None,
             output_controls: HashSet::new(),
             mixer_controls: HashSet::new(),
             link_surfaces: HashSet::new(),
@@ -448,6 +480,22 @@ impl UiProfileState {
         self.actionable && self.global_controls.contains(&control)
     }
 
+    pub fn clock_source_choices(&self) -> &[ClockSourceChoice] {
+        &self.clock_source_choices
+    }
+
+    pub fn clock_source_label(&self, value: i32) -> String {
+        self.clock_source_choices
+            .iter()
+            .find(|choice| choice.value == value)
+            .map(|choice| choice.label.clone())
+            .unwrap_or_else(|| format!("Clock raw {value} (unavailable)"))
+    }
+
+    pub fn clock_source_is_internal(&self, value: Option<i32>) -> bool {
+        value.is_some() && value == self.internal_clock_value
+    }
+
     pub fn supports_routing(&self, destination: u16) -> bool {
         self.actionable && self.routing_destinations.contains(&destination)
     }
@@ -514,6 +562,13 @@ impl Default for UiProfileState {
             input_controls,
             input_capabilities: HashMap::new(),
             parameter_values: HashMap::new(),
+            clock_source_choices: (0..=2)
+                .map(|value| ClockSourceChoice {
+                    value,
+                    label: format!("Raw {value} (label unconfirmed)"),
+                })
+                .collect(),
+            internal_clock_value: Some(0),
             output_controls,
             mixer_controls,
             link_surfaces: [0, 1].into_iter().collect(),

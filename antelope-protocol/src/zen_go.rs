@@ -234,6 +234,27 @@ impl ZenGoDriver {
         }
     }
 
+    fn checked_clock_source(&self, value: ControlValue) -> Result<ClockSource, DriverError> {
+        let parameter = self
+            .profile
+            .params
+            .iter()
+            .find(|parameter| {
+                parameter.name == "clock_source"
+                    && parameter.applies_to == "globals"
+                    && crate::profile_codec::is_confirmed(&parameter.status)
+            })
+            .ok_or_else(|| DriverError::UnsupportedAction("profile clock source".into()))?;
+        let raw = crate::profile_codec::value_i32(
+            value,
+            &parameter.value_type,
+            parameter.range,
+            &parameter.values,
+            &parameter.name,
+        )?;
+        Ok(ClockSource::from_code(Self::byte(raw, "clock source")?))
+    }
+
     fn assignment(source: RoutingSource) -> Result<MixerAssignment, DriverError> {
         let channel =
             u8::try_from(source.index.checked_add(1).ok_or_else(|| {
@@ -604,10 +625,7 @@ impl DeviceDriver for ZenGoDriver {
             Action::SetGlobal {
                 control: GlobalControl::ClockSource,
                 value,
-            } => Command::SetClockSource(ClockSource::from_code(Self::byte(
-                Self::int_value(value, "clock source")?,
-                "clock source",
-            )?)),
+            } => Command::SetClockSource(self.checked_clock_source(value)?),
             Action::SetGlobal {
                 control: GlobalControl::Surface,
                 value,

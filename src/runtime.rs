@@ -10,8 +10,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use antelope_protocol::{
-    Action, ClockSource, ControlValue, GlobalControl, InputControl, MixerAddress, MixerAssignment,
-    PreampMode, SampleRate,
+    Action, ControlValue, GlobalControl, InputControl, MixerAddress, MixerAssignment, PreampMode,
+    SampleRate,
 };
 use zen_go_tui::app::{
     Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind,
@@ -429,6 +429,32 @@ fn handle_routing_source_picker(
     }
 }
 
+fn handle_selector_popup(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    ctrl: bool,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    let result = match key_code {
+        AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('c') if ctrl => return Ok(KeyAction::Quit),
+        AppKeyCode::Up => controller.apply_intent(Intent::MovePopupSelection(false), area),
+        AppKeyCode::Down => controller.apply_intent(Intent::MovePopupSelection(true), area),
+        AppKeyCode::Enter => activate_popup_selection(controller),
+        AppKeyCode::Esc => controller.apply_intent(Intent::CloseSelectorPopup, area),
+        _ => Ok(()),
+    };
+
+    match result {
+        Ok(()) => Ok(KeyAction::Continue),
+        Err(error) if is_device_error(&error) => {
+            handle_runtime_error(controller, error)?;
+            Ok(KeyAction::ReconnectPending)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn handle_key_press(
     controller: &mut Controller,
     key: AppKeyEvent,
@@ -439,6 +465,10 @@ pub fn handle_key_press(
 
     if controller.state.popup.routing_source_picker.is_some() {
         return handle_routing_source_picker(controller, key_code, ctrl, area);
+    }
+
+    if controller.state.popup.selector_popup.is_some() {
+        return handle_selector_popup(controller, key_code, ctrl, area);
     }
 
     if ctrl {
@@ -857,7 +887,11 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('s') => {
-            if controller.state.device.status.clock_source == Some(ClockSource::Internal) {
+            if controller
+                .state
+                .ui_profile
+                .clock_source_is_internal(controller.state.device.status.clock_source)
+            {
                 let current = controller
                     .state
                     .device
@@ -878,22 +912,26 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('c') => {
-            let current = controller
+            let choices = controller.state.ui_profile.clock_source_choices();
+            if choices.is_empty()
+                || !controller
+                    .state
+                    .ui_profile
+                    .supports_global(GlobalControl::ClockSource)
+            {
+                return Ok(KeyAction::Continue);
+            }
+            let position = controller
                 .state
                 .device
                 .status
                 .clock_source
-                .unwrap_or(ClockSource::Internal);
-            let all = ClockSource::all_confirmed();
-            let position = all
-                .iter()
-                .position(|source| *source == current)
-                .unwrap_or(0);
-            let next = all[(position + 1) % all.len()];
+                .and_then(|current| choices.iter().position(|choice| choice.value == current));
+            let next = choices[(position.map_or(0, |index| index + 1)) % choices.len()].value;
             controller.send(
                 Action::SetGlobal {
                     control: GlobalControl::ClockSource,
-                    value: ControlValue::Enum(i32::from(next.code())),
+                    value: ControlValue::Enum(next),
                 },
                 None,
             )?;
@@ -1364,10 +1402,12 @@ pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
                 .get(controller.state.popup.selected_index)
                 .copied()
                 .map(ui::Intent::PickSampleRate),
-            SelectorPopupKind::ClockSource => ClockSource::all_confirmed()
+            SelectorPopupKind::ClockSource => controller
+                .state
+                .ui_profile
+                .clock_source_choices()
                 .get(controller.state.popup.selected_index)
-                .copied()
-                .map(ui::Intent::PickClockSource),
+                .map(|choice| ui::Intent::PickClockSource(choice.value)),
             SelectorPopupKind::PreampMode { input } => {
                 [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
                     .get(controller.state.popup.selected_index)
@@ -1512,6 +1552,71 @@ mod tests {
             modifiers: AppModifiers::default(),
             kind: AppKeyEventKind::Press,
         }
+    }
+
+    #[test]
+    fn clock_selector_is_keyboard_modal_and_only_activates_selected_choice() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 50);
+        let transport = MockTransport::default();
+        let (driver, actions) = RecordingDriver::new();
+        let entry = synthetic_entry();
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+                .expect("controller");
+        controller.state.device.status.clock_source = Some(0);
+        controller.state.device.status.sample_rate = Some(SampleRate::Hz48000);
+        controller
+            .apply_intent(Intent::OpenClockSourceSelector, area)
+            .expect("open clock selector");
+
+        for code in [
+            AppKeyCode::Char('c'),
+            AppKeyCode::Char('s'),
+            AppKeyCode::Char('r'),
+            AppKeyCode::Char('x'),
+            AppKeyCode::Left,
+            AppKeyCode::Tab,
+        ] {
+            assert_eq!(
+                handle_key_press(&mut controller, key(code), area).expect("consume modal key"),
+                KeyAction::Continue
+            );
+        }
+
+        assert!(actions.lock().expect("recorded actions").is_empty());
+        assert!(transport.take_writes().is_empty());
+        assert_eq!(controller.state.device.status.clock_source, Some(0));
+        assert_eq!(
+            controller.state.device.status.sample_rate,
+            Some(SampleRate::Hz48000)
+        );
+        assert!(!controller.state.popup.routing_open);
+        assert_eq!(controller.state.popup.selected_index, 0);
+
+        handle_key_press(&mut controller, key(AppKeyCode::Down), area).expect("selector down");
+        assert_eq!(controller.state.popup.selected_index, 1);
+        handle_key_press(&mut controller, key(AppKeyCode::Up), area).expect("selector up");
+        assert_eq!(controller.state.popup.selected_index, 0);
+        handle_key_press(&mut controller, key(AppKeyCode::Up), area).expect("selector wrap up");
+        assert_eq!(controller.state.popup.selected_index, 2);
+        handle_key_press(&mut controller, key(AppKeyCode::Enter), area)
+            .expect("activate clock choice");
+
+        assert!(controller.state.popup.selector_popup.is_none());
+        assert_eq!(controller.state.device.status.clock_source, Some(2));
+        assert!(matches!(
+            actions.lock().expect("recorded actions").as_slice(),
+            [Action::SetGlobal {
+                control: GlobalControl::ClockSource,
+                value: ControlValue::Enum(2),
+            }]
+        ));
+
+        controller
+            .apply_intent(Intent::OpenClockSourceSelector, area)
+            .expect("reopen clock selector");
+        handle_key_press(&mut controller, key(AppKeyCode::Esc), area).expect("cancel selector");
+        assert!(controller.state.popup.selector_popup.is_none());
     }
 
     #[test]

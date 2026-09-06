@@ -515,7 +515,7 @@ fn build_snapshot_map(entries: &mut Vec<RawMapEntry>, report_len: usize) {
         Some(RawMapScope::Base),
         Coverage::Used,
         "clock source",
-        "Decoded through ClockSource.",
+        "Decoded as the active profile's raw clock-source enum value.",
         OFFSET_CLOCK_SOURCE..(OFFSET_CLOCK_SOURCE + 1),
         report_len,
     );

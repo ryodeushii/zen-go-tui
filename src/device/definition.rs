@@ -404,6 +404,8 @@ pub struct ParamDefinition {
     pub range: Option<(i32, i32)>,
     pub direction: Option<FaderDirectionDefinition>,
     pub unity: Option<i32>,
+    /// Raw enum value that selects the profile's internal clock, when known.
+    pub internal_value: Option<i32>,
     pub range_by_mode: &'static [ParamRangeDefinition],
     pub range_forms: &'static [ParamRangeDefinition],
     pub values: &'static [ParamValueDefinition],

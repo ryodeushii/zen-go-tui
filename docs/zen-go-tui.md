@@ -146,6 +146,8 @@ Saved-state TOML profiles contain user control snapshots. They are not normalize
 - `Ctrl+D` — open or close the raw page
 - `q` — quit
 
+Clock-source choices and the current label come from the active device profile. Orion exposes its seven confirmed labels; Zen Go intentionally shows `Raw 0` through `Raw 2` as label-unconfirmed rather than guessing their names. Clock-source and sample-rate changes are disruptive, and a host audio stream can cause Orion to ignore them; stop the host audio stack before changing either setting.
+
 ## Raw frame view
 
 The TUI includes a raw-data page for live protocol inspection.

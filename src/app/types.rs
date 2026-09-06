@@ -1,9 +1,8 @@
 use std::time::Duration;
 
 use antelope_protocol::{
-    ClockSource, DynamicInputState, DynamicMixerStrip, DynamicOutputState, DynamicRoutingGroup,
-    InputAddress, MixerAddress, MixerAssignment, PanState, PreampMode, RoutingSource, SampleRate,
-    Surface,
+    DynamicInputState, DynamicMixerStrip, DynamicOutputState, DynamicRoutingGroup, InputAddress,
+    MixerAddress, MixerAssignment, PanState, PreampMode, RoutingSource, SampleRate, Surface,
 };
 
 use crate::app::AppState;
@@ -217,7 +216,7 @@ pub enum Intent {
     OpenSampleRateSelector,
     OpenClockSourceSelector,
     PickSampleRate(SampleRate),
-    PickClockSource(ClockSource),
+    PickClockSource(i32),
 
     // Keyboard-only (context-resolved in handle_key_press)
     AdjustFocused(bool),

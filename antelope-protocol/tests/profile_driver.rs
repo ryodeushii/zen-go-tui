@@ -131,15 +131,16 @@ fn non_orion_fixture_entry() -> RuntimeEntry {
     entry.profile.identity.vid = 0x1234;
     entry.profile.identity.pid = 0x5678;
     for parameter in &mut entry.profile.params {
-        parameter.applies_to = match parameter.name.as_str() {
+        let applies_to = match parameter.name.as_str() {
             name if name.starts_with("bus_") => "outputs",
             "adat_gain" => "adat_inputs",
             "spdif_gain" => "spdif_inputs",
             "gain" => "physical_inputs",
             name if name.starts_with("mix_") => "mixers",
-            applies_to => applies_to,
+            _ => parameter.applies_to.as_str(),
         }
-        .into();
+        .to_string();
+        parameter.applies_to = applies_to;
         // Replace Orion's legacy-only offset aliases so non-Orion tests can
         // exercise unrelated behavior under strict reference validation.
         if parameter
@@ -1016,6 +1017,10 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
                 value: ControlValue::Enum(4),
             },
             antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::ClockSource,
+                value: ControlValue::Enum(0),
+            },
+            antelope_protocol::DynamicGlobalState {
                 control: GlobalControl::Parameter(0x0e),
                 value: ControlValue::Int(73),
             },
@@ -1026,6 +1031,87 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
         .mixers
         .iter()
         .all(|surface| surface.master.is_some() && surface.strips.len() == 32));
+}
+
+#[test]
+fn orion_clock_source_decodes_profile_values_zero_and_six() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    for value in [0, 6] {
+        let mut frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+        frame[19] = value;
+        let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+            panic!("snapshot")
+        };
+        assert!(state
+            .globals
+            .contains(&antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::ClockSource,
+                value: ControlValue::Enum(i32::from(value)),
+            }));
+    }
+}
+
+#[test]
+fn unknown_clock_readback_is_preserved_as_raw_enum_value() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    frame[19] = 9;
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("snapshot")
+    };
+    assert!(state
+        .globals
+        .contains(&antelope_protocol::DynamicGlobalState {
+            control: GlobalControl::ClockSource,
+            value: ControlValue::Enum(9),
+        }));
+}
+
+#[test]
+fn orion_usb_clock_source_uses_exact_confirmed_global_frame() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let batch = driver
+        .encode(Action::SetGlobal {
+            control: GlobalControl::ClockSource,
+            value: ControlValue::Enum(6),
+        })
+        .expect("USB clock source");
+    let mut expected = vec![0; 320];
+    expected[0] = 0x70;
+    expected[4..8].copy_from_slice(&0x12_u32.to_le_bytes());
+    expected[16] = 0x04;
+    expected[17] = 0x06;
+    assert_eq!(batch.frames, vec![expected]);
+}
+
+#[test]
+fn clock_source_write_rejects_value_not_declared_by_profile() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    assert!(matches!(
+        driver.encode(Action::SetGlobal {
+            control: GlobalControl::ClockSource,
+            value: ControlValue::Enum(7),
+        }),
+        Err(DriverError::InvalidAction(_))
+    ));
+}
+
+#[test]
+fn zen_clock_source_keeps_only_profile_declared_raw_choices() {
+    let driver = zen_go_driver();
+    assert!(driver
+        .encode(Action::SetGlobal {
+            control: GlobalControl::ClockSource,
+            value: ControlValue::Enum(2),
+        })
+        .is_ok());
+    assert!(matches!(
+        driver.encode(Action::SetGlobal {
+            control: GlobalControl::ClockSource,
+            value: ControlValue::Enum(3),
+        }),
+        Err(DriverError::InvalidAction(_))
+    ));
 }
 
 #[test]

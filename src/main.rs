@@ -33,10 +33,11 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use antelope_protocol::{
-        control_panel_startup_queries, ClockSource, DynamicRoutingGroup, MixerAssignment,
-        MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampMode, ProfileDriver,
-        RoutingSource, RuntimeRoutingSourceDomain, SampleRate, Surface,
+        control_panel_startup_queries, DynamicRoutingGroup, MixerAssignment, MixerSurface,
+        OutputMode, OutputState, OutputTarget, PanState, PreampMode, ProfileDriver, RoutingSource,
+        RuntimeRoutingSourceDomain, SampleRate, Surface,
     };
+    use ratatui::layout::Rect;
     use zen_go_tui::app::{
         AssignmentPickerState, Controller, FocusArea, ProfileEditorMode, ProfileEditorState,
         SelectorPopupKind, SelectorPopupState,
@@ -84,6 +85,18 @@ mod tests {
             &entry,
         )
         .expect("Zen Go controller")
+    }
+
+    fn orion_controller(transport: Box<dyn Transport>) -> Controller {
+        let catalog = ProfileCatalog::builtin();
+        let entry = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "orion_studio_3")
+            .expect("Orion profile")
+            .clone();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        Controller::new_for_entry(transport, Box::new(driver), &entry).expect("Orion controller")
     }
 
     fn seed_first_mixer_strip_state(
@@ -801,7 +814,7 @@ mod tests {
     fn mouse_sample_rate_selector_opens_and_pick_sends_exact_rate() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        controller.state.device.status.clock_source = Some(ClockSource::Internal);
+        controller.state.device.status.clock_source = Some(0);
 
         controller
             .apply_intent(
@@ -831,10 +844,36 @@ mod tests {
     }
 
     #[test]
+    fn orion_clock_popup_keyboard_wrap_selects_usb_exact_frame() {
+        let area = Rect::new(0, 0, 40, 8);
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(Box::new(transport.clone()));
+        controller.state.device.status.clock_source = Some(0);
+        controller
+            .apply_intent(ui::Intent::OpenClockSourceSelector, area)
+            .expect("open clock selector");
+
+        handle_key_press(&mut controller, test_key(AppKeyCode::Up), area)
+            .expect("wrap to last clock choice");
+        assert_eq!(controller.state.popup.selected_index, 6);
+        handle_key_press(&mut controller, test_key(AppKeyCode::Enter), area)
+            .expect("activate USB clock");
+        assert!(controller.state.popup.selector_popup.is_none());
+        controller.flush_commands().expect("flush USB clock");
+
+        let mut expected = vec![0; 320];
+        expected[0] = 0x70;
+        expected[4..8].copy_from_slice(&0x12_u32.to_le_bytes());
+        expected[16] = 0x04;
+        expected[17] = 0x06;
+        assert_eq!(transport.take_writes(), vec![expected]);
+    }
+
+    #[test]
     fn sample_rate_controls_are_disabled_when_clock_source_is_not_internal() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
-        controller.state.device.status.clock_source = Some(ClockSource::Usb);
+        controller.state.device.status.clock_source = Some(2);
         controller.state.device.status.sample_rate = Some(SampleRate::Hz192000);
 
         controller

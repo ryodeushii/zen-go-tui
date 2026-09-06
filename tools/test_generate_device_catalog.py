@@ -849,6 +849,46 @@ class GeneratorTests(unittest.TestCase):
             self.assertIsNone(params[name]["id"])
             self.assertIn("id", json.loads(params[name]["metadata"]))
 
+    def test_clock_sources_preserve_profile_owned_values_and_internal_semantics(self) -> None:
+        orion = {
+            param["name"]: param
+            for param in generator._normalized_profile_record(
+                generator.load_profile(ORION_PROFILE, ORION_PROFILE.parent)
+            )["params"]
+        }["clock_source"]
+        self.assertEqual(orion["id"], 0x04)
+        self.assertEqual(orion["status"], "confirmed")
+        self.assertEqual(orion["value_type"], "enum")
+        self.assertEqual(orion["applies_to"], "globals")
+        self.assertEqual(orion["internal_value"], 0)
+        self.assertEqual(
+            orion["values"],
+            [
+                [0, "Oven (internal OCXO clock -- the device's own reference; power-on default)"],
+                [1, "Word Clock (BNC in)"],
+                [2, "ADAT"],
+                [3, "ADAT x2 (S/MUX2)"],
+                [4, "ADAT x4 (S/MUX4)"],
+                [5, "S/PDIF"],
+                [6, "USB (follow the host)"],
+            ],
+        )
+
+        zen = {
+            param["name"]: param for param in normalized_zen_go()["params"]
+        }["clock_source"]
+        self.assertEqual(zen["internal_value"], 0)
+        self.assertEqual(
+            zen["values"],
+            [[index, f"Raw {index} (label unconfirmed)"] for index in range(3)],
+        )
+
+    def test_clock_internal_value_must_be_a_declared_choice(self) -> None:
+        data = json.loads(ORION_PROFILE.read_text())
+        data["params"]["clock_source"]["runtime_internal_value"] = 9
+        with self.assertRaisesRegex(generator.ProfileError, "runtime_internal_value"):
+            generator._build_params(generator.normalize_profile(data, path=ORION_PROFILE))
+
     def test_orion_actionable_params_have_complete_runtime_shape(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         profile = generator.load_profile(path, REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles")

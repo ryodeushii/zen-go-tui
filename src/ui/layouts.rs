@@ -104,7 +104,7 @@ pub(crate) fn device_header_labels(state: &AppState) -> DeviceHeaderLabels {
         .device
         .status
         .clock_source
-        .map(|value| value.label().to_string())
+        .map(|value| state.ui_profile.clock_source_label(value))
         .unwrap_or_else(|| "clock ?".to_string());
     let lock = if state.device.status.lock_known {
         if state.device.status.locked == Some(true) {

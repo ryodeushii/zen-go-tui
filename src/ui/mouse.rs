@@ -6,8 +6,8 @@ use crate::app::{
 };
 use crate::device::DevicePickerState;
 use antelope_protocol::{
-    ClockSource, DynamicMeterState, GlobalControl, InputControl, MixerAddress, MixerAssignment,
-    MixerControl, OutputControl, PreampMode, RuntimeMeterTarget, SampleRate,
+    DynamicMeterState, GlobalControl, InputControl, MixerAddress, MixerAssignment, MixerControl,
+    OutputControl, PreampMode, RuntimeMeterTarget, SampleRate,
 };
 
 use super::layouts::*;
@@ -219,7 +219,7 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
     }
 
     if let Some(popup) = state.popup.selector_popup {
-        return selector_popup_mouse_action(area, popup, point);
+        return selector_popup_mouse_action(area, state, popup, point);
     }
 
     if let Some(picker) = state.popup.assignment_picker {
@@ -736,6 +736,7 @@ fn routing_source_picker_mouse_action(
 
 fn selector_popup_mouse_action(
     area: Rect,
+    state: &AppState,
     popup: SelectorPopupState,
     point: (u16, u16),
 ) -> Option<Intent> {
@@ -753,16 +754,25 @@ fn selector_popup_mouse_action(
     if point.1 < inner.y {
         return None;
     }
-    let index = point.1.saturating_sub(inner.y) as usize;
+    let item_count = match popup.kind {
+        SelectorPopupKind::SampleRate => SampleRate::all_confirmed().len(),
+        SelectorPopupKind::ClockSource => state.ui_profile.clock_source_choices().len(),
+        SelectorPopupKind::PreampMode { .. } => 3,
+    };
+    let viewport = popup_list_viewport(popup_area, title, item_count, state.popup.selected_index);
+    let index = viewport
+        .start
+        .saturating_add(usize::from(point.1.saturating_sub(inner.y)));
     match popup.kind {
         SelectorPopupKind::SampleRate => SampleRate::all_confirmed()
             .get(index)
             .copied()
             .map(Intent::PickSampleRate),
-        SelectorPopupKind::ClockSource => ClockSource::all_confirmed()
+        SelectorPopupKind::ClockSource => state
+            .ui_profile
+            .clock_source_choices()
             .get(index)
-            .copied()
-            .map(Intent::PickClockSource),
+            .map(|choice| Intent::PickClockSource(choice.value)),
         SelectorPopupKind::PreampMode { input } => {
             [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
                 .get(index)
@@ -811,7 +821,10 @@ fn device_header_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     }
     let geometry = device_header_geometry(area, state);
     if contains_point(geometry.sample_rate, point) {
-        if state.device.status.clock_source == Some(ClockSource::Internal) {
+        if state
+            .ui_profile
+            .clock_source_is_internal(state.device.status.clock_source)
+        {
             Some(Intent::OpenSampleRateSelector)
         } else {
             None

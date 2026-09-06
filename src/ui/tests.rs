@@ -13,17 +13,27 @@ use crate::app::{
     SelectorPopupKind, SelectorPopupState,
 };
 use antelope_protocol::{
-    ClockSource, DynamicMeterState, MixerAddress, MixerAssignment, MixerChannelState,
-    MixerLinkTarget, MixerSurface, OutputMode, OutputState, OutputTarget, PanState,
-    PreampInputState, PreampMode, RuntimeMeterTarget, SampleRate, Surface, OFFSET_MIX1_LANE_A,
-    OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_SURFACE_SELECTOR,
-    SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
+    DynamicMeterState, MixerAddress, MixerAssignment, MixerChannelState, MixerLinkTarget,
+    MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampInputState, PreampMode,
+    RuntimeMeterTarget, SampleRate, Surface, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
+    OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET,
+    SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
 };
 
 use crate::device::ProfileCatalog;
 use crate::transport::MockTransport;
 
 use super::*;
+
+fn orion_state() -> AppState {
+    let catalog = ProfileCatalog::builtin();
+    let entry = catalog
+        .entries()
+        .iter()
+        .find(|entry| entry.id == "orion_studio_3")
+        .expect("Orion profile");
+    AppState::from_entry(entry)
+}
 
 fn zen_go_state() -> AppState {
     let catalog = ProfileCatalog::builtin();
@@ -665,7 +675,7 @@ fn device_header_surfaces_serial_and_hw_without_duplicate_status_line() {
         hardware_version: "6.6".to_string(),
     });
     state.device.status.sample_rate = Some(SampleRate::Hz48000);
-    state.device.status.clock_source = Some(ClockSource::Internal);
+    state.device.status.clock_source = Some(0);
     state.device.status.lock_known = true;
     state.device.status.locked = Some(true);
 
@@ -1471,7 +1481,7 @@ fn afx_routing_source_columns_stay_aligned_for_different_label_lengths() {
 fn device_header_mouse_actions_follow_visible_status_chip_positions() {
     let area = Rect::new(0, 0, 180, 50);
     let mut state = AppState::default();
-    state.device.status.clock_source = Some(ClockSource::Internal);
+    state.device.status.clock_source = Some(0);
     let titlebar = layouts::titlebar_layout(layouts::root_chunks(area)[0])[0];
     let header = layouts::device_panel_layout(titlebar, &state)[0];
     let rendered = render_buffer(header, |area, buffer| {
@@ -1486,7 +1496,7 @@ fn device_header_mouse_actions_follow_visible_status_chip_positions() {
             .map(|offset| rendered[..offset].chars().count() as u16)
             .expect("visible device header chip")
     };
-    let clock_x = header.x + rendered_offset(" Internal ") + 1;
+    let clock_x = header.x + rendered_offset(" Raw 0 (label unconfirmed) ") + 1;
     let sample_x = header.x + rendered_offset(" rate ? ") + 1;
     assert_eq!(
         mouse_action(area, &state, clock_x, header.y),
@@ -1509,7 +1519,7 @@ fn device_header_mouse_actions_follow_visible_status_chip_positions() {
 fn mouse_action_opens_sample_rate_selector_from_device_chip() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = AppState::default();
-    state.device.status.clock_source = Some(ClockSource::Internal);
+    state.device.status.clock_source = Some(0);
     let chips = layouts::device_header_hit_areas(
         layouts::titlebar_layout(layouts::root_chunks(area)[0])[0],
         &state,
@@ -1525,7 +1535,7 @@ fn mouse_action_opens_sample_rate_selector_from_device_chip() {
 fn mouse_action_does_not_open_sample_rate_selector_when_clock_is_external() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = AppState::default();
-    state.device.status.clock_source = Some(ClockSource::Usb);
+    state.device.status.clock_source = Some(2);
     let chips = layouts::device_header_hit_areas(
         layouts::titlebar_layout(layouts::root_chunks(area)[0])[0],
         &state,
@@ -1939,6 +1949,111 @@ fn mouse_action_hits_visible_preamp_mode_chip_position() {
 }
 
 #[test]
+fn orion_clock_selector_uses_all_profile_labels_and_unknown_is_unavailable() {
+    let mut state = orion_state();
+    assert_eq!(
+        state
+            .ui_profile
+            .clock_source_choices()
+            .iter()
+            .map(|choice| (choice.value, choice.label.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                0,
+                "Oven (internal OCXO clock -- the device's own reference; power-on default)"
+            ),
+            (1, "Word Clock (BNC in)"),
+            (2, "ADAT"),
+            (3, "ADAT x2 (S/MUX2)"),
+            (4, "ADAT x4 (S/MUX4)"),
+            (5, "S/PDIF"),
+            (6, "USB (follow the host)"),
+        ]
+    );
+    state.device.status.clock_source = Some(6);
+    assert_eq!(
+        layouts::device_header_labels(&state).clock_source,
+        "USB (follow the host)"
+    );
+    state.device.status.clock_source = Some(9);
+    assert_eq!(
+        layouts::device_header_labels(&state).clock_source,
+        "Clock raw 9 (unavailable)"
+    );
+    assert!(!state.ui_profile.clock_source_is_internal(Some(9)));
+}
+
+#[test]
+fn zen_clock_choices_remain_explicitly_unconfirmed_and_bounded() {
+    let state = zen_go_state();
+    assert_eq!(
+        state
+            .ui_profile
+            .clock_source_choices()
+            .iter()
+            .map(|choice| (choice.value, choice.label.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, "Raw 0 (label unconfirmed)"),
+            (1, "Raw 1 (label unconfirmed)"),
+            (2, "Raw 2 (label unconfirmed)"),
+        ]
+    );
+    assert!(state.ui_profile.clock_source_is_internal(Some(0)));
+    assert!(!state.ui_profile.clock_source_is_internal(Some(1)));
+}
+
+#[test]
+fn clock_internal_semantics_do_not_depend_on_the_choice_label() {
+    let catalog = ProfileCatalog::builtin();
+    let mut entry = catalog
+        .entries()
+        .iter()
+        .find(|entry| entry.id == "orion_studio_3")
+        .expect("Orion profile")
+        .clone();
+    entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|parameter| parameter.name == "clock_source")
+        .expect("clock source")
+        .values[0]
+        .1 = "Renamed by profile".into();
+    let state = AppState::from_entry(&entry);
+    assert!(state.ui_profile.clock_source_is_internal(Some(0)));
+    assert_eq!(state.ui_profile.clock_source_label(0), "Renamed by profile");
+}
+
+#[test]
+fn scrolled_clock_selector_mouse_pick_uses_visible_profile_choice() {
+    let area = Rect::new(0, 0, 40, 8);
+    let mut state = orion_state();
+    state.popup.selector_popup = Some(SelectorPopupState {
+        kind: SelectorPopupKind::ClockSource,
+    });
+    state.popup.selected_index = 6;
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("USB (follow the host)"));
+
+    let popup = layouts::assignment_picker_area(area);
+    let inner = layouts::popup_list_inner_area(popup, "Clock Source");
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y + inner.height - 1),
+        Some(Intent::PickClockSource(6))
+    );
+}
+
+#[test]
 fn mouse_action_picks_preamp_mode_from_selector_popup() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = zen_go_state();
@@ -2310,7 +2425,7 @@ fn perf_draw_full_frame() {
         hardware_version: "6.6".to_string(),
     });
     state.device.status.sample_rate = Some(SampleRate::Hz48000);
-    state.device.status.clock_source = Some(ClockSource::Internal);
+    state.device.status.clock_source = Some(0);
     state.mixer.selected_channel = 7;
     state.ui.focus = FocusArea::Mixer;
     state.mixer.channels[MixerSurface::Mix1.index()][7].level = Some(0x18);

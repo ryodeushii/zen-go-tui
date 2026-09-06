@@ -438,6 +438,9 @@ pub struct RuntimeParam {
     pub direction: Option<FaderDirection>,
     #[serde(default)]
     pub unity: Option<i32>,
+    /// Raw enum value that selects the profile's internal clock, when known.
+    #[serde(default)]
+    pub internal_value: Option<i32>,
     pub values: Vec<(i32, String)>,
     pub frame: ParamReference,
     pub readback: ParamReference,
@@ -472,6 +475,7 @@ mod runtime_param_tests {
             range_by_mode: Vec::new(),
             direction: Some(FaderDirection::Attenuation),
             unity: Some(0),
+            internal_value: None,
             values: Vec::new(),
             frame: ParamReference {
                 text: String::new(),

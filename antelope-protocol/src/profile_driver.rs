@@ -1525,6 +1525,13 @@ impl ProfileDriver {
             "sample_rate" if profile_codec::scalar_offset(frame, field).is_err() => {
                 "sample_rate_byte_offset"
             }
+            "clock_source" if profile_codec::scalar_offset(frame, field).is_err() => {
+                if profile_codec::scalar_offset(frame, "clock_source_byte_offset").is_ok() {
+                    "clock_source_byte_offset"
+                } else {
+                    "clock_source_byte"
+                }
+            }
             "brightness" if profile_codec::scalar_offset(frame, field).is_err() => {
                 "screen_brightness_byte_offset"
             }
@@ -1694,24 +1701,24 @@ impl ProfileDriver {
                 output.dimmed = Some(Self::state_bit_value(frame, "output_dim", status)? != 0);
             }
         }
-        state.globals = vec![
-            DynamicGlobalState {
-                control: GlobalControl::SampleRate,
+        state.globals = vec![DynamicGlobalState {
+            control: GlobalControl::SampleRate,
+            value: ControlValue::Enum(i32::from(Self::scalar_value(frame, bytes, "sample_rate")?)),
+        }];
+        if self.parameter("globals", "clock_source").is_ok() {
+            state.globals.push(DynamicGlobalState {
+                control: GlobalControl::ClockSource,
                 value: ControlValue::Enum(i32::from(Self::scalar_value(
                     frame,
                     bytes,
-                    "sample_rate",
+                    "clock_source",
                 )?)),
-            },
-            DynamicGlobalState {
-                control: GlobalControl::Parameter(0x0e),
-                value: ControlValue::Int(i32::from(Self::scalar_value(
-                    frame,
-                    bytes,
-                    "brightness",
-                )?)),
-            },
-        ];
+            });
+        }
+        state.globals.push(DynamicGlobalState {
+            control: GlobalControl::Parameter(0x0e),
+            value: ControlValue::Int(i32::from(Self::scalar_value(frame, bytes, "brightness")?)),
+        });
         Ok(state)
     }
 

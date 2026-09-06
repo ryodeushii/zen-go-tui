@@ -390,6 +390,7 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                         super::FaderDirectionDefinition::Attenuation => FaderDirection::Attenuation,
                     }),
                     unity: param.unity,
+                    internal_value: param.internal_value,
                     range_by_mode: param
                         .range_by_mode
                         .iter()

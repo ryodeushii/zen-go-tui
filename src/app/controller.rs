@@ -7,10 +7,10 @@ use crate::command_queue::{CommandQueue, QueueEntryId, QueueEntryOutcome};
 use crate::profile::DeviceProfile;
 use crate::transport::Transport;
 use antelope_protocol::{
-    Action, ClockSource, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, GlobalControl,
-    InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl, MixerSurface,
-    OutputAddress, OutputControl, OutputMode, PanState, PreampMode, QueryRequest, RoutingSource,
-    RuntimeEntry, SampleRate, Surface,
+    Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DynamicStatePatch,
+    GlobalControl, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
+    MixerSurface, OutputAddress, OutputControl, OutputMode, PanState, PreampMode, QueryRequest,
+    RoutingSource, RuntimeEntry, SampleRate, Surface,
 };
 
 use super::picker::{
@@ -34,6 +34,14 @@ enum PollWritePolicy {
 struct QueuedMutation {
     id: QueueEntryId,
     pending: Option<PendingMutation>,
+    clock: Option<QueuedClockMutation>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QueuedClockMutation {
+    authoritative: Option<i32>,
+    requested: i32,
+    readback_revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +68,7 @@ pub struct Controller {
     /// Zen Go output mode writes remain guarded until expected readback; uncertain delivery
     /// stays locked for the session because snapshots have no freshness correlation.
     pending_output_modes: HashMap<OutputAddress, PendingOutputMode>,
+    clock_readback_revision: u64,
 }
 
 impl Controller {
@@ -80,6 +89,7 @@ impl Controller {
                 command_queue: CommandQueue::new(),
                 queued_mutations: Vec::new(),
                 pending_output_modes: HashMap::new(),
+                clock_readback_revision: 0,
             });
         };
         Self::new_for_entry(transport, driver, entry)
@@ -110,6 +120,7 @@ impl Controller {
             command_queue: CommandQueue::new(),
             queued_mutations: Vec::new(),
             pending_output_modes: HashMap::new(),
+            clock_readback_revision: 0,
         })
     }
 
@@ -403,6 +414,17 @@ impl Controller {
     pub fn send(&mut self, action: Action, pending: Option<PendingMutation>) -> Result<()> {
         let project_completed_mixer = matches!(action, Action::SetMixer { .. });
         let action = self.complete_dynamic_action(action)?;
+        let clock_transition = match &action {
+            Action::SetGlobal {
+                control: GlobalControl::ClockSource,
+                value: ControlValue::Enum(requested),
+            } => Some(QueuedClockMutation {
+                authoritative: self.state.device.status.clock_source,
+                requested: *requested,
+                readback_revision: self.clock_readback_revision,
+            }),
+            _ => None,
+        };
         let output_mode_transition = if self.state.uses_zen_go_output_safety() {
             match &action {
                 Action::SetOutput {
@@ -452,7 +474,7 @@ impl Controller {
                 .command_queue
                 .enqueue_with_id(action.clone())
                 .ok_or_else(|| anyhow::anyhow!("command queue is full; action was not enqueued"))?;
-            self.remember_queued_mutation(id, pending);
+            self.remember_queued_mutation(id, pending, clock_transition);
             if let Some((address, expected)) = output_mode_transition {
                 self.pending_output_modes.insert(
                     address,
@@ -680,7 +702,7 @@ impl Controller {
                 control: GlobalControl::ClockSource,
                 value: ControlValue::Enum(value),
             } => {
-                self.state.device.status.clock_source = Some(ClockSource::from_code(*value as u8));
+                self.state.device.status.clock_source = Some(*value);
             }
             Action::SetGlobal {
                 control: GlobalControl::SampleRate,
@@ -694,15 +716,32 @@ impl Controller {
         }
     }
 
-    fn remember_queued_mutation(&mut self, id: QueueEntryId, pending: Option<PendingMutation>) {
+    fn remember_queued_mutation(
+        &mut self,
+        id: QueueEntryId,
+        pending: Option<PendingMutation>,
+        clock: Option<QueuedClockMutation>,
+    ) {
         if let Some(queued) = self
             .queued_mutations
             .iter_mut()
             .find(|queued| queued.id == id)
         {
             queued.pending = pending;
+            if let Some(clock) = clock {
+                if let Some(existing) = queued
+                    .clock
+                    .as_mut()
+                    .filter(|existing| existing.readback_revision == clock.readback_revision)
+                {
+                    existing.requested = clock.requested;
+                } else {
+                    queued.clock = Some(clock);
+                }
+            }
         } else {
-            self.queued_mutations.push(QueuedMutation { id, pending });
+            self.queued_mutations
+                .push(QueuedMutation { id, pending, clock });
         }
     }
 
@@ -714,25 +753,35 @@ impl Controller {
         let result = self.command_queue.flush_with(
             self.transport.as_ref(),
             self.driver.as_ref(),
-            |id, outcome| {
-                if outcome == QueueEntryOutcome::Sent {
-                    if let Some(index) = queued_mutations.iter().position(|queued| queued.id == id)
-                    {
-                        pending_mutation = queued_mutations.swap_remove(index).pending;
-                    }
-                }
-                outcomes.push((id, outcome));
-            },
+            |id, outcome| outcomes.push((id, outcome)),
         );
-        self.pending_mutation = pending_mutation;
-        queued_mutations.clear();
         for (id, outcome) in outcomes {
-            self.handle_queue_outcome(id, outcome);
+            let mut queued = queued_mutations
+                .iter()
+                .position(|queued| queued.id == id)
+                .map(|index| queued_mutations.swap_remove(index));
+            if outcome == QueueEntryOutcome::Sent {
+                if let Some(queued) = queued.as_mut() {
+                    pending_mutation = queued.pending.take();
+                }
+            }
+            self.handle_queue_outcome(id, outcome, queued.and_then(|queued| queued.clock));
         }
+        self.pending_mutation = pending_mutation;
+        self.queued_mutations.clear();
         result.map(|_| ())
     }
 
-    fn handle_queue_outcome(&mut self, id: QueueEntryId, outcome: QueueEntryOutcome) {
+    fn handle_queue_outcome(
+        &mut self,
+        id: QueueEntryId,
+        outcome: QueueEntryOutcome,
+        clock: Option<QueuedClockMutation>,
+    ) {
+        if let Some(clock) = clock {
+            self.reconcile_clock_queue_outcome(clock, outcome);
+        }
+
         let Some(address) = self
             .pending_output_modes
             .iter()
@@ -758,6 +807,23 @@ impl Controller {
                 self.invalidate_output_mode(address);
             }
         }
+    }
+
+    fn reconcile_clock_queue_outcome(
+        &mut self,
+        clock: QueuedClockMutation,
+        outcome: QueueEntryOutcome,
+    ) {
+        if outcome == QueueEntryOutcome::Sent
+            || clock.readback_revision != self.clock_readback_revision
+        {
+            return;
+        }
+        self.state.device.status.clock_source = match outcome {
+            QueueEntryOutcome::Failed => None,
+            QueueEntryOutcome::Unsent => clock.authoritative,
+            QueueEntryOutcome::Sent => unreachable!(),
+        };
     }
 
     fn mark_uncertain_output_mode(&mut self, address: OutputAddress, expected: OutputMode) {
@@ -1172,6 +1238,24 @@ impl Controller {
         Ok(())
     }
 
+    fn clock_source_readback(event: &DeviceEvent) -> Option<i32> {
+        let globals = match event {
+            DeviceEvent::Snapshot { state, .. } => &state.globals,
+            DeviceEvent::QueryReply {
+                patch: Some(DynamicStatePatch::Globals(globals)),
+                ..
+            } => globals,
+            _ => return None,
+        };
+        globals.iter().find_map(|global| match global {
+            antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::ClockSource,
+                value: ControlValue::Enum(value),
+            } => Some(*value),
+            _ => None,
+        })
+    }
+
     fn snapshot_output_mode(event: &DeviceEvent, address: OutputAddress) -> Option<OutputMode> {
         let DeviceEvent::Snapshot { state, .. } = event else {
             return None;
@@ -1249,6 +1333,7 @@ impl Controller {
             next_timeout = Duration::ZERO;
 
             if let Some(event) = self.driver.decode(&bytes)? {
+                let clock_source_readback = Self::clock_source_readback(&event);
                 let snapshot_modes = if matches!(event, DeviceEvent::Snapshot { .. }) {
                     self.pending_output_modes
                         .keys()
@@ -1263,6 +1348,11 @@ impl Controller {
                     state_dirty |= self.confirm_pending_write();
                 }
                 state_dirty |= self.state.observe_event(event);
+                if self.state.device.status.clock_source == clock_source_readback
+                    && clock_source_readback.is_some()
+                {
+                    self.clock_readback_revision = self.clock_readback_revision.wrapping_add(1);
+                }
                 if !snapshot_modes.is_empty() {
                     self.resolve_output_mode_snapshots(&snapshot_modes);
                 }
@@ -1460,7 +1550,11 @@ impl Controller {
     }
 
     fn handle_open_sample_rate_selector(&mut self) {
-        if self.state.device.status.clock_source == Some(ClockSource::Internal) {
+        if self
+            .state
+            .ui_profile
+            .clock_source_is_internal(self.state.device.status.clock_source)
+        {
             self.state.popup.selected_index = self
                 .state
                 .device
@@ -1479,15 +1573,25 @@ impl Controller {
     }
 
     fn handle_open_clock_source_selector(&mut self) {
+        if !self
+            .state
+            .ui_profile
+            .supports_global(GlobalControl::ClockSource)
+            || self.state.ui_profile.clock_source_choices().is_empty()
+        {
+            return;
+        }
         self.state.popup.selected_index = self
             .state
             .device
             .status
             .clock_source
             .and_then(|current| {
-                ClockSource::all_confirmed()
+                self.state
+                    .ui_profile
+                    .clock_source_choices()
                     .iter()
-                    .position(|source| *source == current)
+                    .position(|choice| choice.value == current)
             })
             .unwrap_or(0);
         self.state.popup.selector_popup = Some(SelectorPopupState {
@@ -1514,15 +1618,24 @@ impl Controller {
 
     fn handle_pick_clock_source(
         &mut self,
-        source: ClockSource,
+        value: i32,
         pending: Option<PendingMutation>,
     ) -> Result<()> {
+        if !self
+            .state
+            .ui_profile
+            .clock_source_choices()
+            .iter()
+            .any(|choice| choice.value == value)
+        {
+            return Ok(());
+        }
         self.state.popup.selector_popup = None;
         self.state.popup.selected_index = 0;
         self.send(
             Action::SetGlobal {
                 control: GlobalControl::ClockSource,
-                value: ControlValue::Enum(i32::from(source.code())),
+                value: ControlValue::Enum(value),
             },
             pending,
         )?;
@@ -2910,7 +3023,9 @@ impl Controller {
         } else if let Some(popup) = self.state.popup.selector_popup {
             match popup.kind {
                 SelectorPopupKind::SampleRate => SampleRate::all_confirmed().len(),
-                SelectorPopupKind::ClockSource => ClockSource::all_confirmed().len(),
+                SelectorPopupKind::ClockSource => {
+                    self.state.ui_profile.clock_source_choices().len()
+                }
                 SelectorPopupKind::PreampMode { .. } => 3,
             }
         } else {
@@ -3103,6 +3218,21 @@ mod correction_tests {
                 routing: Vec::new(),
                 zen_go_compatibility: None,
             },
+            raw: Vec::new(),
+        }
+    }
+
+    fn clock_readback_event(value: i32) -> DeviceEvent {
+        DeviceEvent::QueryReply {
+            query_id: 1,
+            sub_id: 0,
+            body: Vec::new(),
+            patch: Some(DynamicStatePatch::Globals(vec![
+                antelope_protocol::DynamicGlobalState {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(value),
+                },
+            ])),
             raw: Vec::new(),
         }
     }
@@ -3355,7 +3485,19 @@ mod correction_tests {
         assert!(transport.take_writes().is_empty());
     }
 
-    struct FailingTransport;
+    #[derive(Clone, Default)]
+    struct FailingTransport {
+        reads: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>>,
+    }
+
+    impl FailingTransport {
+        fn push_read(&self, bytes: Vec<u8>) {
+            self.reads
+                .lock()
+                .expect("failing transport reads")
+                .push_back(bytes);
+        }
+    }
 
     impl Transport for FailingTransport {
         fn write(&self, _data: &[u8]) -> anyhow::Result<()> {
@@ -3363,15 +3505,21 @@ mod correction_tests {
         }
 
         fn read(&self, _timeout: Duration) -> anyhow::Result<Option<Vec<u8>>> {
-            Ok(None)
+            Ok(self
+                .reads
+                .lock()
+                .expect("failing transport reads")
+                .pop_front())
         }
     }
 
     #[test]
     fn failed_queue_write_does_not_promote_pending_mutation() {
-        let mut controller =
-            Controller::new(Box::new(FailingTransport), Box::new(AcceptingDriver::new()))
-                .expect("controller");
+        let mut controller = Controller::new(
+            Box::new(FailingTransport::default()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
         let mut pending_output = controller.state.outputs()[0].clone();
         pending_output.level = Some(17);
         controller
@@ -3388,6 +3536,130 @@ mod correction_tests {
         assert!(controller.flush_commands().is_err());
         assert!(controller.pending_mutation.is_none());
         assert_eq!(controller.command_queue.len(), 0);
+    }
+
+    #[test]
+    fn failed_clock_write_invalidates_optimistic_state_and_gates_sample_rate() {
+        let mut controller = Controller::new(
+            Box::new(FailingTransport::default()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        controller.state.device.status.clock_source = Some(2);
+        controller
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(0),
+                },
+                None,
+            )
+            .expect("queue clock command");
+        assert_eq!(controller.state.device.status.clock_source, Some(0));
+
+        assert!(controller.flush_commands().is_err());
+
+        assert_eq!(controller.state.device.status.clock_source, None);
+        controller
+            .apply_intent(Intent::OpenSampleRateSelector, Rect::default())
+            .expect("sample-rate intent");
+        assert!(controller.state.popup.selector_popup.is_none());
+    }
+
+    #[test]
+    fn provably_unsent_coalesced_clock_changes_restore_pre_queue_value() {
+        let mut controller = Controller::new(
+            Box::new(FailingTransport::default()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        controller.state.device.status.clock_source = Some(2);
+        let input = controller.state.input_spaces[0].inputs[0].address;
+        controller
+            .send(
+                Action::SetInput {
+                    address: input,
+                    control: InputControl::Gain,
+                    value: ControlValue::Int(17),
+                },
+                None,
+            )
+            .expect("queue preceding command");
+        for value in [0, 1] {
+            controller
+                .send(
+                    Action::SetGlobal {
+                        control: GlobalControl::ClockSource,
+                        value: ControlValue::Enum(value),
+                    },
+                    None,
+                )
+                .expect("coalesce clock command");
+        }
+        assert_eq!(controller.state.device.status.clock_source, Some(1));
+
+        assert!(controller.flush_commands().is_err());
+
+        assert_eq!(controller.state.device.status.clock_source, Some(2));
+    }
+
+    #[test]
+    fn clock_readback_repairs_uncertain_state() {
+        let transport = FailingTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::with_event(clock_readback_event(2))),
+        )
+        .expect("controller");
+        controller.state.device.status.clock_source = Some(1);
+        controller
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(0),
+                },
+                None,
+            )
+            .expect("queue clock command");
+        assert!(controller.flush_commands().is_err());
+        assert_eq!(controller.state.device.status.clock_source, None);
+
+        transport.push_read(vec![0x73]);
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("clock readback");
+
+        assert_eq!(controller.state.device.status.clock_source, Some(2));
+    }
+
+    #[test]
+    fn fresher_clock_readback_is_not_replaced_by_older_failed_queue_entry() {
+        let transport = FailingTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::with_event(clock_readback_event(1))),
+        )
+        .expect("controller");
+        controller.state.device.status.clock_source = Some(2);
+        controller
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(0),
+                },
+                None,
+            )
+            .expect("queue clock command");
+
+        transport.push_read(vec![0x73]);
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("newer clock readback");
+        assert_eq!(controller.state.device.status.clock_source, Some(1));
+
+        assert!(controller.flush_commands().is_err());
+
+        assert_eq!(controller.state.device.status.clock_source, Some(1));
     }
 
     #[test]

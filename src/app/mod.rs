@@ -1137,11 +1137,12 @@ impl AppState {
     pub fn apply_snapshot(&mut self, snapshot: &DeviceStateSnapshot) {
         self.device.status.sample_rate = Some(snapshot.sample_rate);
         self.device.status.sample_rate_hz = Some(snapshot.sample_rate_hz);
-        self.device.status.clock_source = Some(snapshot.clock_source);
+        let clock_source = i32::from(snapshot.clock_source.code());
+        self.device.status.clock_source = Some(clock_source);
         self.device.status.last_refresh_summary = format!(
             "snapshot {} / {} / surface {}",
             snapshot.sample_rate.label(),
-            snapshot.clock_source.label(),
+            self.ui_profile.clock_source_label(clock_source),
             snapshot.surface.label()
         );
         self.output.states = snapshot.outputs.to_vec();
@@ -1902,7 +1903,7 @@ impl AppState {
                     control: GlobalControl::ClockSource,
                     value: ControlValue::Enum(value),
                 } => {
-                    self.device.status.clock_source = Some(ClockSource::from_code(*value as u8));
+                    self.device.status.clock_source = Some(*value);
                 }
                 DynamicGlobalState {
                     control: GlobalControl::Surface,
@@ -2695,7 +2696,7 @@ mod tests {
         let sample = Intent::PickSampleRate(SampleRate::Hz48000);
         assert!(matches!(sample, Intent::PickSampleRate(_)));
 
-        let clock = Intent::PickClockSource(ClockSource::Internal);
+        let clock = Intent::PickClockSource(0);
         assert!(matches!(clock, Intent::PickClockSource(_)));
     }
 
@@ -3325,7 +3326,7 @@ mod tests {
     fn clock_source_command_updates_visible_state_immediately() {
         let transport = MockTransport::default();
         let mut controller = zen_go_controller(Box::new(transport));
-        controller.state.device.status.clock_source = Some(ClockSource::Usb);
+        controller.state.device.status.clock_source = Some(2);
 
         controller
             .send(
@@ -3337,10 +3338,7 @@ mod tests {
             )
             .expect("set clock source");
 
-        assert_eq!(
-            controller.state.device.status.clock_source,
-            Some(ClockSource::Internal)
-        );
+        assert_eq!(controller.state.device.status.clock_source, Some(0));
     }
 
     #[test]
@@ -4401,10 +4399,7 @@ mod tests {
             controller.state.device.status.sample_rate,
             Some(SampleRate::Hz48000)
         );
-        assert_eq!(
-            controller.state.device.status.clock_source,
-            Some(ClockSource::Usb)
-        );
+        assert_eq!(controller.state.device.status.clock_source, Some(2));
     }
 
     #[test]

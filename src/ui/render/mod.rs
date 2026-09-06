@@ -12,7 +12,7 @@ use crate::app::{
 use crate::device::DevicePickerState;
 use crate::terminal;
 use antelope_protocol::{
-    meter_display_db, ClockSource, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate,
+    meter_display_db, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate,
 };
 
 use super::layouts::*;
@@ -960,9 +960,11 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ),
         SelectorPopupKind::ClockSource => (
             "Clock Source",
-            ClockSource::all_confirmed()
+            state
+                .ui_profile
+                .clock_source_choices()
                 .iter()
-                .map(|source| ListItem::new(source.label()))
+                .map(|choice| ListItem::new(choice.label.clone()))
                 .collect::<Vec<_>>(),
         ),
         SelectorPopupKind::PreampMode { .. } => (
@@ -974,14 +976,14 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ),
     };
 
-    render_popup_list(
-        frame,
-        popup,
-        title,
-        items,
-        state.popup.selected_index,
-        Color::Yellow,
-    );
+    let viewport = popup_list_viewport(popup, title, items.len(), state.popup.selected_index);
+    let selected_index = state.popup.selected_index.saturating_sub(viewport.start);
+    let items = items
+        .into_iter()
+        .skip(viewport.start)
+        .take(viewport.len())
+        .collect();
+    render_popup_list(frame, popup, title, items, selected_index, Color::Yellow);
 }
 
 fn draw_hotkeys_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

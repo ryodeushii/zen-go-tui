@@ -3480,7 +3480,7 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                     _range_form_entry(range_key, raw_ranges, f"params.{name}.{range_key}")
                 )
         values: list[dict[str, Any]] = []
-        enum_values = value.get("values")
+        enum_values = value.get("runtime_values", value.get("values"))
         if enum_values is None and _is_orion(profile) and name in {"output_trim", "talkback_source"}:
             if name == "output_trim":
                 enum_values = {str(index): f"raw_{index}" for index in range(7)}
@@ -3496,6 +3496,20 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
             values.sort(key=lambda item: item["value"])
         elif enum_values is not None:
             raise ProfileError(f"params.{name}.values must be an object")
+        internal_value = (
+            _checked_i32(
+                value["runtime_internal_value"],
+                f"params.{name}.runtime_internal_value",
+            )
+            if value.get("runtime_internal_value") is not None
+            else None
+        )
+        if internal_value is not None and not any(
+            item["value"] == internal_value for item in values
+        ):
+            raise ProfileError(
+                f"params.{name}.runtime_internal_value must name a declared enum choice"
+            )
         frame_value = value.get("runtime_frame", value.get("frame"))
         readback_value = value.get("runtime_readback", value.get("readback"))
         applies_to = str(value.get("runtime_applies_to", value.get("applies_to", "")))
@@ -3523,13 +3537,14 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                     ))
                     else None
                 ),
-                "value_type": _param_type(value.get("type")),
+                "value_type": _param_type(value.get("runtime_type", value.get("type"))),
                 "status": status,
                 "status_text": status,
                 "applies_to": applies_to,
                 "range": parameter_range,
                 "direction": direction,
                 "unity": unity,
+                "internal_value": internal_value,
                 "range_by_mode": range_by_mode,
                 "per_mode_range": per_mode_range,
                 "range_forms": range_forms,
@@ -4585,6 +4600,7 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
                 "range": param["range"],
                 "direction": param["direction"],
                 "unity": param["unity"],
+                "internal_value": param["internal_value"],
                 "range_by_mode": [
                     [mode, list(range_value)]
                     for mode, range_value in param["range_by_mode"].items()
@@ -5126,7 +5142,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 f"value_type: ParamValueType::{param['value_type']}, status: Status::{_status_variant(param['status'])}, "
                 f"status_text: {_rust_string(param['status_text'])}, applies_to: {_rust_string(param['applies_to'])}, "
                 f"range: {_render_range(param['range'])}, direction: {_rust_fader_direction(param['direction'])}, "
-                f"unity: {_rust_option(param['unity'], _rust_i32)}, range_by_mode: {param_range_helpers[index]}, "
+                f"unity: {_rust_option(param['unity'], _rust_i32)}, internal_value: {_rust_option(param['internal_value'], _rust_i32)}, range_by_mode: {param_range_helpers[index]}, "
                 f"range_forms: {param_range_form_helpers[index]}, values: {param_value_helpers[index]}, "
                 f"frame: {param_frame_helpers[index]}, readback: {param_readback_helpers[index]}, "
                 f"encoding: {_rust_string(param['encoding'])}, metadata: {_rust_string(param['metadata'])} }},"
