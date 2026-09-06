@@ -848,7 +848,8 @@ fn render_popup_list(
     highlight_color: Color,
 ) {
     let mut list_state = ListState::default();
-    list_state.select(Some(selected_index.min(items.len().saturating_sub(1))));
+    list_state
+        .select((!items.is_empty()).then_some(selected_index.min(items.len().saturating_sub(1))));
     frame.render_widget(Clear, area);
     frame.render_stateful_widget(
         List::new(items)
@@ -870,20 +871,32 @@ fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     };
 
     let popup = assignment_picker_area(area);
-    let choices = MixerAssignment::grounded_choices();
-    let items = choices
-        .iter()
-        .map(|assignment| ListItem::new(assignment.label()))
-        .collect::<Vec<_>>();
+    let profile_choices = state
+        .popup
+        .assignment_picker_address
+        .map(|address| state.routing_source_choices(address.surface))
+        .unwrap_or_default();
+    let items = if profile_choices.is_empty() {
+        MixerAssignment::grounded_choices()
+            .iter()
+            .map(|assignment| ListItem::new(assignment.label()))
+            .collect::<Vec<_>>()
+    } else {
+        profile_choices
+            .iter()
+            .map(|choice| ListItem::new(choice.label.clone()))
+            .collect::<Vec<_>>()
+    };
+    let title = format!("Assign CH {:02}", picker.strip);
+    let viewport = popup_list_viewport(popup, &title, items.len(), state.popup.selected_index);
+    let selected_index = state.popup.selected_index.saturating_sub(viewport.start);
+    let items = items
+        .into_iter()
+        .skip(viewport.start)
+        .take(viewport.len())
+        .collect();
 
-    render_popup_list(
-        frame,
-        popup,
-        &format!("Assign CH {:02}", picker.strip),
-        items,
-        state.popup.selected_index,
-        Color::Yellow,
-    );
+    render_popup_list(frame, popup, &title, items, selected_index, Color::Yellow);
 }
 
 fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

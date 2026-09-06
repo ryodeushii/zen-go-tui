@@ -373,6 +373,12 @@ pub struct RuntimeLinkDomain {
 pub struct RuntimeRoutingSourceDomain {
     pub bank: u8,
     pub index_count: u16,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub display_index_base: u16,
     pub status: String,
     pub evidence: String,
 }
@@ -391,6 +397,8 @@ pub struct RuntimeRoutingGroup {
     pub destination: u16,
     pub name: String,
     pub channel_count: u16,
+    #[serde(default)]
+    pub mixer_surface: Option<u8>,
     #[serde(default)]
     pub source_domains: Vec<RuntimeRoutingSourceDomain>,
     #[serde(default)]
@@ -1042,6 +1050,7 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
     }
 
     let mut routing_destinations = HashSet::new();
+    let mut routing_mixer_surfaces = HashSet::new();
     for (group_index, group) in profile.routing_groups.iter().enumerate() {
         if group.name.trim().is_empty()
             || group.channel_count == 0
@@ -1055,18 +1064,42 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                         .into(),
             });
         }
+        if group
+            .mixer_surface
+            .is_some_and(|surface| !routing_mixer_surfaces.insert(surface))
+        {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field: format!(
+                    "profiles[{entry_index}].routing_groups[{group_index}].mixer_surface"
+                ),
+                detail: "mixer assignment surfaces must be unique".into(),
+            });
+        }
         let mut banks = HashSet::new();
         for (domain_index, domain) in group.source_domains.iter().enumerate() {
+            let semantic_geometry_valid = if domain.kind.is_empty() && domain.name.is_empty() {
+                true
+            } else {
+                !domain.name.trim().is_empty()
+                    && match domain.kind.as_str() {
+                        "numbered" => true,
+                        "stereo" => domain.index_count == 2,
+                        "mute" => domain.index_count == 1 && domain.display_index_base == 0,
+                        _ => false,
+                    }
+            };
             if !banks.insert(domain.bank)
                 || domain.index_count == 0
                 || domain.index_count > 256
+                || !semantic_geometry_valid
                 || !is_confirmed(&domain.status)
                 || domain.evidence.trim().is_empty()
             {
                 return Err(ProfileLoadError::InvalidReportGeometry {
                     profile_id: profile_id.to_owned(),
                     field: format!("profiles[{entry_index}].routing_groups[{group_index}].source_domains[{domain_index}]"),
-                    detail: "routing source domains require unique banks, confirmed evidence, and finite index counts within 1..=256".into(),
+                    detail: "routing source domains require unique semantic banks, confirmed evidence, and finite index counts within 1..=256".into(),
                 });
             }
         }

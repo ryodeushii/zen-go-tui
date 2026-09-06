@@ -1163,6 +1163,18 @@ pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::l
 
 pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
     if let Some(picker) = controller.state.popup.assignment_picker {
+        if let Some(address) = controller.state.popup.assignment_picker_address {
+            let choices = controller.state.routing_source_choices(address.surface);
+            if let Some(choice) = choices.get(controller.state.popup.selected_index) {
+                return controller.apply_intent(
+                    ui::Intent::PickRoutingSourceAt {
+                        address,
+                        source: choice.source,
+                    },
+                    ratatui::layout::Rect::new(0, 0, 160, 50),
+                );
+            }
+        }
         if let Some(assignment) = MixerAssignment::grounded_choices()
             .get(controller.state.popup.selected_index)
             .copied()

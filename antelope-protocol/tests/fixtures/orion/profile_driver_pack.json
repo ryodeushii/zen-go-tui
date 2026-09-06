@@ -28,7 +28,7 @@
             },
             {
               "kind": "phase",
-              "label": "Ø",
+              "label": "\u00d8",
               "parameter": "phase_invert",
               "parameter_id": 82
             }
@@ -149,12 +149,12 @@
           ]
         },
         {
-          "metadata": "\"0x01 / 0x02 = crash / unknown-dangerous (BusFault family) -- a hardware-safety block, unrelated to AFX. 0x1a / 0x1c / 0x23 added 2026-09-03 as a PRECAUTION before any AFX / Synergy Core LICENSED-plugin-chain work -- see SCOPE.md §4. This is a policy about Antelope's purchasable, activation-gated plugin catalogue (Auto-Tune, amp sims, specialized EQ/comp, etc.), NOT a stance against using the device's DSP unit in general: AuraVerb (0x1d) and the surround per-speaker EQ (readback category 0x1a, unrelated write-opcode collision) are both bundled, non-activated features and are fully decoded + in scope. Since 2026-09-04, from two macOS Launcher captures: 0x23 / param 0xd7 = the AFX SLOT-ASSIGN frame (put plugin instance <handle> on channel <ch>, or 0x00 to clear) -- see frame.afx_slot. Placing/clearing a plugin is bucket E (instantiate/load/remove), so 0x23 STAYS forbidden and build_* must never emit it; frame.afx_slot documents it for observation + readback decoding only. 0x1c / param 0xd5 = the plugin PARAMETER stream -- bucket D, frame-counted but never decoded, stays forbidden. 0x1a as a WRITE OPCODE has never been observed on this device at all -- it is blocked purely as a blanket cross-device precaution, carried over from the Zen Go profile (zen_go_sc.json), where 0x1a and 0x1c share param 0xd5 in one undecoded capture (capture_07_dsp) and 0x1a is actually a *candidate for the Zen Go's mic-modeling/emuMic frame* -- an in-scope, non-AFX feature -- not a confirmed licensed-plugin opcode. So on this device 0x1a stays forbidden as 'unconfirmed, blocked until proven safe,' not because it is known AFX/DSP content. The per-slot BYPASS toggle is a different frame (opcode 0x14 / param 0x98, bucket B, frame.afx_slot.bypass) and is NOT forbidden -- but ships no builder yet (needs a handle from the 0x0c/0x15 readback, undecoded). build_* refuses a forbidden opcode.\"",
+          "metadata": "\"0x01 / 0x02 = crash / unknown-dangerous (BusFault family) -- a hardware-safety block, unrelated to AFX. 0x1a / 0x1c / 0x23 added 2026-09-03 as a PRECAUTION before any AFX / Synergy Core LICENSED-plugin-chain work -- see SCOPE.md \u00a74. This is a policy about Antelope's purchasable, activation-gated plugin catalogue (Auto-Tune, amp sims, specialized EQ/comp, etc.), NOT a stance against using the device's DSP unit in general: AuraVerb (0x1d) and the surround per-speaker EQ (readback category 0x1a, unrelated write-opcode collision) are both bundled, non-activated features and are fully decoded + in scope. Since 2026-09-04, from two macOS Launcher captures: 0x23 / param 0xd7 = the AFX SLOT-ASSIGN frame (put plugin instance <handle> on channel <ch>, or 0x00 to clear) -- see frame.afx_slot. Placing/clearing a plugin is bucket E (instantiate/load/remove), so 0x23 STAYS forbidden and build_* must never emit it; frame.afx_slot documents it for observation + readback decoding only. 0x1c / param 0xd5 = the plugin PARAMETER stream -- bucket D, frame-counted but never decoded, stays forbidden. 0x1a as a WRITE OPCODE has never been observed on this device at all -- it is blocked purely as a blanket cross-device precaution, carried over from the Zen Go profile (zen_go_sc.json), where 0x1a and 0x1c share param 0xd5 in one undecoded capture (capture_07_dsp) and 0x1a is actually a *candidate for the Zen Go's mic-modeling/emuMic frame* -- an in-scope, non-AFX feature -- not a confirmed licensed-plugin opcode. So on this device 0x1a stays forbidden as 'unconfirmed, blocked until proven safe,' not because it is known AFX/DSP content. The per-slot BYPASS toggle is a different frame (opcode 0x14 / param 0x98, bucket B, frame.afx_slot.bypass) and is NOT forbidden -- but ships no builder yet (needs a handle from the 0x0c/0x15 readback, undecoded). build_* refuses a forbidden opcode.\"",
           "name": "forbidden_opcodes_note",
           "range": null,
           "scalar": null,
           "status": "unknown",
-          "text": "0x01 / 0x02 = crash / unknown-dangerous (BusFault family) -- a hardware-safety block, unrelated to AFX. 0x1a / 0x1c / 0x23 added 2026-09-03 as a PRECAUTION before any AFX / Synergy Core LICENSED-plugin-chain work -- see SCOPE.md §4. This is a policy about Antelope's purchasable, activation-gated plugin catalogue (Auto-Tune, amp sims, specialized EQ/comp, etc.), NOT a stance against using the device's DSP unit in general: AuraVerb (0x1d) and the surround per-speaker EQ (readback category 0x1a, unrelated write-opcode collision) are both bundled, non-activated features and are fully decoded + in scope. Since 2026-09-04, from two macOS Launcher captures: 0x23 / param 0xd7 = the AFX SLOT-ASSIGN frame (put plugin instance <handle> on channel <ch>, or 0x00 to clear) -- see frame.afx_slot. Placing/clearing a plugin is bucket E (instantiate/load/remove), so 0x23 STAYS forbidden and build_* must never emit it; frame.afx_slot documents it for observation + readback decoding only. 0x1c / param 0xd5 = the plugin PARAMETER stream -- bucket D, frame-counted but never decoded, stays forbidden. 0x1a as a WRITE OPCODE has never been observed on this device at all -- it is blocked purely as a blanket cross-device precaution, carried over from the Zen Go profile (zen_go_sc.json), where 0x1a and 0x1c share param 0xd5 in one undecoded capture (capture_07_dsp) and 0x1a is actually a *candidate for the Zen Go's mic-modeling/emuMic frame* -- an in-scope, non-AFX feature -- not a confirmed licensed-plugin opcode. So on this device 0x1a stays forbidden as 'unconfirmed, blocked until proven safe,' not because it is known AFX/DSP content. The per-slot BYPASS toggle is a different frame (opcode 0x14 / param 0x98, bucket B, frame.afx_slot.bypass) and is NOT forbidden -- but ships no builder yet (needs a handle from the 0x0c/0x15 readback, undecoded). build_* refuses a forbidden opcode.",
+          "text": "0x01 / 0x02 = crash / unknown-dangerous (BusFault family) -- a hardware-safety block, unrelated to AFX. 0x1a / 0x1c / 0x23 added 2026-09-03 as a PRECAUTION before any AFX / Synergy Core LICENSED-plugin-chain work -- see SCOPE.md \u00a74. This is a policy about Antelope's purchasable, activation-gated plugin catalogue (Auto-Tune, amp sims, specialized EQ/comp, etc.), NOT a stance against using the device's DSP unit in general: AuraVerb (0x1d) and the surround per-speaker EQ (readback category 0x1a, unrelated write-opcode collision) are both bundled, non-activated features and are fully decoded + in scope. Since 2026-09-04, from two macOS Launcher captures: 0x23 / param 0xd7 = the AFX SLOT-ASSIGN frame (put plugin instance <handle> on channel <ch>, or 0x00 to clear) -- see frame.afx_slot. Placing/clearing a plugin is bucket E (instantiate/load/remove), so 0x23 STAYS forbidden and build_* must never emit it; frame.afx_slot documents it for observation + readback decoding only. 0x1c / param 0xd5 = the plugin PARAMETER stream -- bucket D, frame-counted but never decoded, stays forbidden. 0x1a as a WRITE OPCODE has never been observed on this device at all -- it is blocked purely as a blanket cross-device precaution, carried over from the Zen Go profile (zen_go_sc.json), where 0x1a and 0x1c share param 0xd5 in one undecoded capture (capture_07_dsp) and 0x1a is actually a *candidate for the Zen Go's mic-modeling/emuMic frame* -- an in-scope, non-AFX feature -- not a confirmed licensed-plugin opcode. So on this device 0x1a stays forbidden as 'unconfirmed, blocked until proven safe,' not because it is known AFX/DSP content. The per-slot BYPASS toggle is a different frame (opcode 0x14 / param 0x98, bucket B, frame.afx_slot.bypass) and is NOT forbidden -- but ships no builder yet (needs a handle from the 0x0c/0x15 readback, undecoded). build_* refuses a forbidden opcode.",
           "values": []
         },
         {
@@ -393,7 +393,7 @@
           "frame_id": "state_report",
           "id": "decode_state_report",
           "kind": "state_report",
-          "metadata": "{\"adat_gain_base_offset\":75,\"bus_block\":{\"base_offset\":28,\"bytes_per_bus\":3,\"level_byte_offset\":0,\"notes\":\"Same 'parallel array, N bytes per slot' idea as gain_base_offset/status_base_offset above, but for output buses instead of input channels: byte offset for bus N = base_offset + bytes_per_bus*N + field_offset. Confirmed for ALL 6 bus ids: 0/1/2/5 via captures mona/hp1/hp2/monb (2026-08, level ramps + dim/mute/mono toggles), and 3/4 (line/reamp) via capture settings-linevol-mute-reampvol-toggle (2026-08, level ramps at offsets 37 and 40 + a mute toggle on bus 3). Every SET_PARAM command in each log matched the very next state_report reading at this formula's offset. reserved_byte_offset (+2) never changed in any capture; true padding, or just never exercised, is unconfirmed. dim/mono were never exercised on buses 3/4 and may not apply to a line/reamp output. NOTE: the status byte's mute bit (0x04) also reads 1 whenever that bus is at level 96 with no mute command -- see params.bus_mute.\",\"reserved_byte_offset\":2,\"status_bits\":{\"dim\":{\"mask\":\"0x08\",\"shift\":3},\"mono\":{\"mask\":\"0x10\",\"shift\":4},\"mute\":{\"mask\":\"0x04\",\"shift\":2}},\"status_byte_offset\":1},\"channel_meter_base_offset\":157,\"channel_meter_notes\":\"OBSERVED / PROVISIONAL (six-capture bounded review; see PROTOCOL.md section 9 and docs/protocol/orion-meter-evidence.md). Full-report 0x73 offsets 157..160 show observed DSP activity retained as one provisional mono candidate lane per current Mix 1..4 label; fixed lane ownership is low confidence, with no physical or stereo inference. Profile payload offsets 0x8d..0x90 add 0x10 to those full-report offsets. Inverted scale: raw 0x60 at rest/silence falling toward 0x00 as level rises. Repeated regions are not universal: only full-report 158↔222, 159↔223, and 160↔224 are exact in the six captures; first-lane copies 157↔169 and 157↔221 are not universal. Playback 0x73 @177/@178 and meter-only 0x75 @34/@35 co-varied nearest-time within 5 ms (r≈0.998) after filtering free-running reports to byte 1 == 0x1f; owner unresolved and no L/R mapping is claimed. 0x75 @32 is an aggregate/monitor observation and @33 is a flag; byte 1 == 0x00 readback responses are excluded. No physical-preamp mapping is claimed.\",\"channel_meter_scale\":\"inverted: 0x60 (96) at rest/silence, falls toward 0x00 as level rises. Same scale as meter_report.db_curve (raw ~= -dBFS), reuse that curve.\",\"clock_rate_hz_offset\":{\"endian\":\"big\",\"family_offset\":27,\"notes\":\"DECODED 2026-09-04 by a live hardware sweep (clock=OVEN, every rate stepped, 0x73 read at each). Offsets [21][22][23] = the actual running sample rate in Hz as a 24-bit BIG-ENDIAN integer ([21]<<16 | [22]<<8 | [23]): 44100=00ac44, 48000=00bb80, 88200=015888, 96000=017700, 176400=02b110, 192000=02ee00. (32k untested this pass -- expect 007d00.) Offset [27] = rate-family one-hot, = 0x10 >> [21]: 0x10 base family (<=48k), 0x08 double (88.2/96k), 0x04 quad (176.4/192k). Read under the internal (OVEN) clock, so [21-23] echoed the commanded rate; whether under an external clock it reports the MEASURED incoming rate (making it a genuine lock/rate monitor) is not yet tested. Complements offset 18 (the 0-6 enum): this is the frequency in Hz. protocol.state_clock_rate_hz(profile, data).\",\"offset\":21,\"width\":3},\"clock_source_byte_offset\":{\"notes\":\"The device clock source index (0-6, see params.clock_source.values), one plain byte. CONFIRMED from capture clock-source-WC-adat-adatx2-adatx4-spdif-usb-oven (2026-09-03, usbmon): SET_GLOBAL(param 0x04, value V) and offset 19 tracked 1:1 through all seven options. This resolves the old unresolved_state_offsets entry for offset 19 -- the '0x06 -> 0x00 ~3 s after connect' blip is the clock re-locking from USB (6) to the device's saved source at startup, not handshake noise. See params.clock_source.\",\"offset\":19},\"gain_base_offset\":49,\"magic\":\"0x73\",\"magic_offset\":0,\"meter_mappings\":[{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 157; the current Mix 1 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8d + 0x10 = 157). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8d\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":0},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 158; the current Mix 2 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8e + 0x10 = 158). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8e\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":1},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 159; the current Mix 3 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8f + 0x10 = 159). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8f\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":2},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 160; the current Mix 4 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x90 + 0x10 = 160). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x90\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":3}],\"notes\":\"Parallel-array layout: all channel gains contiguous from gain_base_offset, all status bytes contiguous from status_base_offset. Formula: status_byte = (phase<<6)|(phantom<<4)|(mode&0x03).\",\"output_trim_block\":{\"byte_offsets\":[24,25],\"fields\":{\"target_0\":{\"byte_offset\":24,\"mask\":\"0x70\",\"notes\":\"3-bit field, value<<4 at offset 24. capture settings-trim-mona-monb-line-panlaw (2026-08): SET_PARAM(0x4b, target=0, value 0..6) -> offset 24 stepped 0x00/0x10/0x20/0x30/0x40/0x50/0x60, i.e. exactly value<<4, every step. Almost certainly the Monitor A output trim (first target swept, capture name order mona/monb/line).\",\"shift\":4},\"target_1\":{\"byte_offset\":25,\"mask\":\"0x1c\",\"notes\":\"3-bit field, value<<2 at offset 25 bits 2-4. Same capture: SET_PARAM(0x4b, target=1, value 0..6) -> 0x00/0x04/0x08/0x0c/0x10/0x14/0x18. Almost certainly Monitor B output trim.\",\"shift\":2},\"target_2\":{\"byte_offset\":25,\"mask\":\"0xe0\",\"notes\":\"3-bit field, value<<5 at offset 25 bits 5-7. Same capture: SET_PARAM(0x4b, target=2, value 0..6) -> 0x00/0x20/0x40/0x60/0x80/0xa0/0xc0. Almost certainly Line output trim.\",\"shift\":5}},\"notes\":\"A small packed block just before bus_block, holding the settings-tab output-trim selectors (param 0x4b). Three targets (0/1/2 = Monitor A / Monitor B / Line Out) confirmed, each a 7-position 1-dBu-per-step selector (0 = 20 dBu .. 6 = 14 dBu, see params.output_trim.trim_dbu); readback is value<<shift. RE-CONFIRMED live on the device 2026-09-03 (swept all 3, restored). UNUSED bits: offset 24 bits 0-3 and 7, offset 25 bits 0-1. Pan law is NOT here and NOT a 4th target of 0x4b -- tested live 2026-09-03 (SET_PARAM 0x4b target 3 values 0..3 had zero effect anywhere); it needs its own Launcher capture. Readback cat 0x16 (once guessed to hold trim/pan-law) does NOT track either -- ruled out the same day.\"},\"sample_rate_byte_offset\":{\"notes\":\"The device sample-rate INDEX (0-6, see params.sample_rate.values), one plain byte. CONFIRMED from capture macos-smplrt-32k-44k1-48-88k2-96k-176k4-192k (2026-08, native macOS): the user stepped 32k/44k1/48k/88k2/96k/176k4/192k; each SET_GLOBAL(param 0x03, value V) was followed ~1 s later (device clock re-lock settle) by offset 18 == V, monotonic 0..6. This overlaps the old 'offset 17/19 blip' region -- offset 18 itself is the sample rate, NOT blip noise; offset 19 = clock source (see clock_source_byte_offset), offset 17 is still the ~3 s Launcher-handshake blip. Offsets 21/22/23/27 also move with the rate -- DECODED 2026-09-04, see clock_rate_hz_offset. See params.sample_rate.\",\"offset\":18},\"screen_brightness_byte_offset\":{\"notes\":\"The device's front-panel screen brightness, 0-100 (0x00-0x64), one plain byte. CONFIRMED from capture macos-scrbrght-0-100-50-multvalue (2026-08, native macOS -- the user watched the physical screen dim/brighten in real time): every SET_PARAM(opcode 0x12, param 0x0e, value V) was followed by offset 26 == V in the very next 0x73 report, 25/25 commands, values 0x00..0x64. So screen brightness IS a real, persisted, readable device setting (NOT host-side -- the earlier settings-scrbrght-surroundEQ capture under the VM simply never reached the device / the slider did nothing under the VM). Sits in the previously-unmapped gap between output_trim_block (24-25) and bus_block (28-45). Offset 27 still unmapped. See params.screen_brightness.\",\"offset\":26},\"spdif_gain_base_offset\":91,\"status_base_offset\":61,\"status_bits\":{\"input_mode\":{\"mask\":\"0x03\",\"shift\":0},\"phantom\":{\"mask\":\"0x10\",\"shift\":4},\"phase_invert\":{\"mask\":\"0x40\",\"shift\":6}},\"talkback_block\":{\"gain_byte_offset\":74,\"notes\":\"Sits immediately after the 12-byte channel status array (status_base_offset 61 + 12 = 73). offset 73 is a packed talkback status byte (see status_bits); offset 74 is the talkback gain (0-96, same scale as bus_level, 96=0dB) of the CURRENTLY SELECTED source -- confirmed from talkback-gain-int-ch1-2-12 (2026-08): sweeping param 0x20 moved offset 74 1:1 across 0-96, and re-selecting the source reset offset 74 to that source's own stored gain (so talkback gain is per-source, but only the selected source's value is visible here). CAVEAT: source_low and dest_assign share bits 2-3 (source index 4-12 sets bits that also mean dest0/dest1 assigned). The talkback-select and talkback-bttn captures were separate sessions -- source was 0 during the dest toggles and no dest/button was set during the source sweep -- so how these coexist in one byte when both are non-default is UNTESTED. Needs a combined capture before trusting the readback with talkback fully configured.\",\"status_bits\":{\"button\":{\"mask\":\"0x40\",\"notes\":\"Talkback button / hold-to-talk active. Confirmed from capture talkback-bttn (2026-08): press -> bit 6 set, release -> cleared, every time.\",\"shift\":6},\"dest_assign\":{\"mask\":\"0x3c\",\"notes\":\"4-bit bitmask, one bit per talkback destination (Mon A / Mon B / HP1 / HP2): destination N assigned = bit (N+2), i.e. dest0=0x04, dest1=0x08, dest2=0x10, dest3=0x20. Confirmed from capture talkback-bttn (2026-08): toggling each of the 4 switches in isolation set/cleared exactly its bit. Multi-destination combining is USER-CONFIRMED (2026-08) -- talkback can be sent to all 4 at once, so this byte can legitimately hold several of these bits set together.\",\"shift\":2},\"source_low\":{\"mask\":\"0x03\",\"notes\":\"LOW 2 BITS of the talkback source index only. Confirmed from capture talkback-select (2026-08): selecting sources 0..12 in turn, offset 73 bits 0-1 always equalled source_index & 0x03 (13/13 samples). The high bits of the source index are NOT exposed anywhere found in the 0x73 report -- offsets 72 and 75 stayed 0x00 for the whole sweep. So you can read talkback source back only mod 4 from the device; track the full value client-side.\",\"shift\":0}},\"status_byte_offset\":73}}",
+          "metadata": "{\"adat_gain_base_offset\":75,\"bus_block\":{\"base_offset\":28,\"bytes_per_bus\":3,\"level_byte_offset\":0,\"notes\":\"Same 'parallel array, N bytes per slot' idea as gain_base_offset/status_base_offset above, but for output buses instead of input channels: byte offset for bus N = base_offset + bytes_per_bus*N + field_offset. Confirmed for ALL 6 bus ids: 0/1/2/5 via captures mona/hp1/hp2/monb (2026-08, level ramps + dim/mute/mono toggles), and 3/4 (line/reamp) via capture settings-linevol-mute-reampvol-toggle (2026-08, level ramps at offsets 37 and 40 + a mute toggle on bus 3). Every SET_PARAM command in each log matched the very next state_report reading at this formula's offset. reserved_byte_offset (+2) never changed in any capture; true padding, or just never exercised, is unconfirmed. dim/mono were never exercised on buses 3/4 and may not apply to a line/reamp output. NOTE: the status byte's mute bit (0x04) also reads 1 whenever that bus is at level 96 with no mute command -- see params.bus_mute.\",\"reserved_byte_offset\":2,\"status_bits\":{\"dim\":{\"mask\":\"0x08\",\"shift\":3},\"mono\":{\"mask\":\"0x10\",\"shift\":4},\"mute\":{\"mask\":\"0x04\",\"shift\":2}},\"status_byte_offset\":1},\"channel_meter_base_offset\":157,\"channel_meter_notes\":\"OBSERVED / PROVISIONAL (six-capture bounded review; see PROTOCOL.md section 9 and docs/protocol/orion-meter-evidence.md). Full-report 0x73 offsets 157..160 show observed DSP activity retained as one provisional mono candidate lane per current Mix 1..4 label; fixed lane ownership is low confidence, with no physical or stereo inference. Profile payload offsets 0x8d..0x90 add 0x10 to those full-report offsets. Inverted scale: raw 0x60 at rest/silence falling toward 0x00 as level rises. Repeated regions are not universal: only full-report 158\u2194222, 159\u2194223, and 160\u2194224 are exact in the six captures; first-lane copies 157\u2194169 and 157\u2194221 are not universal. Playback 0x73 @177/@178 and meter-only 0x75 @34/@35 co-varied nearest-time within 5 ms (r\u22480.998) after filtering free-running reports to byte 1 == 0x1f; owner unresolved and no L/R mapping is claimed. 0x75 @32 is an aggregate/monitor observation and @33 is a flag; byte 1 == 0x00 readback responses are excluded. No physical-preamp mapping is claimed.\",\"channel_meter_scale\":\"inverted: 0x60 (96) at rest/silence, falls toward 0x00 as level rises. Same scale as meter_report.db_curve (raw ~= -dBFS), reuse that curve.\",\"clock_rate_hz_offset\":{\"endian\":\"big\",\"family_offset\":27,\"notes\":\"DECODED 2026-09-04 by a live hardware sweep (clock=OVEN, every rate stepped, 0x73 read at each). Offsets [21][22][23] = the actual running sample rate in Hz as a 24-bit BIG-ENDIAN integer ([21]<<16 | [22]<<8 | [23]): 44100=00ac44, 48000=00bb80, 88200=015888, 96000=017700, 176400=02b110, 192000=02ee00. (32k untested this pass -- expect 007d00.) Offset [27] = rate-family one-hot, = 0x10 >> [21]: 0x10 base family (<=48k), 0x08 double (88.2/96k), 0x04 quad (176.4/192k). Read under the internal (OVEN) clock, so [21-23] echoed the commanded rate; whether under an external clock it reports the MEASURED incoming rate (making it a genuine lock/rate monitor) is not yet tested. Complements offset 18 (the 0-6 enum): this is the frequency in Hz. protocol.state_clock_rate_hz(profile, data).\",\"offset\":21,\"width\":3},\"clock_source_byte_offset\":{\"notes\":\"The device clock source index (0-6, see params.clock_source.values), one plain byte. CONFIRMED from capture clock-source-WC-adat-adatx2-adatx4-spdif-usb-oven (2026-09-03, usbmon): SET_GLOBAL(param 0x04, value V) and offset 19 tracked 1:1 through all seven options. This resolves the old unresolved_state_offsets entry for offset 19 -- the '0x06 -> 0x00 ~3 s after connect' blip is the clock re-locking from USB (6) to the device's saved source at startup, not handshake noise. See params.clock_source.\",\"offset\":19},\"gain_base_offset\":49,\"magic\":\"0x73\",\"magic_offset\":0,\"meter_mappings\":[{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 157; the current Mix 1 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8d + 0x10 = 157). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8d\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":0},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 158; the current Mix 2 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8e + 0x10 = 158). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8e\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":1},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 159; the current Mix 3 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8f + 0x10 = 159). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8f\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":2},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 160; the current Mix 4 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x90 + 0x10 = 160). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x90\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":3}],\"notes\":\"Parallel-array layout: all channel gains contiguous from gain_base_offset, all status bytes contiguous from status_base_offset. Formula: status_byte = (phase<<6)|(phantom<<4)|(mode&0x03).\",\"output_trim_block\":{\"byte_offsets\":[24,25],\"fields\":{\"target_0\":{\"byte_offset\":24,\"mask\":\"0x70\",\"notes\":\"3-bit field, value<<4 at offset 24. capture settings-trim-mona-monb-line-panlaw (2026-08): SET_PARAM(0x4b, target=0, value 0..6) -> offset 24 stepped 0x00/0x10/0x20/0x30/0x40/0x50/0x60, i.e. exactly value<<4, every step. Almost certainly the Monitor A output trim (first target swept, capture name order mona/monb/line).\",\"shift\":4},\"target_1\":{\"byte_offset\":25,\"mask\":\"0x1c\",\"notes\":\"3-bit field, value<<2 at offset 25 bits 2-4. Same capture: SET_PARAM(0x4b, target=1, value 0..6) -> 0x00/0x04/0x08/0x0c/0x10/0x14/0x18. Almost certainly Monitor B output trim.\",\"shift\":2},\"target_2\":{\"byte_offset\":25,\"mask\":\"0xe0\",\"notes\":\"3-bit field, value<<5 at offset 25 bits 5-7. Same capture: SET_PARAM(0x4b, target=2, value 0..6) -> 0x00/0x20/0x40/0x60/0x80/0xa0/0xc0. Almost certainly Line output trim.\",\"shift\":5}},\"notes\":\"A small packed block just before bus_block, holding the settings-tab output-trim selectors (param 0x4b). Three targets (0/1/2 = Monitor A / Monitor B / Line Out) confirmed, each a 7-position 1-dBu-per-step selector (0 = 20 dBu .. 6 = 14 dBu, see params.output_trim.trim_dbu); readback is value<<shift. RE-CONFIRMED live on the device 2026-09-03 (swept all 3, restored). UNUSED bits: offset 24 bits 0-3 and 7, offset 25 bits 0-1. Pan law is NOT here and NOT a 4th target of 0x4b -- tested live 2026-09-03 (SET_PARAM 0x4b target 3 values 0..3 had zero effect anywhere); it needs its own Launcher capture. Readback cat 0x16 (once guessed to hold trim/pan-law) does NOT track either -- ruled out the same day.\"},\"sample_rate_byte_offset\":{\"notes\":\"The device sample-rate INDEX (0-6, see params.sample_rate.values), one plain byte. CONFIRMED from capture macos-smplrt-32k-44k1-48-88k2-96k-176k4-192k (2026-08, native macOS): the user stepped 32k/44k1/48k/88k2/96k/176k4/192k; each SET_GLOBAL(param 0x03, value V) was followed ~1 s later (device clock re-lock settle) by offset 18 == V, monotonic 0..6. This overlaps the old 'offset 17/19 blip' region -- offset 18 itself is the sample rate, NOT blip noise; offset 19 = clock source (see clock_source_byte_offset), offset 17 is still the ~3 s Launcher-handshake blip. Offsets 21/22/23/27 also move with the rate -- DECODED 2026-09-04, see clock_rate_hz_offset. See params.sample_rate.\",\"offset\":18},\"screen_brightness_byte_offset\":{\"notes\":\"The device's front-panel screen brightness, 0-100 (0x00-0x64), one plain byte. CONFIRMED from capture macos-scrbrght-0-100-50-multvalue (2026-08, native macOS -- the user watched the physical screen dim/brighten in real time): every SET_PARAM(opcode 0x12, param 0x0e, value V) was followed by offset 26 == V in the very next 0x73 report, 25/25 commands, values 0x00..0x64. So screen brightness IS a real, persisted, readable device setting (NOT host-side -- the earlier settings-scrbrght-surroundEQ capture under the VM simply never reached the device / the slider did nothing under the VM). Sits in the previously-unmapped gap between output_trim_block (24-25) and bus_block (28-45). Offset 27 still unmapped. See params.screen_brightness.\",\"offset\":26},\"spdif_gain_base_offset\":91,\"status_base_offset\":61,\"status_bits\":{\"input_mode\":{\"mask\":\"0x03\",\"shift\":0},\"phantom\":{\"mask\":\"0x10\",\"shift\":4},\"phase_invert\":{\"mask\":\"0x40\",\"shift\":6}},\"talkback_block\":{\"gain_byte_offset\":74,\"notes\":\"Sits immediately after the 12-byte channel status array (status_base_offset 61 + 12 = 73). offset 73 is a packed talkback status byte (see status_bits); offset 74 is the talkback gain (0-96, same scale as bus_level, 96=0dB) of the CURRENTLY SELECTED source -- confirmed from talkback-gain-int-ch1-2-12 (2026-08): sweeping param 0x20 moved offset 74 1:1 across 0-96, and re-selecting the source reset offset 74 to that source's own stored gain (so talkback gain is per-source, but only the selected source's value is visible here). CAVEAT: source_low and dest_assign share bits 2-3 (source index 4-12 sets bits that also mean dest0/dest1 assigned). The talkback-select and talkback-bttn captures were separate sessions -- source was 0 during the dest toggles and no dest/button was set during the source sweep -- so how these coexist in one byte when both are non-default is UNTESTED. Needs a combined capture before trusting the readback with talkback fully configured.\",\"status_bits\":{\"button\":{\"mask\":\"0x40\",\"notes\":\"Talkback button / hold-to-talk active. Confirmed from capture talkback-bttn (2026-08): press -> bit 6 set, release -> cleared, every time.\",\"shift\":6},\"dest_assign\":{\"mask\":\"0x3c\",\"notes\":\"4-bit bitmask, one bit per talkback destination (Mon A / Mon B / HP1 / HP2): destination N assigned = bit (N+2), i.e. dest0=0x04, dest1=0x08, dest2=0x10, dest3=0x20. Confirmed from capture talkback-bttn (2026-08): toggling each of the 4 switches in isolation set/cleared exactly its bit. Multi-destination combining is USER-CONFIRMED (2026-08) -- talkback can be sent to all 4 at once, so this byte can legitimately hold several of these bits set together.\",\"shift\":2},\"source_low\":{\"mask\":\"0x03\",\"notes\":\"LOW 2 BITS of the talkback source index only. Confirmed from capture talkback-select (2026-08): selecting sources 0..12 in turn, offset 73 bits 0-1 always equalled source_index & 0x03 (13/13 samples). The high bits of the source index are NOT exposed anywhere found in the 0x73 report -- offsets 72 and 75 stayed 0x00 for the whole sweep. So you can read talkback source back only mod 4 from the device; track the full value client-side.\",\"shift\":0}},\"status_byte_offset\":73}}",
           "status": "confirmed"
         },
         {
@@ -516,7 +516,7 @@
         {
           "id": "routing_command",
           "kind": "command",
-          "metadata": "{\"addressable_destinations\":{\"0\":\"line_out\",\"1\":\"headphone_1\",\"10\":\"mix_ch1\",\"11\":\"mix_ch2\",\"12\":\"mix_ch3\",\"13\":\"mix_ch4\",\"14\":\"surround_in\",\"2\":\"headphone_2\",\"3\":\"monitor_a\",\"4\":\"monitor_b\",\"5\":\"reamp\",\"6\":\"com_rec\",\"7\":\"adat_out\",\"8\":\"spdif_out\",\"9\":\"afx_in\"},\"addressable_destinations_note\":\"ALL 15 destination groups are now writable (2026-09-01). The first six are physical outputs; 6-14 are internal or digital and were left unwired until their channel counts were confirmed off the cat-0x03 readback. Each was live-read before wiring and the counts matched destination_channels exactly: com_rec 32, adat_out 16, spdif_out 2, afx_in 32, mix_ch1-4 32 each, surround_in 16. NOTE mix_chN (10-13) is the input side of the VIRTUAL MIXER: its 32 channels are what each of mix N's 32 strips listens to, so `route mix1 5 preamp3` chooses strip 5's source and `mix-set 1 5 --fader ...` sets that same strip's level -- two halves of one signal path (frame.mix_command, readback cat 0x04).\",\"channel_addressing\":\"The CLI addresses an output channel 1-based: `route <dest> <N> <source>` sets channel N (1..destination_channels[dest]) of that group. For stereo_destinations (hp1/hp2/mona/monb) `L` = channel 1 and `R` = channel 2 are accepted aliases. Reamp is NOT a stereo pair (Reamp 1 / Reamp 2 are separate mono outs) so use 1/2 there. `route <dest> all <s1> <s2> ...` sets every channel at once; `route <dest> mute` mutes all; `route <dest> <N> mute` mutes one.\",\"channel_list_offset\":19,\"channel_stride\":2,\"cli_support\":\"CLI `route` / `matrix-status`. `route <dest> <chan> <source>` sets ONE output channel (1-based; `L`/`R` = 1/2 for stereo_destinations) -- the other channels are read live from the device first (frame.readback cat 0x03) and every write is read back and confirmed. `route <dest> all <s1> <s2> ...` sets the whole group; `route <dest> mute` mutes all; `route <dest> <chan> mute` mutes one. `matrix-status` is a full live read of all 15 groups. Like the Launcher there is NO un-route. Source specs: preamp N -> (0x00,N-1); emumic N (N = preamp number 5-12) -> (0x01,N-5); compplay N (alias playback) -> (0x02,N-1); adat N -> (0x03,N-1); spdif L|R -> (0x04,0|1); afx N -> (0x05,N-1); mix1..4 L|R -> (0x06..0x09, 0|1); surround N -> (0x0a,N-1); osc N -> (0x0c,N-1); mute -> mute_source. Dests wired: ALL 15 (2026-09-01). line_out 16, hp1/hp2/mona/monb/reamp/spdif_out 2, adat_out/surround_in 16, com_rec/afx_in/mix_ch1-4 32. Names accept the ids in addressable_destinations (com_rec, adat_out, spdif_out, afx_in, mix_ch1..mix_ch4, surround_in). spdif_out is in stereo_destinations so L/R work there too.\",\"destination_channels\":{\"0\":16,\"1\":2,\"10\":32,\"11\":32,\"12\":32,\"13\":32,\"14\":16,\"2\":2,\"3\":2,\"4\":2,\"5\":2,\"6\":32,\"7\":16,\"8\":2,\"9\":32},\"destination_channels_note\":\"All 15 CONFIRMED 2026-08-31 by the routing readback (frame.readback category 0x03): each record is <dest_id> + destination_channels[dest_id] (bank,idx) pairs. line_out 16, hp1/hp2/mona/monb/reamp/spdif_out 2, comp_rec/afx_in/mix_ch1..4 32, adat_out/surround_in 16.\",\"destination_offset\":18,\"frame_model\":\"CORRECTED 2026-08 (captures macos-matrix-ch1-12-mute-hp1L / -hp1R). The frame is `d3 41 <dest> | <bank0> <idx0> | <bank1> <idx1> | ...` -- after destination_offset (18) it is a plain array of (source_bank, source_index) pairs, one per output channel of the destination GROUP, starting at channel_list_offset (19) with channel_stride (2). Channel 0 = L / output 1 / Reamp 1; channel 1 = R / output 2 / Reamp 2. Multichannel groups (line_out, adat_out=16, ...) simply have more pairs. mute = mute_source (bank 0x0b, idx 0); there is no 'no source' encoding. THE WHOLE GROUP IS ALWAYS SENT -- there is no single-channel frame. EVIDENCE: hp1L capture swept preamp 1-12 into HP1 L; every frame was `d3 41 01 | 00 (n-1) | 00 02` -- [19][20] = the changing L source, [21][22] = (0x00,0x02) = preamp 3, HP1 R's unchanged source. hp1R capture then swept preamp 1-12 into HP1 R; every frame was `d3 41 01 | 0b 00 | 00 (n-1)` -- [19][20] = (0x0b,0) = MUTE (HP1 L, left muted by hp1L's final frame), [21][22] = the changing R source. The two captures are sequential and the L=mute state carries between them -- decisive. Final mutes: hp1L -> `d3 41 01 | 0b 00 | 00 02` (mute L, keep R); hp1R -> `d3 41 01 | 0b 00 | 0b 00` (mute both).\",\"magic\":\"0x70\",\"magic_offset\":0,\"mono_matrix\":\"The routing matrix treats EVERY output channel independently (user-confirmed 2026-08). HP1 L and HP1 R are separate array slots; no stereo-pair concept.\",\"multichannel_channel_counts\":\"Output-channel counts per destination group (the frame carries one (bank,index) pair per channel, all sent every time): hp1/hp2/mona/monb=2, reamp=2, spdif_out=2; LINE_OUT=16 (CONFIRMED 2026-08 -- macos-matrix-afx*/surrnd*/mix1234* frames end at byte 50 = 16 pairs at bytes 19-50; caveat: a trailing channel routed to (bank 0, idx 0) would read as 00 00 and be invisible, but 16 matches the Launcher matrix). Still unknown: com_rec, adat_out (16 from the old adat_out '15x 03 NN' note), afx_in, mix_ch1..4, surround_in. Only the 2-channel groups are wired into the CLI so far. In the confirmed line_out captures, byte 18 = 0x00 and channel 0 was the one being changed; channels 1-15 held their prior routing (preamp 2-12 then compplay 1-4).\",\"mute_source\":[11,0],\"notes\":\"The matrix/routing frame -- its own command shape (opcode 0x53, NOT the SET_PARAM layout). [16]=0xd3, [17]=0x41 (constant), [18]=destination group. After that: an array of (source_bank, source_index) pairs, one per output channel of the group, from channel_list_offset (19), stride 2 -- see frame_model. Source banks in source_banks. Destination map from capture matrix-compplay-allouts-1: 0=line_out 1=hp1 2=hp2 3=mona 4=monb 5=reamp 6=com_rec 7=adat_out 8=spdif_out 9=afx_in 10-13=mix_ch1..4 14=surround_in. Routing is EXCLUSIVE per channel (one source per output channel; 'virtual mixes' are the separate summing mechanism). Readback is the interrupt-report category 0x03 in frame.readback, not a GET_REPORT Feature transfer (the HID descriptor has no Feature report). The readback_source_banks field records only explicit bounded observations for sources with per-host availability.\",\"opcode\":\"0x53\",\"opcode_name\":\"SET_ROUTE\",\"opcode_offset\":4,\"param_id\":\"0xd3\",\"param_id_offset\":16,\"readback_source_banks\":{\"0x02\":{\"evidence\":\"Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.\",\"indices\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23],\"notes\":\"Readback-only observation. Computer Playback availability is host-dependent (Windows 24 channels; native macOS up to 32), so this does not establish a host-independent write bound.\",\"status\":\"observed\"}},\"source_banks\":{\"0x00\":\"preamps / physical inputs (idx 0-11 = preamp 1-12)\",\"0x01\":\"emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).\",\"0x02\":\"compplay -- Computer Playback / USB channels, idx 0 = Computer Playback 1. 24 channels on the Windows VM driver, up to 32 on the native-macOS driver; idx 24-31 (Computer Playback 25-32) CONFIRMED acknowledged on a native-macOS host via routing readback -- set an output slot to each of 25..32 and it read back unchanged (webui, 2026-09-03). Host-driver-dependent count. Named 'compplay' to match the Antelope Launcher label.\",\"0x03\":\"ADAT inputs (idx 0-15 = ADAT 1-16)\",\"0x04\":\"S/PDIF inputs (idx 0-1 = L/R)\",\"0x05\":\"AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).\",\"0x06\":\"mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).\",\"0x07\":\"mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).\",\"0x08\":\"mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).\",\"0x09\":\"mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).\",\"0x0a\":\"surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).\",\"0x0b\":\"MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.\",\"0x0c\":\"oscillator (idx 0-1 = oscillator 1 / oscillator 2 -- right-click -> insert oscillator on an output)\"},\"status\":\"FULLY DECODED 2026-08-31, incl. READBACK. Frame model + all 12 source banks + all 15 destination channel counts confirmed. Readback: frame.readback category 0x03 -- one record per destination group (index 0..14), the exact same (bank,idx) array as the write frame. Verified end-to-end: CLI wrote line_out/hp1 from Linux, read back byte-identical from the device (and shown correctly by a fresh Windows Launcher, CAPTURE E'). CLI hardware round-trip confirmed 2026-08-31.\",\"stereo_destinations\":[\"1\",\"2\",\"3\",\"4\",\"8\"],\"subcmd\":\"0x41\",\"subcmd_offset\":17,\"supersedes\":\"This REPLACES the old op1_offset/op2_offset/output_ops model (bytes 21-22 = '02 01' for output 1, '00 02' for output 2). That was a misread: '00 02' is literally (bank 0x00, index 0x02) = preamp 3, i.e. the OTHER channel's untouched routing, not an opcode. The old CLI shipped this bug -- `route hp1 R preamp4` wrote preamp4 to [20] (the L slot) and preamp3 to [21][22] (R), so it set L=preamp4, R=preamp3 (user-observed on the Windows Launcher, 2026-08).\"}",
+          "metadata": "{\"addressable_destinations\":{\"0\":\"line_out\",\"1\":\"headphone_1\",\"10\":\"mix_ch1\",\"11\":\"mix_ch2\",\"12\":\"mix_ch3\",\"13\":\"mix_ch4\",\"14\":\"surround_in\",\"2\":\"headphone_2\",\"3\":\"monitor_a\",\"4\":\"monitor_b\",\"5\":\"reamp\",\"6\":\"com_rec\",\"7\":\"adat_out\",\"8\":\"spdif_out\",\"9\":\"afx_in\"},\"addressable_destinations_note\":\"ALL 15 destination groups are now writable (2026-09-01). The first six are physical outputs; 6-14 are internal or digital and were left unwired until their channel counts were confirmed off the cat-0x03 readback. Each was live-read before wiring and the counts matched destination_channels exactly: com_rec 32, adat_out 16, spdif_out 2, afx_in 32, mix_ch1-4 32 each, surround_in 16. NOTE mix_chN (10-13) is the input side of the VIRTUAL MIXER: its 32 channels are what each of mix N's 32 strips listens to, so `route mix1 5 preamp3` chooses strip 5's source and `mix-set 1 5 --fader ...` sets that same strip's level -- two halves of one signal path (frame.mix_command, readback cat 0x04).\",\"channel_addressing\":\"The CLI addresses an output channel 1-based: `route <dest> <N> <source>` sets channel N (1..destination_channels[dest]) of that group. For stereo_destinations (hp1/hp2/mona/monb) `L` = channel 1 and `R` = channel 2 are accepted aliases. Reamp is NOT a stereo pair (Reamp 1 / Reamp 2 are separate mono outs) so use 1/2 there. `route <dest> all <s1> <s2> ...` sets every channel at once; `route <dest> mute` mutes all; `route <dest> <N> mute` mutes one.\",\"channel_list_offset\":19,\"channel_stride\":2,\"cli_support\":\"CLI `route` / `matrix-status`. `route <dest> <chan> <source>` sets ONE output channel (1-based; `L`/`R` = 1/2 for stereo_destinations) -- the other channels are read live from the device first (frame.readback cat 0x03) and every write is read back and confirmed. `route <dest> all <s1> <s2> ...` sets the whole group; `route <dest> mute` mutes all; `route <dest> <chan> mute` mutes one. `matrix-status` is a full live read of all 15 groups. Like the Launcher there is NO un-route. Source specs: preamp N -> (0x00,N-1); emumic N (N = preamp number 5-12) -> (0x01,N-5); compplay N (alias playback) -> (0x02,N-1); adat N -> (0x03,N-1); spdif L|R -> (0x04,0|1); afx N -> (0x05,N-1); mix1..4 L|R -> (0x06..0x09, 0|1); surround N -> (0x0a,N-1); osc N -> (0x0c,N-1); mute -> mute_source. Dests wired: ALL 15 (2026-09-01). line_out 16, hp1/hp2/mona/monb/reamp/spdif_out 2, adat_out/surround_in 16, com_rec/afx_in/mix_ch1-4 32. Names accept the ids in addressable_destinations (com_rec, adat_out, spdif_out, afx_in, mix_ch1..mix_ch4, surround_in). spdif_out is in stereo_destinations so L/R work there too.\",\"destination_channels\":{\"0\":16,\"1\":2,\"10\":32,\"11\":32,\"12\":32,\"13\":32,\"14\":16,\"2\":2,\"3\":2,\"4\":2,\"5\":2,\"6\":32,\"7\":16,\"8\":2,\"9\":32},\"destination_channels_note\":\"All 15 CONFIRMED 2026-08-31 by the routing readback (frame.readback category 0x03): each record is <dest_id> + destination_channels[dest_id] (bank,idx) pairs. line_out 16, hp1/hp2/mona/monb/reamp/spdif_out 2, comp_rec/afx_in/mix_ch1..4 32, adat_out/surround_in 16.\",\"destination_offset\":18,\"frame_model\":\"CORRECTED 2026-08 (captures macos-matrix-ch1-12-mute-hp1L / -hp1R). The frame is `d3 41 <dest> | <bank0> <idx0> | <bank1> <idx1> | ...` -- after destination_offset (18) it is a plain array of (source_bank, source_index) pairs, one per output channel of the destination GROUP, starting at channel_list_offset (19) with channel_stride (2). Channel 0 = L / output 1 / Reamp 1; channel 1 = R / output 2 / Reamp 2. Multichannel groups (line_out, adat_out=16, ...) simply have more pairs. mute = mute_source (bank 0x0b, idx 0); there is no 'no source' encoding. THE WHOLE GROUP IS ALWAYS SENT -- there is no single-channel frame. EVIDENCE: hp1L capture swept preamp 1-12 into HP1 L; every frame was `d3 41 01 | 00 (n-1) | 00 02` -- [19][20] = the changing L source, [21][22] = (0x00,0x02) = preamp 3, HP1 R's unchanged source. hp1R capture then swept preamp 1-12 into HP1 R; every frame was `d3 41 01 | 0b 00 | 00 (n-1)` -- [19][20] = (0x0b,0) = MUTE (HP1 L, left muted by hp1L's final frame), [21][22] = the changing R source. The two captures are sequential and the L=mute state carries between them -- decisive. Final mutes: hp1L -> `d3 41 01 | 0b 00 | 00 02` (mute L, keep R); hp1R -> `d3 41 01 | 0b 00 | 0b 00` (mute both).\",\"magic\":\"0x70\",\"magic_offset\":0,\"mono_matrix\":\"The routing matrix treats EVERY output channel independently (user-confirmed 2026-08). HP1 L and HP1 R are separate array slots; no stereo-pair concept.\",\"multichannel_channel_counts\":\"Output-channel counts per destination group (the frame carries one (bank,index) pair per channel, all sent every time): hp1/hp2/mona/monb=2, reamp=2, spdif_out=2; LINE_OUT=16 (CONFIRMED 2026-08 -- macos-matrix-afx*/surrnd*/mix1234* frames end at byte 50 = 16 pairs at bytes 19-50; caveat: a trailing channel routed to (bank 0, idx 0) would read as 00 00 and be invisible, but 16 matches the Launcher matrix). Still unknown: com_rec, adat_out (16 from the old adat_out '15x 03 NN' note), afx_in, mix_ch1..4, surround_in. Only the 2-channel groups are wired into the CLI so far. In the confirmed line_out captures, byte 18 = 0x00 and channel 0 was the one being changed; channels 1-15 held their prior routing (preamp 2-12 then compplay 1-4).\",\"mute_source\":[11,0],\"notes\":\"The matrix/routing frame -- its own command shape (opcode 0x53, NOT the SET_PARAM layout). [16]=0xd3, [17]=0x41 (constant), [18]=destination group. After that: an array of (source_bank, source_index) pairs, one per output channel of the group, from channel_list_offset (19), stride 2 -- see frame_model. Source banks in source_banks. Destination map from capture matrix-compplay-allouts-1: 0=line_out 1=hp1 2=hp2 3=mona 4=monb 5=reamp 6=com_rec 7=adat_out 8=spdif_out 9=afx_in 10-13=mix_ch1..4 14=surround_in. Routing is EXCLUSIVE per channel (one source per output channel; 'virtual mixes' are the separate summing mechanism). Readback is the interrupt-report category 0x03 in frame.readback, not a GET_REPORT Feature transfer (the HID descriptor has no Feature report). The readback_source_banks field records only explicit bounded observations for sources with per-host availability.\",\"opcode\":\"0x53\",\"opcode_name\":\"SET_ROUTE\",\"opcode_offset\":4,\"param_id\":\"0xd3\",\"param_id_offset\":16,\"readback_source_banks\":{\"0x02\":{\"evidence\":\"Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.\",\"indices\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23],\"notes\":\"Readback-only observation. Computer Playback availability is host-dependent (Windows 24 channels; native macOS up to 32), so this does not establish a host-independent write bound.\",\"status\":\"observed\"}},\"source_banks\":{\"0x00\":\"preamps / physical inputs (idx 0-11 = preamp 1-12)\",\"0x01\":\"emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).\",\"0x02\":\"compplay -- Computer Playback / USB channels, idx 0 = Computer Playback 1. 24 channels on the Windows VM driver, up to 32 on the native-macOS driver; idx 24-31 (Computer Playback 25-32) CONFIRMED acknowledged on a native-macOS host via routing readback -- set an output slot to each of 25..32 and it read back unchanged (webui, 2026-09-03). Host-driver-dependent count. Named 'compplay' to match the Antelope Launcher label.\",\"0x03\":\"ADAT inputs (idx 0-15 = ADAT 1-16)\",\"0x04\":\"S/PDIF inputs (idx 0-1 = L/R)\",\"0x05\":\"AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).\",\"0x06\":\"mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).\",\"0x07\":\"mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).\",\"0x08\":\"mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).\",\"0x09\":\"mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).\",\"0x0a\":\"surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).\",\"0x0b\":\"MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.\",\"0x0c\":\"oscillator (idx 0-1 = oscillator 1 / oscillator 2 -- right-click -> insert oscillator on an output)\"},\"source_semantics\":{\"0x00\":{\"display_index_base\":1,\"kind\":\"numbered\",\"name\":\"Preamp\"},\"0x01\":{\"display_index_base\":5,\"kind\":\"numbered\",\"name\":\"emuMic\"},\"0x02\":{\"display_index_base\":1,\"evidence\":\"WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.\",\"kind\":\"numbered\",\"name\":\"Computer Playback\",\"writable_index_count\":24},\"0x03\":{\"display_index_base\":1,\"kind\":\"numbered\",\"name\":\"ADAT In\"},\"0x04\":{\"display_index_base\":0,\"kind\":\"stereo\",\"name\":\"S/PDIF In\"},\"0x05\":{\"display_index_base\":1,\"kind\":\"numbered\",\"name\":\"AFX Out\"},\"0x06\":{\"display_index_base\":0,\"kind\":\"stereo\",\"name\":\"Mix 1\"},\"0x07\":{\"display_index_base\":0,\"kind\":\"stereo\",\"name\":\"Mix 2\"},\"0x08\":{\"display_index_base\":0,\"kind\":\"stereo\",\"name\":\"Mix 3\"},\"0x09\":{\"display_index_base\":0,\"kind\":\"stereo\",\"name\":\"Mix 4\"},\"0x0a\":{\"display_index_base\":1,\"kind\":\"numbered\",\"name\":\"Surround Out\"},\"0x0b\":{\"display_index_base\":0,\"kind\":\"mute\",\"name\":\"MUTE\"},\"0x0c\":{\"display_index_base\":1,\"kind\":\"numbered\",\"name\":\"Oscillator\"}},\"status\":\"FULLY DECODED 2026-08-31, incl. READBACK. Frame model + all 12 source banks + all 15 destination channel counts confirmed. Readback: frame.readback category 0x03 -- one record per destination group (index 0..14), the exact same (bank,idx) array as the write frame. Verified end-to-end: CLI wrote line_out/hp1 from Linux, read back byte-identical from the device (and shown correctly by a fresh Windows Launcher, CAPTURE E'). CLI hardware round-trip confirmed 2026-08-31.\",\"stereo_destinations\":[\"1\",\"2\",\"3\",\"4\",\"8\"],\"subcmd\":\"0x41\",\"subcmd_offset\":17,\"supersedes\":\"This REPLACES the old op1_offset/op2_offset/output_ops model (bytes 21-22 = '02 01' for output 1, '00 02' for output 2). That was a misread: '00 02' is literally (bank 0x00, index 0x02) = preamp 3, i.e. the OTHER channel's untouched routing, not an opcode. The old CLI shipped this bug -- `route hp1 R preamp4` wrote preamp4 to [20] (the L slot) and preamp3 to [21][22] (R), so it set L=preamp4, R=preamp3 (user-observed on the Windows Launcher, 2026-08).\"}",
           "operations": [
             {
               "offset": 0,
@@ -840,7 +840,7 @@
         {
           "id": "state_report",
           "kind": "state_report",
-          "metadata": "{\"adat_gain_base_offset\":75,\"bus_block\":{\"base_offset\":28,\"bytes_per_bus\":3,\"level_byte_offset\":0,\"notes\":\"Same 'parallel array, N bytes per slot' idea as gain_base_offset/status_base_offset above, but for output buses instead of input channels: byte offset for bus N = base_offset + bytes_per_bus*N + field_offset. Confirmed for ALL 6 bus ids: 0/1/2/5 via captures mona/hp1/hp2/monb (2026-08, level ramps + dim/mute/mono toggles), and 3/4 (line/reamp) via capture settings-linevol-mute-reampvol-toggle (2026-08, level ramps at offsets 37 and 40 + a mute toggle on bus 3). Every SET_PARAM command in each log matched the very next state_report reading at this formula's offset. reserved_byte_offset (+2) never changed in any capture; true padding, or just never exercised, is unconfirmed. dim/mono were never exercised on buses 3/4 and may not apply to a line/reamp output. NOTE: the status byte's mute bit (0x04) also reads 1 whenever that bus is at level 96 with no mute command -- see params.bus_mute.\",\"reserved_byte_offset\":2,\"status_bits\":{\"dim\":{\"mask\":\"0x08\",\"shift\":3},\"mono\":{\"mask\":\"0x10\",\"shift\":4},\"mute\":{\"mask\":\"0x04\",\"shift\":2}},\"status_byte_offset\":1},\"channel_meter_base_offset\":157,\"channel_meter_notes\":\"OBSERVED / PROVISIONAL (six-capture bounded review; see PROTOCOL.md section 9 and docs/protocol/orion-meter-evidence.md). Full-report 0x73 offsets 157..160 show observed DSP activity retained as one provisional mono candidate lane per current Mix 1..4 label; fixed lane ownership is low confidence, with no physical or stereo inference. Profile payload offsets 0x8d..0x90 add 0x10 to those full-report offsets. Inverted scale: raw 0x60 at rest/silence falling toward 0x00 as level rises. Repeated regions are not universal: only full-report 158↔222, 159↔223, and 160↔224 are exact in the six captures; first-lane copies 157↔169 and 157↔221 are not universal. Playback 0x73 @177/@178 and meter-only 0x75 @34/@35 co-varied nearest-time within 5 ms (r≈0.998) after filtering free-running reports to byte 1 == 0x1f; owner unresolved and no L/R mapping is claimed. 0x75 @32 is an aggregate/monitor observation and @33 is a flag; byte 1 == 0x00 readback responses are excluded. No physical-preamp mapping is claimed.\",\"channel_meter_scale\":\"inverted: 0x60 (96) at rest/silence, falls toward 0x00 as level rises. Same scale as meter_report.db_curve (raw ~= -dBFS), reuse that curve.\",\"clock_rate_hz_offset\":{\"endian\":\"big\",\"family_offset\":27,\"notes\":\"DECODED 2026-09-04 by a live hardware sweep (clock=OVEN, every rate stepped, 0x73 read at each). Offsets [21][22][23] = the actual running sample rate in Hz as a 24-bit BIG-ENDIAN integer ([21]<<16 | [22]<<8 | [23]): 44100=00ac44, 48000=00bb80, 88200=015888, 96000=017700, 176400=02b110, 192000=02ee00. (32k untested this pass -- expect 007d00.) Offset [27] = rate-family one-hot, = 0x10 >> [21]: 0x10 base family (<=48k), 0x08 double (88.2/96k), 0x04 quad (176.4/192k). Read under the internal (OVEN) clock, so [21-23] echoed the commanded rate; whether under an external clock it reports the MEASURED incoming rate (making it a genuine lock/rate monitor) is not yet tested. Complements offset 18 (the 0-6 enum): this is the frequency in Hz. protocol.state_clock_rate_hz(profile, data).\",\"offset\":21,\"width\":3},\"clock_source_byte_offset\":{\"notes\":\"The device clock source index (0-6, see params.clock_source.values), one plain byte. CONFIRMED from capture clock-source-WC-adat-adatx2-adatx4-spdif-usb-oven (2026-09-03, usbmon): SET_GLOBAL(param 0x04, value V) and offset 19 tracked 1:1 through all seven options. This resolves the old unresolved_state_offsets entry for offset 19 -- the '0x06 -> 0x00 ~3 s after connect' blip is the clock re-locking from USB (6) to the device's saved source at startup, not handshake noise. See params.clock_source.\",\"offset\":19},\"gain_base_offset\":49,\"magic\":\"0x73\",\"magic_offset\":0,\"meter_mappings\":[{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 157; the current Mix 1 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8d + 0x10 = 157). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8d\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":0},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 158; the current Mix 2 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8e + 0x10 = 158). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8e\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":1},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 159; the current Mix 3 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8f + 0x10 = 159). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8f\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":2},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 160; the current Mix 4 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x90 + 0x10 = 160). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x90\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":3}],\"notes\":\"Parallel-array layout: all channel gains contiguous from gain_base_offset, all status bytes contiguous from status_base_offset. Formula: status_byte = (phase<<6)|(phantom<<4)|(mode&0x03).\",\"output_trim_block\":{\"byte_offsets\":[24,25],\"fields\":{\"target_0\":{\"byte_offset\":24,\"mask\":\"0x70\",\"notes\":\"3-bit field, value<<4 at offset 24. capture settings-trim-mona-monb-line-panlaw (2026-08): SET_PARAM(0x4b, target=0, value 0..6) -> offset 24 stepped 0x00/0x10/0x20/0x30/0x40/0x50/0x60, i.e. exactly value<<4, every step. Almost certainly the Monitor A output trim (first target swept, capture name order mona/monb/line).\",\"shift\":4},\"target_1\":{\"byte_offset\":25,\"mask\":\"0x1c\",\"notes\":\"3-bit field, value<<2 at offset 25 bits 2-4. Same capture: SET_PARAM(0x4b, target=1, value 0..6) -> 0x00/0x04/0x08/0x0c/0x10/0x14/0x18. Almost certainly Monitor B output trim.\",\"shift\":2},\"target_2\":{\"byte_offset\":25,\"mask\":\"0xe0\",\"notes\":\"3-bit field, value<<5 at offset 25 bits 5-7. Same capture: SET_PARAM(0x4b, target=2, value 0..6) -> 0x00/0x20/0x40/0x60/0x80/0xa0/0xc0. Almost certainly Line output trim.\",\"shift\":5}},\"notes\":\"A small packed block just before bus_block, holding the settings-tab output-trim selectors (param 0x4b). Three targets (0/1/2 = Monitor A / Monitor B / Line Out) confirmed, each a 7-position 1-dBu-per-step selector (0 = 20 dBu .. 6 = 14 dBu, see params.output_trim.trim_dbu); readback is value<<shift. RE-CONFIRMED live on the device 2026-09-03 (swept all 3, restored). UNUSED bits: offset 24 bits 0-3 and 7, offset 25 bits 0-1. Pan law is NOT here and NOT a 4th target of 0x4b -- tested live 2026-09-03 (SET_PARAM 0x4b target 3 values 0..3 had zero effect anywhere); it needs its own Launcher capture. Readback cat 0x16 (once guessed to hold trim/pan-law) does NOT track either -- ruled out the same day.\"},\"sample_rate_byte_offset\":{\"notes\":\"The device sample-rate INDEX (0-6, see params.sample_rate.values), one plain byte. CONFIRMED from capture macos-smplrt-32k-44k1-48-88k2-96k-176k4-192k (2026-08, native macOS): the user stepped 32k/44k1/48k/88k2/96k/176k4/192k; each SET_GLOBAL(param 0x03, value V) was followed ~1 s later (device clock re-lock settle) by offset 18 == V, monotonic 0..6. This overlaps the old 'offset 17/19 blip' region -- offset 18 itself is the sample rate, NOT blip noise; offset 19 = clock source (see clock_source_byte_offset), offset 17 is still the ~3 s Launcher-handshake blip. Offsets 21/22/23/27 also move with the rate -- DECODED 2026-09-04, see clock_rate_hz_offset. See params.sample_rate.\",\"offset\":18},\"screen_brightness_byte_offset\":{\"notes\":\"The device's front-panel screen brightness, 0-100 (0x00-0x64), one plain byte. CONFIRMED from capture macos-scrbrght-0-100-50-multvalue (2026-08, native macOS -- the user watched the physical screen dim/brighten in real time): every SET_PARAM(opcode 0x12, param 0x0e, value V) was followed by offset 26 == V in the very next 0x73 report, 25/25 commands, values 0x00..0x64. So screen brightness IS a real, persisted, readable device setting (NOT host-side -- the earlier settings-scrbrght-surroundEQ capture under the VM simply never reached the device / the slider did nothing under the VM). Sits in the previously-unmapped gap between output_trim_block (24-25) and bus_block (28-45). Offset 27 still unmapped. See params.screen_brightness.\",\"offset\":26},\"spdif_gain_base_offset\":91,\"status_base_offset\":61,\"status_bits\":{\"input_mode\":{\"mask\":\"0x03\",\"shift\":0},\"phantom\":{\"mask\":\"0x10\",\"shift\":4},\"phase_invert\":{\"mask\":\"0x40\",\"shift\":6}},\"talkback_block\":{\"gain_byte_offset\":74,\"notes\":\"Sits immediately after the 12-byte channel status array (status_base_offset 61 + 12 = 73). offset 73 is a packed talkback status byte (see status_bits); offset 74 is the talkback gain (0-96, same scale as bus_level, 96=0dB) of the CURRENTLY SELECTED source -- confirmed from talkback-gain-int-ch1-2-12 (2026-08): sweeping param 0x20 moved offset 74 1:1 across 0-96, and re-selecting the source reset offset 74 to that source's own stored gain (so talkback gain is per-source, but only the selected source's value is visible here). CAVEAT: source_low and dest_assign share bits 2-3 (source index 4-12 sets bits that also mean dest0/dest1 assigned). The talkback-select and talkback-bttn captures were separate sessions -- source was 0 during the dest toggles and no dest/button was set during the source sweep -- so how these coexist in one byte when both are non-default is UNTESTED. Needs a combined capture before trusting the readback with talkback fully configured.\",\"status_bits\":{\"button\":{\"mask\":\"0x40\",\"notes\":\"Talkback button / hold-to-talk active. Confirmed from capture talkback-bttn (2026-08): press -> bit 6 set, release -> cleared, every time.\",\"shift\":6},\"dest_assign\":{\"mask\":\"0x3c\",\"notes\":\"4-bit bitmask, one bit per talkback destination (Mon A / Mon B / HP1 / HP2): destination N assigned = bit (N+2), i.e. dest0=0x04, dest1=0x08, dest2=0x10, dest3=0x20. Confirmed from capture talkback-bttn (2026-08): toggling each of the 4 switches in isolation set/cleared exactly its bit. Multi-destination combining is USER-CONFIRMED (2026-08) -- talkback can be sent to all 4 at once, so this byte can legitimately hold several of these bits set together.\",\"shift\":2},\"source_low\":{\"mask\":\"0x03\",\"notes\":\"LOW 2 BITS of the talkback source index only. Confirmed from capture talkback-select (2026-08): selecting sources 0..12 in turn, offset 73 bits 0-1 always equalled source_index & 0x03 (13/13 samples). The high bits of the source index are NOT exposed anywhere found in the 0x73 report -- offsets 72 and 75 stayed 0x00 for the whole sweep. So you can read talkback source back only mod 4 from the device; track the full value client-side.\",\"shift\":0}},\"status_byte_offset\":73}}",
+          "metadata": "{\"adat_gain_base_offset\":75,\"bus_block\":{\"base_offset\":28,\"bytes_per_bus\":3,\"level_byte_offset\":0,\"notes\":\"Same 'parallel array, N bytes per slot' idea as gain_base_offset/status_base_offset above, but for output buses instead of input channels: byte offset for bus N = base_offset + bytes_per_bus*N + field_offset. Confirmed for ALL 6 bus ids: 0/1/2/5 via captures mona/hp1/hp2/monb (2026-08, level ramps + dim/mute/mono toggles), and 3/4 (line/reamp) via capture settings-linevol-mute-reampvol-toggle (2026-08, level ramps at offsets 37 and 40 + a mute toggle on bus 3). Every SET_PARAM command in each log matched the very next state_report reading at this formula's offset. reserved_byte_offset (+2) never changed in any capture; true padding, or just never exercised, is unconfirmed. dim/mono were never exercised on buses 3/4 and may not apply to a line/reamp output. NOTE: the status byte's mute bit (0x04) also reads 1 whenever that bus is at level 96 with no mute command -- see params.bus_mute.\",\"reserved_byte_offset\":2,\"status_bits\":{\"dim\":{\"mask\":\"0x08\",\"shift\":3},\"mono\":{\"mask\":\"0x10\",\"shift\":4},\"mute\":{\"mask\":\"0x04\",\"shift\":2}},\"status_byte_offset\":1},\"channel_meter_base_offset\":157,\"channel_meter_notes\":\"OBSERVED / PROVISIONAL (six-capture bounded review; see PROTOCOL.md section 9 and docs/protocol/orion-meter-evidence.md). Full-report 0x73 offsets 157..160 show observed DSP activity retained as one provisional mono candidate lane per current Mix 1..4 label; fixed lane ownership is low confidence, with no physical or stereo inference. Profile payload offsets 0x8d..0x90 add 0x10 to those full-report offsets. Inverted scale: raw 0x60 at rest/silence falling toward 0x00 as level rises. Repeated regions are not universal: only full-report 158\u2194222, 159\u2194223, and 160\u2194224 are exact in the six captures; first-lane copies 157\u2194169 and 157\u2194221 are not universal. Playback 0x73 @177/@178 and meter-only 0x75 @34/@35 co-varied nearest-time within 5 ms (r\u22480.998) after filtering free-running reports to byte 1 == 0x1f; owner unresolved and no L/R mapping is claimed. 0x75 @32 is an aggregate/monitor observation and @33 is a flag; byte 1 == 0x00 readback responses are excluded. No physical-preamp mapping is claimed.\",\"channel_meter_scale\":\"inverted: 0x60 (96) at rest/silence, falls toward 0x00 as level rises. Same scale as meter_report.db_curve (raw ~= -dBFS), reuse that curve.\",\"clock_rate_hz_offset\":{\"endian\":\"big\",\"family_offset\":27,\"notes\":\"DECODED 2026-09-04 by a live hardware sweep (clock=OVEN, every rate stepped, 0x73 read at each). Offsets [21][22][23] = the actual running sample rate in Hz as a 24-bit BIG-ENDIAN integer ([21]<<16 | [22]<<8 | [23]): 44100=00ac44, 48000=00bb80, 88200=015888, 96000=017700, 176400=02b110, 192000=02ee00. (32k untested this pass -- expect 007d00.) Offset [27] = rate-family one-hot, = 0x10 >> [21]: 0x10 base family (<=48k), 0x08 double (88.2/96k), 0x04 quad (176.4/192k). Read under the internal (OVEN) clock, so [21-23] echoed the commanded rate; whether under an external clock it reports the MEASURED incoming rate (making it a genuine lock/rate monitor) is not yet tested. Complements offset 18 (the 0-6 enum): this is the frequency in Hz. protocol.state_clock_rate_hz(profile, data).\",\"offset\":21,\"width\":3},\"clock_source_byte_offset\":{\"notes\":\"The device clock source index (0-6, see params.clock_source.values), one plain byte. CONFIRMED from capture clock-source-WC-adat-adatx2-adatx4-spdif-usb-oven (2026-09-03, usbmon): SET_GLOBAL(param 0x04, value V) and offset 19 tracked 1:1 through all seven options. This resolves the old unresolved_state_offsets entry for offset 19 -- the '0x06 -> 0x00 ~3 s after connect' blip is the clock re-locking from USB (6) to the device's saved source at startup, not handshake noise. See params.clock_source.\",\"offset\":19},\"gain_base_offset\":49,\"magic\":\"0x73\",\"magic_offset\":0,\"meter_mappings\":[{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 157; the current Mix 1 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8d + 0x10 = 157). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8d\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":0},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 158; the current Mix 2 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8e + 0x10 = 158). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8e\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":1},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 159; the current Mix 3 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x8f + 0x10 = 159). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x8f\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":2},{\"evidence\":\"Six-capture bounded review observes DSP activity at full-report 0x73 offset 160; the current Mix 4 label is retained provisionally, with low confidence in fixed lane ownership and no physical/stereo inference. The schema field is payload-relative (0x90 + 0x10 = 160). One mono lane only; no L/R inference.\",\"lane\":0,\"payload_offset\":\"0x90\",\"status\":\"observed\",\"target\":\"mix_master\",\"target_index\":3}],\"notes\":\"Parallel-array layout: all channel gains contiguous from gain_base_offset, all status bytes contiguous from status_base_offset. Formula: status_byte = (phase<<6)|(phantom<<4)|(mode&0x03).\",\"output_trim_block\":{\"byte_offsets\":[24,25],\"fields\":{\"target_0\":{\"byte_offset\":24,\"mask\":\"0x70\",\"notes\":\"3-bit field, value<<4 at offset 24. capture settings-trim-mona-monb-line-panlaw (2026-08): SET_PARAM(0x4b, target=0, value 0..6) -> offset 24 stepped 0x00/0x10/0x20/0x30/0x40/0x50/0x60, i.e. exactly value<<4, every step. Almost certainly the Monitor A output trim (first target swept, capture name order mona/monb/line).\",\"shift\":4},\"target_1\":{\"byte_offset\":25,\"mask\":\"0x1c\",\"notes\":\"3-bit field, value<<2 at offset 25 bits 2-4. Same capture: SET_PARAM(0x4b, target=1, value 0..6) -> 0x00/0x04/0x08/0x0c/0x10/0x14/0x18. Almost certainly Monitor B output trim.\",\"shift\":2},\"target_2\":{\"byte_offset\":25,\"mask\":\"0xe0\",\"notes\":\"3-bit field, value<<5 at offset 25 bits 5-7. Same capture: SET_PARAM(0x4b, target=2, value 0..6) -> 0x00/0x20/0x40/0x60/0x80/0xa0/0xc0. Almost certainly Line output trim.\",\"shift\":5}},\"notes\":\"A small packed block just before bus_block, holding the settings-tab output-trim selectors (param 0x4b). Three targets (0/1/2 = Monitor A / Monitor B / Line Out) confirmed, each a 7-position 1-dBu-per-step selector (0 = 20 dBu .. 6 = 14 dBu, see params.output_trim.trim_dbu); readback is value<<shift. RE-CONFIRMED live on the device 2026-09-03 (swept all 3, restored). UNUSED bits: offset 24 bits 0-3 and 7, offset 25 bits 0-1. Pan law is NOT here and NOT a 4th target of 0x4b -- tested live 2026-09-03 (SET_PARAM 0x4b target 3 values 0..3 had zero effect anywhere); it needs its own Launcher capture. Readback cat 0x16 (once guessed to hold trim/pan-law) does NOT track either -- ruled out the same day.\"},\"sample_rate_byte_offset\":{\"notes\":\"The device sample-rate INDEX (0-6, see params.sample_rate.values), one plain byte. CONFIRMED from capture macos-smplrt-32k-44k1-48-88k2-96k-176k4-192k (2026-08, native macOS): the user stepped 32k/44k1/48k/88k2/96k/176k4/192k; each SET_GLOBAL(param 0x03, value V) was followed ~1 s later (device clock re-lock settle) by offset 18 == V, monotonic 0..6. This overlaps the old 'offset 17/19 blip' region -- offset 18 itself is the sample rate, NOT blip noise; offset 19 = clock source (see clock_source_byte_offset), offset 17 is still the ~3 s Launcher-handshake blip. Offsets 21/22/23/27 also move with the rate -- DECODED 2026-09-04, see clock_rate_hz_offset. See params.sample_rate.\",\"offset\":18},\"screen_brightness_byte_offset\":{\"notes\":\"The device's front-panel screen brightness, 0-100 (0x00-0x64), one plain byte. CONFIRMED from capture macos-scrbrght-0-100-50-multvalue (2026-08, native macOS -- the user watched the physical screen dim/brighten in real time): every SET_PARAM(opcode 0x12, param 0x0e, value V) was followed by offset 26 == V in the very next 0x73 report, 25/25 commands, values 0x00..0x64. So screen brightness IS a real, persisted, readable device setting (NOT host-side -- the earlier settings-scrbrght-surroundEQ capture under the VM simply never reached the device / the slider did nothing under the VM). Sits in the previously-unmapped gap between output_trim_block (24-25) and bus_block (28-45). Offset 27 still unmapped. See params.screen_brightness.\",\"offset\":26},\"spdif_gain_base_offset\":91,\"status_base_offset\":61,\"status_bits\":{\"input_mode\":{\"mask\":\"0x03\",\"shift\":0},\"phantom\":{\"mask\":\"0x10\",\"shift\":4},\"phase_invert\":{\"mask\":\"0x40\",\"shift\":6}},\"talkback_block\":{\"gain_byte_offset\":74,\"notes\":\"Sits immediately after the 12-byte channel status array (status_base_offset 61 + 12 = 73). offset 73 is a packed talkback status byte (see status_bits); offset 74 is the talkback gain (0-96, same scale as bus_level, 96=0dB) of the CURRENTLY SELECTED source -- confirmed from talkback-gain-int-ch1-2-12 (2026-08): sweeping param 0x20 moved offset 74 1:1 across 0-96, and re-selecting the source reset offset 74 to that source's own stored gain (so talkback gain is per-source, but only the selected source's value is visible here). CAVEAT: source_low and dest_assign share bits 2-3 (source index 4-12 sets bits that also mean dest0/dest1 assigned). The talkback-select and talkback-bttn captures were separate sessions -- source was 0 during the dest toggles and no dest/button was set during the source sweep -- so how these coexist in one byte when both are non-default is UNTESTED. Needs a combined capture before trusting the readback with talkback fully configured.\",\"status_bits\":{\"button\":{\"mask\":\"0x40\",\"notes\":\"Talkback button / hold-to-talk active. Confirmed from capture talkback-bttn (2026-08): press -> bit 6 set, release -> cleared, every time.\",\"shift\":6},\"dest_assign\":{\"mask\":\"0x3c\",\"notes\":\"4-bit bitmask, one bit per talkback destination (Mon A / Mon B / HP1 / HP2): destination N assigned = bit (N+2), i.e. dest0=0x04, dest1=0x08, dest2=0x10, dest3=0x20. Confirmed from capture talkback-bttn (2026-08): toggling each of the 4 switches in isolation set/cleared exactly its bit. Multi-destination combining is USER-CONFIRMED (2026-08) -- talkback can be sent to all 4 at once, so this byte can legitimately hold several of these bits set together.\",\"shift\":2},\"source_low\":{\"mask\":\"0x03\",\"notes\":\"LOW 2 BITS of the talkback source index only. Confirmed from capture talkback-select (2026-08): selecting sources 0..12 in turn, offset 73 bits 0-1 always equalled source_index & 0x03 (13/13 samples). The high bits of the source index are NOT exposed anywhere found in the 0x73 report -- offsets 72 and 75 stayed 0x00 for the whole sweep. So you can read talkback source back only mod 4 from the device; track the full value client-side.\",\"shift\":0}},\"status_byte_offset\":73}}",
           "operations": [
             {
               "offset": 0,
@@ -3150,7 +3150,7 @@
             "text": "auraverb_command (opcode 0x1d / param 0xda) -- [28] = 1 on / 0 off; 8 DSP params at frame.auraverb_command.param_offsets (Room Size @19, Color @20, Pre-Delay @21, Early Reflection Gain @23, Late Reflection Delay @24, Richness @25, Reverb Time @26, Reverb Level @27), each a plain 0-100 byte; [22] = 100 constant (wet/mix lock, unswept)"
           },
           "id": null,
-          "metadata": "{\"control_names\":\"Color, Pre-Delay (0-100 -> 0-32 ms), Early Reflection Gain, Late Reflection Delay, Richness, Reverb Time, Room Size, Reverb Level (Orion Studio Synergy Core manual p.50 + antelopeaudio.com/products/auraverb)\",\"evidence\":\"macos-auraverb-on-off (2026-08): on/off = offset 28 (01 -> 00). macos-auraverb-ctl-* (2026-08-31): each of the 8 controls swept in isolation -> offsets 19/20/21/23/24/25/26/27 respectively; offset 22 stayed 0x64 throughout; no state-report offset tracked any sweep. 2026-09-03 (device, differential readback): with the Orion live, set each param via the CLI and re-read cat 0x0a -- every param + the enable bit mapped 1:1 to a byte of the Mix-1 block, and restoring the pre-sweep values reproduced the 43-byte record exactly; reverb-level round-trip (26->33->26) verified against the readback and restored clean.\",\"frame\":\"auraverb_command (opcode 0x1d / param 0xda) -- [28] = 1 on / 0 off; 8 DSP params at frame.auraverb_command.param_offsets (Room Size @19, Color @20, Pre-Delay @21, Early Reflection Gain @23, Late Reflection Delay @24, Richness @25, Reverb Time @26, Reverb Level @27), each a plain 0-100 byte; [22] = 100 constant (wet/mix lock, unswept)\",\"notes\":\"IN SCOPE (user, 2026-08) -- AuraVerb is bundled, no per-plugin activation. DECODED 2026-08-31 from macos-auraverb-ctl-color-predelay-earlyrefgaij-laterefdelay-richness-reverbtime-roomsize-reverblevel: 8 single-control sweeps, each moving exactly one frame byte through 0..~100. The frame carries the whole param block + enabled every time (no partial update). READBACK: frame.readback category 0x0a (decoded + hardware round-trip confirmed 2026-09-03) -- CLI `auraverb` live-reads it and does a verified read-modify-write; the CLI cache (kind 'auraverb') is now just an offline fallback. build_auraverb_command(profile, params, enabled). 0x1d in constraints.allowed_opcodes.\",\"per\":\"the AuraVerb instance on the Mix 1 window (frame offset 18 = mix index, only 0/Mix 1 written so far). The 0x0a readback carries a block for ALL FOUR mixes, so each mix has its own AuraVerb instance; writing mix 1-3 via build_auraverb_command(mix=N) is untested.\",\"range\":[0,100],\"status\":\"confirmed (on/off + all 8 DSP params); HARDWARE ROUND-TRIP VERIFIED 2026-09-03 against readback cat 0x0a -- see .readback and PROTOCOL.md §12\",\"type\":\"bool (on/off) + 8 x uint8 0-100\"}",
+          "metadata": "{\"control_names\":\"Color, Pre-Delay (0-100 -> 0-32 ms), Early Reflection Gain, Late Reflection Delay, Richness, Reverb Time, Room Size, Reverb Level (Orion Studio Synergy Core manual p.50 + antelopeaudio.com/products/auraverb)\",\"evidence\":\"macos-auraverb-on-off (2026-08): on/off = offset 28 (01 -> 00). macos-auraverb-ctl-* (2026-08-31): each of the 8 controls swept in isolation -> offsets 19/20/21/23/24/25/26/27 respectively; offset 22 stayed 0x64 throughout; no state-report offset tracked any sweep. 2026-09-03 (device, differential readback): with the Orion live, set each param via the CLI and re-read cat 0x0a -- every param + the enable bit mapped 1:1 to a byte of the Mix-1 block, and restoring the pre-sweep values reproduced the 43-byte record exactly; reverb-level round-trip (26->33->26) verified against the readback and restored clean.\",\"frame\":\"auraverb_command (opcode 0x1d / param 0xda) -- [28] = 1 on / 0 off; 8 DSP params at frame.auraverb_command.param_offsets (Room Size @19, Color @20, Pre-Delay @21, Early Reflection Gain @23, Late Reflection Delay @24, Richness @25, Reverb Time @26, Reverb Level @27), each a plain 0-100 byte; [22] = 100 constant (wet/mix lock, unswept)\",\"notes\":\"IN SCOPE (user, 2026-08) -- AuraVerb is bundled, no per-plugin activation. DECODED 2026-08-31 from macos-auraverb-ctl-color-predelay-earlyrefgaij-laterefdelay-richness-reverbtime-roomsize-reverblevel: 8 single-control sweeps, each moving exactly one frame byte through 0..~100. The frame carries the whole param block + enabled every time (no partial update). READBACK: frame.readback category 0x0a (decoded + hardware round-trip confirmed 2026-09-03) -- CLI `auraverb` live-reads it and does a verified read-modify-write; the CLI cache (kind 'auraverb') is now just an offline fallback. build_auraverb_command(profile, params, enabled). 0x1d in constraints.allowed_opcodes.\",\"per\":\"the AuraVerb instance on the Mix 1 window (frame offset 18 = mix index, only 0/Mix 1 written so far). The 0x0a readback carries a block for ALL FOUR mixes, so each mix has its own AuraVerb instance; writing mix 1-3 via build_auraverb_command(mix=N) is untested.\",\"range\":[0,100],\"status\":\"confirmed (on/off + all 8 DSP params); HARDWARE ROUND-TRIP VERIFIED 2026-09-03 against readback cat 0x0a -- see .readback and PROTOCOL.md \u00a712\",\"type\":\"bool (on/off) + 8 x uint8 0-100\"}",
           "name": "auraverb",
           "range": [
             0,
@@ -3194,7 +3194,7 @@
       "provenance": {
         "generator_version": "1.4.0",
         "source_path": "profiles/orion_studio_sc.json",
-        "source_sha256": "8b91ebb4d78ae5d99e76467bb13318cd885889bf414bbbe2caa07f54ad62479f"
+        "source_sha256": "0e4d7c9a0d2ccdbead3e150c806a63f00ddded73f8e390a25360151534e8a24b"
       },
       "readback": {
         "category_counts": [
@@ -3707,105 +3707,116 @@
         {
           "channel_count": 16,
           "destination": 0,
+          "mixer_surface": null,
           "name": "line_out",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -3813,105 +3824,116 @@
         {
           "channel_count": 2,
           "destination": 1,
+          "mixer_surface": null,
           "name": "headphone_1",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -3919,105 +3941,116 @@
         {
           "channel_count": 2,
           "destination": 2,
+          "mixer_surface": null,
           "name": "headphone_2",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4025,105 +4058,116 @@
         {
           "channel_count": 2,
           "destination": 3,
+          "mixer_surface": null,
           "name": "monitor_a",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4131,105 +4175,116 @@
         {
           "channel_count": 2,
           "destination": 4,
+          "mixer_surface": null,
           "name": "monitor_b",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4237,105 +4292,116 @@
         {
           "channel_count": 2,
           "destination": 5,
+          "mixer_surface": null,
           "name": "reamp",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4343,105 +4409,116 @@
         {
           "channel_count": 32,
           "destination": 6,
+          "mixer_surface": null,
           "name": "com_rec",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4449,105 +4526,116 @@
         {
           "channel_count": 16,
           "destination": 7,
+          "mixer_surface": null,
           "name": "adat_out",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4555,105 +4643,116 @@
         {
           "channel_count": 2,
           "destination": 8,
+          "mixer_surface": null,
           "name": "spdif_out",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4661,105 +4760,116 @@
         {
           "channel_count": 32,
           "destination": 9,
+          "mixer_surface": null,
           "name": "afx_in",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4767,105 +4877,116 @@
         {
           "channel_count": 32,
           "destination": 10,
+          "mixer_surface": 0,
           "name": "mix_ch1",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4873,105 +4994,116 @@
         {
           "channel_count": 32,
           "destination": 11,
+          "mixer_surface": 1,
           "name": "mix_ch2",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -4979,105 +5111,116 @@
         {
           "channel_count": 32,
           "destination": 12,
+          "mixer_surface": 2,
           "name": "mix_ch3",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -5085,105 +5228,116 @@
         {
           "channel_count": 32,
           "destination": 13,
+          "mixer_surface": 3,
           "name": "mix_ch4",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]
@@ -5191,105 +5345,116 @@
         {
           "channel_count": 16,
           "destination": 14,
+          "mixer_surface": null,
           "name": "surround_in",
-          "readback_source_domains": [
-            {
-              "bank": 2,
-              "evidence": "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): destination 13 records AntelopeINIT.json frame 16648; macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; macos-antelopeINIT-poweron.json frames 12884,18118; macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 all contain category 0x03/index 13 bytes 17..64 = 0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 (bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); no captured bank 0x02 index >=24.",
-              "indices": [
-                0,
-                1,
-                2,
-                3,
-                4,
-                5,
-                6,
-                7,
-                8,
-                9,
-                10,
-                11,
-                12,
-                13,
-                14,
-                15,
-                16,
-                17,
-                18,
-                19,
-                20,
-                21,
-                22,
-                23
-              ],
-              "status": "observed"
-            }
-          ],
+          "readback_source_domains": [],
           "source_domains": [
             {
               "bank": 0,
+              "display_index_base": 1,
               "evidence": "preamps / physical inputs (idx 0-11 = preamp 1-12)",
               "index_count": 12,
+              "kind": "numbered",
+              "name": "Preamp",
               "status": "confirmed"
             },
             {
               "bank": 1,
+              "display_index_base": 5,
               "evidence": "emumic -- the mic-modeling ('emuMic') DSP output as a matrix source (the wet/modelled tap of a preamp, vs bank 0x00 = the dry preamp). The DSP is controlled by micmodeling_command (opcode 0x17 / param 0xe5). CONFIRMED 2026-08-31 from capture 'emumic-5to 12' (Windows KVM): routed emumic into line_out ch 1-8, one channel at a time -> pairs (0x01, 0) .. (0x01, 7). So bank 0x01 has 8 indices, 0-7. The Launcher labels them by PREAMP NUMBER 5-12 (idx 0 = preamp 5), even though the front-panel EMU button only appears on preamps 7-12 -- so emumic idx 0-1 (preamps 5-6) are selectable as matrix sources with no way to configure a model on them (a Launcher bug or an unfinished feature; UNTESTED whether the card actually produces audio on those two taps). CLI source spec: emumicN with N = preamp number 5-12 -> (0x01, N-5).",
               "index_count": 8,
+              "kind": "numbered",
+              "name": "emuMic",
+              "status": "confirmed"
+            },
+            {
+              "bank": 2,
+              "display_index_base": 1,
+              "evidence": "WebUI/protocol ROUTE_SOURCE_SPECS defines Computer Playback as a writable source; 24 channels are available on the verified Windows host. Native macOS writes 25-32 were acknowledged, but selecting that wider host-dependent capability is deferred until runtime has an active-host channel-capability signal.",
+              "index_count": 24,
+              "kind": "numbered",
+              "name": "Computer Playback",
               "status": "confirmed"
             },
             {
               "bank": 3,
+              "display_index_base": 1,
               "evidence": "ADAT inputs (idx 0-15 = ADAT 1-16)",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "ADAT In",
               "status": "confirmed"
             },
             {
               "bank": 4,
+              "display_index_base": 0,
               "evidence": "S/PDIF inputs (idx 0-1 = L/R)",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "S/PDIF In",
               "status": "confirmed"
             },
             {
               "bank": 5,
+              "display_index_base": 1,
               "evidence": "AFX out -- Synergy Core FX / AFX2DAW effect returns, idx 0-31 (32 channels). CONFIRMED (macos-matrix-afx1-19-to-line1-afx29to32-to-line1, 2026-08: AFX 1-19 -> idx 0x00-0x12, AFX 29-32 -> idx 0x1c-0x1f, linear).",
               "index_count": 32,
+              "kind": "numbered",
+              "name": "AFX Out",
               "status": "confirmed"
             },
             {
               "bank": 6,
+              "display_index_base": 0,
               "evidence": "mix 1 -- virtual mix 1, idx 0 = L, 1 = R. CONFIRMED (macos-matrix-mix1234-lineo1-invphch6, 2026-08).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 1",
               "status": "confirmed"
             },
             {
               "bank": 7,
+              "display_index_base": 0,
               "evidence": "mix 2 -- virtual mix 2, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 2",
               "status": "confirmed"
             },
             {
               "bank": 8,
+              "display_index_base": 0,
               "evidence": "mix 3 -- virtual mix 3, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 3",
               "status": "confirmed"
             },
             {
               "bank": 9,
+              "display_index_base": 0,
               "evidence": "mix 4 -- virtual mix 4, idx 0/1 = L/R. CONFIRMED (same capture).",
               "index_count": 2,
+              "kind": "stereo",
+              "name": "Mix 4",
               "status": "confirmed"
             },
             {
               "bank": 10,
+              "display_index_base": 1,
               "evidence": "surround out -- idx 0-15 (16 channels). CONFIRMED (macos-matrix-surrnd1-16-to-lineo1, 2026-08: surround 1-16 -> idx 0x00-0x0f).",
               "index_count": 16,
+              "kind": "numbered",
+              "name": "Surround Out",
               "status": "confirmed"
             },
             {
               "bank": 11,
+              "display_index_base": 0,
               "evidence": "MUTE -- putting (bank 0x0b, idx 0) in a channel slot mutes that output channel (right-click -> mute in the matrix). User-confirmed 2026-08. Un-mute = put a real source back.",
               "index_count": 1,
+              "kind": "mute",
+              "name": "MUTE",
               "status": "confirmed"
             }
           ]

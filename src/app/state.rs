@@ -5,8 +5,8 @@ use antelope_protocol::{
     ClockSource, DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState,
     GlobalControl, InputAddress, InputControl, MixerAddress, MixerChannelState, MixerControl,
     OutputAddress, OutputControl, OutputMode, OutputState, OutputTarget, PreampState,
-    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeProfile, RuntimeReadiness,
-    SampleRate, Surface,
+    RoutingSource, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeProfile,
+    RuntimeReadiness, SampleRate, Surface,
 };
 
 use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
@@ -153,6 +153,12 @@ pub struct RoutingGroupCapability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoutingSourceChoice {
+    pub source: RoutingSource,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiInputCapability {
     pub kind: RuntimeInputControlKind,
     pub parameter: String,
@@ -180,6 +186,7 @@ pub struct UiProfileState {
     global_controls: HashSet<GlobalControl>,
     routing_destinations: HashSet<u16>,
     routing_channel_counts: HashMap<u16, u16>,
+    mixer_assignment_destinations: HashMap<u8, u16>,
 }
 
 impl UiProfileState {
@@ -321,6 +328,15 @@ impl UiProfileState {
             .iter()
             .map(|group| (group.destination, group.channel_count))
             .collect();
+        let mixer_assignment_destinations = profile
+            .routing_groups
+            .iter()
+            .filter_map(|group| {
+                group
+                    .mixer_surface
+                    .map(|surface| (surface, group.destination))
+            })
+            .collect();
 
         Self {
             id: entry.id.clone(),
@@ -338,6 +354,7 @@ impl UiProfileState {
             global_controls,
             routing_destinations,
             routing_channel_counts,
+            mixer_assignment_destinations,
         }
     }
 
@@ -358,6 +375,7 @@ impl UiProfileState {
             global_controls: HashSet::new(),
             routing_destinations: HashSet::new(),
             routing_channel_counts: HashMap::new(),
+            mixer_assignment_destinations: HashMap::new(),
         }
     }
 
@@ -442,11 +460,10 @@ impl UiProfileState {
         if self.driver_kind == RuntimeDriverKind::ZenGo && surface < 2 && strip <= 16 {
             return true;
         }
-        self.routing_destinations.contains(&u16::from(surface))
-            && self
-                .routing_channel_counts
-                .get(&u16::from(surface))
-                .is_some_and(|count| strip <= *count)
+        self.mixer_assignment_destinations
+            .get(&surface)
+            .and_then(|destination| self.routing_channel_counts.get(destination))
+            .is_some_and(|count| strip <= *count)
     }
 }
 
@@ -502,6 +519,7 @@ impl Default for UiProfileState {
                 .collect(),
             routing_destinations: [0].into_iter().collect(),
             routing_channel_counts: [(0, 16)].into_iter().collect(),
+            mixer_assignment_destinations: HashMap::new(),
         }
     }
 }

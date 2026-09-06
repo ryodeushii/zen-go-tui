@@ -323,12 +323,16 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     destination: group.destination,
                     name: group.name.into(),
                     channel_count: group.channel_count,
+                    mixer_surface: group.mixer_surface,
                     source_domains: group
                         .source_domains
                         .iter()
                         .map(|domain| RuntimeRoutingSourceDomain {
                             bank: domain.bank,
                             index_count: domain.index_count,
+                            kind: domain.kind.into(),
+                            name: domain.name.into(),
+                            display_index_base: domain.display_index_base,
                             status: status(domain.status).into(),
                             evidence: domain.evidence.into(),
                         })

@@ -1083,6 +1083,9 @@ impl Controller {
                 address,
                 assignment,
             } => self.handle_pick_assignment_at(address, assignment, pending)?,
+            Intent::PickRoutingSourceAt { address, source } => {
+                self.handle_pick_routing_source_at(address, source, pending)?
+            }
             Intent::CloseAssignmentPicker => self.handle_close_assignment_picker(),
             Intent::CloseSelectorPopup => self.handle_close_selector_popup(),
             Intent::SelectPreampInput(input) => self.handle_select_preamp_input(input),
@@ -2357,6 +2360,12 @@ impl Controller {
             .get(surface_index)
             .and_then(|surface| surface.get(strip_index))
             .and_then(|channel| channel.assignment);
+        let current_routing_source = self
+            .state
+            .routing_assignment_destination(address.surface)
+            .and_then(|destination| self.state.routing_group(destination))
+            .and_then(|group| group.sources.get(strip_index))
+            .copied();
 
         self.state.ui.focus = FocusArea::Mixer;
         self.state.mixer.selected_channel = strip_index;
@@ -2366,13 +2375,21 @@ impl Controller {
             return Ok(());
         }
 
-        self.state.popup.selected_index = current_assignment
-            .and_then(|current| {
+        let routing_choices = self.state.routing_source_choices(address.surface);
+        self.state.popup.selected_index = if routing_choices.is_empty() {
+            current_assignment.and_then(|current| {
                 MixerAssignment::grounded_choices()
                     .iter()
                     .position(|assignment| *assignment == current)
             })
-            .unwrap_or(0);
+        } else {
+            current_routing_source.and_then(|current| {
+                routing_choices
+                    .iter()
+                    .position(|choice| choice.source == current)
+            })
+        }
+        .unwrap_or(0);
         self.state.popup.assignment_picker = Some(AssignmentPickerState { strip });
         self.state.popup.assignment_picker_address = Some(address);
         self.state.ui.last_message = format!("Pick source assignment for CH {strip:02}");
@@ -2418,6 +2435,36 @@ impl Controller {
         )
     }
 
+    fn handle_pick_routing_source_at(
+        &mut self,
+        address: MixerAddress,
+        source: RoutingSource,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        let destination = self
+            .state
+            .routing_assignment_destination(address.surface)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mixer surface {} has no routing destination",
+                    address.surface
+                )
+            })?;
+        if !self
+            .state
+            .routing_source_choices(address.surface)
+            .iter()
+            .any(|choice| choice.source == source)
+        {
+            bail!(
+                "routing source {}:{} is unavailable",
+                source.bank,
+                source.index
+            );
+        }
+        self.handle_pick_routing_source_for(address, source, pending, destination, false, false)
+    }
+
     fn handle_pick_assignment_for(
         &mut self,
         address: MixerAddress,
@@ -2425,6 +2472,25 @@ impl Controller {
         pending: Option<PendingMutation>,
         destination: u16,
         legacy: bool,
+    ) -> Result<()> {
+        self.handle_pick_routing_source_for(
+            address,
+            routing_source_from_assignment(assignment),
+            pending,
+            destination,
+            legacy,
+            true,
+        )
+    }
+
+    fn handle_pick_routing_source_for(
+        &mut self,
+        address: MixerAddress,
+        source: RoutingSource,
+        pending: Option<PendingMutation>,
+        destination: u16,
+        legacy: bool,
+        include_changed_channel: bool,
     ) -> Result<()> {
         let strip = u8::try_from(address.strip)
             .map_err(|_| anyhow::anyhow!("routing strip {} is out of range", address.strip))?;
@@ -2449,11 +2515,11 @@ impl Controller {
         let slot = sources
             .get_mut(usize::from(changed_channel))
             .ok_or_else(|| anyhow::anyhow!("invalid routing strip {strip}"))?;
-        *slot = routing_source_from_assignment(assignment);
+        *slot = source;
         self.send(
             Action::SetRoutingGroup {
                 destination,
-                changed_channel: Some(changed_channel),
+                changed_channel: include_changed_channel.then_some(changed_channel),
                 sources,
             },
             pending,
@@ -2658,7 +2724,12 @@ impl Controller {
 
     fn handle_move_popup_selection(&mut self, down: bool) {
         let item_count = if self.state.popup.assignment_picker.is_some() {
-            antelope_protocol::MixerAssignment::grounded_choices().len()
+            self.state
+                .popup
+                .assignment_picker_address
+                .map(|address| self.state.routing_source_choices(address.surface).len())
+                .filter(|count| *count > 0)
+                .unwrap_or_else(|| antelope_protocol::MixerAssignment::grounded_choices().len())
         } else if self.state.popup.profiles_open {
             self.state.popup.profile_names.len()
         } else if let Some(popup) = self.state.popup.selector_popup {

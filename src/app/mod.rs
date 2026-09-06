@@ -6,7 +6,7 @@ use antelope_protocol::{
     DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup, DynamicStatePatch,
     FaderSemantics, GlobalControl, MixerAddress, MixerChannelState, MixerPassiveStripState,
     MixerSurface, OutputAddress, OutputMode, OutputState, OutputTarget, PreampState, QueryResponse,
-    RuntimeEntry, RuntimeProfile, SampleRate, Surface,
+    RoutingSource, RuntimeEntry, RuntimeProfile, SampleRate, Surface,
 };
 
 mod types;
@@ -358,7 +358,73 @@ impl AppState {
     }
 
     pub(crate) fn routing_assignment_available(&self, surface: u8, strip: u16) -> bool {
-        self.runtime_profile.is_none() || self.ui_profile.supports_assignment(surface, strip)
+        if self.runtime_profile.is_none() {
+            return true;
+        }
+        if !self.ui_profile.supports_assignment(surface, strip) {
+            return false;
+        }
+        if self.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+            return true;
+        }
+        let Some(group) = self.routing_assignment_group(surface) else {
+            return false;
+        };
+        !self.routing_source_choices(surface).is_empty()
+            && self
+                .routing_group(group.destination)
+                .is_some_and(|snapshot| snapshot.sources.len() == usize::from(group.channel_count))
+    }
+
+    pub(crate) fn routing_assignment_destination(&self, surface: u8) -> Option<u16> {
+        self.routing_assignment_group(surface)
+            .map(|group| group.destination)
+    }
+
+    pub fn routing_source_choices(&self, surface: u8) -> Vec<RoutingSourceChoice> {
+        if self.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+            return Vec::new();
+        }
+        let Some(group) = self.routing_assignment_group(surface) else {
+            return Vec::new();
+        };
+        group
+            .source_domains
+            .iter()
+            .filter(|domain| {
+                !domain.name.trim().is_empty()
+                    && matches!(domain.kind.as_str(), "numbered" | "stereo" | "mute")
+            })
+            .flat_map(|domain| {
+                (0..domain.index_count).map(move |index| {
+                    let label = match domain.kind.as_str() {
+                        "stereo" => {
+                            format!("{} {}", domain.name, if index == 0 { "L" } else { "R" })
+                        }
+                        "mute" => domain.name.clone(),
+                        _ => format!("{} {}", domain.name, index + domain.display_index_base),
+                    };
+                    RoutingSourceChoice {
+                        source: RoutingSource {
+                            bank: domain.bank,
+                            index,
+                        },
+                        label,
+                    }
+                })
+            })
+            .collect()
+    }
+
+    fn routing_assignment_group(
+        &self,
+        surface: u8,
+    ) -> Option<&antelope_protocol::RuntimeRoutingGroup> {
+        self.runtime_profile
+            .as_ref()?
+            .routing_groups
+            .iter()
+            .find(|group| group.mixer_surface == Some(surface))
     }
 
     pub(crate) fn legacy_routing_assignment_available(&self) -> bool {

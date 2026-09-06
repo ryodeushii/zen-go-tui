@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use antelope_protocol::{
     ClockSource, DynamicInputState, DynamicMixerStrip, DynamicOutputState, DynamicRoutingGroup,
-    InputAddress, MixerAddress, MixerAssignment, PanState, PreampMode, SampleRate, Surface,
+    InputAddress, MixerAddress, MixerAssignment, PanState, PreampMode, RoutingSource, SampleRate,
+    Surface,
 };
 
 use crate::app::AppState;
@@ -111,6 +112,10 @@ pub enum Intent {
     PickAssignmentAt {
         address: MixerAddress,
         assignment: MixerAssignment,
+    },
+    PickRoutingSourceAt {
+        address: MixerAddress,
+        source: RoutingSource,
     },
     AdjustMixerLevelAt {
         address: MixerAddress,

@@ -72,6 +72,9 @@ mod tests {
         entry.profile.routing_groups[0].source_domains = vec![RuntimeRoutingSourceDomain {
             bank: 0,
             index_count: 16,
+            kind: "numbered".into(),
+            name: "Preamp".into(),
+            display_index_base: 1,
             status: "confirmed".into(),
             evidence: "test fixture".into(),
         }];

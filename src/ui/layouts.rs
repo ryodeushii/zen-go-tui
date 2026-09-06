@@ -640,6 +640,27 @@ pub(crate) fn popup_list_inner_area(popup: Rect, title: &str) -> Rect {
     super::styles::panel_block(title, ratatui::style::Color::Yellow, true).inner(popup)
 }
 
+pub(crate) fn popup_list_viewport(
+    popup: Rect,
+    title: &str,
+    item_count: usize,
+    selected_index: usize,
+) -> std::ops::Range<usize> {
+    if item_count == 0 {
+        return 0..0;
+    }
+    let visible_count = usize::from(popup_list_inner_area(popup, title).height).min(item_count);
+    if visible_count == 0 {
+        return item_count..item_count;
+    }
+    let selected_index = selected_index.min(item_count - 1);
+    let start = selected_index
+        .saturating_add(1)
+        .saturating_sub(visible_count)
+        .min(item_count - visible_count);
+    start..start + visible_count
+}
+
 pub(crate) fn hotkeys_popup_area(area: Rect) -> Rect {
     let width = area.width.clamp(54, 86);
     let height = area.height.clamp(10, 16);
@@ -1332,6 +1353,45 @@ pub(crate) fn dynamic_input_control_rects(
     })
 }
 
+pub(crate) fn mixer_source_label(state: &AppState, address: MixerAddress) -> String {
+    let legacy_label = || {
+        state
+            .mixers()
+            .iter()
+            .position(|surface| surface.surface == address.surface)
+            .and_then(|surface| {
+                address
+                    .strip
+                    .checked_sub(1)
+                    .and_then(|index| state.mixer.channels.get(surface)?.get(usize::from(index)))
+            })
+            .and_then(|channel| channel.assignment)
+            .map(|assignment| assignment.short_label().to_string())
+    };
+
+    if state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+        return legacy_label().unwrap_or_else(|| "SOURCE ?".to_string());
+    }
+
+    address
+        .strip
+        .checked_sub(1)
+        .and_then(|index| {
+            state
+                .routing_assignment_destination(address.surface)
+                .and_then(|destination| state.routing_group(destination))
+                .and_then(|group| group.sources.get(usize::from(index)))
+        })
+        .and_then(|source| {
+            state
+                .routing_source_choices(address.surface)
+                .into_iter()
+                .find(|choice| choice.source == *source)
+        })
+        .map(|choice| choice.label)
+        .unwrap_or_else(|| "SOURCE ?".to_string())
+}
+
 pub(crate) fn dynamic_mixer_control_rects(
     card: Rect,
     state: &AppState,
@@ -1399,19 +1459,10 @@ pub(crate) fn dynamic_mixer_control_rects(
         rect
     });
     let mute = labels[2].then(|| rects[cursor]);
-    let source_label = state
-        .active_mixer_surface()
-        .and_then(|surface| {
-            address
-                .strip
-                .checked_sub(1)
-                .and_then(|index| state.mixer.channels.get(surface)?.get(usize::from(index)))
-        })
-        .and_then(|channel| channel.assignment)
-        .map_or("SOURCE ?", |assignment| assignment.short_label());
+    let source_label = mixer_source_label(state, address);
     Some(DynamicMixerControlRects {
         card,
-        source: source.then(|| mixer_header_chip_rects(card, source_label).1),
+        source: source.then(|| mixer_header_chip_rects(card, &source_label).1),
         fader,
         pan,
         send,

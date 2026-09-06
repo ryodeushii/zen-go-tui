@@ -243,6 +243,9 @@ pub struct LinkDomainDefinition {
 pub struct RoutingSourceDomainDefinition {
     pub bank: u8,
     pub index_count: u16,
+    pub kind: &'static str,
+    pub name: &'static str,
+    pub display_index_base: u16,
     pub status: Status,
     pub evidence: &'static str,
 }
@@ -262,6 +265,7 @@ pub struct RoutingGroupDefinition {
     pub destination: u16,
     pub name: &'static str,
     pub channel_count: u16,
+    pub mixer_surface: Option<u8>,
     pub source_domains: &'static [RoutingSourceDomainDefinition],
     pub readback_source_domains: &'static [RoutingReadbackSourceDomainDefinition],
 }

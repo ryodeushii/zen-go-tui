@@ -558,19 +558,7 @@ pub(crate) fn render_dynamic_mixer_strip_widget(
     )))
     .render(label_rect, buffer);
     if let Some(rect) = controls.source {
-        let source = address
-            .strip
-            .checked_sub(1)
-            .and_then(|index| {
-                state
-                    .active_mixer_surface()
-                    .and_then(|surface| state.mixer.channels.get(surface)?.get(usize::from(index)))
-            })
-            .and_then(|channel| channel.assignment)
-            .map_or_else(
-                || "SOURCE ?".to_string(),
-                |assignment| assignment.short_label().to_string(),
-            );
+        let source = mixer_source_label(state, address);
         Paragraph::new(Line::from(chip(&source, Color::Black, Color::LightCyan)))
             .alignment(Alignment::Right)
             .render(rect, buffer);

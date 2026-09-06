@@ -91,7 +91,9 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
                         state.routing_assignment_available(surface, strip)
                     })
         }
-        Intent::OpenAssignmentPickerAt { address } | Intent::PickAssignmentAt { address, .. } => {
+        Intent::OpenAssignmentPickerAt { address }
+        | Intent::PickAssignmentAt { address, .. }
+        | Intent::PickRoutingSourceAt { address, .. } => {
             address.strip > 0
                 && state
                     .mixers()
@@ -223,6 +225,7 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
     if let Some(picker) = state.popup.assignment_picker {
         return assignment_picker_mouse_action(
             area,
+            state,
             picker,
             state.popup.assignment_picker_address,
             point,
@@ -592,6 +595,7 @@ pub(crate) fn raw_dump_wheel_action(
 
 fn assignment_picker_mouse_action(
     area: Rect,
+    state: &AppState,
     picker: AssignmentPickerState,
     address: Option<MixerAddress>,
     point: (u16, u16),
@@ -601,11 +605,30 @@ fn assignment_picker_mouse_action(
         return Some(Intent::CloseAssignmentPicker);
     }
 
-    let inner = popup_list_inner_area(popup, &format!("Assign CH {:02}", picker.strip));
-    if point.1 < inner.y {
+    let title = format!("Assign CH {:02}", picker.strip);
+    let inner = popup_list_inner_area(popup, &title);
+    if !contains_point(inner, point) {
         return None;
     }
-    let index = point.1.saturating_sub(inner.y) as usize;
+    let profile_choices = address
+        .map(|address| state.routing_source_choices(address.surface))
+        .unwrap_or_default();
+    let item_count = if profile_choices.is_empty() {
+        MixerAssignment::grounded_choices().len()
+    } else {
+        profile_choices.len()
+    };
+    let viewport = popup_list_viewport(popup, &title, item_count, state.popup.selected_index);
+    let index = viewport
+        .start
+        .saturating_add(point.1.saturating_sub(inner.y) as usize);
+    if !profile_choices.is_empty() {
+        let choice = profile_choices.get(index)?;
+        return Some(Intent::PickRoutingSourceAt {
+            address: address?,
+            source: choice.source,
+        });
+    }
     let assignment = *MixerAssignment::grounded_choices().get(index)?;
     address.map_or(
         Some(Intent::PickAssignment {

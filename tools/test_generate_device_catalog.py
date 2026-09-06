@@ -1325,7 +1325,24 @@ class GeneratorTests(unittest.TestCase):
         }
         self.assertEqual(
             source_bounds,
-            {0: 12, 1: 8, 3: 16, 4: 2, 5: 32, 6: 2, 7: 2, 8: 2, 9: 2, 10: 16, 11: 1},
+            {0: 12, 1: 8, 2: 24, 3: 16, 4: 2, 5: 32, 6: 2, 7: 2, 8: 2, 9: 2, 10: 16, 11: 1},
+        )
+        self.assertEqual(
+            [
+                (group["mixer_surface"], group["destination"])
+                for group in orion["routing_groups"]
+                if group["mixer_surface"] is not None
+            ],
+            [(0, 10), (1, 11), (2, 12), (3, 13)],
+        )
+        computer_playback = next(
+            domain
+            for domain in orion["routing_groups"][10]["source_domains"]
+            if domain["bank"] == 2
+        )
+        self.assertEqual(
+            (computer_playback["kind"], computer_playback["name"], computer_playback["display_index_base"]),
+            ("numbered", "Computer Playback", 1),
         )
         self.assertEqual(
             [
@@ -1493,7 +1510,7 @@ class GeneratorTests(unittest.TestCase):
                     generator._derived_routing_source_domains(profile, routing, True), []
                 )
 
-    def test_orion_host_dependent_source_bank_remains_metadata_only(self) -> None:
+    def test_orion_host_dependent_source_bank_uses_conservative_writable_bound(self) -> None:
         profiles_dir = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
         profile = generator.load_profile(ORION_PROFILE, profiles_dir)
         domains = generator._derived_routing_source_domains(
@@ -1502,42 +1519,27 @@ class GeneratorTests(unittest.TestCase):
 
         self.assertEqual(generator.classify_readiness(profile), generator.Readiness.SUPPORTED)
         self.assertTrue(domains)
-        self.assertNotIn(
-            0x02,
-            {
-                bank["bank"]
-                for domain in domains
-                for bank in domain["banks"]
-            },
+        computer_playback = next(
+            bank
+            for domain in domains
+            for bank in domain["banks"]
+            if bank["bank"] == 0x02
         )
+        self.assertEqual(computer_playback["index_count"], 24)
+        self.assertIn("active-host channel-capability signal", computer_playback["evidence"])
 
-    def test_orion_readback_domain_is_observed_and_write_distinct(self) -> None:
+    def test_orion_readback_observation_is_reclassified_under_writable_domain(self) -> None:
         profiles_dir = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
         profile = generator.load_profile(ORION_PROFILE, profiles_dir)
         normalized = generator._normalized_profile_record(profile)
         groups = normalized["routing_groups"]
 
-        expected_readback = [{
-            "bank": 2,
-            "indices": list(range(24)),
-            "status": "observed",
-            "evidence": (
-                "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): "
-                "destination 13 records AntelopeINIT.json frame 16648; "
-                "macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; "
-                "macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; "
-                "macos-antelopeINIT-poweron.json frames 12884,18118; "
-                "macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 "
-                "all contain category 0x03/index 13 bytes 17..64 = "
-                "0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 "
-                "(bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains "
-                "category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); "
-                "no captured bank 0x02 index >=24."
-            ),
-        }]
-        self.assertEqual(groups[1]["readback_source_domains"], expected_readback)
-        self.assertTrue(all(group["readback_source_domains"] == expected_readback for group in groups))
-        self.assertNotIn(2, {domain["bank"] for domain in groups[1]["source_domains"]})
+        self.assertTrue(all(not group["readback_source_domains"] for group in groups))
+        computer_playback = next(
+            domain for domain in groups[1]["source_domains"] if domain["bank"] == 2
+        )
+        self.assertEqual(computer_playback["index_count"], 24)
+        self.assertIn("24 channels are available", computer_playback["evidence"])
         self.assertNotIn(12, {domain["bank"] for domain in groups[1]["source_domains"]})
 
     def test_malformed_observed_readback_domains_are_rejected(self) -> None:

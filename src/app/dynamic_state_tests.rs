@@ -43,6 +43,15 @@ fn orion_profile() -> RuntimeProfile {
     orion_entry().profile
 }
 
+fn canonical_orion_entry() -> RuntimeEntry {
+    ProfileCatalog::builtin()
+        .entries()
+        .iter()
+        .find(|entry| entry.id == "orion_studio_3")
+        .expect("built-in Orion profile")
+        .clone()
+}
+
 fn zen_go_profile() -> RuntimeProfile {
     ProfileCatalog::builtin()
         .find(0x23e5, 0xa015)
@@ -74,6 +83,127 @@ fn unsupported_input_action() -> Action {
         control: OutputControl::Dim,
         value: ControlValue::Bool(true),
     }
+}
+
+#[test]
+fn orion_selected_mixer_assignment_uses_profile_destinations_and_requires_snapshot() {
+    let entry = canonical_orion_entry();
+    let mut state = AppState::from_entry(&entry);
+
+    assert_eq!(
+        (0..4)
+            .map(|surface| state.routing_assignment_destination(surface))
+            .collect::<Vec<_>>(),
+        vec![Some(10), Some(11), Some(12), Some(13)]
+    );
+    assert!(!state.routing_assignment_available(0, 1));
+
+    for (surface, destination) in [(0, 10), (1, 11), (2, 12), (3, 13)] {
+        state.routing.push(DynamicRoutingGroup {
+            destination,
+            name: format!("mix_ch{}", surface + 1),
+            sources: vec![RoutingSource { bank: 11, index: 0 }; 32],
+        });
+        assert!(state.routing_assignment_available(surface, 1));
+        assert!(state.routing_assignment_available(surface, 32));
+        assert!(!state.routing_assignment_available(surface, 33));
+    }
+
+    let choices = state.routing_source_choices(0);
+    assert_eq!(choices.len(), 119);
+    for (source, label) in [
+        (RoutingSource { bank: 1, index: 0 }, "emuMic 5"),
+        (RoutingSource { bank: 2, index: 0 }, "Computer Playback 1"),
+        (RoutingSource { bank: 2, index: 23 }, "Computer Playback 24"),
+        (RoutingSource { bank: 4, index: 0 }, "S/PDIF In L"),
+        (RoutingSource { bank: 4, index: 1 }, "S/PDIF In R"),
+        (RoutingSource { bank: 11, index: 0 }, "MUTE"),
+    ] {
+        assert!(choices
+            .iter()
+            .any(|choice| choice.source == source && choice.label == label));
+    }
+    assert!(!choices
+        .iter()
+        .any(|choice| choice.source == RoutingSource { bank: 2, index: 24 }));
+}
+
+#[test]
+fn orion_selected_all_four_mix_writes_preserve_routing_siblings() {
+    for (surface, destination, replacement) in [
+        (0, 10, RoutingSource { bank: 2, index: 0 }),
+        (1, 11, RoutingSource { bank: 2, index: 23 }),
+        (2, 12, RoutingSource { bank: 3, index: 15 }),
+        (3, 13, RoutingSource { bank: 11, index: 0 }),
+    ] {
+        let entry = canonical_orion_entry();
+        let transport = MockTransport::default();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+                .expect("Orion controller");
+        let siblings = (0..32)
+            .map(|index| RoutingSource {
+                bank: 0,
+                index: index % 12,
+            })
+            .collect::<Vec<_>>();
+        controller.state.routing.push(DynamicRoutingGroup {
+            destination,
+            name: format!("mix_ch{}", surface + 1),
+            sources: siblings.clone(),
+        });
+
+        controller
+            .apply_intent(
+                Intent::PickRoutingSourceAt {
+                    address: MixerAddress { surface, strip: 1 },
+                    source: replacement,
+                },
+                Rect::default(),
+            )
+            .expect("selected-mixer route write");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        let frame = &writes[0];
+        assert_eq!(&frame[16..19], &[0xd3, 0x41, destination as u8]);
+        assert_eq!(&frame[19..21], &[replacement.bank, replacement.index as u8]);
+        for (channel, sibling) in siblings.iter().enumerate().skip(1) {
+            let offset = 19 + channel * 2;
+            assert_eq!(
+                &frame[offset..offset + 2],
+                &[sibling.bank, sibling.index as u8],
+                "destination {destination} sibling channel {channel}"
+            );
+        }
+    }
+}
+
+#[test]
+fn orion_selected_mixer_refuses_mutation_without_complete_readback() {
+    let entry = canonical_orion_entry();
+    let transport = MockTransport::default();
+    let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+    let mut controller =
+        Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+            .expect("Orion controller");
+
+    let error = controller
+        .apply_intent(
+            Intent::PickRoutingSourceAt {
+                address: MixerAddress {
+                    surface: 0,
+                    strip: 1,
+                },
+                source: RoutingSource { bank: 2, index: 0 },
+            },
+            Rect::default(),
+        )
+        .expect_err("missing routing snapshot must disable mutation");
+
+    assert!(error.to_string().contains("unsupported"));
+    assert!(transport.take_writes().is_empty());
 }
 
 #[test]

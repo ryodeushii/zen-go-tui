@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use antelope_protocol::{
-    DynamicMeterState, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
-    OutputControl, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeMeterTarget,
-    RuntimeReadiness,
+    DynamicMeterState, DynamicRoutingGroup, InputAddress, InputControl, MixerAddress,
+    MixerAssignment, MixerControl, OutputControl, RoutingSource, RuntimeDriverKind, RuntimeEntry,
+    RuntimeInputControlKind, RuntimeMeterTarget, RuntimeReadiness,
 };
 use ratatui::{
     backend::TestBackend,
@@ -830,8 +830,170 @@ fn dynamic_mixer_uses_authoritative_strip_and_optional_capabilities() {
 }
 
 #[test]
+fn assignment_picker_viewport_tracks_first_deep_and_keyboard_selected_rows() {
+    let popup = Rect::new(0, 0, 42, 22);
+
+    assert_eq!(
+        super::layouts::popup_list_viewport(popup, "Assign CH 01", 119, 0),
+        0..20
+    );
+    assert_eq!(
+        super::layouts::popup_list_viewport(popup, "Assign CH 01", 119, 117),
+        98..118
+    );
+    assert_eq!(
+        super::layouts::popup_list_viewport(popup, "Assign CH 01", 119, 118),
+        99..119
+    );
+}
+
+#[test]
+fn assignment_picker_viewport_handles_short_empty_and_zero_height_lists() {
+    let popup = Rect::new(0, 0, 42, 22);
+    assert_eq!(
+        super::layouts::popup_list_viewport(popup, "Assign CH 01", 3, 2),
+        0..3
+    );
+    assert_eq!(
+        super::layouts::popup_list_viewport(popup, "Assign CH 01", 0, 12),
+        0..0
+    );
+    assert_eq!(
+        super::layouts::popup_list_viewport(Rect::new(0, 0, 42, 2), "Assign CH 01", 119, 118),
+        119..119
+    );
+}
+
+#[test]
+fn orion_assignment_picker_mouse_rows_follow_the_rendered_viewport() {
+    let area = Rect::new(0, 0, 140, 48);
+    let popup = super::layouts::assignment_picker_area(area);
+    let inner = super::layouts::popup_list_inner_area(popup, "Assign CH 01");
+    let address = MixerAddress {
+        surface: 0,
+        strip: 1,
+    };
+    let mut state = orion_ui_state();
+    state.routing.push(DynamicRoutingGroup {
+        destination: 10,
+        name: "mix_ch1".into(),
+        sources: vec![RoutingSource { bank: 11, index: 0 }; 32],
+    });
+    state.popup.assignment_picker = Some(crate::app::AssignmentPickerState { strip: 1 });
+    state.popup.assignment_picker_address = Some(address);
+
+    state.popup.selected_index = 0;
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y),
+        Some(Intent::PickRoutingSourceAt {
+            address,
+            source: RoutingSource { bank: 0, index: 0 },
+        })
+    );
+
+    state.popup.selected_index = 118;
+    let text = render_to_string(&state);
+    assert!(
+        text.contains("MUTE"),
+        "deep selected choice must be rendered"
+    );
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y + inner.height - 1),
+        Some(Intent::PickRoutingSourceAt {
+            address,
+            source: RoutingSource { bank: 11, index: 0 },
+        })
+    );
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y + inner.height),
+        None,
+        "popup border is not a selectable row"
+    );
+}
+
+#[test]
+fn dynamic_mixer_source_label_uses_profile_routing_readback_for_each_surface() {
+    let mut state = orion_ui_state();
+    for (destination, source) in [
+        (10, RoutingSource { bank: 2, index: 23 }),
+        (13, RoutingSource { bank: 4, index: 1 }),
+    ] {
+        state.routing.push(DynamicRoutingGroup {
+            destination,
+            name: format!("destination_{destination}"),
+            sources: vec![source; 32],
+        });
+    }
+
+    for (address, expected) in [
+        (
+            MixerAddress {
+                surface: 0,
+                strip: 1,
+            },
+            "Computer Playback 24",
+        ),
+        (
+            MixerAddress {
+                surface: 3,
+                strip: 1,
+            },
+            "S/PDIF In R",
+        ),
+    ] {
+        let label = super::layouts::mixer_source_label(&state, address);
+        assert_eq!(label, expected);
+        let geometry = super::layouts::dynamic_mixer_control_rects_for_test(&state, address)
+            .expect("strip geometry");
+        assert_eq!(
+            geometry.source,
+            Some(super::layouts::mixer_header_chip_rects(geometry.card, &label).1)
+        );
+        state.mixer.surface_index = usize::from(address.surface);
+        let rendered = render_to_string(&state);
+        assert!(!rendered.contains("SOURCE ?"));
+    }
+}
+
+#[test]
+fn dynamic_mixer_source_label_falls_back_without_readback_and_retains_zen_legacy() {
+    let orion = orion_ui_state();
+    assert_eq!(
+        super::layouts::mixer_source_label(
+            &orion,
+            MixerAddress {
+                surface: 0,
+                strip: 1,
+            }
+        ),
+        "SOURCE ?"
+    );
+
+    let mut zen = zen_go_ui_state();
+    zen.mixer.channels[0][0].assignment = Some(MixerAssignment::Preamp(1));
+    let address = MixerAddress {
+        surface: 0,
+        strip: 1,
+    };
+    let label = super::layouts::mixer_source_label(&zen, address);
+    assert_eq!(label, "P1");
+    let geometry = super::layouts::dynamic_mixer_control_rects_for_test(&zen, address)
+        .expect("Zen strip geometry");
+    assert_eq!(
+        geometry.source,
+        Some(super::layouts::mixer_header_chip_rects(geometry.card, &label).1)
+    );
+}
+
+#[test]
 fn dynamic_mixer_source_chip_stays_inside_strip_border() {
-    for state in [zen_go_ui_state(), orion_ui_state()] {
+    let mut orion = orion_ui_state();
+    orion.routing.push(DynamicRoutingGroup {
+        destination: 10,
+        name: "mix_ch1".into(),
+        sources: vec![RoutingSource { bank: 11, index: 0 }; 32],
+    });
+    for state in [zen_go_ui_state(), orion] {
         let address = MixerAddress {
             surface: 0,
             strip: 1,

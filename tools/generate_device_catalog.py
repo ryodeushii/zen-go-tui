@@ -2107,12 +2107,19 @@ def _derived_routing_records(
             raise ProfileError(
                 "frame.routing_command destination maps must cover the same groups"
             )
+        mixer_surfaces = {
+            "mix_ch1": 0,
+            "mix_ch2": 1,
+            "mix_ch3": 2,
+            "mix_ch4": 3,
+        }
         for destination in sorted(names):
             groups.append(
                 {
                     "destination": destination,
                     "name": names[destination],
                     "channel_count": counts[destination],
+                    "mixer_surface": mixer_surfaces.get(names[destination]),
                     "source_domains": [],
                     "_source_domains_confirmed": confirmed,
                 }
@@ -2202,6 +2209,17 @@ def _derived_routing_source_domains(
     raw_banks = route["source_banks"]
     if not isinstance(raw_banks, Mapping):
         raise ProfileError("frame.routing_command.source_banks must be an object")
+    raw_semantics = route.get("source_semantics", {})
+    if not isinstance(raw_semantics, Mapping):
+        raise ProfileError("frame.routing_command.source_semantics must be an object")
+    semantics: dict[int, Mapping[str, Any]] = {}
+    for raw_bank, raw_semantic in raw_semantics.items():
+        bank = _checked_u8(raw_bank, "frame.routing_command.source_semantics.bank")
+        if bank in semantics or not isinstance(raw_semantic, Mapping):
+            raise ProfileError(
+                "frame.routing_command.source_semantics requires unique object-valued banks"
+            )
+        semantics[bank] = raw_semantic
     banks: list[dict[str, Any]] = []
     seen_banks: set[int] = set()
     for raw_bank, raw_evidence in raw_banks.items():
@@ -2212,11 +2230,20 @@ def _derived_routing_source_domains(
             )
         seen_banks.add(bank)
         bank_context = f"frame.routing_command.source_banks.{bank:#04x}"
-        # Orion bank 0x02 is host-dependent: Windows exposes 24 channels while
-        # native macOS exposes up to 32. Keep its raw evidence metadata-only.
-        if bank == 0x02 and _is_orion(profile):
-            continue
-        count, evidence = _index_count_from_raw(raw_evidence, bank_context)
+        semantic = semantics.get(bank)
+        has_explicit_writable_bound = semantic is not None and "writable_index_count" in semantic
+        if has_explicit_writable_bound:
+            count = _bounded_count(
+                semantic["writable_index_count"],
+                f"frame.routing_command.source_semantics.{bank:#04x}.writable_index_count",
+            )
+            evidence = semantic.get("evidence")
+            if not isinstance(evidence, str) or not evidence.strip():
+                raise ProfileError(
+                    f"frame.routing_command.source_semantics.{bank:#04x} writable bound requires evidence"
+                )
+        else:
+            count, evidence = _index_count_from_raw(raw_evidence, bank_context)
         if count is None:
             # Source record remains available in frame metadata, but no safe
             # action domain can be generated without a finite bound.
@@ -2235,8 +2262,36 @@ def _derived_routing_source_domains(
                     status_qualifications.append(qualifier)
         if any(not _evidence_is_confirmed(qualifier) for qualifier in status_qualifications):
             continue
-        if any(_source_bound_evidence_is_negative(qualifier) for qualifier in qualifications):
+        if (
+            not has_explicit_writable_bound
+            and any(_source_bound_evidence_is_negative(qualifier) for qualifier in qualifications)
+        ):
             continue
+        if semantic is None:
+            if _is_orion(profile):
+                # Orion source choices require explicit profile semantics; prose
+                # ordering or observed readback must never define writes.
+                continue
+            semantic = {
+                "kind": "numbered",
+                "name": f"Source bank {bank:#04x}",
+                "display_index_base": 1,
+            }
+        kind = semantic.get("kind")
+        name = semantic.get("name")
+        display_index_base = semantic.get("display_index_base")
+        if (
+            kind not in {"numbered", "stereo", "mute"}
+            or not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(display_index_base, int)
+            or not 0 <= display_index_base <= 0xFFFF
+            or (kind == "stereo" and count != 2)
+            or (kind == "mute" and (count != 1 or display_index_base != 0))
+        ):
+            raise ProfileError(
+                f"frame.routing_command.source_semantics.{bank:#04x} has invalid kind/name/display geometry"
+            )
         evidence_text = evidence.lower()
         # Oscillator has a finite-looking note but no confirmation.  It is a
         # pseudo-source, so keep it metadata-only until raw evidence confirms it.
@@ -2246,6 +2301,9 @@ def _derived_routing_source_domains(
             {
                 "bank": bank,
                 "index_count": count,
+                "kind": kind,
+                "name": name,
+                "display_index_base": display_index_base,
                 "status": "confirmed",
                 "evidence": evidence,
             }
@@ -2275,6 +2333,12 @@ def _derived_routing_readback_source_domains(
             "frame.routing_command.readback_source_banks must be an object"
         )
     domains: list[dict[str, Any]] = []
+    writable_domains = _derived_routing_source_domains(profile, route, confirmed)
+    writable_banks = {
+        domain["bank"]
+        for domain_set in writable_domains
+        for domain in domain_set["banks"]
+    }
     seen_banks: set[int] = set()
     for raw_bank, raw_evidence in raw_banks.items():
         bank = _checked_u8(
@@ -2288,9 +2352,10 @@ def _derived_routing_readback_source_domains(
         seen_banks.add(bank)
         context = f"frame.routing_command.readback_source_banks.{bank:#04x}"
         indices, status, evidence = _readback_indices_from_raw(raw_evidence, context)
-        # Only the specifically profiled Orion computer-playback observation is
-        # actionable to the decoder. Other raw source-bank facts remain opaque.
-        if _is_orion(profile) and bank == 0x02 and confirmed:
+        # Once a source has separate, finite write evidence, its writable domain
+        # also validates inbound values. Preserve this observation in raw profile
+        # provenance rather than duplicating an overlapping readback-only domain.
+        if _is_orion(profile) and bank == 0x02 and confirmed and bank not in writable_banks:
             domains.append(
                 {
                     "bank": bank,
@@ -2527,10 +2592,28 @@ def _routing_source_domain_sets(
                     f"{bank_context} requires unique bank, finite index_count within 1..=256, and evidence"
                 )
             seen_banks.add(bank)
+            kind = bank_record.get("kind", "numbered")
+            name = bank_record.get("name", "Source")
+            display_index_base = bank_record.get("display_index_base", 1)
+            if (
+                kind not in {"numbered", "stereo", "mute"}
+                or not isinstance(name, str)
+                or not name.strip()
+                or not isinstance(display_index_base, int)
+                or not 0 <= display_index_base <= 0xFFFF
+                or (kind == "stereo" and index_count != 2)
+                or (kind == "mute" and (index_count != 1 or display_index_base != 0))
+            ):
+                raise ProfileError(
+                    f"{bank_context} requires semantic kind/name/display_index_base"
+                )
             typed.append(
                 {
                     "bank": bank,
                     "index_count": index_count,
+                    "kind": kind,
+                    "name": name,
+                    "display_index_base": display_index_base,
                     "status": status,
                     "evidence": bank_evidence,
                 }
@@ -2613,6 +2696,7 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
             raise ProfileError("confirmed runtime_topology.routing_groups must be an array")
         result: list[dict[str, Any]] = []
         seen: set[int] = set()
+        seen_mixer_surfaces: set[int] = set()
         for index, group in enumerate(groups):
             context = f"runtime_topology.routing_groups[{index}]"
             if not isinstance(group, Mapping):
@@ -2622,9 +2706,16 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
             if not isinstance(name, str) or not name.strip():
                 raise ProfileError(f"{context}.name must be non-empty")
             channel_count = _checked_u16(group.get("channel_count"), f"{context}.channel_count")
-            if channel_count == 0 or destination in seen:
+            mixer_surface = group.get("mixer_surface")
+            if mixer_surface is not None:
+                mixer_surface = _checked_u8(mixer_surface, f"{context}.mixer_surface")
+            if (
+                channel_count == 0
+                or destination in seen
+                or (mixer_surface is not None and mixer_surface in seen_mixer_surfaces)
+            ):
                 raise ProfileError(
-                    "runtime_topology routing destinations must be unique with positive channel counts"
+                    "runtime_topology routing destinations and mixer surfaces must be unique with positive channel counts"
                 )
             source_domain_id = group.get("source_domain")
             if source_domain_id is None:
@@ -2638,11 +2729,14 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
                 f"{context}.readback_source_domains",
             )
             seen.add(destination)
+            if mixer_surface is not None:
+                seen_mixer_surfaces.add(mixer_surface)
             result.append(
                 {
                     "destination": destination,
                     "name": name,
                     "channel_count": channel_count,
+                    "mixer_surface": mixer_surface,
                     "source_domains": source_domains,
                     "readback_source_domains": readback_source_domains,
                 }
@@ -2664,6 +2758,7 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
         raise ProfileError("derived runtime routing_groups must be an array")
     result: list[dict[str, Any]] = []
     seen: set[int] = set()
+    seen_mixer_surfaces: set[int] = set()
     for index, group in enumerate(groups):
         context = f"derived runtime_topology.routing_groups[{index}]"
         if not isinstance(group, Mapping):
@@ -2673,9 +2768,16 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
         if not isinstance(name, str) or not name.strip():
             raise ProfileError(f"{context}.name must be non-empty")
         channel_count = _checked_u16(group.get("channel_count"), f"{context}.channel_count")
-        if channel_count == 0 or destination in seen:
+        mixer_surface = group.get("mixer_surface")
+        if mixer_surface is not None:
+            mixer_surface = _checked_u8(mixer_surface, f"{context}.mixer_surface")
+        if (
+            channel_count == 0
+            or destination in seen
+            or (mixer_surface is not None and mixer_surface in seen_mixer_surfaces)
+        ):
             raise ProfileError(
-                "derived runtime routing destinations must be unique with positive channel counts"
+                "derived runtime routing destinations and mixer surfaces must be unique with positive channel counts"
             )
         source_domains = group.get("source_domains", [])
         if not isinstance(source_domains, list):
@@ -2685,11 +2787,14 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
             f"{context}.readback_source_domains",
         )
         seen.add(destination)
+        if mixer_surface is not None:
+            seen_mixer_surfaces.add(mixer_surface)
         result.append(
             {
                 "destination": destination,
                 "name": name,
                 "channel_count": channel_count,
+                "mixer_surface": mixer_surface,
                 "source_domains": [dict(domain) for domain in source_domains],
                 "readback_source_domains": readback_source_domains,
             }
@@ -4913,6 +5018,8 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 lines.append(
                     "    RoutingSourceDomainDefinition { "
                     f"bank: {_rust_u8(domain['bank'])}, index_count: {_rust_u16(domain['index_count'])}, "
+                    f"kind: {_rust_string(domain['kind'])}, name: {_rust_string(domain['name'])}, "
+                    f"display_index_base: {_rust_u16(domain['display_index_base'])}, "
                     f"status: Status::{_status_variant(domain['status'])}, evidence: {_rust_string(domain['evidence'])} }},"
                 )
             lines.append("];\n")
@@ -4943,7 +5050,8 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             lines.append(
                 "    RoutingGroupDefinition { "
                 f"destination: {_rust_u16(group['destination'])}, name: {_rust_string(group['name'])}, "
-                f"channel_count: {_rust_u16(group['channel_count'])}, source_domains: {routing_source_helpers[index]}, "
+                f"channel_count: {_rust_u16(group['channel_count'])}, mixer_surface: "
+                f"{_rust_option(group.get('mixer_surface'), _rust_u8)}, source_domains: {routing_source_helpers[index]}, "
                 f"readback_source_domains: {routing_readback_helpers[index]} }},"
             )
         lines.append("];\n")

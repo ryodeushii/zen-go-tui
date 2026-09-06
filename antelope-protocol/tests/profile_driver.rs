@@ -4,7 +4,8 @@ use antelope_protocol::{
     DynamicStatePatch, FrameEndian, FrameOperation, GlobalControl, InputAddress, InputControl,
     MixerAddress, MixerControl, OutputAddress, OutputControl, ProfileDriver, QueryRequest,
     RoutingSource, RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
-    RuntimeMeterMapping, RuntimeMeterTarget, RuntimeReadiness, WholeStateField, ZenGoDriver,
+    RuntimeMeterMapping, RuntimeMeterTarget, RuntimeReadiness, RuntimeRoutingReadbackSourceDomain,
+    WholeStateField, ZenGoDriver,
 };
 
 fn stored_orion_entry() -> RuntimeEntry {
@@ -18,6 +19,22 @@ fn stored_orion_entry() -> RuntimeEntry {
 
 fn fixture_entry() -> RuntimeEntry {
     stored_orion_entry()
+}
+
+fn observed_readback_fixture_entry() -> RuntimeEntry {
+    let mut entry = fixture_entry();
+    for group in &mut entry.profile.routing_groups {
+        group.source_domains.retain(|domain| domain.bank != 2);
+        group
+            .readback_source_domains
+            .push(RuntimeRoutingReadbackSourceDomain {
+                bank: 2,
+                indices: (0..24).collect(),
+                status: "observed".into(),
+                evidence: "synthetic host-dependent readback fixture".into(),
+            });
+    }
+    entry
 }
 
 fn canonical_orion_entry() -> RuntimeEntry {
@@ -2180,7 +2197,7 @@ fn constructor_rejects_invalid_destination_source_domains_before_io() {
 #[test]
 fn constructor_rejects_invalid_observed_readback_domains_before_io() {
     for mutate in 0..7 {
-        let mut entry = fixture_entry();
+        let mut entry = observed_readback_fixture_entry();
         let domain = &mut entry.profile.routing_groups[0].readback_source_domains[0];
         match mutate {
             0 => domain.indices.clear(),
@@ -2197,6 +2214,30 @@ fn constructor_rejects_invalid_observed_readback_domains_before_io() {
             "readback domain mutation {mutate}"
         );
     }
+}
+
+#[test]
+fn canonical_orion_computer_playback_write_bound_is_conservative_24_channels() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut sources = vec![RoutingSource { bank: 11, index: 0 }; 32];
+    sources[0] = RoutingSource { bank: 2, index: 23 };
+    driver
+        .encode(Action::SetRoutingGroup {
+            destination: 10,
+            changed_channel: None,
+            sources: sources.clone(),
+        })
+        .expect("Computer Playback 24 is within the host-independent write bound");
+
+    sources[0] = RoutingSource { bank: 2, index: 24 };
+    let error = driver
+        .encode(Action::SetRoutingGroup {
+            destination: 10,
+            changed_channel: None,
+            sources,
+        })
+        .expect_err("Computer Playback 25 requires a future active-host capability");
+    assert!(error.to_string().contains("outside 0..23"));
 }
 
 #[test]
@@ -2305,7 +2346,8 @@ fn inbound_readback_bounds_and_complete_patches_are_enforced() {
 
 #[test]
 fn observed_readback_domains_accept_complete_host_dependent_bank_without_authorizing_writes() {
-    let driver = profile_driver_from_fixture();
+    let driver = ProfileDriver::new(observed_readback_fixture_entry())
+        .expect("observed readback fixture driver");
     let mut routing = vec![0; 320];
     routing[0] = 0x75;
     routing[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
