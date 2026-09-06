@@ -18,7 +18,7 @@ use antelope_protocol::{
 
 use super::layouts::*;
 use super::mouse::mix_meter;
-use super::raw_map::build_raw_packet_map;
+use super::raw_map::build_raw_packet_map_for_profile;
 use super::styles::*;
 use super::widgets::mixer;
 
@@ -1326,7 +1326,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let content = raw_content_layout(layout[3], query_replies);
     let (title, bytes, baseline, waiting) = raw_packet_source(selected, state);
     let (map_text, mut dump_text) = if let Some(bytes) = bytes {
-        let map = build_raw_packet_map(selected, bytes);
+        let map = build_raw_packet_map_for_profile(selected, bytes, state.runtime_profile());
         let map_text =
             text::render_raw_map_text(&map, state.raw_view.raw_map_scope, content.compact_map());
         let dump_text =

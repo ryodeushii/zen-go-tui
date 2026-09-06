@@ -1014,6 +1014,7 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
 #[test]
 fn profile_driver_decodes_explicit_mapped_meter_lanes_from_full_report_offsets() {
     let mut entry = state_meter_fixture_entry();
+    entry.profile.meter_mappings.clear();
     entry.profile.meter_mappings.push(RuntimeMeterMapping {
         frame_id: "state_report".into(),
         target: RuntimeMeterTarget::MixMaster,
@@ -1143,9 +1144,27 @@ fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
 }
 
 #[test]
-fn canonical_orion_profile_driver_keeps_physical_meters_unavailable() {
+fn canonical_orion_profile_driver_keeps_state_meters_unavailable_and_exposes_mixer_lanes() {
     let entry = canonical_orion_entry();
-    assert!(entry.profile.meter_mappings.is_empty());
+    assert_eq!(
+        entry
+            .profile
+            .meter_mappings
+            .iter()
+            .map(|mapping| (
+                mapping.target,
+                mapping.target_index,
+                mapping.lane,
+                mapping.offset
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (RuntimeMeterTarget::MixMaster, 0, 0, 157),
+            (RuntimeMeterTarget::MixMaster, 1, 0, 158),
+            (RuntimeMeterTarget::MixMaster, 2, 0, 159),
+            (RuntimeMeterTarget::MixMaster, 3, 0, 160),
+        ]
+    );
     assert_eq!(entry.readiness, RuntimeReadiness::Supported);
     assert_eq!(entry.driver_kind, RuntimeDriverKind::Profile);
     assert_eq!(entry.profile.startup_queries.len(), 113);
@@ -1170,6 +1189,7 @@ fn canonical_orion_profile_driver_keeps_physical_meters_unavailable() {
         .iter()
         .filter(|input| input.address.space == 0)
         .all(|input| input.meter.is_none()));
+    assert_eq!(state.meters.len(), 4);
 }
 
 #[test]

@@ -253,7 +253,7 @@ These should remain unimplemented until official frame length and variant identi
 
 ### Miscontrolled or state-incomplete
 
-- Output mute and dim cannot be represented simultaneously because state uses one `OutputMode` enum, even though commands are independent.
+- The bounded Zen Go runtime intentionally keeps one `OutputMode` for the capture-proven isolated states. Unknown mode bytes remain unavailable; direct Mute->Dim and Dim->Mute writes are rejected, and a pending mode change cannot be followed by another mode request until a snapshot confirms the intermediate Normal state. Composition remains unverified, so this safeguard is not a rule for other profile-driven devices.
 - Current capture-dialect mixer readback applies only solo from `0x18/0x00`; level, pan, and mute remain stale or optimistic.
 - Passive pan is decoded but discarded. This is safer than applying an unproven mapping, but UI must not imply authoritative pan readback.
 

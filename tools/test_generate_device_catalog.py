@@ -28,6 +28,13 @@ def normalized_zen_go() -> dict[str, Any]:
     return generator._normalized_profile_record(profile)
 
 
+def normalized_orion() -> dict[str, Any]:
+    profile = generator.load_profile(
+        ORION_PROFILE, REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
+    )
+    return generator._normalized_profile_record(profile)
+
+
 EXPECTED_PROFILES = {
     "discrete_4_pro_synergy_core.json",
     "discrete_4_synergy_core.json",
@@ -246,6 +253,29 @@ class GeneratorTests(unittest.TestCase):
             *[{"category": 0x19, "index": index} for index in range(12)],
         ]))
 
+    def test_orion_profile_declares_four_single_lane_mix_master_meters(self) -> None:
+        profile = normalized_orion()
+        mappings = profile["meter_mappings"]
+
+        self.assertEqual(
+            [
+                (item["frame_id"], item["target"], item["target_index"], item["lane"], item["offset"])
+                for item in mappings
+            ],
+            [
+                ("state_report", "mix_master", 0, 0, 157),
+                ("state_report", "mix_master", 1, 0, 158),
+                ("state_report", "mix_master", 2, 0, 159),
+                ("state_report", "mix_master", 3, 0, 160),
+            ],
+        )
+        self.assertTrue(all(item["status"] == "observed" for item in mappings))
+        self.assertTrue(all("mono" in item["evidence"] for item in mappings))
+        self.assertTrue(all("no L/R" in item["evidence"] for item in mappings))
+        self.assertEqual([mixer["mix_index"] for mixer in profile["mixers"]], [0, 1, 2, 3])
+        self.assertTrue(all(mixer["has_master"] for mixer in profile["mixers"]))
+        self.assertFalse(any(item["target"] == "physical_output" for item in mappings))
+
     def test_zen_go_profile_declares_capture_scoped_mixer_layouts(self) -> None:
         layouts = normalized_zen_go()["readback"]["layouts"]
 
@@ -342,6 +372,15 @@ class GeneratorTests(unittest.TestCase):
             json.loads(bus_level["metadata"])["encoding"],
             "raw = dB attenuation below unity: 0 = 0 dB, 96 = -96 dB",
         )
+
+    def test_zen_go_profile_exposes_capture_confirmed_output_dim(self) -> None:
+        params = {param["name"]: param for param in normalized_zen_go()["params"]}
+
+        self.assertIn("bus_dim", params)
+        self.assertNotIn("bus_param_0x66", params)
+        self.assertEqual(params["bus_dim"]["id"], 0x66)
+        self.assertEqual(params["bus_dim"]["status"], "confirmed")
+        self.assertEqual(params["bus_dim"]["applies_to"], "buses")
 
     def test_zen_go_profile_preserves_confirmed_ui_labels(self) -> None:
         profile = normalized_zen_go()

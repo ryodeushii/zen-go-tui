@@ -5,8 +5,8 @@ use antelope_protocol::{
     DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMixerStrip,
     DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup, DynamicStatePatch,
     FaderSemantics, GlobalControl, MixerAddress, MixerChannelState, MixerPassiveStripState,
-    MixerSurface, OutputMode, OutputState, OutputTarget, PreampState, QueryResponse, RuntimeEntry,
-    RuntimeProfile, SampleRate, Surface,
+    MixerSurface, OutputAddress, OutputMode, OutputState, OutputTarget, PreampState, QueryResponse,
+    RuntimeEntry, RuntimeProfile, SampleRate, Surface,
 };
 
 mod types;
@@ -322,6 +322,34 @@ impl AppState {
 
     pub(crate) fn runtime_profile_loaded(&self) -> bool {
         self.runtime_profile.is_some()
+    }
+
+    pub(crate) fn runtime_profile(&self) -> Option<&RuntimeProfile> {
+        self.runtime_profile.as_ref()
+    }
+
+    /// Zen Go's output mode evidence only covers isolated Normal/Dim and Normal/Mute
+    /// transitions. Keep that conservative behavior scoped to the Zen Go profile.
+    pub(crate) fn uses_zen_go_output_safety(&self) -> bool {
+        self.runtime_profile
+            .as_ref()
+            .is_some_and(|profile| (profile.identity.vid, profile.identity.pid) == (0x23e5, 0xa015))
+    }
+
+    /// Return a mode only when the normalized output readback contains a complete,
+    /// unambiguous mode pair. `None` means unavailable or unknown.
+    pub(crate) fn observed_output_mode(&self, address: OutputAddress) -> Option<OutputMode> {
+        let output = self
+            .output
+            .dynamic
+            .iter()
+            .find(|output| output.address == address)?;
+        match (output.muted, output.dimmed) {
+            (Some(false), Some(false)) => Some(OutputMode::Normal),
+            (Some(true), Some(false)) => Some(OutputMode::Mute),
+            (Some(false), Some(true)) => Some(OutputMode::Dim),
+            _ => None,
+        }
     }
 
     /// Return fader semantics declared by selected runtime profile for mixer surface.
@@ -1068,6 +1096,10 @@ impl AppState {
             return false;
         }
 
+        let compatibility_outputs = state
+            .zen_go_compatibility
+            .as_ref()
+            .map(|compatibility| compatibility.outputs.clone());
         let was_connected = self.device.connection.connected;
         let mut changed = !was_connected || raw_changed;
         self.device.connection.connected = true;
@@ -1096,6 +1128,9 @@ impl AppState {
         self.meters = state.meters;
         for group in state.routing {
             changed |= self.merge_routing_group(group);
+        }
+        if let Some(outputs) = compatibility_outputs.as_deref() {
+            changed |= self.apply_zen_go_compatibility_outputs(outputs);
         }
         self.sync_compatibility_views();
         self.apply_dynamic_globals_to_status();
@@ -1283,6 +1318,36 @@ impl AppState {
 
     fn apply_output_patch(&mut self, outputs: Vec<DynamicOutputState>) {
         let _ = self.apply_dynamic_patch(DynamicStatePatch::Outputs(outputs));
+    }
+
+    fn apply_zen_go_compatibility_outputs(&mut self, outputs: &[OutputState]) -> bool {
+        let mut changed = self.output.states != outputs;
+        self.output.states = outputs.to_vec();
+        for output_state in outputs {
+            let address = OutputAddress {
+                id: u16::from(output_state.target.index()),
+            };
+            let Some(output) = self
+                .output
+                .dynamic
+                .iter_mut()
+                .find(|output| output.address == address)
+            else {
+                continue;
+            };
+            let (muted, dimmed) = match output_state.mode {
+                OutputMode::Normal => (Some(false), Some(false)),
+                OutputMode::Mute => (Some(true), Some(false)),
+                OutputMode::Dim => (Some(false), Some(true)),
+                OutputMode::Unknown(_) => (None, None),
+            };
+            let before = (output.level, output.muted, output.dimmed);
+            output.level = Some(i32::from(output_state.volume));
+            output.muted = muted;
+            output.dimmed = dimmed;
+            changed |= before != (output.level, output.muted, output.dimmed);
+        }
+        changed
     }
 
     fn merge_input_state(&mut self, incoming: DynamicInputState) -> bool {

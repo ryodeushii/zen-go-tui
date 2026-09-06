@@ -42,6 +42,16 @@ fn coalesce_key_for_command(command: &Action) -> Option<CoalesceKey> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct QueueEntryId(u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueueEntryOutcome {
+    /// Every frame belonging to the queued entry was written successfully.
+    Sent,
+    /// A transport operation failed while delivery of the current entry was uncertain.
+    Failed,
+    /// No frame belonging to the queued entry was attempted.
+    Unsent,
+}
+
 #[derive(Debug, Clone)]
 pub struct QueuedCommand {
     pub command: Action,
@@ -94,32 +104,79 @@ impl CommandQueue {
     }
 
     pub fn flush(&mut self, transport: &dyn Transport, driver: &dyn DeviceDriver) -> Result<usize> {
-        self.flush_with(transport, driver, |_| {})
+        self.flush_with(transport, driver, |_, _| {})
     }
 
     pub(crate) fn flush_with<F>(
         &mut self,
         transport: &dyn Transport,
         driver: &dyn DeviceDriver,
-        mut on_sent: F,
+        mut on_outcome: F,
     ) -> Result<usize>
     where
-        F: FnMut(QueueEntryId),
+        F: FnMut(QueueEntryId, QueueEntryOutcome),
     {
         let mut count = 0;
-        for entry in self.entries.drain(..) {
-            let batch = driver.encode(entry.command)?;
+        let mut entries = self.entries.drain(..);
+        while let Some(entry) = entries.next() {
+            let id = entry.id;
+            let batch = match driver.encode(entry.command) {
+                Ok(batch) => batch,
+                Err(error) => {
+                    on_outcome(id, QueueEntryOutcome::Unsent);
+                    for entry in entries {
+                        on_outcome(entry.id, QueueEntryOutcome::Unsent);
+                    }
+                    return Err(error.into());
+                }
+            };
+            let mut wrote_frame = false;
             for frame in batch.frames {
-                transport.write(&frame)?;
+                if let Err(error) = transport.write(&frame) {
+                    // A transport error does not prove that the current frame
+                    // was not delivered. Keep the current entry uncertain,
+                    // including when this was its first write.
+                    on_outcome(id, QueueEntryOutcome::Failed);
+                    for entry in entries {
+                        on_outcome(entry.id, QueueEntryOutcome::Unsent);
+                    }
+                    return Err(error);
+                }
+                wrote_frame = true;
             }
             for request in batch.refresh_requests {
-                let refresh = driver.encode(Action::Query(request))?;
+                let refresh = match driver.encode(Action::Query(request)) {
+                    Ok(refresh) => refresh,
+                    Err(error) => {
+                        on_outcome(
+                            id,
+                            if wrote_frame {
+                                QueueEntryOutcome::Failed
+                            } else {
+                                QueueEntryOutcome::Unsent
+                            },
+                        );
+                        for entry in entries {
+                            on_outcome(entry.id, QueueEntryOutcome::Unsent);
+                        }
+                        return Err(error.into());
+                    }
+                };
                 for frame in refresh.frames {
-                    transport.write(&frame)?;
+                    match transport.write(&frame) {
+                        Ok(()) => wrote_frame = true,
+                        Err(error) => {
+                            on_outcome(id, QueueEntryOutcome::Failed);
+                            for entry in entries {
+                                on_outcome(entry.id, QueueEntryOutcome::Unsent);
+                            }
+                            return Err(error);
+                        }
+                    }
                 }
             }
             count += 1;
-            on_sent(entry.id);
+            on_outcome(id, QueueEntryOutcome::Sent);
         }
         Ok(count)
     }

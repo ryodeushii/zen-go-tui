@@ -185,6 +185,8 @@ The first following `0x73` often has no mode-byte change. The change appears wit
 
 These captures prove isolated mode codes, not composition. No capture enables mute and dim together, so this evidence cannot decide whether a device mode byte is a mutually exclusive enum or a composed bitfield. Do not infer composition from these isolated transitions.
 
+The bounded Zen Go runtime therefore preserves any unrecognized mode byte as `Unknown` (including `0x03`) rather than treating it as `Normal`. The `ZenGoDriver` application path permits only the observed isolated Normal<->Mute and Normal<->Dim transitions: a direct Mute->Dim or Dim->Mute request is rejected without a write, and a second mode request remains blocked until a state snapshot confirms the intermediate Normal state. This policy is specific to Zen Go evidence and must not be generalized to profile-driven devices with distinct captures.
+
 ### Preamp cluster and mode-scoped gain
 
 `capture_07_dsp.pcapng` correlates commands with snapshot payload cluster `0x18..0x1b`:

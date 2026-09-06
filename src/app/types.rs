@@ -272,16 +272,26 @@ impl Intent {
             }
             Intent::ToggleOutputMute(index) => {
                 let mut output = state.outputs().get(*index)?.clone();
+                if state.uses_zen_go_output_safety()
+                    && state.observed_output_mode(output.address).is_none()
+                {
+                    return None;
+                }
                 output.muted = Some(!output.muted.unwrap_or(false));
-                if output.muted == Some(true) {
+                if !state.uses_zen_go_output_safety() && output.muted == Some(true) {
                     output.dimmed = Some(false);
                 }
                 Some(PendingMutation::Output(output))
             }
             Intent::ToggleOutputDim(index) => {
                 let mut output = state.outputs().get(*index)?.clone();
+                if state.uses_zen_go_output_safety()
+                    && state.observed_output_mode(output.address).is_none()
+                {
+                    return None;
+                }
                 output.dimmed = Some(!output.dimmed.unwrap_or(false));
-                if output.dimmed == Some(true) {
+                if !state.uses_zen_go_output_safety() && output.dimmed == Some(true) {
                     output.muted = Some(false);
                 }
                 Some(PendingMutation::Output(output))

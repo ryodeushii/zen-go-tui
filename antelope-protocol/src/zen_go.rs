@@ -329,12 +329,18 @@ impl ZenGoDriver {
                     .outputs
                     .iter()
                     .find(|output| u16::from(output.target.index()) == declared.id);
+                let (muted, dimmed) = match output.map(|value| value.mode) {
+                    Some(crate::types::OutputMode::Normal) => (Some(false), Some(false)),
+                    Some(crate::types::OutputMode::Mute) => (Some(true), Some(false)),
+                    Some(crate::types::OutputMode::Dim) => (Some(false), Some(true)),
+                    Some(crate::types::OutputMode::Unknown(_)) | None => (None, None),
+                };
                 DynamicOutputState {
                     address: OutputAddress { id: declared.id },
                     name: declared.name.clone(),
                     level: output.map(|value| i32::from(value.volume)),
-                    muted: output.map(|value| matches!(value.mode, crate::types::OutputMode::Mute)),
-                    dimmed: output.map(|value| matches!(value.mode, crate::types::OutputMode::Dim)),
+                    muted,
+                    dimmed,
                     parameters: Vec::new(),
                 }
             })

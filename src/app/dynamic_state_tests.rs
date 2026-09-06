@@ -1,17 +1,24 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::{
+    panic::{catch_unwind, AssertUnwindSafe},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use antelope_protocol::{
     load_profile_pack, Action, ControlValue, DeviceEvent, DynamicDeviceState, DynamicGlobalState,
     DynamicInputState, DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState,
     DynamicRoutingGroup, DynamicStatePatch, GlobalControl, InputAddress, MixerAddress,
-    OutputAddress, OutputControl, ProfileDriver, RoutingSource, RuntimeDriverKind, RuntimeEntry,
-    RuntimeProfile, RuntimeReadiness, Surface,
+    OutputAddress, OutputControl, OutputMode, ProfileDriver, RoutingSource, RuntimeDriverKind,
+    RuntimeEntry, RuntimeProfile, RuntimeReadiness, Surface,
 };
 
 use ratatui::layout::Rect;
 
 use crate::device::ProfileCatalog;
-use crate::transport::MockTransport;
+use crate::transport::{MockTransport, Transport};
 
 use super::{AppState, Controller, Intent, PendingMutation};
 
@@ -542,44 +549,331 @@ fn dynamic_state_complete_mixer_mutation_preserves_companions() {
     ));
 }
 
-#[test]
-fn successful_output_actions_project_immediately_to_dynamic_and_compatibility_state() {
-    let mut controller = Controller::new(
-        Box::new(MockTransport::default()),
+fn zen_snapshot_frame(output_modes: [u8; 3]) -> Vec<u8> {
+    let mut frame = vec![0u8; antelope_protocol::HID_REPORT_SIZE];
+    frame[..4].copy_from_slice(&0x73u32.to_le_bytes());
+    let payload = antelope_protocol::SNAPSHOT_PAYLOAD_OFFSET;
+    frame[payload + antelope_protocol::OFFSET_SAMPLE_RATE_CODE] = 0x02;
+    frame[payload + antelope_protocol::OFFSET_CLOCK_SOURCE] = 0x01;
+    frame[payload + antelope_protocol::OFFSET_SAMPLE_RATE_HZ_START
+        ..payload + antelope_protocol::OFFSET_SAMPLE_RATE_HZ_END]
+        .copy_from_slice(&48_000u32.to_be_bytes());
+    frame[payload + antelope_protocol::OFFSET_STATUS_FLAGS_0] = 0x08;
+    frame[payload + antelope_protocol::OFFSET_MONITOR_VOLUME] = 0x20;
+    frame[payload + antelope_protocol::OFFSET_MONITOR_MODE] = output_modes[0];
+    frame[payload + antelope_protocol::OFFSET_HP1_VOLUME] = 0x20;
+    frame[payload + antelope_protocol::OFFSET_HP1_MODE] = output_modes[1];
+    frame[payload + antelope_protocol::OFFSET_HP2_VOLUME] = 0x20;
+    frame[payload + antelope_protocol::OFFSET_HP2_MODE] = output_modes[2];
+    frame[payload + antelope_protocol::OFFSET_PREAMP1_MODE] = 0x00;
+    frame[payload + antelope_protocol::OFFSET_PREAMP2_MODE] = 0x00;
+    frame[payload + antelope_protocol::OFFSET_SURFACE_SELECTOR] = 0x0f;
+    frame
+}
+
+fn zen_controller_with_transport() -> (Controller, MockTransport) {
+    let transport = MockTransport::default();
+    let controller = Controller::new(
+        Box::new(transport.clone()),
         Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
     )
     .expect("Zen Go controller");
+    (controller, transport)
+}
+
+#[derive(Clone)]
+struct FailAtWriteTransport {
+    inner: MockTransport,
+    fail_at: usize,
+    attempts: Arc<AtomicUsize>,
+}
+
+impl Transport for FailAtWriteTransport {
+    fn write(&self, data: &[u8]) -> anyhow::Result<()> {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+        if attempt == self.fail_at {
+            return Err(anyhow::anyhow!(
+                "deterministic write failure at attempt {attempt}"
+            ));
+        }
+        self.inner.write(data)
+    }
+
+    fn read(&self, timeout: Duration) -> anyhow::Result<Option<Vec<u8>>> {
+        self.inner.read(timeout)
+    }
+
+    fn is_available(&self) -> anyhow::Result<bool> {
+        self.inner.is_available()
+    }
+}
+
+fn zen_controller_with_failure(fail_at: usize) -> (Controller, MockTransport) {
+    let transport = MockTransport::default();
+    let failing = FailAtWriteTransport {
+        inner: transport.clone(),
+        fail_at,
+        attempts: Arc::new(AtomicUsize::new(0)),
+    };
+    let controller = Controller::new(
+        Box::new(failing),
+        Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
+    )
+    .expect("Zen Go controller");
+    (controller, transport)
+}
+
+fn observe_zen_snapshot(
+    controller: &mut Controller,
+    transport: &MockTransport,
+    output_modes: [u8; 3],
+) {
+    transport.push_read(zen_snapshot_frame(output_modes));
+    controller
+        .poll_device_without_writes(Duration::ZERO)
+        .expect("observe Zen Go snapshot");
+}
+
+fn flush_zen_mode_command(controller: &mut Controller, transport: &MockTransport) {
+    controller.flush_commands().expect("flush Zen Go command");
+    assert_eq!(transport.take_writes().len(), 1);
+}
+
+#[test]
+fn zen_go_unknown_output_mode_is_unavailable_and_does_not_write() {
+    let (mut controller, transport) = zen_controller_with_transport();
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
+    observe_zen_snapshot(&mut controller, &transport, [0x03, 0x00, 0x00]);
+
+    assert_eq!(
+        controller.state.output.states[0].mode,
+        OutputMode::Unknown(0x03)
+    );
+    assert_eq!(controller.state.outputs()[0].muted, None);
+    assert_eq!(controller.state.outputs()[0].dimmed, None);
+
+    let error = controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect_err("unknown mode must block output mode actions");
+    assert!(error.to_string().contains("unknown"));
+    assert!(transport.take_writes().is_empty());
+}
+
+#[test]
+fn zen_go_mute_to_dim_is_rejected_without_writes() {
+    let (mut controller, transport) = zen_controller_with_transport();
+    observe_zen_snapshot(&mut controller, &transport, [0x01, 0x00, 0x00]);
+
+    let error = controller
+        .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+        .expect_err("direct Mute to Dim must be rejected");
+    assert!(error.to_string().contains("unverified"));
+    assert!(transport.take_writes().is_empty());
+}
+
+#[test]
+fn zen_go_dim_to_mute_is_rejected_without_writes() {
+    let (mut controller, transport) = zen_controller_with_transport();
+    observe_zen_snapshot(&mut controller, &transport, [0x02, 0x00, 0x00]);
+
+    let error = controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect_err("direct Dim to Mute must be rejected");
+    assert!(error.to_string().contains("unverified"));
+    assert!(transport.take_writes().is_empty());
+}
+
+#[test]
+fn zen_go_pending_return_to_normal_does_not_allow_dim_bypass() {
+    let (mut controller, transport) = zen_controller_with_transport();
+    observe_zen_snapshot(&mut controller, &transport, [0x01, 0x00, 0x00]);
 
     controller
-        .apply_intent(
-            Intent::SetOutputLevel { index: 1, step: 24 },
-            Rect::default(),
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect("queue return to Normal");
+    assert!(transport.take_writes().is_empty());
+    assert_eq!(controller.state.outputs()[0].muted, Some(false));
+
+    let error = controller
+        .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+        .expect_err("pending Normal must not be bypassed");
+    assert!(error.to_string().contains("awaiting state readback"));
+    assert!(transport.take_writes().is_empty());
+
+    flush_zen_mode_command(&mut controller, &transport);
+    // The first snapshot can still carry the previous mode. It must not
+    // release the guard merely because a snapshot arrived.
+    observe_zen_snapshot(&mut controller, &transport, [0x01, 0x00, 0x00]);
+    let error = controller
+        .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+        .expect_err("stale Mute readback must keep the guard active");
+    assert!(error.to_string().contains("awaiting state readback"));
+    assert!(transport.take_writes().is_empty());
+
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
+    controller
+        .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+        .expect("observed Normal permits isolated Dim");
+    flush_zen_mode_command(&mut controller, &transport);
+}
+
+#[test]
+fn zen_go_isolated_output_mode_transitions_remain_available() {
+    let (mut controller, transport) = zen_controller_with_transport();
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
+
+    controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect("Normal to Mute remains available");
+    flush_zen_mode_command(&mut controller, &transport);
+    observe_zen_snapshot(&mut controller, &transport, [0x01, 0x00, 0x00]);
+
+    controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect("Mute to observed Normal remains available");
+    flush_zen_mode_command(&mut controller, &transport);
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
+
+    controller
+        .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+        .expect("Normal to Dim remains available");
+    flush_zen_mode_command(&mut controller, &transport);
+    observe_zen_snapshot(&mut controller, &transport, [0x02, 0x00, 0x00]);
+
+    controller
+        .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+        .expect("Dim to observed Normal remains available");
+    flush_zen_mode_command(&mut controller, &transport);
+}
+
+#[test]
+fn zen_go_failed_flush_removes_only_provably_unsent_mode_guard() {
+    let (mut controller, transport) = zen_controller_with_failure(0);
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
+
+    controller
+        .send(
+            Action::SetOutput {
+                address: OutputAddress { id: 0 },
+                control: OutputControl::Level,
+                value: ControlValue::Int(19),
+            },
+            None,
         )
-        .expect("set output level");
-    assert_eq!(controller.state.outputs()[1].level, Some(24));
-    assert_eq!(controller.state.output.states[1].volume, 24);
-
+        .expect("queue preceding output write");
     controller
-        .apply_intent(Intent::ToggleOutputMute(1), Rect::default())
-        .expect("toggle output mute");
-    assert_eq!(controller.state.outputs()[1].muted, Some(true));
-    assert_eq!(controller.state.outputs()[1].dimmed, Some(false));
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect("queue mode write after preceding output write");
+    assert_eq!(controller.state.outputs()[0].muted, Some(true));
+
+    assert!(controller.flush_commands().is_err());
+    assert!(transport.take_writes().is_empty());
+    assert_eq!(controller.state.outputs()[0].muted, None);
+    assert_eq!(controller.state.outputs()[0].dimmed, None);
     assert_eq!(
-        controller.state.output.states[1].mode,
-        antelope_protocol::OutputMode::Mute
+        controller.state.output.states[0].mode,
+        OutputMode::Unknown(u8::MAX)
     );
 
-    // Zen Go profile has no confirmed dim control; unsupported output actions
-    // must leave both dynamic and compatibility state unchanged.
+    let error = controller
+        .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+        .expect_err("failed recovery must require a known snapshot");
+    assert!(error.to_string().contains("unknown"));
+
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
     controller
-        .apply_intent(Intent::ToggleOutputDim(1), Rect::default())
-        .expect("unsupported output dim is a no-op");
-    assert_eq!(controller.state.outputs()[1].muted, Some(true));
-    assert_eq!(controller.state.outputs()[1].dimmed, Some(false));
+        .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+        .expect("fresh Normal readback permits isolated mode retry");
+    controller
+        .flush_commands()
+        .expect("retry after unsent mode recovery");
+    assert_eq!(transport.take_writes().len(), 1);
+}
+
+#[test]
+fn zen_go_uncertain_mode_write_stays_locked_through_all_snapshot_modes() {
+    let (mut controller, transport) = zen_controller_with_failure(1);
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
+
+    controller
+        .send(
+            Action::SetOutput {
+                address: OutputAddress { id: 0 },
+                control: OutputControl::Level,
+                value: ControlValue::Int(19),
+            },
+            None,
+        )
+        .expect("queue preceding output write");
+    controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect("queue uncertain Mute write after preceding output write");
+    assert!(controller.flush_commands().is_err());
+    assert_eq!(transport.take_writes().len(), 1);
+    assert_eq!(controller.state.outputs()[0].muted, None);
+    assert_eq!(controller.state.outputs()[0].dimmed, None);
     assert_eq!(
-        controller.state.output.states[1].mode,
-        antelope_protocol::OutputMode::Mute
+        controller.state.output.states[0].mode,
+        OutputMode::Unknown(u8::MAX)
     );
+
+    for output_modes in [[0x00, 0x00, 0x00], [0x01, 0x00, 0x00], [0x03, 0x00, 0x00]] {
+        observe_zen_snapshot(&mut controller, &transport, output_modes);
+        let error = controller
+            .apply_intent(Intent::ToggleOutputDim(0), Rect::default())
+            .expect_err("uncertain mode must remain locked for this session");
+        assert!(error.to_string().contains("delivery is uncertain"));
+        assert!(error.to_string().contains("disabled for this session"));
+        assert!(transport.take_writes().is_empty());
+    }
+}
+
+#[test]
+fn zen_go_successful_mode_readback_releases_with_unrelated_queue() {
+    let (mut controller, transport) = zen_controller_with_transport();
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
+
+    controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect("queue Mute mode write");
+    flush_zen_mode_command(&mut controller, &transport);
+
+    controller
+        .send(
+            Action::SetOutput {
+                address: OutputAddress { id: 1 },
+                control: OutputControl::Level,
+                value: ControlValue::Int(19),
+            },
+            None,
+        )
+        .expect("queue unrelated level write");
+    observe_zen_snapshot(&mut controller, &transport, [0x01, 0x00, 0x00]);
+
+    controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect("expected Mute readback releases the successful mode guard");
+    controller
+        .flush_commands()
+        .expect("flush unrelated level and mode writes");
+    assert_eq!(transport.take_writes().len(), 2);
+}
+
+#[test]
+fn zen_go_same_output_queued_mode_stays_guarded_on_snapshot() {
+    let (mut controller, transport) = zen_controller_with_transport();
+    observe_zen_snapshot(&mut controller, &transport, [0x00, 0x00, 0x00]);
+
+    controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect("queue Mute mode write");
+    observe_zen_snapshot(&mut controller, &transport, [0x01, 0x00, 0x00]);
+
+    let error = controller
+        .apply_intent(Intent::ToggleOutputMute(0), Rect::default())
+        .expect_err("same-output queued mode must not be released by readback");
+    assert!(error.to_string().contains("awaiting state readback"));
+    assert!(transport.take_writes().is_empty());
 }
 
 #[test]

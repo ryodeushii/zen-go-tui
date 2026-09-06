@@ -414,6 +414,8 @@ mod tests {
         let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.output.states[1] =
             OutputState::new(OutputTarget::Hp1, 0x30, OutputMode::Normal);
+        controller.state.output.dynamic[1].muted = Some(false);
+        controller.state.output.dynamic[1].dimmed = Some(false);
 
         controller
             .apply_intent(

@@ -13,7 +13,9 @@ use super::super::layouts::CONNECTION_STALE_AFTER;
 use super::super::layouts::{
     device_header_labels, DEVICE_HEADER_CHIP_GAP, DEVICE_HEADER_PRODUCT_GAP,
 };
-use super::super::raw_map::{build_raw_packet_map, Coverage, RawDomain, RawMapEntry, RawPacketMap};
+use super::super::raw_map::{
+    build_raw_packet_map_for_profile, Coverage, RawDomain, RawMapEntry, RawPacketMap,
+};
 use super::super::styles::{
     chip, labeled_value_chip, muted_style, raw_coverage_color, strong_style,
     style_for_raw_ascii_byte, style_for_raw_hex_byte,
@@ -29,7 +31,8 @@ pub(crate) fn selected_query_reply_bytes<'a>(fallback: &'a [u8], state: &'a AppS
 
 pub(crate) fn render_query_reply_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
     let bytes = selected_query_reply_bytes(state_bytes, state);
-    let map = build_raw_packet_map(RawPacketTab::Query75, bytes);
+    let map =
+        build_raw_packet_map_for_profile(RawPacketTab::Query75, bytes, state.runtime_profile());
     render_full_packet_dump(
         bytes,
         state
@@ -43,7 +46,11 @@ pub(crate) fn render_query_reply_panel(state_bytes: &[u8], state: &AppState) -> 
 }
 
 pub(crate) fn render_query_request_panel(state_bytes: &[u8], state: &AppState) -> Text<'static> {
-    let map = build_raw_packet_map(RawPacketTab::Query74, state_bytes);
+    let map = build_raw_packet_map_for_profile(
+        RawPacketTab::Query74,
+        state_bytes,
+        state.runtime_profile(),
+    );
     let mut lines = render_full_packet_dump(
         state_bytes,
         state

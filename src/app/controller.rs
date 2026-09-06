@@ -1,16 +1,16 @@
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::{bail, Result};
 use ratatui::layout::Rect;
 
-use crate::command_queue::{CommandQueue, QueueEntryId};
+use crate::command_queue::{CommandQueue, QueueEntryId, QueueEntryOutcome};
 use crate::profile::DeviceProfile;
 use crate::transport::Transport;
 use antelope_protocol::{
     Action, ClockSource, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, GlobalControl,
     InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl, MixerSurface,
-    OutputControl, OutputMode, PanState, PreampMode, QueryRequest, RoutingSource, RuntimeEntry,
-    SampleRate, Surface,
+    OutputAddress, OutputControl, OutputMode, PanState, PreampMode, QueryRequest, RoutingSource,
+    RuntimeEntry, SampleRate, Surface,
 };
 
 use super::picker::{AssignmentPickerState, SelectorPopupKind, SelectorPopupState};
@@ -33,6 +33,20 @@ struct QueuedMutation {
     pending: Option<PendingMutation>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingOutputModeStatus {
+    Queued(QueueEntryId),
+    AwaitingReadback,
+    /// Delivery was uncertain; no protocol freshness barrier can safely release this guard.
+    Recovery,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingOutputMode {
+    expected: OutputMode,
+    status: PendingOutputModeStatus,
+}
+
 pub struct Controller {
     transport: Box<dyn Transport>,
     driver: Box<dyn DeviceDriver>,
@@ -40,6 +54,9 @@ pub struct Controller {
     pub(crate) pending_mutation: Option<PendingMutation>,
     command_queue: CommandQueue,
     queued_mutations: Vec<QueuedMutation>,
+    /// Zen Go output mode writes remain guarded until expected readback; uncertain delivery
+    /// stays locked for the session because snapshots have no freshness correlation.
+    pending_output_modes: HashMap<OutputAddress, PendingOutputMode>,
 }
 
 impl Controller {
@@ -59,6 +76,7 @@ impl Controller {
                 pending_mutation: None,
                 command_queue: CommandQueue::new(),
                 queued_mutations: Vec::new(),
+                pending_output_modes: HashMap::new(),
             });
         };
         Self::new_for_entry(transport, driver, entry)
@@ -88,6 +106,7 @@ impl Controller {
             pending_mutation: None,
             command_queue: CommandQueue::new(),
             queued_mutations: Vec::new(),
+            pending_output_modes: HashMap::new(),
         })
     }
 
@@ -381,6 +400,46 @@ impl Controller {
     pub fn send(&mut self, action: Action, pending: Option<PendingMutation>) -> Result<()> {
         let project_completed_mixer = matches!(action, Action::SetMixer { .. });
         let action = self.complete_dynamic_action(action)?;
+        let output_mode_transition = if self.state.uses_zen_go_output_safety() {
+            match &action {
+                Action::SetOutput {
+                    address,
+                    control,
+                    value: ControlValue::Bool(enabled),
+                } => match control {
+                    OutputControl::Mute => Some((
+                        *address,
+                        if *enabled {
+                            OutputMode::Mute
+                        } else {
+                            OutputMode::Normal
+                        },
+                    )),
+                    OutputControl::Dim => Some((
+                        *address,
+                        if *enabled {
+                            OutputMode::Dim
+                        } else {
+                            OutputMode::Normal
+                        },
+                    )),
+                    _ => None,
+                },
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Action::SetOutput {
+            address,
+            control,
+            value: ControlValue::Bool(enabled),
+        } = &action
+        {
+            if matches!(control, OutputControl::Mute | OutputControl::Dim) {
+                self.ensure_output_mode_action_allowed(*address, *control, *enabled)?;
+            }
+        }
         let batch = self.driver.encode(action.clone())?;
         let queueable = !matches!(action, Action::SetRoutingGroup { .. })
             && batch.frames.len() == 1
@@ -391,9 +450,38 @@ impl Controller {
                 .enqueue_with_id(action.clone())
                 .ok_or_else(|| anyhow::anyhow!("command queue is full; action was not enqueued"))?;
             self.remember_queued_mutation(id, pending);
+            if let Some((address, expected)) = output_mode_transition {
+                self.pending_output_modes.insert(
+                    address,
+                    PendingOutputMode {
+                        expected,
+                        status: PendingOutputModeStatus::Queued(id),
+                    },
+                );
+            }
         } else {
             self.flush_commands()?;
-            self.write_batch(batch)?;
+            if let Some((address, expected)) = output_mode_transition {
+                self.pending_output_modes.insert(
+                    address,
+                    PendingOutputMode {
+                        expected,
+                        status: PendingOutputModeStatus::Recovery,
+                    },
+                );
+            }
+            if let Err(error) = self.write_batch(batch) {
+                if let Some((address, expected)) = output_mode_transition {
+                    self.mark_uncertain_output_mode(address, expected);
+                }
+                return Err(error);
+            }
+            if let Some((address, pending_mode)) = output_mode_transition {
+                if let Some(guard) = self.pending_output_modes.get_mut(&address) {
+                    guard.status = PendingOutputModeStatus::AwaitingReadback;
+                    guard.expected = pending_mode;
+                }
+            }
             self.pending_mutation = pending;
         }
         if project_completed_mixer || !matches!(action, Action::SetMixerStripState { .. }) {
@@ -481,13 +569,13 @@ impl Controller {
                     }
                     (OutputControl::Mute, ControlValue::Bool(muted)) => {
                         output.muted = Some(*muted);
-                        if *muted {
+                        if *muted && !self.state.uses_zen_go_output_safety() {
                             output.dimmed = Some(false);
                         }
                     }
                     (OutputControl::Dim, ControlValue::Bool(dimmed)) => {
                         output.dimmed = Some(*dimmed);
-                        if *dimmed {
+                        if *dimmed && !self.state.uses_zen_go_output_safety() {
                             output.muted = Some(false);
                         }
                     }
@@ -619,20 +707,81 @@ impl Controller {
     pub fn flush_commands(&mut self) -> Result<()> {
         let mut queued_mutations = std::mem::take(&mut self.queued_mutations);
         let mut pending_mutation = self.pending_mutation.take();
-        let result =
-            self.command_queue
-                .flush_with(self.transport.as_ref(), self.driver.as_ref(), |id| {
-                    let Some(index) = queued_mutations.iter().position(|queued| queued.id == id)
-                    else {
-                        return;
-                    };
-                    pending_mutation = queued_mutations.swap_remove(index).pending;
-                });
+        let mut outcomes = Vec::new();
+        let result = self.command_queue.flush_with(
+            self.transport.as_ref(),
+            self.driver.as_ref(),
+            |id, outcome| {
+                if outcome == QueueEntryOutcome::Sent {
+                    if let Some(index) = queued_mutations.iter().position(|queued| queued.id == id)
+                    {
+                        pending_mutation = queued_mutations.swap_remove(index).pending;
+                    }
+                }
+                outcomes.push((id, outcome));
+            },
+        );
         self.pending_mutation = pending_mutation;
-        // `flush_with` drains discarded and failed entries too. Any associations
-        // left here therefore belong to commands that were never sent.
         queued_mutations.clear();
+        for (id, outcome) in outcomes {
+            self.handle_queue_outcome(id, outcome);
+        }
         result.map(|_| ())
+    }
+
+    fn handle_queue_outcome(&mut self, id: QueueEntryId, outcome: QueueEntryOutcome) {
+        let Some(address) = self
+            .pending_output_modes
+            .iter()
+            .find(|(_, guard)| guard.status == PendingOutputModeStatus::Queued(id))
+            .map(|(address, _)| *address)
+        else {
+            return;
+        };
+        match outcome {
+            QueueEntryOutcome::Sent => {
+                if let Some(guard) = self.pending_output_modes.get_mut(&address) {
+                    guard.status = PendingOutputModeStatus::AwaitingReadback;
+                }
+            }
+            QueueEntryOutcome::Failed => {
+                if let Some(guard) = self.pending_output_modes.get_mut(&address) {
+                    guard.status = PendingOutputModeStatus::Recovery;
+                }
+                self.invalidate_output_mode(address);
+            }
+            QueueEntryOutcome::Unsent => {
+                self.pending_output_modes.remove(&address);
+                self.invalidate_output_mode(address);
+            }
+        }
+    }
+
+    fn mark_uncertain_output_mode(&mut self, address: OutputAddress, expected: OutputMode) {
+        self.pending_output_modes.insert(
+            address,
+            PendingOutputMode {
+                expected,
+                status: PendingOutputModeStatus::Recovery,
+            },
+        );
+        self.invalidate_output_mode(address);
+    }
+
+    fn invalidate_output_mode(&mut self, address: OutputAddress) {
+        if let Some(output) = self
+            .state
+            .output
+            .dynamic
+            .iter_mut()
+            .find(|output| output.address == address)
+        {
+            output.muted = None;
+            output.dimmed = None;
+        }
+        if let Some(state) = self.state.output.states.get_mut(usize::from(address.id)) {
+            state.mode = OutputMode::Unknown(u8::MAX);
+        }
     }
 
     fn mixer_address_from_ui(&self, mixer: MixerSurface, channel: u8) -> Result<MixerAddress> {
@@ -1000,6 +1149,48 @@ impl Controller {
         Ok(())
     }
 
+    fn snapshot_output_mode(event: &DeviceEvent, address: OutputAddress) -> Option<OutputMode> {
+        let DeviceEvent::Snapshot { state, .. } = event else {
+            return None;
+        };
+        let output = state
+            .outputs
+            .iter()
+            .find(|output| output.address == address)?;
+        match (output.muted, output.dimmed) {
+            (Some(false), Some(false)) => Some(OutputMode::Normal),
+            (Some(true), Some(false)) => Some(OutputMode::Mute),
+            (Some(false), Some(true)) => Some(OutputMode::Dim),
+            _ => None,
+        }
+    }
+
+    fn resolve_output_mode_snapshots(
+        &mut self,
+        snapshot_modes: &[(OutputAddress, Option<OutputMode>)],
+    ) {
+        for (address, mode) in snapshot_modes {
+            let Some(mode) = mode else {
+                continue;
+            };
+            let remove =
+                self.pending_output_modes
+                    .get(address)
+                    .is_some_and(|guard| match guard.status {
+                        PendingOutputModeStatus::Queued(_) => false,
+                        // Successful queued writes use best-effort expected-mode
+                        // confirmation; a queued entry itself remains protected.
+                        PendingOutputModeStatus::AwaitingReadback => guard.expected == *mode,
+                        // Failed delivery has no freshness barrier, so a snapshot
+                        // cannot prove that the device applied or rejected the write.
+                        PendingOutputModeStatus::Recovery => false,
+                    });
+            if remove {
+                self.pending_output_modes.remove(address);
+            }
+        }
+    }
+
     pub fn poll_device(&mut self, timeout: Duration) -> Result<bool> {
         self.poll_device_with_policy(timeout, PollWritePolicy::FlushPending)
     }
@@ -1035,12 +1226,23 @@ impl Controller {
             next_timeout = Duration::ZERO;
 
             if let Some(event) = self.driver.decode(&bytes)? {
+                let snapshot_modes = if matches!(event, DeviceEvent::Snapshot { .. }) {
+                    self.pending_output_modes
+                        .keys()
+                        .map(|address| (*address, Self::snapshot_output_mode(&event, *address)))
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 if matches!(event, DeviceEvent::Snapshot { .. }) {
                     // Confirmation only updates the current session's state; it
                     // does not send a command and is safe in receive-only mode.
                     state_dirty |= self.confirm_pending_write();
                 }
                 state_dirty |= self.state.observe_event(event);
+                if !snapshot_modes.is_empty() {
+                    self.resolve_output_mode_snapshots(&snapshot_modes);
+                }
             }
         }
 
@@ -1131,6 +1333,49 @@ impl Controller {
         Ok(())
     }
 
+    fn ensure_output_mode_action_allowed(
+        &self,
+        address: OutputAddress,
+        control: OutputControl,
+        enabled: bool,
+    ) -> Result<()> {
+        if !self.state.uses_zen_go_output_safety() {
+            return Ok(());
+        }
+        if let Some(guard) = self.pending_output_modes.get(&address) {
+            match guard.status {
+                PendingOutputModeStatus::Recovery => bail!(
+                    "Zen Go output mode delivery is uncertain; mode controls are disabled for this session; verify actual device mode before starting a new session"
+                ),
+                PendingOutputModeStatus::Queued(_) | PendingOutputModeStatus::AwaitingReadback => {
+                    bail!(
+                        "Zen Go output mode transition is awaiting state readback; wait before changing mode"
+                    )
+                }
+            }
+        }
+        let mode = self.state.observed_output_mode(address).ok_or_else(|| {
+            anyhow::anyhow!("Zen Go output mode is unknown; wait for state readback")
+        })?;
+        if enabled
+            && matches!(
+                (mode, control),
+                (OutputMode::Mute, OutputControl::Dim) | (OutputMode::Dim, OutputControl::Mute)
+            )
+        {
+            bail!(
+                "Zen Go direct {} to {} transition is unverified; return to observed Normal first",
+                mode.label(),
+                match control {
+                    OutputControl::Mute => "Mute",
+                    OutputControl::Dim => "Dim",
+                    _ => unreachable!(),
+                }
+            );
+        }
+        Ok(())
+    }
+
     fn handle_output_toggle_dim(
         &mut self,
         index: usize,
@@ -1146,13 +1391,15 @@ impl Controller {
         {
             return Ok(());
         }
+        let enabled = !output.dimmed.unwrap_or(false);
+        self.ensure_output_mode_action_allowed(output.address, OutputControl::Dim, enabled)?;
         self.state.ui.focus = FocusArea::Outputs;
         self.state.output.selected = index;
         self.send(
             Action::SetOutput {
                 address: output.address,
                 control: OutputControl::Dim,
-                value: ControlValue::Bool(!output.dimmed.unwrap_or(false)),
+                value: ControlValue::Bool(enabled),
             },
             pending,
         )?;
@@ -1174,13 +1421,15 @@ impl Controller {
         {
             return Ok(());
         }
+        let enabled = !output.muted.unwrap_or(false);
+        self.ensure_output_mode_action_allowed(output.address, OutputControl::Mute, enabled)?;
         self.state.ui.focus = FocusArea::Outputs;
         self.state.output.selected = index;
         self.send(
             Action::SetOutput {
                 address: output.address,
                 control: OutputControl::Mute,
-                value: ControlValue::Bool(!output.muted.unwrap_or(false)),
+                value: ControlValue::Bool(enabled),
             },
             pending,
         )?;

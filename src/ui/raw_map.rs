@@ -1,17 +1,17 @@
 use std::ops::Range;
 
 use antelope_protocol::{
-    control_panel_startup_queries, QueryResponse, HID_REPORT_SIZE, OFFSET_CLOCK_SOURCE,
-    OFFSET_FRONT_PANEL_BYTES_END, OFFSET_FRONT_PANEL_BYTES_START, OFFSET_HP1_MODE,
-    OFFSET_HP1_VOLUME, OFFSET_HP2_MODE, OFFSET_HP2_VOLUME, OFFSET_LATE_SHADOW_START,
-    OFFSET_METER_LANES_END, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
-    OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX1_PRIMARY, OFFSET_MIX2_LANE_A,
-    OFFSET_MIX2_LANE_B, OFFSET_MIX2_PRIMARY, OFFSET_MONITOR_MODE, OFFSET_MONITOR_VOLUME,
-    OFFSET_PREAMP1_GAIN, OFFSET_PREAMP1_METER, OFFSET_PREAMP1_MODE, OFFSET_PREAMP2_GAIN,
-    OFFSET_PREAMP2_METER, OFFSET_PREAMP2_MODE, OFFSET_SAMPLE_RATE_CODE, OFFSET_SAMPLE_RATE_HZ_END,
-    OFFSET_SAMPLE_RATE_HZ_START, OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_5,
-    OFFSET_STATUS_FLAGS_0, OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
-    SNAPSHOT_PAYLOAD_SIZE,
+    control_panel_startup_queries, FrameOperation, QueryResponse, RuntimeMeterTarget,
+    RuntimeProfile, HID_REPORT_SIZE, OFFSET_CLOCK_SOURCE, OFFSET_FRONT_PANEL_BYTES_END,
+    OFFSET_FRONT_PANEL_BYTES_START, OFFSET_HP1_MODE, OFFSET_HP1_VOLUME, OFFSET_HP2_MODE,
+    OFFSET_HP2_VOLUME, OFFSET_LATE_SHADOW_START, OFFSET_METER_LANES_END, OFFSET_METER_LANES_START,
+    OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B,
+    OFFSET_MIX1_PRIMARY, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_MIX2_PRIMARY,
+    OFFSET_MONITOR_MODE, OFFSET_MONITOR_VOLUME, OFFSET_PREAMP1_GAIN, OFFSET_PREAMP1_METER,
+    OFFSET_PREAMP1_MODE, OFFSET_PREAMP2_GAIN, OFFSET_PREAMP2_METER, OFFSET_PREAMP2_MODE,
+    OFFSET_SAMPLE_RATE_CODE, OFFSET_SAMPLE_RATE_HZ_END, OFFSET_SAMPLE_RATE_HZ_START,
+    OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_5, OFFSET_STATUS_FLAGS_0, OFFSET_SURFACE_SELECTOR,
+    OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET, SNAPSHOT_PAYLOAD_SIZE,
 };
 
 use crate::app::{RawMapScope, RawPacketTab};
@@ -167,24 +167,43 @@ pub(crate) fn payload_ranges(ranges: &[Range<usize>]) -> Vec<RawMapRange> {
 }
 
 pub(crate) fn build_raw_packet_map(tab: RawPacketTab, bytes: &[u8]) -> RawPacketMap {
+    build_raw_packet_map_for_profile(tab, bytes, None)
+}
+
+/// Build a raw map against the selected runtime profile. The compatibility wrapper above is
+/// retained for protocol-fixture tests; production rendering always supplies the active profile.
+pub(crate) fn build_raw_packet_map_for_profile(
+    tab: RawPacketTab,
+    bytes: &[u8],
+    profile: Option<&RuntimeProfile>,
+) -> RawPacketMap {
     let report_len = bytes.len();
     let mut entries = Vec::new();
 
     match tab {
-        RawPacketTab::State73 => build_snapshot_map(&mut entries, report_len),
-        RawPacketTab::Query74 => build_query_request_map(&mut entries, bytes, report_len),
-        RawPacketTab::Query75 => build_query_reply_map(&mut entries, bytes, report_len),
-        RawPacketTab::Auxiliary => build_auxiliary_map(&mut entries, report_len),
+        RawPacketTab::State73 => match profile {
+            Some(profile) => build_profile_snapshot_map(&mut entries, report_len, profile),
+            None => build_snapshot_map(&mut entries, report_len),
+        },
+        RawPacketTab::Query74 => build_query_request_map(&mut entries, bytes, report_len, profile),
+        RawPacketTab::Query75 => build_query_reply_map(&mut entries, bytes, report_len, profile),
+        RawPacketTab::Auxiliary => build_auxiliary_map(&mut entries, report_len, profile),
         RawPacketTab::DeviceNotification => build_notification_map(&mut entries, report_len),
     }
 
+    let payload_offset = profile_payload_offset(profile);
     let payload = match tab {
-        RawPacketTab::State73 => Some((
-            SNAPSHOT_PAYLOAD_OFFSET,
-            SNAPSHOT_PAYLOAD_OFFSET + SNAPSHOT_PAYLOAD_SIZE,
-        )),
+        RawPacketTab::State73 => profile
+            .is_some()
+            .then_some((payload_offset, report_len))
+            .or_else(|| {
+                Some((
+                    SNAPSHOT_PAYLOAD_OFFSET,
+                    SNAPSHOT_PAYLOAD_OFFSET + SNAPSHOT_PAYLOAD_SIZE,
+                ))
+            }),
         RawPacketTab::Auxiliary | RawPacketTab::Query75 => {
-            (report_len > SNAPSHOT_PAYLOAD_OFFSET).then_some((SNAPSHOT_PAYLOAD_OFFSET, report_len))
+            (report_len > payload_offset).then_some((payload_offset, report_len))
         }
         RawPacketTab::Query74 | RawPacketTab::DeviceNotification => None,
     };
@@ -199,6 +218,256 @@ pub(crate) fn build_raw_packet_map(tab: RawPacketTab, bytes: &[u8]) -> RawPacket
     RawPacketMap {
         entries,
         report_len,
+    }
+}
+
+fn profile_payload_offset(profile: Option<&RuntimeProfile>) -> usize {
+    profile
+        .and_then(|profile| profile.readback.as_ref())
+        .map_or(SNAPSHOT_PAYLOAD_OFFSET, |readback| {
+            usize::from(readback.data_offset)
+        })
+}
+
+fn profile_frame<'a>(
+    profile: &'a RuntimeProfile,
+    frame_id: &str,
+) -> Option<&'a antelope_protocol::RuntimeFrame> {
+    profile.frames.iter().find(|frame| frame.id == frame_id)
+}
+
+fn profile_fixed_byte(profile: &RuntimeProfile, frame_id: &str, offset: usize) -> Option<u8> {
+    profile_frame(profile, frame_id)?
+        .operations
+        .iter()
+        .find_map(|operation| match operation {
+            FrameOperation::FixedByte {
+                offset: operation_offset,
+                value,
+            } if usize::from(*operation_offset) == offset => Some(*value),
+            _ => None,
+        })
+}
+
+fn profile_range(offset: usize, width: usize, payload_offset: usize) -> RawMapRange {
+    let end = offset.saturating_add(width);
+    let payload = (offset >= payload_offset)
+        .then(|| (offset - payload_offset)..(end.saturating_sub(payload_offset)));
+    RawMapRange {
+        report: offset..end,
+        payload,
+    }
+}
+
+fn profile_domain(field: &str) -> RawDomain {
+    let field = field.to_ascii_lowercase();
+    if field.contains("physical_meter")
+        || field.contains("preamp")
+        || field.contains("input")
+        || field.contains("gain")
+        || field.contains("phantom")
+        || field.contains("phase")
+        || field.contains("mode")
+    {
+        return RawDomain::Preamp;
+    }
+    if field.contains("bus") || field.contains("output") {
+        return RawDomain::Output;
+    }
+    if field.contains("meter") || field.contains("mix") {
+        return RawDomain::Mixer;
+    }
+    RawDomain::Base
+}
+
+fn profile_scope(domain: RawDomain) -> Option<RawMapScope> {
+    match domain {
+        RawDomain::Base => Some(RawMapScope::Base),
+        RawDomain::Output => Some(RawMapScope::Outputs),
+        RawDomain::Preamp => Some(RawMapScope::Preamps),
+        RawDomain::Mixer => Some(RawMapScope::Mixer),
+        _ => None,
+    }
+}
+
+fn add_profile_operation(
+    entries: &mut Vec<RawMapEntry>,
+    frame_id: &str,
+    operation: &FrameOperation,
+    payload_offset: usize,
+    report_len: usize,
+) {
+    let note = format!("Active profile {frame_id} frame mapping; no cross-device byte overlay.");
+    let mut add_used = |field: &str, ranges: Vec<RawMapRange>| {
+        let domain = profile_domain(field);
+        add_bounded_entry(
+            entries,
+            domain,
+            profile_scope(domain),
+            Coverage::Used,
+            format!("{frame_id} {field}"),
+            note.clone(),
+            ranges,
+            report_len,
+        );
+    };
+
+    match operation {
+        FrameOperation::FixedByte { offset, value } => add_bounded_entry(
+            entries,
+            RawDomain::Parser,
+            Some(RawMapScope::Parser),
+            Coverage::Parser,
+            format!("{frame_id} magic 0x{value:02x}"),
+            "Profile-declared report discriminator.",
+            vec![profile_range(usize::from(*offset), 1, payload_offset)],
+            report_len,
+        ),
+        FrameOperation::Scalar {
+            field,
+            offset,
+            width,
+            ..
+        } => {
+            add_used(
+                field,
+                vec![profile_range(
+                    usize::from(*offset),
+                    usize::from(*width),
+                    payload_offset,
+                )],
+            );
+        }
+        FrameOperation::BitField { field, offset, .. } => add_used(
+            field,
+            vec![profile_range(usize::from(*offset), 1, payload_offset)],
+        ),
+        FrameOperation::Indexed {
+            base,
+            stride,
+            index_field,
+            width,
+            max_index,
+        } => {
+            let Some(max_index) = max_index else {
+                return;
+            };
+            for index in 0..=usize::from(*max_index) {
+                let offset =
+                    usize::from(*base).saturating_add(index.saturating_mul(usize::from(*stride)));
+                add_used(
+                    &format!("{index_field}[{index}]"),
+                    vec![profile_range(offset, usize::from(*width), payload_offset)],
+                );
+            }
+        }
+        FrameOperation::PairIndex {
+            base,
+            stride,
+            pair_field,
+            width,
+            max_index,
+        } => {
+            let Some(max_index) = max_index else {
+                return;
+            };
+            for index in 0..=usize::from(*max_index) {
+                let offset =
+                    usize::from(*base).saturating_add(index.saturating_mul(usize::from(*stride)));
+                add_used(
+                    &format!("{pair_field}[{index}]"),
+                    vec![profile_range(offset, usize::from(*width), payload_offset)],
+                );
+            }
+        }
+        FrameOperation::AllowedValues { .. } | FrameOperation::UncompiledFormula { .. } => {}
+    }
+}
+
+fn build_profile_snapshot_map(
+    entries: &mut Vec<RawMapEntry>,
+    report_len: usize,
+    profile: &RuntimeProfile,
+) {
+    let payload_offset = profile_payload_offset(Some(profile));
+    add_bounded_entry(
+        entries,
+        RawDomain::Parser,
+        Some(RawMapScope::Parser),
+        Coverage::Parser,
+        "frame envelope and header",
+        "Active profile state_report frame area.",
+        vec![RawMapRange {
+            report: 0..payload_offset,
+            payload: None,
+        }],
+        report_len,
+    );
+
+    if let Some(frame) = profile_frame(profile, "state_report") {
+        for operation in &frame.operations {
+            add_profile_operation(
+                entries,
+                "state_report",
+                operation,
+                payload_offset,
+                report_len,
+            );
+        }
+    }
+
+    if let Some(state_report) = profile.state_report.as_ref() {
+        for meter in &state_report.candidate_preamp_meters {
+            let label = format!("candidate preamp {} meter", meter.input_index + 1);
+            add_bounded_entry(
+                entries,
+                RawDomain::Preamp,
+                Some(RawMapScope::Preamps),
+                Coverage::Observed,
+                label,
+                "Profile candidate only; this is not a confirmed physical-input capability.",
+                vec![profile_range(meter.offset, 1, payload_offset)],
+                report_len,
+            );
+        }
+    }
+
+    for mapping in profile
+        .meter_mappings
+        .iter()
+        .filter(|mapping| mapping.frame_id == "state_report")
+    {
+        let (domain, label) = match mapping.target {
+            RuntimeMeterTarget::MixMaster => {
+                let name = profile
+                    .mixer(mapping.target_index as u8)
+                    .map(|mixer| mixer.name.clone())
+                    .unwrap_or_else(|| format!("Mix {}", mapping.target_index + 1));
+                (RawDomain::Mixer, format!("{name} master meter"))
+            }
+            RuntimeMeterTarget::PhysicalOutput => {
+                let name = profile
+                    .outputs
+                    .iter()
+                    .find(|output| output.id == mapping.target_index)
+                    .map(|output| output.name.clone())
+                    .unwrap_or_else(|| format!("output {}", mapping.target_index));
+                (RawDomain::Output, format!("{name} output meter"))
+            }
+        };
+        add_bounded_entry(
+            entries,
+            domain,
+            profile_scope(domain),
+            Coverage::Observed,
+            label,
+            format!(
+                "Profile-owned observed meter mapping ({}). One lane only; no stereo L/R inference. {}",
+                mapping.status_text, mapping.evidence
+            ),
+            vec![profile_range(mapping.offset, 1, payload_offset)],
+            report_len,
+        );
     }
 }
 
@@ -556,10 +825,32 @@ fn build_snapshot_map(entries: &mut Vec<RawMapEntry>, report_len: usize) {
     );
 }
 
-fn build_query_request_map(entries: &mut Vec<RawMapEntry>, bytes: &[u8], report_len: usize) {
-    add_query_header(entries, report_len);
+fn build_query_request_map(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    report_len: usize,
+    profile: Option<&RuntimeProfile>,
+) {
+    add_query_header(entries, report_len, profile);
 
-    let Some(response) = query_response(bytes) else {
+    if let Some(profile) = profile {
+        let request_magic = profile
+            .readback
+            .as_ref()
+            .map(|readback| readback.request_magic);
+        if request_magic != bytes.first().copied() {
+            add_query_body_unresolved(
+                entries,
+                report_len,
+                "Frame does not match active profile 0x74 request magic.".to_string(),
+                true,
+                report_len.saturating_sub(profile_payload_offset(Some(profile))),
+            );
+            return;
+        }
+    }
+
+    let Some(response) = query_response(bytes, profile) else {
         return;
     };
     let known = control_panel_startup_queries()
@@ -593,10 +884,44 @@ fn build_query_request_map(entries: &mut Vec<RawMapEntry>, bytes: &[u8], report_
     }
 }
 
-fn build_query_reply_map(entries: &mut Vec<RawMapEntry>, bytes: &[u8], report_len: usize) {
-    add_query_header(entries, report_len);
+fn build_query_reply_map(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    report_len: usize,
+    profile: Option<&RuntimeProfile>,
+) {
+    add_query_header(entries, report_len, profile);
 
-    let Some(response) = query_response(bytes) else {
+    if let Some(profile) = profile {
+        let Some(readback) = profile.readback.as_ref() else {
+            add_query_body_unresolved(
+                entries,
+                report_len,
+                "Active profile has no readback discriminator.".to_string(),
+                true,
+                report_len.saturating_sub(profile_payload_offset(Some(profile))),
+            );
+            return;
+        };
+        let matches_response = bytes.first() == Some(&readback.response_magic)
+            && bytes.get(usize::from(readback.response_discriminator_offset))
+                == Some(&readback.response_discriminator);
+        if !matches_response {
+            add_query_body_unresolved(
+                entries,
+                report_len,
+                format!(
+                    "Frame does not match active profile 0x75 readback discriminator 0x{:02x}; body remains unresolved.",
+                    readback.response_discriminator
+                ),
+                true,
+                report_len.saturating_sub(profile_payload_offset(Some(profile))),
+            );
+            return;
+        }
+    }
+
+    let Some(response) = query_response(bytes, profile) else {
         add_query_body_unresolved(
             entries,
             report_len,
@@ -688,14 +1013,25 @@ fn build_query_reply_map(entries: &mut Vec<RawMapEntry>, bytes: &[u8], report_le
     }
 }
 
-fn build_auxiliary_map(entries: &mut Vec<RawMapEntry>, report_len: usize) {
+fn build_auxiliary_map(
+    entries: &mut Vec<RawMapEntry>,
+    report_len: usize,
+    profile: Option<&RuntimeProfile>,
+) {
+    let frame_label = match profile {
+        None => "0x83".to_string(),
+        Some(profile) => profile_fixed_byte(profile, "meter_report", 0).map_or_else(
+            || "active profile".to_string(),
+            |magic| format!("0x{magic:02x}"),
+        ),
+    };
     add_bounded_entry(
         entries,
         RawDomain::Parser,
         Some(RawMapScope::Parser),
         Coverage::Parser,
         "frame envelope and header",
-        "Parser-known 0x83 frame area.",
+        "Parser-known auxiliary frame area for the active profile.",
         vec![RawMapRange {
             report: 0..SNAPSHOT_PAYLOAD_OFFSET,
             payload: None,
@@ -708,7 +1044,7 @@ fn build_auxiliary_map(entries: &mut Vec<RawMapEntry>, report_len: usize) {
         Some(RawMapScope::Unmapped),
         Coverage::Unmapped,
         "unmapped auxiliary payload",
-        "0x83 payload is preserved without a grounded decoder.",
+        format!("{frame_label} payload is preserved without a grounded decoder."),
         vec![RawMapRange {
             report: SNAPSHOT_PAYLOAD_OFFSET..HID_REPORT_SIZE,
             payload: Some(0..(HID_REPORT_SIZE - SNAPSHOT_PAYLOAD_OFFSET)),
@@ -746,7 +1082,21 @@ fn build_notification_map(entries: &mut Vec<RawMapEntry>, report_len: usize) {
     );
 }
 
-fn add_query_header(entries: &mut Vec<RawMapEntry>, report_len: usize) {
+fn add_query_header(
+    entries: &mut Vec<RawMapEntry>,
+    report_len: usize,
+    profile: Option<&RuntimeProfile>,
+) {
+    let payload_offset = profile_payload_offset(profile);
+    let (category_offset, index_offset) = profile
+        .and_then(|profile| profile.readback.as_ref())
+        .map(|readback| {
+            (
+                usize::from(readback.category_offset),
+                usize::from(readback.index_offset),
+            )
+        })
+        .unwrap_or((0x08, 0x0c));
     add_bounded_entry(
         entries,
         RawDomain::Parser,
@@ -755,7 +1105,7 @@ fn add_query_header(entries: &mut Vec<RawMapEntry>, report_len: usize) {
         "frame envelope and header",
         "Parser-known query frame area.",
         vec![RawMapRange {
-            report: 0..SNAPSHOT_PAYLOAD_OFFSET,
+            report: 0..payload_offset,
             payload: None,
         }],
         report_len,
@@ -768,7 +1118,7 @@ fn add_query_header(entries: &mut Vec<RawMapEntry>, report_len: usize) {
         "query ID",
         "Parser-known query identifier.",
         vec![RawMapRange {
-            report: 0x08..0x09,
+            report: category_offset..(category_offset + 1),
             payload: None,
         }],
         report_len,
@@ -781,7 +1131,7 @@ fn add_query_header(entries: &mut Vec<RawMapEntry>, report_len: usize) {
         "sub-ID",
         "Parser-known sub-query identifier.",
         vec![RawMapRange {
-            report: 0x0c..0x0d,
+            report: index_offset..(index_offset + 1),
             payload: None,
         }],
         report_len,
@@ -1088,25 +1438,40 @@ fn effective_query_body_len(response: &QueryResponse, report_len: usize) -> usiz
     }
 }
 
-fn query_response(bytes: &[u8]) -> Option<QueryResponse> {
-    (bytes.len() >= SNAPSHOT_PAYLOAD_OFFSET).then(|| {
-        let body = declared_query_body_len(bytes)
-            .map(|body_len| {
-                bytes[SNAPSHOT_PAYLOAD_OFFSET..SNAPSHOT_PAYLOAD_OFFSET + body_len].to_vec()
-            })
+fn query_response(bytes: &[u8], profile: Option<&RuntimeProfile>) -> Option<QueryResponse> {
+    let payload_offset = profile_payload_offset(profile);
+    let (category_offset, index_offset) = profile
+        .and_then(|profile| profile.readback.as_ref())
+        .map(|readback| {
+            (
+                usize::from(readback.category_offset),
+                usize::from(readback.index_offset),
+            )
+        })
+        .unwrap_or((0x08, 0x0c));
+    (bytes.len() >= payload_offset
+        && bytes.get(category_offset).is_some()
+        && bytes.get(index_offset).is_some())
+    .then(|| {
+        let body = declared_query_body_len_at(bytes, payload_offset)
+            .map(|body_len| bytes[payload_offset..payload_offset + body_len].to_vec())
             .unwrap_or_default();
         QueryResponse {
-            query_id: bytes[0x08],
-            sub_id: bytes[0x0c],
+            query_id: bytes[category_offset],
+            sub_id: bytes[index_offset],
             body,
         }
     })
 }
 
 fn declared_query_body_len(bytes: &[u8]) -> Option<usize> {
+    declared_query_body_len_at(bytes, SNAPSHOT_PAYLOAD_OFFSET)
+}
+
+fn declared_query_body_len_at(bytes: &[u8], payload_offset: usize) -> Option<usize> {
     let declared_total = u32::from_le_bytes(bytes[4..8].try_into().ok()?) as usize;
-    let body_len = declared_total.checked_sub(SNAPSHOT_PAYLOAD_OFFSET)?;
-    let available = bytes.len().saturating_sub(SNAPSHOT_PAYLOAD_OFFSET);
+    let body_len = declared_total.checked_sub(payload_offset)?;
+    let available = bytes.len().saturating_sub(payload_offset);
     Some(body_len.min(available))
 }
 
@@ -1288,6 +1653,14 @@ mod tests {
             .unwrap_or_else(|| panic!("missing raw map entry: {label}"))
     }
 
+    fn builtin_profile(pid: u16) -> antelope_protocol::RuntimeProfile {
+        crate::device::ProfileCatalog::builtin()
+            .find(0x23e5, pid)
+            .unwrap_or_else(|| panic!("missing built-in profile for pid {pid:#06x}"))
+            .profile()
+            .clone()
+    }
+
     fn query_bytes(query_id: u8, sub_id: u8, body: &[u8]) -> [u8; 320] {
         let mut bytes = [0_u8; 320];
         bytes[0..4].copy_from_slice(&0x75_u32.to_le_bytes());
@@ -1299,6 +1672,108 @@ mod tests {
         bytes[SNAPSHOT_PAYLOAD_OFFSET..SNAPSHOT_PAYLOAD_OFFSET + body_len]
             .copy_from_slice(&body[..body_len]);
         bytes
+    }
+
+    #[test]
+    fn active_orion_profile_maps_four_single_lane_mix_masters_at_full_offsets() {
+        let profile = builtin_profile(0xa221);
+        let map =
+            build_raw_packet_map_for_profile(RawPacketTab::State73, &[0; 320], Some(&profile));
+        let observed = map
+            .entries()
+            .iter()
+            .filter(|entry| {
+                entry.coverage == Coverage::Observed
+                    && entry.domain == RawDomain::Mixer
+                    && entry.label.contains("master meter")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(observed.len(), 4);
+        assert_eq!(
+            observed
+                .iter()
+                .map(|entry| entry.ranges[0].report.start)
+                .collect::<Vec<_>>(),
+            vec![157, 158, 159, 160]
+        );
+        assert!(observed.iter().all(|entry| entry.ranges.len() == 1));
+        assert!(observed.iter().all(|entry| !entry.label.contains(" L ")));
+        assert!(observed.iter().all(|entry| !entry.label.contains(" R ")));
+        assert_eq!(
+            map.classify(161, RawMapScope::All).coverage,
+            Coverage::Unmapped
+        );
+        assert!(!map
+            .entries()
+            .iter()
+            .any(|entry| entry.label.contains("physical preamp")
+                || entry.label.contains("output meter")));
+    }
+
+    #[test]
+    fn active_profile_readback_discriminator_keeps_orion_meter_bytes_unresolved() {
+        let profile = builtin_profile(0xa221);
+        let mut bytes = [0_u8; 320];
+        bytes[0] = 0x75;
+        bytes[1] = 0x1f;
+        let map = build_raw_packet_map_for_profile(RawPacketTab::Query75, &bytes, Some(&profile));
+
+        assert!(map
+            .entries()
+            .iter()
+            .all(|entry| entry.coverage != Coverage::Readback));
+        assert!(map
+            .entries()
+            .iter()
+            .any(|entry| entry.label == "unresolved query body"));
+    }
+
+    #[test]
+    fn active_profiles_do_not_invent_meter_lanes_or_exceed_short_report_bounds() {
+        let catalog = crate::device::ProfileCatalog::builtin();
+        for entry in catalog.entries() {
+            let profile = entry.profile();
+            let bytes = vec![0_u8; 160];
+            let map =
+                build_raw_packet_map_for_profile(RawPacketTab::State73, &bytes, Some(profile));
+            assert!(map.entries().iter().all(|item| {
+                item.ranges
+                    .iter()
+                    .all(|range| range.report.end <= bytes.len())
+            }));
+            let expected = profile
+                .meter_mappings
+                .iter()
+                .filter(|mapping| {
+                    mapping.frame_id == "state_report" && mapping.offset < bytes.len()
+                })
+                .count();
+            let observed = map
+                .entries()
+                .iter()
+                .filter(|item| {
+                    item.coverage == Coverage::Observed
+                        && item.label.contains("meter")
+                        && item.domain == RawDomain::Mixer
+                })
+                .count();
+            assert_eq!(
+                observed,
+                profile
+                    .meter_mappings
+                    .iter()
+                    .filter(|mapping| {
+                        mapping.frame_id == "state_report"
+                            && mapping.offset < bytes.len()
+                            && mapping.target == antelope_protocol::RuntimeMeterTarget::MixMaster
+                    })
+                    .count(),
+                "profile {}",
+                entry.id
+            );
+            assert!(expected >= observed);
+        }
     }
 
     #[test]
