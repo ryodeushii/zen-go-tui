@@ -148,11 +148,11 @@ The normalized Orion profile preserves this profile-derived topology:
 - one confirmed mixer link domain in protocol space 3 with 16 pairs;
 - an exact 113-request startup query order with finite readback bounds.
 
-Orion is `Supported` with `RuntimeDriverKind::Profile`. The generator applies an Orion-only, non-numbered framing assumption (`transport.uses_numbered_reports: false`); descriptor and hardware validation of that assumption remains pending. Confirmed profile controls are enabled independently of metering. Physical preamp meters remain unavailable: the prior state-report offset-157 mapping was retracted as mix-master data, and no physical meter source is emitted. The superseded `meter_report` mapping is not interpreted as per-channel meters, so the UI renders physical meter values as unknown (`?`) rather than fabricating readings.
+Orion is `Supported` with `RuntimeDriverKind::Profile`. The generator applies an Orion-only, non-numbered framing assumption (`transport.uses_numbered_reports: false`); descriptor and hardware validation of that assumption remains pending. Confirmed profile controls are enabled independently of metering. The profile retains observed full-report `0x73` offsets 157..160 as one provisional mono `mix_master` lane per current Mix 1..4 label, with low confidence in fixed ownership and no physical/stereo inference. Physical preamp meters remain unavailable. The superseded `0x75` per-channel interpretation is not used; free-running reports require byte 1 `0x1f`, while byte 1 `0x00` readback responses are excluded and @32 is aggregate/monitor only. See [the bounded Orion meter evidence](protocol/orion-meter-evidence.md).
 
 Only the confirmed mixer link domain at protocol space 3 is exposed. Physical and ADAT link semantics remain non-actionable, so the UI exposes no controls for those links. The catalog does not add unconfirmed link actions.
 
-A standalone Orion meter command or per-channel HID meter offsets are not supported by current evidence. The root runtime therefore leaves physical preamp meters unavailable and does not infer offsets; the bundled standalone CLI remains a separate follow-up.
+A standalone Orion physical-meter command or per-channel HID physical-meter mapping is not supported by current evidence. The root runtime therefore leaves physical preamp meters unavailable; the retained 157..160 candidates are mixer-view evidence only, not standalone physical offsets. The bundled standalone CLI remains a separate follow-up.
 
 Generic profile-driver tests cover representative writes, typed decoding, routing bounds, whole-state behavior, state-report meter decoding, superseded meter handling, and profile-derived fixtures. These tests are not physical Orion validation.
 

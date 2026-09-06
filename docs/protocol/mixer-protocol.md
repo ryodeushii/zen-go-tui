@@ -383,7 +383,7 @@ The current meter captures are now sufficient for a narrow strip-meter parser, b
 
 The profile catalog carries explicit one-byte `meter_mappings` rather than inferring targets from moving bytes. A mapping names its report frame, target kind (`mix_master` or `physical_output`), target index, lane, status, and evidence. Source profiles declare payload-relative offsets; the generator adds the 16-byte snapshot payload prefix and emits full-report offsets for both drivers.
 
-Zen Go declares only the four capture-backed `mix_master` lanes (`MIX 1` at `0xda/0xdb`, `MIX 2` at `0xde/0xdf` in the payload, emitted as `0xea/0xeb/0xee/0xef` in the full report). These labels are mixer targets, not claims that the bytes are physical output meters. Orion currently declares no typed mappings, so its mapped meter collection remains unavailable. A malformed mapping is rejected, including duplicate target/lane declarations across frames; no frame-order precedence is applied.
+Zen Go declares only the four capture-backed `mix_master` lanes (`MIX 1` at `0xda/0xdb`, `MIX 2` at `0xde/0xdf` in the payload, emitted as `0xea/0xeb/0xee/0xef` in the full report). Orion now declares four observed `mix_master` candidate lanes at full-report `0x73` offsets `157..160` (payload `0x8d..0x90`), one mono lane per current Mix 1..4 label. Those labels are provisional, with low fixed-ownership confidence and no physical/stereo claim; see the [bounded evidence note](orion-meter-evidence.md). A malformed mapping is rejected, including duplicate target/lane declarations across frames; no frame-order precedence is applied.
 
 What is grounded:
 

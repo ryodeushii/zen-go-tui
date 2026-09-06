@@ -4,7 +4,7 @@
 - **Status:** Architecture approved. Implementation complete; hardware verification pending.
 - **Scope:** Orion Studio III (`0x23e5:0xa221`)
 
-> **Superseded meter premise (2026-09-06):** The historical offset-157 physical-preamp meter claims and the state-report meter requirement recorded below were based on evidence later retracted. Current runtime behavior intentionally treats Orion physical-preamp meters as unavailable and does not infer standalone meter offsets; see [the profile-driver contract](../../protocol/profile-driver.md) and [current device-support limits](../../device-support.md). This note supersedes only those meter claims and preserves the approved design history.
+> **Meter evidence correction (2026-09-06):** Historical offset-157 physical-preamp and universal-mirror claims recorded below were overconfident. Current runtime retains observed full-report `0x73` offsets 157..160 as one provisional mono `mix_master` lane per current Mix 1..4 label, with low confidence in fixed ownership and no physical/stereo inference. Free-running `0x75` reports require byte 1 `0x1f`; byte 1 `0x00` readback responses are excluded. See [the bounded Orion meter evidence](../../protocol/orion-meter-evidence.md). This note supersedes only those meter claims and preserves the approved design history.
 
 ## Context
 
@@ -12,14 +12,15 @@
 
 Orion profile data contains command, state, meter, readback, mixer, routing, and confirmed mixer-link mappings.
 
-Its canonical `meter_report` is superseded for per-channel values. Real per-channel meters are
-confirmed in `state_report` at offset 157. The current generic driver has no state-report meter
-source, so it would otherwise decode known-invalid `meter_report` bytes 33 and later as channels.
+Its canonical `meter_report` is superseded for per-channel values. The profile carries four observed
+state-report `mix_master` candidate lanes at full-report offsets 157..160 (payload offsets
+0x8d..0x90). These are mixer-view candidates, not confirmed physical-input meters; the generic
+driver must not decode `0x75` bytes 33 and later as physical channels.
 
 Orion remains disabled for three policy reasons:
 
 1. The canonical profile does not confirm HID report-ID framing.
-2. The current generic driver has no profile-declared state-report meter source.
+2. The profile-declared state-report lanes are observed mixer candidates, not a confirmed physical-meter source.
 3. Raw evidence describes an ambiguous physical and ADAT link space.
 
 The normalized runtime profile exposes no physical or ADAT link action.
@@ -44,22 +45,24 @@ The generator will apply one explicit Orion runtime policy:
 - Record the framing assumption in generated support metadata and hazards.
 - Promote only source-backed generic command, state, and readback mappings to effective runtime
   status. Leave unsupported `auraverb_command` evidence non-actionable.
-- Add a generated `state_report` `physical_meter` indexed operation at base 157, stride 1, and
-  the confirmed physical-channel range.
+- Retain generated `state_report` `mix_master` candidate mappings at full-report offsets 157..160,
+  one mono lane per current Mix 1..4 label; keep their observed status and provenance caveats.
 - Treat Orion as `RuntimeReadiness::Supported` only when all other readiness checks pass, including
-  the state-report meter mapping.
+  valid profile mapping data; do not treat these candidates as physical-channel meters.
 - Set `RuntimeDriverKind::Profile` for supported Orion.
-- Accept either a confirmed `meter_report` source or a confirmed state-report meter source in the
-  generic driver. Keep superseded `meter_report` per-channel data non-actionable.
-- Populate input meters from state snapshots when the state-report source is selected.
+- Preserve confirmed `meter_report` sources for profiles that have them, and allow Orion's observed
+  state-report `mix_master` candidates for profile-owned mixer views. Keep superseded `meter_report`
+  per-channel data non-actionable and do not expose the Orion candidates as physical-input meters.
+- Populate profile-owned mixer meter views from state snapshots when the Orion state-report source is selected.
 - Accept only the confirmed mixer link domain at protocol space 3.
 - Reject any future physical or ADAT link action mapping.
 - Preserve identity status `unknown` and all raw evidence text.
 
-The Rust generic driver keeps fail-closed validation and gains one profile-driven meter-source
+The Rust generic driver keeps fail-closed validation and retains profile-driven meter-source
 capability. Profiles with a confirmed `meter_report` keep their current response-meter path.
-Profiles with a confirmed state-report `physical_meter` mapping populate meters in `Snapshot`
-events and ignore non-readback superseded meter responses.
+Orion's observed state-report `mix_master` mappings populate profile-owned mixer meter views in
+`Snapshot` events; they do not claim physical-input meters, and non-readback superseded meter
+responses remain ignored.
 
 No descriptor probe, report-framing fallback, blind probe, or dedicated Orion driver will be added.
 
@@ -131,15 +134,14 @@ No Orion-specific branch belongs in session startup.
 `ProfileDriver::new` remains fail closed. It will validate the promoted generated entry before HID open.
 
 The existing Orion command, state, mixer, routing, and readback operation shapes match the generic
-codec. The generic driver will accept one of two confirmed meter sources:
+codec. The generic driver keeps confirmed `meter_report` sources for profiles that provide them and
+uses Orion's observed `state_report` `mix_master` mappings for profile-owned mixer views. The Orion
+mapping is full-report 157..160 (payload 0x8d..0x90), one mono candidate lane per current Mix 1..4
+label. It is not a `physical_meter` layout and must not populate physical-input channels.
 
-- A `meter_report` frame with the existing `physical_meter` indexed layout and confirmed decoder.
-- A `state_report` frame with a `physical_meter` indexed layout covering `physical_inputs`.
-
-State-report meter sources are applied to `DynamicInputState.meter` while decoding a `Snapshot`.
-A profile without either source fails validation. A profile with only a state source does not decode
-superseded meter responses as per-channel meters. Existing profiles with confirmed meter reports
-retain their current behavior.
+State-report mixer candidates are applied to the profile-owned mixer meter state while decoding a
+`Snapshot`. Superseded `0x75` non-readback reports are not decoded as per-channel meters. Existing
+profiles with confirmed meter reports retain their current behavior.
 
 The implementation will not duplicate Orion mappings in a device-specific driver.
 
@@ -162,8 +164,8 @@ Hardware verification must confirm this assumption later.
 - The runtime loop marks the session disconnected and returns to discovery.
 - If an action targets an unsupported physical or ADAT link, the driver returns `UnsupportedAction`.
 - The controller must not enqueue or write that command.
-- A superseded non-readback meter response is ignored when no confirmed meter-response source is
-  available. It is never decoded as per-channel input data.
+- A superseded non-readback `0x75` meter response is never decoded as per-channel physical-input
+  data; Orion's byte-1 filter excludes readback responses from free-running meter evidence.
 - Unknown response magic follows current decoder behavior and does not issue a write.
 - Orion remains unavailable when candidate identity, interface, usage, path, or transport checks fail.
 
@@ -184,7 +186,8 @@ Rejected. The user selected normal support. Orion will appear in the ordinary pi
 Rejected as a broad change. Unknown framing and incomplete evidence must remain blocked for every
 non-Orion profile. The generic driver gets only the narrow meter-source alternative described above.
 
-`ProfileDriver::new` keeps fail-closed validation and requires one confirmed meter source.
+`ProfileDriver::new` keeps fail-closed validation and requires valid profile meter declarations where
+metering is enabled; an observed Orion mixer candidate is not promoted to a physical-meter claim.
 
 ### HID descriptor probe or framing fallback
 
@@ -225,8 +228,10 @@ Rejected. Raw evidence cannot distinguish those links. The runtime will expose o
 - Load the regenerated Orion fixture through profile validation.
 - Construct `ProfileDriver` from the Orion entry.
 - Exercise confirmed input, output, global, mixer, mixer-link, routing, query, state, meter, and readback paths.
-- Assert Orion state snapshots decode per-channel meters from state-report offset 157.
-- Assert superseded meter responses are not decoded as per-channel values.
+- Assert Orion state snapshots decode the profile-owned `mix_master` candidates from full-report
+  offsets 157..160 and preserve payload-relative offsets 0x8d..0x90.
+- Assert the candidates are not exposed as physical-input meters and superseded meter responses are
+  not decoded as per-channel values.
 - Assert profiles with confirmed meter-report sources retain their existing meter path.
 - Assert unsupported physical and ADAT link actions return `UnsupportedAction` without a transport write.
 - Assert transport tests cover the selected non-numbered framing.
@@ -254,8 +259,8 @@ The test must also confirm control writes and reconnect behavior.
 
 - Orion is selectable through the ordinary device picker.
 - Orion uses `ProfileDriver` without a device-specific codec.
-- The generic driver accepts Orion’s confirmed state-report meter source and populates input meters
-  from offset 157.
+- The generic driver accepts Orion’s observed state-report `mix_master` candidates at full-report
+  offsets 157..160 for profile-owned mixer views, without claiming physical-input meters.
 - Superseded `meter_report` bytes 33 and later are never treated as per-channel values.
 - Profiles with normal confirmed meter reports retain their existing decode path.
 - The generated Orion entry uses explicit non-numbered framing.
