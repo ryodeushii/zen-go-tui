@@ -861,6 +861,22 @@ mod tests {
 
         let driver = driver_for_entry(entry).expect("Profile driver mapping");
         assert_eq!(driver.definition().id, "orion_studio_3");
+        let startup = driver
+            .startup_requests()
+            .iter()
+            .map(|query| (query.query_id, query.sub_id))
+            .collect::<Vec<_>>();
+        let expected = [(0x11, 0), (0x11, 1), (0x0b, 1), (0x0b, 2), (0x1b, 0)]
+            .into_iter()
+            .chain((0u8..16).map(|index| (0x1a, index)))
+            .chain((0u8..15).map(|index| (0x03, index)))
+            .chain((0u8..4).flat_map(|index| [(0x04, index), (0x0b, 3)]))
+            .chain([(0x0a, 0), (0x15, 0), (0x0b, 0), (0x16, 0)])
+            .chain((0u8..64).map(|index| (0x19, index)))
+            .chain([(0x0b, 4)])
+            .collect::<Vec<_>>();
+        assert_eq!(startup, expected);
+        assert_eq!(startup.len(), 113);
     }
 
     #[test]

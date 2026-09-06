@@ -4,6 +4,8 @@
 - **Status:** Architecture approved. Implementation complete; hardware verification pending.
 - **Scope:** Orion Studio III (`0x23e5:0xa221`)
 
+> **Superseded meter premise (2026-09-06):** The historical offset-157 physical-preamp meter claims and the state-report meter requirement recorded below were based on evidence later retracted. Current runtime behavior intentionally treats Orion physical-preamp meters as unavailable and does not infer standalone meter offsets; see [the profile-driver contract](../../protocol/profile-driver.md) and [current device-support limits](../../device-support.md). This note supersedes only those meter claims and preserves the approved design history.
+
 ## Context
 
 `zen-go-tui` now has a generated profile catalog, a generic `ProfileDriver`, profile-aware HID discovery, and a device picker.

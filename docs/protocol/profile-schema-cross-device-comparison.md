@@ -33,7 +33,7 @@ Orion currently encodes much of this information through established scalar fiel
 | Preamp status bits | Mode `0x03`, phantom `0x10`, phase `0x40` | Same masks | Shared semantic bit names |
 | Gain ranges | Mic `0..75`, line `-6..20`, Hi-Z `0..65` | Mic `0..65`, line ungrounded, Hi-Z `0..45` | Per-device and per-mode ranges |
 | Mixer names | Derived as `Mix N` | Explicit display names | Optional display metadata |
-| Meter source | Orion state report and `0x75` meter family | Zen `0x83` meter report plus observed state-report candidates | Shared meter semantics, device-specific source |
+| Meter source | No confirmed per-channel source; prior state-report offset 157 mapping was retracted as mix-master data | Zen `0x83` meter report plus observed state-report candidates | Shared meter semantics, device-specific source |
 
 ## Readback queries
 
@@ -119,7 +119,7 @@ Both state reports use the same status-bit meanings:
 
 The layout values differ:
 
-- Orion: gain base 49, status base 61, physical input meter base 157.
+- Orion: gain base 49 and status base 61; no confirmed physical-input meter base.
 - Zen Go: gain base 40, status base 42, observed preamp-meter candidates at `0xce` and `0xcf`.
 
 Gain ranges also differ by hardware and evidence quality. Zen's line-mode range remains intentionally ungrounded and must not inherit Orion's `-6..20` range.

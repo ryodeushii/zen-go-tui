@@ -17,12 +17,68 @@ fn stored_orion_entry() -> RuntimeEntry {
 }
 
 fn fixture_entry() -> RuntimeEntry {
-    let mut entry = stored_orion_entry();
-    entry.readiness = RuntimeReadiness::Supported;
-    entry.driver_kind = RuntimeDriverKind::Profile;
-    // Synthetic test assumption: generic codec fixtures model unnumbered HID
-    // payloads only. Canonical Orion framing remains unknown and disabled.
-    entry.profile.transport.uses_numbered_reports = Some(false);
+    stored_orion_entry()
+}
+
+fn canonical_orion_entry() -> RuntimeEntry {
+    load_profile_pack(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/device/generated_profiles.json"
+    )))
+    .expect("generated profile pack")
+    .profiles
+    .into_iter()
+    .find(|entry| entry.profile.identity.pid == 0xa221)
+    .expect("canonical Orion profile")
+}
+
+fn state_meter_fixture_entry() -> RuntimeEntry {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "state_report")
+        .expect("state report")
+        .operations
+        .push(FrameOperation::Indexed {
+            base: 157,
+            stride: 1,
+            index_field: "physical_meter".into(),
+            width: 1,
+            max_index: Some(11),
+        });
+    entry
+}
+
+fn confirmed_meter_fixture_entry() -> RuntimeEntry {
+    let mut entry = fixture_entry();
+    let meter_frame = entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "meter_report")
+        .expect("meter report");
+    meter_frame.status = "confirmed".into();
+    meter_frame.operations.extend([
+        FrameOperation::Scalar {
+            offset: 32,
+            width: 1,
+            field: "channel_meter_base".into(),
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::FixedByte {
+            offset: 1,
+            value: 0x1f,
+        },
+    ]);
+    entry
+        .profile
+        .decoders
+        .iter_mut()
+        .find(|decoder| decoder.frame_id == "meter_report")
+        .expect("meter decoder")
+        .status = "confirmed".into();
     entry
 }
 
@@ -161,8 +217,8 @@ fn promoted_canonical_orion_rejects_unconfirmed_report_framing() {
 }
 
 #[test]
-fn synthetic_unnumbered_fixture_constructs_for_generic_codec_tests() {
-    ProfileDriver::new(fixture_entry()).expect("synthetic unnumbered fixture");
+fn canonical_orion_fixture_constructs_for_generic_codec_tests() {
+    ProfileDriver::new(fixture_entry()).expect("canonical Orion fixture");
 }
 
 #[test]
@@ -391,16 +447,15 @@ fn query_bounds_and_layout_are_profile_driven() {
 #[test]
 fn profile_derived_startup_walk_is_exactly_113_bounded_requests() {
     let driver = profile_driver_from_fixture();
-    let mut expected = Vec::new();
-    expected.extend((0..15).map(|index| (0x03, index)));
-    expected.extend((0..4).map(|index| (0x04, index)));
-    expected.extend([(0x0a, 0)]);
-    expected.extend((0..8).map(|index| (0x0b, index)));
-    expected.extend((0..2).map(|index| (0x11, index)));
-    expected.extend([(0x15, 0), (0x16, 0)]);
-    expected.extend((0..64).map(|index| (0x19, index)));
+    let mut expected = vec![(0x11, 0), (0x11, 1), (0x0b, 1), (0x0b, 2), (0x1b, 0)];
     expected.extend((0..16).map(|index| (0x1a, index)));
-    expected.extend([(0x1b, 0)]);
+    expected.extend((0..15).map(|index| (0x03, index)));
+    for index in 0..4 {
+        expected.extend([(0x04, index), (0x0b, 3)]);
+    }
+    expected.extend([(0x0a, 0), (0x15, 0), (0x0b, 0), (0x16, 0)]);
+    expected.extend((0..64).map(|index| (0x19, index)));
+    expected.push((0x0b, 4));
 
     let actual: Vec<_> = driver
         .startup_requests()
@@ -958,7 +1013,7 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
 
 #[test]
 fn state_only_profile_populates_physical_meters_from_state_report() {
-    let driver = profile_driver_from_fixture();
+    let driver = ProfileDriver::new(state_meter_fixture_entry()).expect("state meter fixture");
     let frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
     let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
         panic!("snapshot")
@@ -987,33 +1042,8 @@ fn state_only_profile_ignores_superseded_meter_report_bytes_after_monitor_level(
 
 #[test]
 fn confirmed_meter_report_emits_meter_only_for_confirmed_discriminator() {
-    let mut entry = fixture_entry();
-    entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "meter_report")
-        .unwrap()
-        .status = "confirmed".into();
-    entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "meter_report")
-        .unwrap()
-        .operations
-        .push(FrameOperation::FixedByte {
-            offset: 1,
-            value: 0x1f,
-        });
-    entry
-        .profile
-        .decoders
-        .iter_mut()
-        .find(|decoder| decoder.frame_id == "meter_report")
-        .unwrap()
-        .status = "confirmed".into();
-    let driver = ProfileDriver::new(entry).expect("confirmed meter source");
+    let driver =
+        ProfileDriver::new(confirmed_meter_fixture_entry()).expect("confirmed meter source");
     let mut frame = vec![0; 320];
     frame[0] = 0x75;
     frame[1] = 0x73;
@@ -1026,33 +1056,8 @@ fn confirmed_meter_report_emits_meter_only_for_confirmed_discriminator() {
 
 #[test]
 fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
-    let mut entry = fixture_entry();
-    entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "meter_report")
-        .unwrap()
-        .status = "confirmed".into();
-    entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "meter_report")
-        .unwrap()
-        .operations
-        .push(FrameOperation::FixedByte {
-            offset: 1,
-            value: 0x1f,
-        });
-    entry
-        .profile
-        .decoders
-        .iter_mut()
-        .find(|decoder| decoder.frame_id == "meter_report")
-        .unwrap()
-        .status = "confirmed".into();
-    let driver = ProfileDriver::new(entry).expect("confirmed meter source");
+    let driver =
+        ProfileDriver::new(confirmed_meter_fixture_entry()).expect("confirmed meter source");
     let mut frame = vec![0; 320];
     frame[0] = 0x75;
     frame[1] = 0x1f;
@@ -1077,44 +1082,38 @@ fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
 }
 
 #[test]
-fn meter_source_does_not_require_state_physical_meter_layout() {
-    let mut entry = fixture_entry();
-    entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "meter_report")
-        .unwrap()
-        .status = "confirmed".into();
-    entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "meter_report")
-        .unwrap()
-        .operations
-        .push(FrameOperation::FixedByte {
-            offset: 1,
-            value: 0x1f,
-        });
-    entry
+fn canonical_orion_profile_driver_keeps_physical_meters_unavailable() {
+    let entry = canonical_orion_entry();
+    assert_eq!(entry.readiness, RuntimeReadiness::Supported);
+    assert_eq!(entry.driver_kind, RuntimeDriverKind::Profile);
+    assert_eq!(entry.profile.startup_queries.len(), 113);
+    assert!(!entry
         .profile
         .decoders
-        .iter_mut()
-        .find(|decoder| decoder.frame_id == "meter_report")
+        .iter()
+        .any(|decoder| decoder.frame_id == "meter_report"
+            && decoder.status.eq_ignore_ascii_case("confirmed")));
+
+    let driver = ProfileDriver::new(entry).expect("canonical Orion profile driver");
+    let state_frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    let DeviceEvent::Snapshot { state, .. } = driver
+        .decode(&state_frame)
         .unwrap()
-        .status = "confirmed".into();
-    entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "state_report")
-        .unwrap()
-        .operations
-        .retain(|operation| {
-            !matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == "physical_meter")
-        });
-    let driver = ProfileDriver::new(entry).expect("meter source without state meter");
+        .expect("state snapshot")
+    else {
+        panic!("snapshot")
+    };
+    assert!(state
+        .inputs
+        .iter()
+        .filter(|input| input.address.space == 0)
+        .all(|input| input.meter.is_none()));
+}
+
+#[test]
+fn meter_source_does_not_require_state_physical_meter_layout() {
+    let driver = ProfileDriver::new(confirmed_meter_fixture_entry())
+        .expect("meter source without state meter");
     let state = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
     let DeviceEvent::Snapshot { state, .. } = driver.decode(&state).unwrap().unwrap() else {
         panic!("snapshot")
@@ -1179,7 +1178,7 @@ fn no_send_implicit_mixer_readback_decodes_three_byte_records_without_send() {
 #[test]
 fn state_meter_layout_requires_finite_width_count_and_range() {
     for mutation in 0..3 {
-        let mut entry = fixture_entry();
+        let mut entry = state_meter_fixture_entry();
         let state = entry
             .profile
             .frames
@@ -1218,9 +1217,31 @@ fn state_meter_layout_requires_finite_width_count_and_range() {
 }
 
 #[test]
+fn malformed_declared_state_meter_is_rejected_even_with_meter_report_source() {
+    let mut entry = confirmed_meter_fixture_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "state_report")
+        .expect("state report")
+        .operations
+        .push(FrameOperation::Indexed {
+            base: 157,
+            stride: 1,
+            index_field: "physical_meter".into(),
+            width: 1,
+            max_index: Some(10),
+        });
+    let error =
+        ProfileDriver::new(entry).expect_err("malformed declared state meter must fail closed");
+    assert!(error.to_string().contains("physical meter layout"));
+}
+
+#[test]
 fn valid_bounded_non_patch_readbacks_return_owned_none_patch() {
     let driver = profile_driver_from_fixture();
-    for (category, index) in [(0x0a, 0), (0x0b, 7), (0x11, 1), (0x19, 63), (0x1a, 15)] {
+    for (category, index) in [(0x0a, 0), (0x0b, 4), (0x11, 1), (0x19, 63), (0x1a, 15)] {
         let mut frame = vec![0; 320];
         frame[0] = 0x75;
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
@@ -1450,25 +1471,38 @@ fn constructor_rejects_missing_or_unsafe_startup_walk_before_io() {
 }
 
 #[test]
-fn constructor_rejects_missing_state_or_meter_semantics_before_io() {
-    for (frame_id, semantic) in [
-        ("state_report", "gain_base"),
-        ("state_report", "physical_meter"),
-    ] {
-        let mut entry = fixture_entry();
-        entry
-            .profile
-            .frames
-            .iter_mut()
-            .find(|frame| frame.id == frame_id)
-            .unwrap()
-            .operations
-            .retain(|operation| {
-                !matches!(operation, FrameOperation::Indexed { index_field, .. } if index_field == semantic)
-                    && !matches!(operation, FrameOperation::Scalar { field, .. } if field == semantic)
-            });
-        assert!(ProfileDriver::new(entry).is_err(), "{frame_id}/{semantic}");
-    }
+fn constructor_rejects_missing_state_semantics_but_allows_unavailable_meter() {
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "state_report")
+        .unwrap()
+        .operations
+        .retain(|operation| {
+            !matches!(operation, FrameOperation::Scalar { field, .. } if field == "gain_base")
+        });
+    assert!(ProfileDriver::new(entry).is_err(), "state_report/gain_base");
+
+    let mut entry = fixture_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "state_report")
+        .unwrap()
+        .operations
+        .retain(|operation| {
+            !matches!(
+                operation,
+                FrameOperation::Indexed { index_field, .. } if index_field == "physical_meter"
+            )
+        });
+    assert!(
+        ProfileDriver::new(entry).is_ok(),
+        "a missing physical meter mapping is an unavailable capability"
+    );
 }
 
 #[test]

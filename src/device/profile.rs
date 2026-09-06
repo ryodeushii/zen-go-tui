@@ -446,7 +446,7 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
             match readiness {
                 RuntimeReadiness::Supported => "validated built-in driver",
                 RuntimeReadiness::Partial => "profile data is incomplete for safe read/write control",
-            RuntimeReadiness::Unverified => "transport or frame geometry is unverified",
+                RuntimeReadiness::Unverified => "transport or frame geometry is unverified",
                 RuntimeReadiness::Disabled => "profile is not enabled for control",
             }
         }
@@ -620,6 +620,10 @@ mod tests {
         let orion = catalog.find(0x23e5, 0xa221).expect("Orion entry");
         assert_eq!(orion.readiness, RuntimeReadiness::Supported);
         assert_eq!(orion.driver_kind, RuntimeDriverKind::Profile);
+        assert_eq!(
+            orion.support_reason,
+            "validated source-backed profile; assumes unnumbered HID reports pending hardware verification"
+        );
         assert_eq!(orion.profile.inputs_in("physical_inputs"), 12);
     }
 
@@ -717,6 +721,10 @@ mod tests {
             .expect("Orion pack entry");
         assert_eq!(orion.readiness, RuntimeReadiness::Supported);
         assert_eq!(orion.driver_kind, RuntimeDriverKind::Profile);
+        assert_eq!(
+            orion.support_reason,
+            "validated source-backed profile; assumes unnumbered HID reports pending hardware verification"
+        );
     }
 
     #[test]

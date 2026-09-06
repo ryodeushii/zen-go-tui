@@ -3,8 +3,8 @@ use ratatui::widgets::{Block, Borders};
 
 use crate::app::{AppState, RawMapScope, RawPacketTab, MIXER_STRIP_PAGE_SIZE};
 use antelope_protocol::{
-    FaderDirection, FaderSemantics, InputControl, MixerAddress, MixerControl, OutputControl,
-    RuntimeInputControlKind,
+    meter_display_db, FaderDirection, FaderSemantics, InputControl, MixerAddress, MixerControl,
+    OutputControl, RuntimeInputControlKind,
 };
 
 use super::styles::chip_width;
@@ -1795,6 +1795,9 @@ pub(crate) fn signal_slider_label(prefix: &str, value: Option<String>) -> String
         .unwrap_or_else(|| prefix.to_string())
 }
 
-pub(crate) fn meter_slider_label(prefix: &str, value: Option<i16>) -> String {
-    format!("{prefix} {}", format_meter_value_label(value))
+pub(crate) fn meter_slider_label(prefix: &str, raw: Option<u8>) -> String {
+    let value = raw
+        .map(meter_display_db)
+        .map_or_else(|| "?".to_string(), |value| format_meter_value_label(value));
+    format!("{prefix} {value}")
 }

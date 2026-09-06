@@ -135,7 +135,7 @@ The generated Zen Go topology defines:
 
 The built-in `ZenGo` driver also supports the tested global, output, preamp, mixer, routing, readback, raw-view, and metering behavior described in [Zen Go Synergy Core TUI](zen-go-tui.md).
 
-Zen Go and Orion Studio III are currently selectable for control. Unit and integration tests preserve exact protocol bytes for Zen Go. Supported profiles still pass the same selection gate and safety limits described above.
+Zen Go and Orion Studio III are currently selectable for control. Unit and integration tests preserve exact protocol bytes for Zen Go; Orion uses the generic profile driver and source-backed profile mappings. Supported profiles still pass the same selection gate and safety limits described above.
 
 ## Orion runtime support and limits
 
@@ -148,11 +148,11 @@ The normalized Orion profile preserves this profile-derived topology:
 - one confirmed mixer link domain in protocol space 3 with 16 pairs;
 - an exact 113-request startup query order with finite readback bounds.
 
-Orion is `Supported` with `RuntimeDriverKind::Profile`. The generator applies an Orion-only, non-numbered framing assumption: `transport.uses_numbered_reports: false`. The canonical raw profile remains unchanged; generated support metadata records this assumption and states that hardware verification remains pending. No descriptor or hardware validation establishes this framing yet.
-
-Orion per-channel input meters come from `state_report` at offset 157, one byte per physical channel. The superseded `meter_report` bytes 33 and later are not interpreted as per-channel meters. The generic driver uses the confirmed state-report source and ignores those superseded channel values.
+Orion is `Supported` with `RuntimeDriverKind::Profile`. The generator applies an Orion-only, non-numbered framing assumption (`transport.uses_numbered_reports: false`); descriptor and hardware validation of that assumption remains pending. Confirmed profile controls are enabled independently of metering. Physical preamp meters remain unavailable: the prior state-report offset-157 mapping was retracted as mix-master data, and no physical meter source is emitted. The superseded `meter_report` mapping is not interpreted as per-channel meters, so the UI renders physical meter values as unknown (`?`) rather than fabricating readings.
 
 Only the confirmed mixer link domain at protocol space 3 is exposed. Physical and ADAT link semantics remain non-actionable, so the UI exposes no controls for those links. The catalog does not add unconfirmed link actions.
+
+A standalone Orion meter command or per-channel HID meter offsets are not supported by current evidence. The root runtime therefore leaves physical preamp meters unavailable and does not infer offsets; the bundled standalone CLI remains a separate follow-up.
 
 Generic profile-driver tests cover representative writes, typed decoding, routing bounds, whole-state behavior, state-report meter decoding, superseded meter handling, and profile-derived fixtures. These tests are not physical Orion validation.
 

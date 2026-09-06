@@ -8,7 +8,7 @@ use tui_slider::{Slider, SliderOrientation};
 use crate::app::{AppState, FocusArea};
 use crate::terminal;
 use antelope_protocol::{
-    meter_display_db, DynamicMixerStrip, OutputMode, OutputState, PreampInputState, PreampMode,
+    DynamicMixerStrip, OutputMode, OutputState, PreampInputState, PreampMode, meter_display_db,
 };
 
 use super::super::layouts::*;
@@ -223,7 +223,7 @@ pub(crate) fn render_preamp_visual_widget(
     render_stacked_signal_rows(
         sections[0],
         buffer,
-        &meter_slider_label("OBS", input.observed_meter_db()),
+        &meter_slider_label("OBS", input.observed_meter),
         input.observed_meter_ratio(),
         &signal_slider_label("GAIN", Some(input.gain_db_label())),
         Some(input.gain_ratio()),

@@ -529,7 +529,6 @@ fn render_dynamic_input_row(
         };
         block.render(controls.row, buffer);
         let sections = preamp_card_inner_layout(controls.row);
-        let meter_db = input.meter.and_then(antelope_protocol::meter_display_db);
         let gain_range = state.input_range(input.address, input.mode);
         let gain_label = input
             .gain
@@ -547,7 +546,7 @@ fn render_dynamic_input_row(
         render_stacked_signal_rows(
             sections[0],
             buffer,
-            &meter_slider_label("OBS", meter_db),
+            &meter_slider_label("OBS", input.meter),
             input.meter.map(antelope_protocol::meter_ratio),
             &signal_slider_label("GAIN", Some(gain_label)),
             gain_ratio,

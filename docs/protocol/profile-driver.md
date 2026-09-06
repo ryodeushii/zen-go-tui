@@ -14,7 +14,7 @@ A supported profile must provide confirmed, report-sized frames named:
 - `state_report`
 - `readback`
 
-Every supported profile must provide one confirmed meter source: either a confirmed `meter_report` with its decoder or a confirmed state-report `physical_meter` layout. It must also provide confirmed decoders for the report families it uses and a confirmed readback definition. Constructor validation rejects absent, duplicate, ambiguous, unconfirmed, out-of-report, or `uncompiled_formula` mappings before I/O.
+Metering is optional. A supported profile may omit both meter sources; the constructor then keeps metering unavailable and does not emit meter events. If a meter mapping is declared, it must be a confirmed, unambiguous, finite, in-report mapping: a confirmed `meter_report` also requires exactly one confirmed decoder, while a state-report `physical_meter` mapping must cover its finite input space. Constructor validation rejects malformed, duplicate, ambiguous, unconfirmed, out-of-report, or `uncompiled_formula` mappings before I/O.
 
 Scalar and bit-field operations require stable semantic `field` names. One-byte scalars use `not_applicable` endianness. Wider scalars require explicit `little` or `big`; source data without proven wider-scalar endianness is emitted as `uncompiled_formula` and cannot enable a profile driver.
 
@@ -37,10 +37,8 @@ Routing commands are complete ordered assignment tables. Callers must use `SetRo
 
 ## Orion Studio III status and limits
 
-Orion Studio III is `Supported` with `RuntimeDriverKind::Profile`. Its generator uses a non-numbered framing assumption: `transport.uses_numbered_reports: false`. This is a generator-only assumption pending descriptor and hardware validation. No hardware validation is claimed.
+Orion Studio III is `Supported` with `RuntimeDriverKind::Profile`. Its normalized profile uses a source-backed non-numbered framing assumption (`transport.uses_numbered_reports: false`); descriptor and hardware validation of that assumption remains pending. Confirmed controls are enabled independently of metering. Physical preamp meters remain unavailable: the upstream state-report mapping at offset 157 was retracted because those bytes are mix-master data, and no physical meter decoder is enabled. Superseded `meter_report` bytes 33 and later are also not interpreted as channel meters; the UI renders those physical meter values as unknown (`?`).
 
-Orion physical-channel meters come from `state_report` at offset 157. Superseded `meter_report` bytes 33 and later are not per-channel values and are not interpreted as channel meters.
-
-Only mixer link space 3 is exposed. Physical and ADAT links remain non-actionable; the profile driver does not expose controls for them.
+Only mixer link space 3 is described as actionable in the profile. Physical and ADAT links remain non-actionable, while confirmed output, input, mixer, and routing controls use the generic profile driver.
 
 Profile-driver fixtures validate codec, bounds, and framing mechanics only. They do not constitute physical Orion validation.

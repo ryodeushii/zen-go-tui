@@ -777,10 +777,12 @@ def _effective_framing(profile: NormalizedProfile) -> bool | None:
 
 
 def _reference_mentions_frame(text: str, frame_id: str) -> bool:
-    """Match complete frame identifiers, not identifiers containing one another."""
+    """Match complete frame identifiers, including serialized reference objects."""
 
-    match = re.match(r"\s*(?:frame\.)?([A-Za-z_][A-Za-z0-9_]*)", text)
-    return match is not None and match.group(1) == frame_id
+    return re.search(
+        rf"(?<![A-Za-z0-9_])(?:frame\.)?{re.escape(frame_id)}(?![A-Za-z0-9_])",
+        text,
+    ) is not None
 
 
 def _parameter_blocks_promotion(parameter: Mapping[str, Any]) -> bool:
@@ -820,10 +822,6 @@ def _effective_frame_status(profile: NormalizedProfile, frame_id: str, frame: Ma
         and not _parameter_blocks_promotion(parameter)
         for parameter in parameters
     )
-    if frame_id == "state_report":
-        has_confirmed_mapping = has_confirmed_mapping or _evidence_is_confirmed(
-            str(frame.get("channel_meter_notes", ""))
-        )
     explicit_evidence = " ".join(str(frame.get(key, "")) for key in ("status", "runtime_status", "notes", "evidence"))
     if (not has_confirmed_mapping and not explicit_decoded) or _evidence_has_negative_qualifier(explicit_evidence):
         return raw_status
@@ -857,35 +855,6 @@ def _operations_fit_report(profile: NormalizedProfile, operations: list[dict[str
         return True
     except (KeyError, TypeError):
         return False
-
-
-def _orion_state_meter_operations(profile: NormalizedProfile) -> list[dict[str, Any]]:
-    state = profile.frame.get("state_report")
-    if not _is_orion(profile) or not isinstance(state, Mapping):
-        return []
-    evidence = str(state.get("channel_meter_notes", ""))
-    if not _evidence_is_confirmed(evidence):
-        return []
-    count = profile.channels.get("count_confirmed")
-    indices = profile.channels.get("confirmed_indices")
-    if (
-        not isinstance(count, int)
-        or isinstance(count, bool)
-        or count <= 0
-        or not isinstance(indices, list)
-        or indices != list(range(count))
-    ):
-        return []
-    base = state.get("channel_meter_base_offset")
-    if count is None or count <= 0 or base is None:
-        return []
-    try:
-        base = _checked_u16(base, "frame.state_report.channel_meter_base_offset")
-        if not _report_span_fits(base, count, profile.transport.report_size or 0):
-            return []
-    except ProfileError:
-        return []
-    return [{"op": "indexed", "base": base, "stride": 1, "index_field": "physical_meter", "width": 1, "max_index": count - 1}]
 
 
 def _orion_has_confirmed_ambiguous_input_link(profile: NormalizedProfile) -> bool:
@@ -998,7 +967,7 @@ def orion_readiness_blockers(profile: NormalizedProfile) -> list[str]:
         0x03: 15,
         0x04: 4,
         0x0A: 1,
-        0x0B: 8,
+        0x0B: 5,
         0x11: 2,
         0x15: 1,
         0x16: 1,
@@ -1023,8 +992,6 @@ def orion_readiness_blockers(profile: NormalizedProfile) -> list[str]:
             )
             break
 
-    if not _orion_state_meter_operations(profile):
-        blockers.append("frame.state_report lacks confirmed physical channel meter mapping")
     raw_topology = profile.raw.get("runtime_topology")
     raw_link_domains = raw_topology.get("link_domains", []) if isinstance(raw_topology, Mapping) else []
     if _orion_has_confirmed_ambiguous_input_link(profile) or any(
@@ -3579,14 +3546,14 @@ def _pair_max_index(profile: NormalizedProfile, frame_id: str) -> int:
 def _obsolete_orion_channel_meter_operation(
     profile: NormalizedProfile, frame_id: str, operation: Mapping[str, Any]
 ) -> bool:
-    """Exclude superseded 0x75 channel indexing, while retaining other geometry."""
+    """Exclude the disproven Orion physical-preamp meter mapping from runtime data."""
 
+    field = str(operation.get("field", ""))
+    index_field = str(operation.get("index_field", ""))
     return (
         _is_orion(profile)
-        and frame_id == "meter_report"
-        and operation.get("op") == "indexed"
-        and operation.get("index_field") == "channel_meter"
-        and operation.get("max_index", 0) > 0
+        and frame_id in {"state_report", "meter_report"}
+        and (field.startswith("channel_meter") or index_field in {"channel_meter", "physical_meter"})
     )
 
 
@@ -3649,7 +3616,7 @@ def _retain_meter_report_operations(
         for operation in operations
         if _obsolete_orion_channel_meter_operation(profile, frame_id, operation)
     ]
-    # Keep malformed superseded geometry visible so readiness can fail closed;
+    # Keep malformed superseded geometry visible so validation can fail closed;
     # only suppress it after report-bound validation succeeds.
     if obsolete_operations and not _operations_fit_report(profile, obsolete_operations):
         return operations
@@ -3748,7 +3715,6 @@ def _frame_operations(
                 raise ProfileError(f"{context}.op {kind!r} is unsupported")
             operations.append(operation)
         if frame_id == "state_report":
-            operations.extend(_orion_state_meter_operations(profile))
             operations.extend(_candidate_preamp_meter_operations(profile))
         return _retain_meter_report_operations(profile, frame_id, operations)
 
@@ -3903,7 +3869,6 @@ def _frame_operations(
 
     walk(frame, "frame")
     if frame_id == "state_report":
-        operations.extend(_orion_state_meter_operations(profile))
         operations.extend(_candidate_preamp_meter_operations(profile))
     operations = _disambiguate_orion_inferred_semantics(profile, frame_id, operations)
     return _retain_meter_report_operations(profile, frame_id, operations)

@@ -642,14 +642,35 @@ class GeneratorTests(unittest.TestCase):
         blockers = generator.orion_readiness_blockers(canonical)
 
         self.assertEqual(normalized["readiness"], "supported")
+        self.assertNotIn("frame.state_report lacks confirmed physical channel meter mapping", blockers)
+        self.assertNotIn("frame.readback.category_counts does not match confirmed finite bounds", blockers)
         self.assertEqual(normalized["driver_kind"], "profile")
+        self.assertEqual(
+            normalized["support_reason"],
+            "validated source-backed profile; assumes unnumbered HID reports pending hardware verification",
+        )
+        state_frame = next(frame for frame in normalized["frames"] if frame["id"] == "state_report")
+        self.assertEqual(state_frame["status"], "confirmed")
+        self.assertFalse(
+            any(
+                operation.get("index_field") == "physical_meter"
+                for operation in state_frame["operations"]
+            )
+        )
+        self.assertFalse(
+            any(
+                decoder["frame_id"] == "meter_report"
+                and generator._status_variant(decoder["status"]) == "Confirmed"
+                for decoder in normalized["decoders"]
+            )
+        )
         self.assertFalse(normalized["transport"]["uses_numbered_reports"])
         self.assertNotIn("transport.uses_numbered_reports is unconfirmed", blockers)
         self.assertNotIn("physical/ADAT link action has ambiguous space=0 semantics", blockers)
         self.assertEqual(normalized["identity"]["status"], "unknown")
         self.assertEqual(
             normalized["provenance"]["source_sha256"],
-            "971a1f25d55d502f15bc2a1f86dbed682ebea2d4c5bf1d1ba361baf96c4015fa",
+            generator.hashlib.sha256(canonical_path.read_bytes()).hexdigest(),
         )
 
     def test_orion_source_only_params_are_non_actionable(self) -> None:
@@ -759,7 +780,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(len(names), len(set(names)), kind)
         names = {operation.get("field") for operation in operations}
         self.assertTrue({"gain_base", "status_base", "adat_gain_base", "spdif_gain_base"} <= names)
-        self.assertIn("physical_meter", {operation.get("index_field") for operation in operations})
+        self.assertNotIn("physical_meter", {operation.get("index_field") for operation in operations})
         self.assertIn("mask__2", names)
         self.assertIn("byte__2", names)
 
@@ -825,14 +846,16 @@ class GeneratorTests(unittest.TestCase):
         profile = generator.normalize_profile(data, path=path)
         self.assertTrue(any("operation geometry exceeds" in blocker for blocker in generator.orion_readiness_blockers(profile)))
 
-    def test_orion_state_meter_requires_confirmed_complete_physical_indices(self) -> None:
+    def test_orion_missing_physical_meter_is_capability_limit_not_readiness_blocker(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["channels"].pop("confirmed_indices")
         profile = generator.normalize_profile(data, path=path)
-        self.assertTrue(any("physical channel meter" in blocker for blocker in generator.orion_readiness_blockers(profile)))
+        blockers = generator.orion_readiness_blockers(profile)
+        self.assertNotIn("frame.state_report lacks confirmed physical channel meter mapping", blockers)
+        self.assertEqual(generator.classify_readiness(profile), generator.Readiness.SUPPORTED)
 
-    def test_orion_physical_meter_is_scoped_to_state_report(self) -> None:
+    def test_orion_disproven_physical_meter_is_not_emitted(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         profile = generator.normalize_profile(data, path=path)
@@ -847,10 +870,7 @@ class GeneratorTests(unittest.TestCase):
             if operation.get("op") == "indexed"
             and operation.get("index_field") == "physical_meter"
         ]
-        self.assertEqual(
-            state_meters,
-            [{"op": "indexed", "base": 157, "stride": 1, "index_field": "physical_meter", "width": 1, "max_index": 11}],
-        )
+        self.assertEqual(state_meters, [])
         leaked_frames = {
             frame_id
             for frame_id, operations in operations_by_frame.items()
@@ -859,7 +879,7 @@ class GeneratorTests(unittest.TestCase):
         }
         self.assertEqual(leaked_frames, set())
 
-    def test_orion_meter_removes_only_obsolete_channel_indexing(self) -> None:
+    def test_orion_meter_omits_disproven_channel_mapping(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         data["frame"]["meter_report"]["channel_meter_stride"] = 1
@@ -867,20 +887,10 @@ class GeneratorTests(unittest.TestCase):
         normalized = generator._normalized_profile_record(profile)
         meter = next(frame for frame in normalized["frames"] if frame["id"] == "meter_report")
         self.assertIn({"op": "fixed_byte", "offset": 0, "value": 0x75}, meter["operations"])
-        self.assertIn(
-            {
-                "op": "scalar",
-                "field": "channel_meter_base",
-                "offset": 32,
-                "width": 1,
-                "endian": "not_applicable",
-            },
-            meter["operations"],
-        )
         self.assertFalse(
             any(
-                operation.get("op") == "indexed"
-                and operation.get("index_field") == "channel_meter"
+                operation.get("field", "").startswith("channel_meter")
+                or operation.get("index_field") in {"channel_meter", "physical_meter"}
                 for operation in meter["operations"]
             )
         )
@@ -1112,12 +1122,8 @@ class GeneratorTests(unittest.TestCase):
             for query in normalized["startup_queries"]
         ]
         expected = [
-            (int(category, 0), index)
-            for category, count in sorted(
-                canonical.raw["frame"]["readback"]["category_counts"].items(),
-                key=lambda item: int(item[0], 0),
-            )
-            for index in range(count)
+            (int(query["category"], 0), query["index"])
+            for query in canonical.raw["frame"]["readback"]["startup_queries"]
         ]
         self.assertEqual(startup, expected)
         self.assertEqual(len(startup), 113)
@@ -1167,7 +1173,18 @@ class GeneratorTests(unittest.TestCase):
             ],
             [(3, 16)],
         )
-        self.assertEqual(len(orion["startup_queries"]), 113)
+        expected_startup = [(0x11, 0), (0x11, 1), (0x0B, 1), (0x0B, 2), (0x1B, 0)]
+        expected_startup.extend((0x1A, index) for index in range(16))
+        expected_startup.extend((0x03, index) for index in range(15))
+        for index in range(4):
+            expected_startup.extend([(0x04, index), (0x0B, 3)])
+        expected_startup.extend([(0x0A, 0), (0x15, 0), (0x0B, 0), (0x16, 0)])
+        expected_startup.extend((0x19, index) for index in range(64))
+        expected_startup.append((0x0B, 4))
+        self.assertEqual(
+            [(query["query_id"], query["sub_id"]) for query in orion["startup_queries"]],
+            expected_startup,
+        )
         self.assertFalse(
             any(
                 capability["kind"] == "link"

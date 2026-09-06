@@ -20,6 +20,7 @@ use crate::QueryRequest;
 enum MeterSource {
     MeterReport,
     StateReport,
+    Unavailable,
 }
 
 #[derive(Debug)]
@@ -36,6 +37,74 @@ pub struct ProfileDriver {
 }
 
 impl ProfileDriver {
+    fn validate_declared_state_meter_layout(
+        profile: &RuntimeProfile,
+        frame: &RuntimeFrame,
+    ) -> Result<bool, DriverError> {
+        let mut indexed = frame
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                FrameOperation::Indexed { index_field, .. } if index_field == "physical_meter" => {
+                    Some(operation)
+                }
+                _ => None,
+            });
+        let Some(operation) = indexed.next() else {
+            if frame.operations.iter().any(|operation| {
+                matches!(
+                    operation,
+                    FrameOperation::Scalar { field, .. } if field == "physical_meter"
+                )
+            }) {
+                return Err(DriverError::InvalidAction(
+                    "state physical meter must use an indexed mapping".into(),
+                ));
+            }
+            return Ok(false);
+        };
+        if indexed.next().is_some() {
+            return Err(DriverError::InvalidAction(
+                "state physical meter mapping is ambiguous".into(),
+            ));
+        }
+        let FrameOperation::Indexed {
+            width, max_index, ..
+        } = operation
+        else {
+            unreachable!("filtered state meter operation is indexed");
+        };
+        let physical_space = profile
+            .address_spaces
+            .iter()
+            .find(|space| space.id == "physical_inputs")
+            .ok_or_else(|| DriverError::InvalidAction("missing physical meter space".into()))?;
+        let physical_count = physical_space.count.ok_or_else(|| {
+            DriverError::InvalidAction("physical meter space is unbounded".into())
+        })?;
+        if physical_count == 0
+            || profile
+                .inputs
+                .iter()
+                .filter(|input| input.space_id == physical_space.space_id)
+                .count()
+                != usize::from(physical_count)
+        {
+            return Err(DriverError::InvalidAction(
+                "physical meter count does not match finite physical inputs".into(),
+            ));
+        }
+        let max_index = max_index.ok_or_else(|| {
+            DriverError::InvalidAction("state physical meter mapping is unbounded".into())
+        })?;
+        if *width != 1 || u32::from(max_index) + 1 != u32::from(physical_count) {
+            return Err(DriverError::InvalidAction(
+                "state physical meter layout is incomplete".into(),
+            ));
+        }
+        Ok(true)
+    }
+
     pub fn new(entry: RuntimeEntry) -> Result<Self, DriverError> {
         if entry.readiness != RuntimeReadiness::Supported {
             return Err(DriverError::UnsupportedAction(format!(
@@ -95,15 +164,27 @@ impl ProfileDriver {
                     && profile_codec::is_confirmed(&decoder.status)
             })
             .count();
-        let meter_source = if frame_index
+        let state_has_meter_layout = match frame_index
+            .get("state_report")
+            .and_then(|index| entry.profile.frames.get(*index))
+        {
+            Some(frame) => Self::validate_declared_state_meter_layout(&entry.profile, frame)?,
+            None => false,
+        };
+        let meter_frame_is_confirmed = frame_index
             .get("meter_report")
             .and_then(|index| entry.profile.frames.get(*index))
-            .is_some_and(|frame| profile_codec::is_confirmed(&frame.status))
-            && confirmed_meter_decoder_count == 1
-        {
+            .is_some_and(|frame| profile_codec::is_confirmed(&frame.status));
+        let meter_source = if meter_frame_is_confirmed && confirmed_meter_decoder_count == 1 {
             MeterSource::MeterReport
-        } else {
+        } else if meter_frame_is_confirmed {
+            return Err(DriverError::InvalidAction(
+                "confirmed meter_report requires exactly one confirmed decoder mapping".into(),
+            ));
+        } else if state_has_meter_layout {
             MeterSource::StateReport
+        } else {
+            MeterSource::Unavailable
         };
         for required in [
             "command",
@@ -1952,7 +2033,7 @@ impl DeviceDriver for ProfileDriver {
                     self.frame("meter_report")?,
                     readback.response_discriminator_offset,
                 ),
-                MeterSource::StateReport => {
+                MeterSource::StateReport | MeterSource::Unavailable => {
                     self.frame_index
                         .get("meter_report")
                         .and_then(|index| self.profile.frames.get(*index))
@@ -1979,8 +2060,10 @@ impl DeviceDriver for ProfileDriver {
             if discriminator != readback.response_discriminator {
                 // State-report profiles may suppress only a superseded meter
                 // response whose discriminator is proven by meter_report.
-                if matches!(self.meter_source, MeterSource::StateReport)
-                    && meter_discriminator == Some(discriminator)
+                if matches!(
+                    self.meter_source,
+                    MeterSource::StateReport | MeterSource::Unavailable
+                ) && meter_discriminator == Some(discriminator)
                 {
                     return Ok(None);
                 }

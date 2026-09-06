@@ -175,6 +175,136 @@ fn promoted_orion_fixture_constructs_profile_driver() {
 }
 
 #[test]
+fn promoted_orion_fixture_matches_current_generated_runtime_fields() {
+    let fixture = load_profile_pack(include_bytes!("fixtures/orion/profile_driver_pack.json"))
+        .expect("promoted Orion fixture")
+        .profiles
+        .into_iter()
+        .find(|entry| entry.id == "orion_studio_3")
+        .expect("fixture Orion profile");
+    let generated = load_profile_pack(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/device/generated_profiles.json"
+    )))
+    .expect("generated profile pack")
+    .profiles
+    .into_iter()
+    .find(|entry| entry.id == "orion_studio_3")
+    .expect("generated Orion profile");
+
+    macro_rules! assert_field {
+        ($name:literal, $left:expr, $right:expr) => {
+            assert_eq!($left, $right, "canonical Orion field mismatch: {}", $name);
+        };
+    }
+    assert_field!("id", fixture.id, generated.id);
+    assert_field!(
+        "profile.identity",
+        fixture.profile.identity,
+        generated.profile.identity
+    );
+    assert_field!(
+        "profile.transport",
+        fixture.profile.transport,
+        generated.profile.transport
+    );
+    assert_field!(
+        "profile.address_spaces",
+        fixture.profile.address_spaces,
+        generated.profile.address_spaces
+    );
+    assert_field!(
+        "profile.inputs",
+        fixture.profile.inputs,
+        generated.profile.inputs
+    );
+    assert_field!(
+        "profile.outputs",
+        fixture.profile.outputs,
+        generated.profile.outputs
+    );
+    assert_field!(
+        "profile.mixers",
+        fixture.profile.mixers,
+        generated.profile.mixers
+    );
+    assert_field!(
+        "profile.state_report",
+        fixture.profile.state_report,
+        generated.profile.state_report
+    );
+    assert_field!(
+        "profile.link_domains",
+        fixture.profile.link_domains,
+        generated.profile.link_domains
+    );
+    assert_field!(
+        "profile.routing_groups",
+        fixture.profile.routing_groups,
+        generated.profile.routing_groups
+    );
+    assert_field!(
+        "profile.frames",
+        fixture.profile.frames,
+        generated.profile.frames
+    );
+    assert_field!(
+        "profile.decoders",
+        fixture.profile.decoders,
+        generated.profile.decoders
+    );
+    assert_field!(
+        "profile.params",
+        fixture.profile.params,
+        generated.profile.params
+    );
+    assert_field!(
+        "profile.constraints",
+        fixture.profile.constraints,
+        generated.profile.constraints
+    );
+    assert_field!(
+        "profile.hazards",
+        fixture.profile.hazards,
+        generated.profile.hazards
+    );
+    assert_field!(
+        "profile.startup_queries",
+        fixture.profile.startup_queries,
+        generated.profile.startup_queries
+    );
+    assert_field!(
+        "profile.readback",
+        fixture.profile.readback,
+        generated.profile.readback
+    );
+    assert_field!("readiness", fixture.readiness, generated.readiness);
+    assert_field!("driver_kind", fixture.driver_kind, generated.driver_kind);
+    assert_field!(
+        "support_reason",
+        fixture.support_reason,
+        generated.support_reason
+    );
+
+    // Provenance must follow the current generated source without pinning a
+    // source hash literal in this regression test.
+    assert_field!(
+        "provenance.source_path",
+        fixture.profile.provenance.source_path,
+        generated.profile.provenance.source_path
+    );
+    assert_field!(
+        "provenance.generator_version",
+        fixture.profile.provenance.generator_version,
+        generated.profile.provenance.generator_version
+    );
+    assert_eq!(
+        fixture.profile.provenance.source_sha256, generated.profile.provenance.source_sha256,
+        "canonical Orion provenance hash must follow generated output"
+    );
+}
+
+#[test]
 fn rejects_indexed_operation_when_final_reachable_index_exceeds_report() {
     let mut pack = fixture_pack();
     pack.profiles[0].profile.frames[0]

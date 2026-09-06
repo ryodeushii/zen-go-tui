@@ -922,9 +922,21 @@ fn orion_renders_a_rich_card_for_each_physical_preamp_only() {
     let text = terminal_text(&terminal);
 
     assert_eq!(text.matches("OBS").count(), 12);
+    assert_eq!(text.matches("OBS ?").count(), 12);
+    assert!(!text.contains("OBS -∞ dB"));
     assert!(text.matches("GAIN").count() >= 12);
     assert!(text.contains("ADAT 1"));
     assert!(text.contains("S/PDIF L"));
+}
+
+#[test]
+fn orion_physical_meter_source_is_unavailable_without_fabricated_values() {
+    let state = orion_ui_state();
+    assert!(state.input_spaces[0]
+        .inputs
+        .iter()
+        .all(|input| input.meter.is_none()));
+    assert_eq!(super::layouts::meter_slider_label("OBS", None), "OBS ?");
 }
 
 #[test]
