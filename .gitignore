@@ -2,3 +2,4 @@ target/
 antelope_pcap/
 .chrome-devtools-cache
 .worktrees/
+**/__pycache__
