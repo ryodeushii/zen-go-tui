@@ -335,6 +335,15 @@ pub struct RuntimeRoutingSourceDomain {
     pub evidence: String,
 }
 
+/// Explicit source indices accepted for inbound routing readback only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeRoutingReadbackSourceDomain {
+    pub bank: u8,
+    pub indices: Vec<u8>,
+    pub status: String,
+    pub evidence: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRoutingGroup {
     pub destination: u16,
@@ -342,6 +351,8 @@ pub struct RuntimeRoutingGroup {
     pub channel_count: u16,
     #[serde(default)]
     pub source_domains: Vec<RuntimeRoutingSourceDomain>,
+    #[serde(default)]
+    pub readback_source_domains: Vec<RuntimeRoutingReadbackSourceDomain>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1013,6 +1024,24 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                 });
             }
         }
+        let mut readback_banks = HashSet::new();
+        for (domain_index, domain) in group.readback_source_domains.iter().enumerate() {
+            if !readback_banks.insert(domain.bank)
+                || domain.bank == 0x0c
+                || banks.contains(&domain.bank)
+                || domain.indices.is_empty()
+                || domain.indices.len() > 256
+                || domain.indices.windows(2).any(|pair| pair[0] >= pair[1])
+                || !is_observed(&domain.status)
+                || domain.evidence.trim().is_empty()
+            {
+                return Err(ProfileLoadError::InvalidReportGeometry {
+                    profile_id: profile_id.to_owned(),
+                    field: format!("profiles[{entry_index}].routing_groups[{group_index}].readback_source_domains[{domain_index}]"),
+                    detail: "routing readback source domains require unique write-distinct banks, sorted finite indices within 1..=256, observed evidence, and non-empty provenance".into(),
+                });
+            }
+        }
         if selectable_profile && group.source_domains.is_empty() {
             return Err(ProfileLoadError::MissingRequiredField {
                 profile_id: profile_id.to_owned(),
@@ -1531,6 +1560,10 @@ fn validate_readback(
 
 fn is_confirmed(status: &str) -> bool {
     status.trim().to_ascii_lowercase().starts_with("confirm")
+}
+
+fn is_observed(status: &str) -> bool {
+    status.trim().to_ascii_lowercase().starts_with("observ")
 }
 
 mod query_requests {

@@ -63,8 +63,8 @@ pub use profile::{
     RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
     RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping, RuntimeMeterTarget,
     RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile, RuntimeProvenance, RuntimeReadiness,
-    RuntimeRoutingGroup, RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport,
-    SafeQuery, PROFILE_PACK_SCHEMA_VERSION,
+    RuntimeRoutingGroup, RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain,
+    RuntimeStateReport, RuntimeTransport, SafeQuery, PROFILE_PACK_SCHEMA_VERSION,
 };
 pub use query::{control_panel_startup_queries, DeviceMetadata, QueryRequest, QueryResponse};
 

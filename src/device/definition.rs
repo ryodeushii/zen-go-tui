@@ -238,11 +238,20 @@ pub struct LinkDomainDefinition {
     pub evidence: &'static str,
 }
 
-/// One finite source-bank domain allowed for a routing destination.
+/// One finite source-bank domain allowed for a routing destination's writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoutingSourceDomainDefinition {
     pub bank: u8,
     pub index_count: u16,
+    pub status: Status,
+    pub evidence: &'static str,
+}
+
+/// One explicitly observed source-bank/index set accepted by a routing readback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingReadbackSourceDomainDefinition {
+    pub bank: u8,
+    pub indices: &'static [u8],
     pub status: Status,
     pub evidence: &'static str,
 }
@@ -254,6 +263,7 @@ pub struct RoutingGroupDefinition {
     pub name: &'static str,
     pub channel_count: u16,
     pub source_domains: &'static [RoutingSourceDomainDefinition],
+    pub readback_source_domains: &'static [RoutingReadbackSourceDomainDefinition],
 }
 
 /// A scalar field in a command/report layout.

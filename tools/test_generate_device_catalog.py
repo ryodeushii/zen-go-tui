@@ -1398,6 +1398,75 @@ class GeneratorTests(unittest.TestCase):
             },
         )
 
+    def test_orion_readback_domain_is_observed_and_write_distinct(self) -> None:
+        profiles_dir = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
+        profile = generator.load_profile(ORION_PROFILE, profiles_dir)
+        normalized = generator._normalized_profile_record(profile)
+        groups = normalized["routing_groups"]
+
+        self.assertEqual(
+            groups[1]["readback_source_domains"],
+            [{
+                "bank": 2,
+                "indices": [0, 1],
+                "status": "observed",
+                "evidence": "Verified Orion routing readback: AntelopeINIT.json frame 16384, category 0x03/index 1, bytes 17..20 = 02 00 02 01 (Computer Playback 1-2).",
+            }],
+        )
+        self.assertNotIn(2, {domain["bank"] for domain in groups[1]["source_domains"]})
+        self.assertNotIn(12, {domain["bank"] for domain in groups[1]["source_domains"]})
+
+    def test_malformed_observed_readback_domains_are_rejected(self) -> None:
+        for value in (
+            {"indices": [0, 0], "status": "observed", "evidence": "capture"},
+            {"indices": [1, 0], "status": "observed", "evidence": "capture"},
+            {"indices": [0, 1], "status": "confirmed", "evidence": "capture"},
+            {"indices": [0, 1], "status": "observed", "evidence": ""},
+        ):
+            with self.subTest(value=value):
+                data = profile_data("Antelope Orion Studio III", "0xa221")
+                data.pop("runtime_topology")
+                routing = data["frame"]["routing_command"]
+                routing.update(
+                    {
+                        "status": "confirmed",
+                        "addressable_destinations": {"0": "mixer"},
+                        "destination_channels": {"0": 16},
+                        "source_banks": {
+                            "0x00": {"index_count": 2, "evidence": "idx 0-1 confirmed"}
+                        },
+                        "readback_source_banks": {"0x02": value},
+                    }
+                )
+                with self.assertRaisesRegex(generator.ProfileError, "readback_source_banks"):
+                    generator.normalize_profile(data)
+
+    def test_observed_readback_does_not_promote_unknown_bank(self) -> None:
+        data = profile_data("Antelope Orion Studio III", "0xa221")
+        data.pop("runtime_topology")
+        routing = data["frame"]["routing_command"]
+        routing.update(
+            {
+                "status": "confirmed",
+                "addressable_destinations": {"0": "mixer"},
+                "destination_channels": {"0": 16},
+                "source_banks": {
+                    "0x00": {"index_count": 2, "evidence": "idx 0-1 confirmed"}
+                },
+                "readback_source_banks": {
+                    "0x0c": {
+                        "indices": [0, 1],
+                        "status": "observed",
+                        "evidence": "unidentified source observation",
+                    }
+                },
+            }
+        )
+        profile = generator.normalize_profile(data)
+        self.assertEqual(
+            generator._derived_routing_readback_source_domains(profile, routing, True), []
+        )
+
     def test_duplicate_normalized_source_banks_are_rejected(self) -> None:
         data = profile_data("Antelope Orion Studio III", "0xa221")
         data.pop("runtime_topology")

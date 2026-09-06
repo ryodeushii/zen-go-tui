@@ -2158,6 +2158,28 @@ fn constructor_rejects_invalid_destination_source_domains_before_io() {
 }
 
 #[test]
+fn constructor_rejects_invalid_observed_readback_domains_before_io() {
+    for mutate in 0..7 {
+        let mut entry = fixture_entry();
+        let domain = &mut entry.profile.routing_groups[0].readback_source_domains[0];
+        match mutate {
+            0 => domain.indices.clear(),
+            1 => domain.indices = vec![0, 0],
+            2 => domain.indices = vec![1, 0],
+            3 => domain.bank = 0,
+            4 => domain.bank = 0x0c,
+            5 => domain.status = "confirmed".into(),
+            6 => domain.evidence.clear(),
+            _ => unreachable!(),
+        }
+        assert!(
+            ProfileDriver::new(entry).is_err(),
+            "readback domain mutation {mutate}"
+        );
+    }
+}
+
+#[test]
 fn complete_routing_group_preserves_every_ordered_source_pair() {
     let driver = profile_driver_from_fixture();
     assert!(driver
@@ -2259,6 +2281,64 @@ fn inbound_readback_bounds_and_complete_patches_are_enforced() {
     outside[12] = 15;
     assert!(driver.decode(&outside).is_err());
     assert!(driver.decode(&mixer_bytes[..40]).is_err());
+}
+
+#[test]
+fn observed_readback_domains_accept_host_dependent_bank_without_authorizing_writes() {
+    let driver = profile_driver_from_fixture();
+    let mut routing = vec![0; 320];
+    routing[0] = 0x75;
+    routing[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+    routing[8] = 0x03;
+    routing[12] = 1;
+    routing[16] = 1;
+    routing[17..21].copy_from_slice(&[0x02, 0x00, 0x02, 0x01]);
+
+    let DeviceEvent::QueryReply {
+        patch: Some(DynamicStatePatch::Routing(group)),
+        ..
+    } = driver
+        .decode(&routing)
+        .expect("observed bank-2 routing readback")
+        .expect("routing event")
+    else {
+        panic!("routing patch")
+    };
+    assert_eq!(
+        group.sources,
+        vec![
+            RoutingSource { bank: 2, index: 0 },
+            RoutingSource { bank: 2, index: 1 },
+        ]
+    );
+
+    let outbound_error = driver
+        .encode(Action::SetRoutingGroup {
+            destination: 1,
+            changed_channel: None,
+            sources: vec![
+                RoutingSource { bank: 2, index: 0 },
+                RoutingSource { bank: 2, index: 1 },
+            ],
+        })
+        .expect_err("observed readback domain must not authorize writes");
+    assert!(outbound_error.to_string().contains("source bank 2"));
+
+    let mut unlisted = routing.clone();
+    unlisted[18] = 2;
+    let unlisted_error = driver
+        .decode(&unlisted)
+        .expect_err("unlisted observed source index must reject");
+    assert!(unlisted_error
+        .to_string()
+        .contains("not in the profile readback domain"));
+
+    let mut unknown = routing;
+    unknown[17] = 0x0c;
+    let unknown_error = driver
+        .decode(&unknown)
+        .expect_err("unknown bank 0x0c must reject");
+    assert!(unknown_error.to_string().contains("source bank 12"));
 }
 
 #[test]

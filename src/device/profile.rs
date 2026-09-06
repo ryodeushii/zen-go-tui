@@ -13,7 +13,8 @@ use antelope_protocol::{
     RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
     RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping, RuntimeMeterTarget,
     RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile, RuntimeProvenance, RuntimeReadiness,
-    RuntimeRoutingGroup, RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport,
+    RuntimeRoutingGroup, RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain,
+    RuntimeStateReport, RuntimeTransport,
 };
 use std::collections::HashSet;
 
@@ -324,6 +325,16 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                         .map(|domain| RuntimeRoutingSourceDomain {
                             bank: domain.bank,
                             index_count: domain.index_count,
+                            status: status(domain.status).into(),
+                            evidence: domain.evidence.into(),
+                        })
+                        .collect(),
+                    readback_source_domains: group
+                        .readback_source_domains
+                        .iter()
+                        .map(|domain| RuntimeRoutingReadbackSourceDomain {
+                            bank: domain.bank,
+                            indices: domain.indices.to_vec(),
                             status: status(domain.status).into(),
                             evidence: domain.evidence.into(),
                         })

@@ -490,6 +490,26 @@ impl ProfileDriver {
                     group.destination
                 )));
             }
+            let mut readback_banks = HashSet::new();
+            if group.readback_source_domains.iter().any(|domain| {
+                !readback_banks.insert(domain.bank)
+                    || domain.bank == 0x0c
+                    || banks.contains(&domain.bank)
+                    || domain.indices.is_empty()
+                    || domain.indices.len() > 256
+                    || domain.indices.windows(2).any(|pair| pair[0] >= pair[1])
+                    || !domain
+                        .status
+                        .trim()
+                        .to_ascii_lowercase()
+                        .starts_with("observ")
+                    || domain.evidence.trim().is_empty()
+            }) {
+                return Err(DriverError::InvalidAction(format!(
+                    "routing destination {} has invalid observed readback source domains",
+                    group.destination
+                )));
+            }
         }
         let mut link_spaces = HashSet::new();
         if entry.profile.link_domains.is_empty()
@@ -1881,15 +1901,24 @@ impl ProfileDriver {
                 bank: record[0],
                 index: u16::from(record[1]),
             };
-            let Some(domain) = group
+            if let Some(domain) = group
                 .source_domains
                 .iter()
                 .find(|domain| domain.bank == source.bank)
-            else {
+            {
+                if source.index >= domain.index_count {
+                    return Err(DriverError::InvalidAction(format!("routing readback category {:#04x} index {destination} channel {channel} source {}:{} outside 0..{}", self.routing_readback_category, source.bank, source.index, domain.index_count - 1)));
+                }
+            } else if let Some(domain) = group
+                .readback_source_domains
+                .iter()
+                .find(|domain| domain.bank == source.bank)
+            {
+                if !domain.indices.contains(&(source.index as u8)) {
+                    return Err(DriverError::InvalidAction(format!("routing readback category {:#04x} index {destination} channel {channel} observed source {}:{} is not in the profile readback domain", self.routing_readback_category, source.bank, source.index)));
+                }
+            } else {
                 return Err(DriverError::InvalidAction(format!("routing readback category {:#04x} index {destination} channel {channel} source bank {} is unavailable", self.routing_readback_category, source.bank)));
-            };
-            if source.index >= domain.index_count {
-                return Err(DriverError::InvalidAction(format!("routing readback category {:#04x} index {destination} channel {channel} source {}:{} outside 0..{}", self.routing_readback_category, source.bank, source.index, domain.index_count - 1)));
             }
             sources.push(source);
         }

@@ -1925,6 +1925,34 @@ def _index_count_from_raw(value: Any, context: str) -> tuple[int | None, str]:
     return expected, evidence
 
 
+def _readback_indices_from_raw(value: Any, context: str) -> tuple[list[int], str, str]:
+    """Read an explicitly observed, finite source-index set for readback only."""
+
+    if not isinstance(value, Mapping):
+        raise ProfileError(f"{context} must be an object")
+    raw_indices = value.get("indices")
+    if not isinstance(raw_indices, list) or not raw_indices:
+        raise ProfileError(f"{context}.indices must be a non-empty array")
+    if len(raw_indices) > 256:
+        raise ProfileError(f"{context}.indices must contain at most 256 entries")
+    indices = [
+        _checked_u8(item, f"{context}.indices[{index}]")
+        for index, item in enumerate(raw_indices)
+    ]
+    if any(first >= second for first, second in zip(indices, indices[1:])):
+        raise ProfileError(f"{context}.indices must be sorted and contain no duplicates")
+    status = value.get("status")
+    if not isinstance(status, str) or _normalized_status(status) != "observed":
+        raise ProfileError(f"{context}.status must be observed")
+    evidence = value.get("evidence")
+    if not isinstance(evidence, str) or not evidence.strip():
+        raise ProfileError(f"{context}.evidence must be a non-empty string")
+    for field in ("runtime_status", "notes"):
+        if field in value and not isinstance(value[field], str):
+            raise ProfileError(f"{context}.{field} must be a string")
+    return indices, status, evidence
+
+
 _NEGATIVE_QUALIFIER_PATTERN = re.compile(
     r"\b(?:partial|partly|unconfirmed|unverified|unknown|ambiguous|incomplete|conflicting|superseded|untested)\b"
     r"|\bhost[-\s]+dependent\b",
@@ -2233,6 +2261,46 @@ def _derived_routing_source_domains(
     ]
 
 
+def _derived_routing_readback_source_domains(
+    profile: NormalizedProfile, route: Mapping[str, Any], confirmed: bool
+) -> list[dict[str, Any]]:
+    """Build explicit observed source sets without widening routing writes."""
+
+    if "readback_source_banks" not in route:
+        return []
+    raw_banks = route["readback_source_banks"]
+    if not isinstance(raw_banks, Mapping):
+        raise ProfileError(
+            "frame.routing_command.readback_source_banks must be an object"
+        )
+    domains: list[dict[str, Any]] = []
+    seen_banks: set[int] = set()
+    for raw_bank, raw_evidence in raw_banks.items():
+        bank = _checked_u8(
+            raw_bank, "frame.routing_command.readback_source_banks.bank"
+        )
+        if bank in seen_banks:
+            raise ProfileError(
+                "frame.routing_command.readback_source_banks contains duplicate source bank "
+                f"{bank:#04x}"
+            )
+        seen_banks.add(bank)
+        context = f"frame.routing_command.readback_source_banks.{bank:#04x}"
+        indices, status, evidence = _readback_indices_from_raw(raw_evidence, context)
+        # Only the specifically profiled Orion computer-playback observation is
+        # actionable to the decoder. Other raw source-bank facts remain opaque.
+        if _is_orion(profile) and bank == 0x02 and confirmed:
+            domains.append(
+                {
+                    "bank": bank,
+                    "indices": indices,
+                    "status": status,
+                    "evidence": evidence,
+                }
+            )
+    return domains
+
+
 def _derived_link_domains(
     profile: NormalizedProfile,
 ) -> list[dict[str, Any]]:
@@ -2321,16 +2389,20 @@ def _derive_runtime_topology(profile: NormalizedProfile) -> Mapping[str, Any] | 
         }
 
     groups, routing_confirmed = _derived_routing_records(profile)
-    source_domains = _derived_routing_source_domains(
-        profile, _raw_control_frame(profile, "routing_command") or {}, routing_confirmed
+    route = _raw_control_frame(profile, "routing_command") or {}
+    source_domains = _derived_routing_source_domains(profile, route, routing_confirmed)
+    readback_source_domains = _derived_routing_readback_source_domains(
+        profile, route, routing_confirmed
     )
-    if source_domains:
-        for group in groups:
-            if not group.get("_source_domains_confirmed", False):
-                continue
-            group["source_domains"] = [
-                dict(domain) for domain in source_domains[0]["banks"]
-            ]
+    for group in groups:
+        group["readback_source_domains"] = [
+            dict(domain) for domain in readback_source_domains
+        ]
+        if not source_domains or not group.get("_source_domains_confirmed", False):
+            continue
+        group["source_domains"] = [
+            dict(domain) for domain in source_domains[0]["banks"]
+        ]
     if groups or _raw_control_frame(profile, "routing_command") is not None:
         topology["routing_groups"] = groups
     if source_domains:
@@ -2466,6 +2538,62 @@ def _routing_source_domain_sets(
     return result
 
 
+def _routing_readback_source_domains(
+    value: Any, context: str
+) -> list[dict[str, Any]]:
+    """Validate one per-destination observed readback source set."""
+
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ProfileError(f"{context} must be an array")
+    result: list[dict[str, Any]] = []
+    seen_banks: set[int] = set()
+    for domain_index, raw_domain in enumerate(value):
+        domain_context = f"{context}[{domain_index}]"
+        if not isinstance(raw_domain, Mapping):
+            raise ProfileError(f"{domain_context} must be an object")
+        bank = _checked_u8(raw_domain.get("bank"), f"{domain_context}.bank")
+        indices = raw_domain.get("indices")
+        if not isinstance(indices, list) or not indices or len(indices) > 256:
+            raise ProfileError(
+                f"{domain_context}.indices must be a non-empty array of at most 256 entries"
+            )
+        parsed_indices = [
+            _checked_u8(item, f"{domain_context}.indices[{index}]")
+            for index, item in enumerate(indices)
+        ]
+        if any(
+            first >= second for first, second in zip(parsed_indices, parsed_indices[1:])
+        ):
+            raise ProfileError(
+                f"{domain_context}.indices must be sorted and contain no duplicates"
+            )
+        status = raw_domain.get("status")
+        evidence = raw_domain.get("evidence")
+        if (
+            bank in seen_banks
+            or bank == 0x0C
+            or not isinstance(status, str)
+            or _normalized_status(status) != "observed"
+            or not isinstance(evidence, str)
+            or not evidence.strip()
+        ):
+            raise ProfileError(
+                f"{domain_context} requires unique bank, sorted finite indices, observed status, and evidence"
+            )
+        seen_banks.add(bank)
+        result.append(
+            {
+                "bank": bank,
+                "indices": parsed_indices,
+                "status": status,
+                "evidence": evidence,
+            }
+        )
+    return result
+
+
 def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dict[str, Any]]]:
     topology = _confirmed_runtime_topology(profile)
     if topology is None:
@@ -2504,6 +2632,10 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
                 raise ProfileError(f"{context}.source_domain references an unknown confirmed domain")
             else:
                 source_domains = [dict(domain) for domain in source_domain_sets[source_domain_id]]
+            readback_source_domains = _routing_readback_source_domains(
+                group.get("readback_source_domains"),
+                f"{context}.readback_source_domains",
+            )
             seen.add(destination)
             result.append(
                 {
@@ -2511,6 +2643,7 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
                     "name": name,
                     "channel_count": channel_count,
                     "source_domains": source_domains,
+                    "readback_source_domains": readback_source_domains,
                 }
             )
         return mixer["has_master"], result
@@ -2546,6 +2679,10 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
         source_domains = group.get("source_domains", [])
         if not isinstance(source_domains, list):
             raise ProfileError(f"{context}.source_domains must be an array")
+        readback_source_domains = _routing_readback_source_domains(
+            group.get("readback_source_domains"),
+            f"{context}.readback_source_domains",
+        )
         seen.add(destination)
         result.append(
             {
@@ -2553,6 +2690,7 @@ def _runtime_topology(profile: NormalizedProfile) -> tuple[bool | None, list[dic
                 "name": name,
                 "channel_count": channel_count,
                 "source_domains": [dict(domain) for domain in source_domains],
+                "readback_source_domains": readback_source_domains,
             }
         )
     return has_master, result
@@ -4222,6 +4360,14 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
                     {**domain, "status": _normalized_status(domain["status"])}
                     for domain in group["source_domains"]
                 ],
+                "readback_source_domains": [
+                    {
+                        **domain,
+                        "indices": list(domain["indices"]),
+                        "status": _normalized_status(domain["status"]),
+                    }
+                    for domain in group.get("readback_source_domains", [])
+                ],
             }
             for group in _build_routing_groups(profile)
         ],
@@ -4555,7 +4701,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         "    InputCapabilityDefinition, InputControlKind,",
         "    DecoderDefinition, DeviceDefinition, DeviceEntry, DeviceIdentity, FrameDefinition,",
         "    FrameEndianDefinition, FrameFieldDefinition, FrameKind, FrameOperationDefinition, HazardDefinition, InputDefinition, LinkDomainDefinition, LinkDomainKind, MixerDefinition,",
-        "    OutputDefinition, ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReference, RoutingGroupDefinition, RoutingSourceDomainDefinition,",
+        "    OutputDefinition, ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReference, RoutingGroupDefinition, RoutingReadbackSourceDomainDefinition, RoutingSourceDomainDefinition,",
         "    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition,",
         "    SafeQueryDefinition, MixerReadbackLayoutDefinition, StateReportDefinition,",
         "    CandidatePreampMeterDefinition, MeterMappingDefinition, MeterTargetDefinition,",
@@ -4668,6 +4814,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         lines.append("];\n")
 
         routing_source_helpers: list[str] = []
+        routing_readback_helpers: list[str] = []
         for index, group in enumerate(routing_groups):
             helper = f"{slug}_ROUTING_GROUP_{index}_SOURCE_DOMAINS"
             routing_source_helpers.append(helper)
@@ -4679,12 +4826,35 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                     f"status: Status::{_status_variant(domain['status'])}, evidence: {_rust_string(domain['evidence'])} }},"
                 )
             lines.append("];\n")
+
+            readback_helper = f"{slug}_ROUTING_GROUP_{index}_READBACK_SOURCE_DOMAINS"
+            routing_readback_helpers.append(readback_helper)
+            readback_domains = group.get("readback_source_domains", [])
+            readback_index_helpers: list[str] = []
+            for readback_index, domain in enumerate(readback_domains):
+                indices_helper = (
+                    f"{slug}_ROUTING_GROUP_{index}_READBACK_DOMAIN_{readback_index}_INDICES"
+                )
+                readback_index_helpers.append(indices_helper)
+                lines.append(
+                    f"static {indices_helper}: &[u8] = "
+                    f"{_rust_slice(_rust_u8(item) for item in domain['indices'])};"
+                )
+            lines.append(f"static {readback_helper}: &[RoutingReadbackSourceDomainDefinition] = &[")
+            for domain, indices_helper in zip(readback_domains, readback_index_helpers):
+                lines.append(
+                    "    RoutingReadbackSourceDomainDefinition { "
+                    f"bank: {_rust_u8(domain['bank'])}, indices: {indices_helper}, "
+                    f"status: Status::{_status_variant(domain['status'])}, evidence: {_rust_string(domain['evidence'])} }},"
+                )
+            lines.append("];\n")
         lines.append(f"static {slug}_ROUTING_GROUPS: &[RoutingGroupDefinition] = &[")
         for index, group in enumerate(routing_groups):
             lines.append(
                 "    RoutingGroupDefinition { "
                 f"destination: {_rust_u16(group['destination'])}, name: {_rust_string(group['name'])}, "
-                f"channel_count: {_rust_u16(group['channel_count'])}, source_domains: {routing_source_helpers[index]} }},"
+                f"channel_count: {_rust_u16(group['channel_count'])}, source_domains: {routing_source_helpers[index]}, "
+                f"readback_source_domains: {routing_readback_helpers[index]} }},"
             )
         lines.append("];\n")
 
