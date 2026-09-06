@@ -1,9 +1,10 @@
 //! Owned, validated runtime profile packs.
 
-use crate::{types::PanState, QueryRequest};
+use crate::{types::PanState, QueryRequest, SNAPSHOT_PAYLOAD_OFFSET};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::OnceLock;
 
 pub const PROFILE_PACK_SCHEMA_VERSION: u16 = 1;
 
@@ -91,10 +92,51 @@ pub struct MixerReadbackLayout {
     pub supported_fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CandidatePreampMeter {
     pub input_index: u16,
+    /// Byte offset relative to the state-report payload (after its 0x10-byte header).
     pub offset: usize,
+    /// Inclusive raw-byte ranges accepted as a candidate meter value.
+    pub raw_value_ranges: Vec<(u8, u8)>,
+    pub status: String,
+    pub confidence: String,
+    pub caveat: String,
+}
+
+impl CandidatePreampMeter {
+    /// Returns whether a raw byte belongs to this profile-owned candidate lane.
+    pub fn accepts(&self, raw: u8) -> bool {
+        self.raw_value_ranges
+            .iter()
+            .any(|(minimum, maximum)| (*minimum..=*maximum).contains(&raw))
+    }
+}
+
+/// Profile-generated Zen Go candidates retained only for legacy profile-less parsers.
+pub(crate) fn legacy_zen_go_candidate_preamp_meters() -> &'static [CandidatePreampMeter] {
+    static METERS: OnceLock<Vec<CandidatePreampMeter>> = OnceLock::new();
+    METERS
+        .get_or_init(|| {
+            let meters: Vec<CandidatePreampMeter> = serde_json::from_slice(include_bytes!(
+                "legacy_zen_go_candidate_preamp_meters.json"
+            ))
+            .expect("generated legacy Zen Go candidate meter artifact must be valid JSON");
+            assert!(
+                meters.len() == 2
+                    && meters
+                        .iter()
+                        .enumerate()
+                        .all(|(index, meter)| meter.input_index == index as u16
+                            && !meter.raw_value_ranges.is_empty()
+                            && !meter.status.trim().is_empty()
+                            && !meter.confidence.trim().is_empty()
+                            && !meter.caveat.trim().is_empty()),
+                "generated legacy Zen Go candidate meter artifact must retain inputs 0 and 1 with provenance"
+            );
+            meters
+        })
+        .as_slice()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -785,10 +827,14 @@ impl RuntimeProfile {
         &self.mixers
     }
 
+    pub fn candidate_preamp_meters(&self) -> &[CandidatePreampMeter] {
+        self.state_report.as_ref().map_or(&[], |state_report| {
+            state_report.candidate_preamp_meters.as_slice()
+        })
+    }
+
     pub fn candidate_preamp_meter(&self, input_index: u16) -> Option<usize> {
-        self.state_report
-            .as_ref()?
-            .candidate_preamp_meters
+        self.candidate_preamp_meters()
             .iter()
             .find(|meter| meter.input_index == input_index)
             .map(|meter| meter.offset)
@@ -1141,17 +1187,84 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
             });
         }
     }
-    if let (Some(report_size), Some(state_report)) =
-        (profile.transport.report_size, profile.state_report.as_ref())
-    {
+    if let Some(state_report) = profile.state_report.as_ref() {
+        if !state_report.candidate_preamp_meters.is_empty()
+            && profile.transport.report_size.is_none()
+        {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field: format!("profiles[{entry_index}].state_report.candidate_preamp_meters"),
+                detail: "candidate meters require a finite transport.report_size".into(),
+            });
+        }
+        let mut input_indices = HashSet::new();
         for (meter_index, meter) in state_report.candidate_preamp_meters.iter().enumerate() {
-            if meter.offset >= usize::from(report_size) {
+            let field = format!(
+                "profiles[{entry_index}].state_report.candidate_preamp_meters[{meter_index}]"
+            );
+            if !input_indices.insert(meter.input_index) {
                 return Err(ProfileLoadError::InvalidReportGeometry {
                     profile_id: profile_id.to_owned(),
-                    field: format!(
-                        "profiles[{entry_index}].state_report.candidate_preamp_meters[{meter_index}].offset"
-                    ),
-                    detail: format!("offset {} exceeds state report size {report_size}", meter.offset),
+                    field: format!("{field}.input_index"),
+                    detail: "candidate input index is declared more than once".into(),
+                });
+            }
+            if !profile
+                .inputs
+                .iter()
+                .any(|input| input.space == "physical_inputs" && input.index == meter.input_index)
+            {
+                return Err(ProfileLoadError::InvalidReportGeometry {
+                    profile_id: profile_id.to_owned(),
+                    field: format!("{field}.input_index"),
+                    detail: "candidate meter input is not a declared physical input".into(),
+                });
+            }
+            if let Some(report_size) = profile.transport.report_size {
+                let full_offset = SNAPSHOT_PAYLOAD_OFFSET
+                    .checked_add(meter.offset)
+                    .ok_or_else(|| ProfileLoadError::InvalidReportGeometry {
+                        profile_id: profile_id.to_owned(),
+                        field: format!("{field}.offset"),
+                        detail: "payload offset overflows report geometry".into(),
+                    })?;
+                if full_offset >= usize::from(report_size) {
+                    return Err(ProfileLoadError::InvalidReportGeometry {
+                        profile_id: profile_id.to_owned(),
+                        field: format!("{field}.offset"),
+                        detail: format!(
+                            "payload offset {} (full report {}) exceeds state report size {report_size}",
+                            meter.offset, full_offset
+                        ),
+                    });
+                }
+            }
+            if meter.status.trim().is_empty()
+                || meter.confidence.trim().is_empty()
+                || meter.caveat.trim().is_empty()
+            {
+                return Err(ProfileLoadError::InvalidReportGeometry {
+                    profile_id: profile_id.to_owned(),
+                    field,
+                    detail: "candidate meters require status, confidence, and caveat".into(),
+                });
+            }
+            if meter.raw_value_ranges.is_empty()
+                || meter
+                    .raw_value_ranges
+                    .iter()
+                    .any(|(minimum, maximum)| minimum > maximum)
+                || meter
+                    .raw_value_ranges
+                    .windows(2)
+                    .any(|ranges| ranges[0].1 >= ranges[1].0)
+            {
+                return Err(ProfileLoadError::InvalidReportGeometry {
+                    profile_id: profile_id.to_owned(),
+                    field: format!("{field}.raw_value_ranges"),
+                    detail:
+                        "candidate raw value ranges must be non-empty, ordered, and non-overlapping"
+                            .into(),
                 });
             }
         }

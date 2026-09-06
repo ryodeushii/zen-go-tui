@@ -1,11 +1,11 @@
 //! Mixer-related types: surfaces, strips, assignments, links, passive decode.
 
+use crate::profile::{legacy_zen_go_candidate_preamp_meters, CandidatePreampMeter};
 use crate::types::{PanState, Surface};
 use crate::types::{
     OFFSET_METER_LANES_END, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
     OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX1_PRIMARY, OFFSET_MIX2_LANE_A,
-    OFFSET_MIX2_LANE_B, OFFSET_MIX2_PRIMARY, OFFSET_PREAMP1_METER, OFFSET_PREAMP2_METER,
-    OFFSET_SURFACE_SELECTOR, SURFACE_CODE_MONITOR_HP1,
+    OFFSET_MIX2_LANE_B, OFFSET_MIX2_PRIMARY, OFFSET_SURFACE_SELECTOR, SURFACE_CODE_MONITOR_HP1,
 };
 
 /// Which mixer surface (mix bus) a strip belongs to.
@@ -465,11 +465,11 @@ fn decode_strip_meter(payload: &[u8], channel: u8) -> Option<u8> {
         .filter(|raw| *raw <= 0x60)
 }
 
-fn decode_preamp_meter(payload: &[u8], offset: usize) -> Option<u8> {
+fn decode_preamp_meter(payload: &[u8], meter: &CandidatePreampMeter) -> Option<u8> {
     payload
-        .get(offset)
+        .get(meter.offset)
         .copied()
-        .filter(|raw| *raw != 0x00 && (*raw <= 0x49 || *raw == 0x52))
+        .filter(|raw| meter.accepts(*raw))
 }
 
 fn decode_mute_from_group(
@@ -559,11 +559,34 @@ fn decode_link_state(payload: &[u8]) -> Option<bool> {
     }
 }
 
-/// Decodes passive mixer state from a snapshot frame payload.
+/// Decodes passive mixer state using legacy Zen Go candidate meter defaults.
 ///
-/// Extracts meter readings, mute flags, pan positions, and link states
-/// by correlating bytes across multiple regions of the payload.
+/// New profile-aware callers should use
+/// [`decode_passive_mixer_state_with_candidate_preamp_meters`] instead.
 pub fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
+    decode_passive_mixer_state_with_candidate_preamp_meters(
+        payload,
+        legacy_zen_go_candidate_preamp_meters(),
+    )
+}
+
+/// Decodes passive mixer state using profile-owned candidate preamp meter lanes.
+pub fn decode_passive_mixer_state_with_candidate_preamp_meters(
+    payload: &[u8],
+    candidate_preamp_meters: &[CandidatePreampMeter],
+) -> MixerPassiveDecode {
+    decode_passive_mixer_state_with_available_candidate_payload(
+        payload,
+        payload,
+        candidate_preamp_meters,
+    )
+}
+
+pub(crate) fn decode_passive_mixer_state_with_available_candidate_payload(
+    payload: &[u8],
+    available_candidate_payload: &[u8],
+    candidate_preamp_meters: &[CandidatePreampMeter],
+) -> MixerPassiveDecode {
     let mut decode = MixerPassiveDecode::default();
 
     let shared_mute = decode_mute_from_group(
@@ -590,8 +613,14 @@ pub fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
             .get(OFFSET_SURFACE_SELECTOR)
             .unwrap_or(&SURFACE_CODE_MONITOR_HP1),
     ));
-    decode.observed_preamp1_meter = decode_preamp_meter(payload, OFFSET_PREAMP1_METER);
-    decode.observed_preamp2_meter = decode_preamp_meter(payload, OFFSET_PREAMP2_METER);
+    for meter in candidate_preamp_meters {
+        let value = decode_preamp_meter(available_candidate_payload, meter);
+        match meter.input_index {
+            0 => decode.observed_preamp1_meter = value,
+            1 => decode.observed_preamp2_meter = value,
+            _ => {}
+        }
+    }
     for channel in 1..=16 {
         let meter = decode_strip_meter(payload, channel);
         for mixer in [MixerSurface::Mix1, MixerSurface::Mix2] {
@@ -623,7 +652,7 @@ pub fn decode_passive_mixer_state(payload: &[u8]) -> MixerPassiveDecode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::PanState;
+    use crate::types::{PanState, OFFSET_PREAMP1_METER};
 
     #[test]
     fn ordinary_strip_index_map_stays_out_of_early_afx_range() {
@@ -700,6 +729,22 @@ mod tests {
             MixerLinkTarget::from_channel(MixerSurface::Mix2, 3)
                 .and_then(|target| target.companion_bank()),
             Some(0x01)
+        );
+    }
+
+    #[test]
+    fn legacy_passive_decoder_preserves_zen_go_candidate_meter_behavior() {
+        let mut payload = vec![0_u8; 0xe6];
+        payload[OFFSET_PREAMP1_METER] = 42;
+
+        assert_eq!(
+            decode_passive_mixer_state(&payload).observed_preamp1_meter,
+            Some(42)
+        );
+        assert_eq!(
+            decode_passive_mixer_state_with_candidate_preamp_meters(&payload, &[])
+                .observed_preamp1_meter,
+            None
         );
     }
 

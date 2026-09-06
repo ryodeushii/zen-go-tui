@@ -52,8 +52,9 @@ pub use encoder::{
 };
 pub use frame::{DeviceNotification, DeviceSnapshot, Frame};
 pub use mixer::{
-    decode_passive_mixer_state, MixerAssignment, MixerChannelState, MixerLinkTarget,
-    MixerPassiveDecode, MixerPassiveStripState, MixerStrip, MixerStripKind, MixerSurface,
+    decode_passive_mixer_state, decode_passive_mixer_state_with_candidate_preamp_meters,
+    MixerAssignment, MixerChannelState, MixerLinkTarget, MixerPassiveDecode,
+    MixerPassiveStripState, MixerStrip, MixerStripKind, MixerSurface,
 };
 pub use profile::{
     load_profile_pack, load_profile_pack_file, CandidatePreampMeter, FaderDirection,

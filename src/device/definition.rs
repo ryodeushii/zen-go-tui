@@ -481,7 +481,14 @@ pub struct MixerReadbackLayoutDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CandidatePreampMeterDefinition {
     pub input_index: u16,
+    /// Payload-relative state-report byte offset.
     pub offset: usize,
+    /// Inclusive raw-byte ranges accepted by the candidate decoder.
+    pub raw_value_ranges: &'static [(u8, u8)],
+    pub status: Status,
+    pub status_text: &'static str,
+    pub confidence: &'static str,
+    pub caveat: &'static str,
 }
 
 /// Typed target kind for an explicit one-byte meter lane.

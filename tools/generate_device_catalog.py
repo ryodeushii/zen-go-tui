@@ -724,6 +724,7 @@ def normalize_profile(
     _build_link_domains(normalized)
     _build_routing_groups(normalized)
     _readback_definition(normalized)
+    _candidate_preamp_meters(normalized)
     _meter_mappings(normalized)
     return normalized
 
@@ -4021,25 +4022,94 @@ def _candidate_preamp_meters(profile: NormalizedProfile) -> list[dict[str, Any]]
     raw_meters = state["candidate_preamp_meters"]
     if not isinstance(raw_meters, list):
         raise ProfileError("frame.state_report.candidate_preamp_meters must be an array")
+
+    report_size = profile.transport.report_size
+    if raw_meters and report_size is None:
+        raise ProfileError(
+            "frame.state_report.candidate_preamp_meters require a finite transport.report_size"
+        )
+    channel_count = _count(
+        profile.channels,
+        ("count", "count_confirmed", "count_assumed_total"),
+        "channels",
+    )
+    zen_go = (profile.identity.vid, profile.identity.pid) == (0x23E5, 0xA015)
+    if zen_go:
+        physical_input_indices = {
+            item["index"]
+            for item in _build_inputs(profile)
+            if item["space"] == "physical_inputs"
+        }
+        if physical_input_indices != {0, 1}:
+            raise ProfileError(
+                "Zen Go runtime requires physical input indices 0 and 1"
+            )
     meters: list[dict[str, Any]] = []
+    seen_inputs: set[int] = set()
     for index, raw_meter in enumerate(raw_meters):
         context = f"frame.state_report.candidate_preamp_meters[{index}]"
         if not isinstance(raw_meter, Mapping):
             raise ProfileError(f"{context} must be an object")
         input_index = _checked_u8(raw_meter.get("input_index"), f"{context}.input_index")
+        if input_index in seen_inputs:
+            raise ProfileError(f"{context}.input_index is declared more than once")
+        seen_inputs.add(input_index)
+        if channel_count is not None and input_index >= channel_count:
+            raise ProfileError(
+                f"{context}.input_index {input_index} exceeds channel count {channel_count}"
+            )
+        if zen_go and input_index not in {0, 1}:
+            raise ProfileError(
+                f"{context}.input_index must use Zen Go physical input indices 0 and 1"
+            )
+        # Candidate offsets are relative to the state-report payload; the runtime
+        # adds SNAPSHOT_PAYLOAD_OFFSET when validating the full HID report.
         offset = _checked_u16(raw_meter.get("offset"), f"{context}.offset")
+        if report_size is not None and not _report_span_fits(
+            SNAPSHOT_PAYLOAD_OFFSET + offset, 1, report_size
+        ):
+            raise ProfileError(
+                f"{context}.offset {offset:#x} falls outside the payload portion of report size {report_size}"
+            )
         status = raw_meter.get("status")
+        confidence = raw_meter.get("confidence")
         caveat = raw_meter.get("caveat")
-        if not isinstance(status, str) or not status.strip():
-            raise ProfileError(f"{context}.status must be a non-empty string")
-        if not isinstance(caveat, str) or not caveat.strip():
-            raise ProfileError(f"{context}.caveat must be a non-empty string")
+        for field_name, value in (
+            ("status", status),
+            ("confidence", confidence),
+            ("caveat", caveat),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ProfileError(f"{context}.{field_name} must be a non-empty string")
+
+        raw_ranges = raw_meter.get("raw_value_ranges")
+        if not isinstance(raw_ranges, list) or not raw_ranges:
+            raise ProfileError(f"{context}.raw_value_ranges must be a non-empty array")
+        value_ranges: list[list[int]] = []
+        previous_max = -1
+        for range_index, raw_range in enumerate(raw_ranges):
+            range_context = f"{context}.raw_value_ranges[{range_index}]"
+            if not isinstance(raw_range, list) or len(raw_range) != 2:
+                raise ProfileError(f"{range_context} must contain [min, max]")
+            minimum = _checked_u8(raw_range[0], f"{range_context}[0]")
+            maximum = _checked_u8(raw_range[1], f"{range_context}[1]")
+            if minimum > maximum:
+                raise ProfileError(f"{range_context} minimum must not exceed maximum")
+            if minimum <= previous_max:
+                raise ProfileError(
+                    f"{range_context} overlaps or is out of order with the previous range"
+                )
+            previous_max = maximum
+            value_ranges.append([minimum, maximum])
+
         meters.append(
             {
                 "input_index": input_index,
                 "offset": offset,
                 "status": status,
+                "confidence": confidence,
                 "caveat": caveat,
+                "raw_value_ranges": value_ranges,
             }
         )
     return meters
@@ -4050,7 +4120,7 @@ def _candidate_preamp_meter_operations(profile: NormalizedProfile) -> list[dict[
         {
             "op": "scalar",
             "field": f"candidate_preamp_meter_{meter['input_index']}",
-            "offset": meter["offset"],
+            "offset": SNAPSHOT_PAYLOAD_OFFSET + meter["offset"],
             "width": 1,
             "endian": "not_applicable",
             "input_index": meter["input_index"],
@@ -4457,6 +4527,26 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
         "driver_kind": _runtime_driver_kind(profile, readiness),
         "support_reason": _support_reason(profile, readiness),
     }
+
+
+def render_legacy_zen_go_candidate_preamp_meters(
+    profiles: Sequence[NormalizedProfile],
+) -> str:
+    """Render the profile-owned candidate lanes used only by legacy Zen Go parsers."""
+
+    matches = [
+        profile
+        for profile in profiles
+        if (profile.identity.vid, profile.identity.pid) == (0x23E5, 0xA015)
+    ]
+    if len(matches) != 1:
+        raise ProfileError("expected exactly one canonical Zen Go profile")
+    return json.dumps(
+        _candidate_preamp_meters(matches[0]),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ) + "\n"
 
 
 def render_profile_pack(profiles: Sequence[NormalizedProfile]) -> str:
@@ -5004,11 +5094,27 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         if not state_report:
             state_report_name = "None"
         else:
+            candidate_meters = state_report.get("candidate_preamp_meters", [])
+            for meter_index, meter in enumerate(candidate_meters):
+                ranges_name = f"{slug}_CANDIDATE_PREAMP_METER_{meter_index}_RANGES"
+                lines.append(
+                    f"static {ranges_name}: &[(u8, u8)] = &["
+                    + ", ".join(
+                        f"({minimum}u8, {maximum}u8)"
+                        for minimum, maximum in meter["raw_value_ranges"]
+                    )
+                    + "];"
+                )
             lines.append(f"static {slug}_CANDIDATE_PREAMP_METERS: &[CandidatePreampMeterDefinition] = &[")
-            for meter in state_report.get("candidate_preamp_meters", []):
+            for meter_index, meter in enumerate(candidate_meters):
+                ranges_name = f"{slug}_CANDIDATE_PREAMP_METER_{meter_index}_RANGES"
                 lines.append(
                     "    CandidatePreampMeterDefinition { "
-                    f"input_index: {meter['input_index']}u16, offset: {meter['offset']}usize }},"
+                    f"input_index: {meter['input_index']}u16, offset: {meter['offset']}usize, "
+                    f"raw_value_ranges: {ranges_name}, status: Status::{_status_variant(meter['status'])}, "
+                    f"status_text: {_rust_string(meter['status'])}, "
+                    f"confidence: {_rust_string(meter['confidence'])}, "
+                    f"caveat: {_rust_string(meter['caveat'])} }},"
                 )
             lines.append("];\n")
             lines.append(
@@ -5177,6 +5283,10 @@ def generate_profile_pack(profiles_dir: Path | str) -> str:
     return render_profile_pack(_load_profiles(profiles_dir))
 
 
+def generate_legacy_zen_go_candidate_preamp_meters(profiles_dir: Path | str) -> str:
+    return render_legacy_zen_go_candidate_preamp_meters(_load_profiles(profiles_dir))
+
+
 def write_catalog(profiles_dir: Path | str, output: Path | str) -> None:
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5187,6 +5297,18 @@ def write_profile_pack(profiles_dir: Path | str, output: Path | str) -> None:
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(generate_profile_pack(profiles_dir), encoding="utf-8", newline="\n")
+
+
+def write_legacy_zen_go_candidate_preamp_meters(
+    profiles_dir: Path | str, output: Path | str
+) -> None:
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        generate_legacy_zen_go_candidate_preamp_meters(profiles_dir),
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def _normalized_text(path: Path | str) -> str | None:
@@ -5204,13 +5326,31 @@ def check_profile_pack(profiles_dir: Path | str, generated: Path | str) -> bool:
     return _normalized_text(generated) == generate_profile_pack(profiles_dir)
 
 
+def check_legacy_zen_go_candidate_preamp_meters(
+    profiles_dir: Path | str, generated: Path | str
+) -> bool:
+    return _normalized_text(generated) == generate_legacy_zen_go_candidate_preamp_meters(
+        profiles_dir
+    )
+
+
 def check_generated_artifacts(
-    profiles_dir: Path | str, generated: Path | str, pack_generated: Path | str
+    profiles_dir: Path | str,
+    generated: Path | str,
+    pack_generated: Path | str,
+    legacy_candidate_generated: Path | str | None = None,
 ) -> bool:
     # Evaluate both checks so callers get complete drift coverage.
     rust_matches = check_catalog(profiles_dir, generated)
     pack_matches = check_profile_pack(profiles_dir, pack_generated)
-    return rust_matches and pack_matches
+    legacy_matches = (
+        True
+        if legacy_candidate_generated is None
+        else check_legacy_zen_go_candidate_preamp_meters(
+            profiles_dir, legacy_candidate_generated
+        )
+    )
+    return rust_matches and pack_matches and legacy_matches
 
 
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -5218,21 +5358,60 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--profiles-dir", type=Path, help="Antelope-Ctl profiles directory")
     parser.add_argument("--output", type=Path, help="generated Rust output path")
     parser.add_argument("--pack-output", type=Path, help="normalized JSON profile-pack output path")
+    parser.add_argument(
+        "--legacy-candidate-output",
+        type=Path,
+        help="generated legacy Zen Go candidate-meter JSON output path",
+    )
     parser.add_argument("--check", type=Path, metavar="PROFILES_DIR", help="check generated output against profiles")
     parser.add_argument("--generated", type=Path, help="generated Rust path used with --check")
     parser.add_argument("--pack-generated", type=Path, help="generated JSON profile-pack path used with --check")
+    parser.add_argument(
+        "--legacy-candidate-generated",
+        type=Path,
+        help="generated legacy Zen Go candidate-meter JSON path used with --check",
+    )
     args = parser.parse_args(argv)
-    generate_mode = any(value is not None for value in (args.profiles_dir, args.output, args.pack_output))
-    check_mode = any(value is not None for value in (args.check, args.generated, args.pack_generated))
+    generate_mode = any(
+        value is not None
+        for value in (
+            args.profiles_dir,
+            args.output,
+            args.pack_output,
+            args.legacy_candidate_output,
+        )
+    )
+    check_mode = any(
+        value is not None
+        for value in (
+            args.check,
+            args.generated,
+            args.pack_generated,
+            args.legacy_candidate_generated,
+        )
+    )
     if generate_mode and check_mode:
         parser.error("choose --profiles-dir/--output or --check/--generated")
     if generate_mode:
-        if args.output is None or args.pack_output is None:
-            parser.error("--output and --pack-output are required together")
+        if (
+            args.output is None
+            or args.pack_output is None
+            or args.legacy_candidate_output is None
+        ):
+            parser.error(
+                "--output, --pack-output, and --legacy-candidate-output are required together"
+            )
         args.profiles_dir = args.profiles_dir or DEFAULT_PROFILES_DIR
     elif check_mode:
-        if args.check is None or args.generated is None or args.pack_generated is None:
-            parser.error("--check, --generated, and --pack-generated are required together")
+        if (
+            args.check is None
+            or args.generated is None
+            or args.pack_generated is None
+            or args.legacy_candidate_generated is None
+        ):
+            parser.error(
+                "--check, --generated, --pack-generated, and --legacy-candidate-generated are required together"
+            )
     else:
         parser.error("one generation or check mode is required")
     return args
@@ -5244,14 +5423,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.profiles_dir is not None:
             write_catalog(args.profiles_dir, args.output)
             write_profile_pack(args.profiles_dir, args.pack_output)
+            write_legacy_zen_go_candidate_preamp_meters(
+                args.profiles_dir, args.legacy_candidate_output
+            )
             return 0
         rust_matches = check_catalog(args.check, args.generated)
         pack_matches = check_profile_pack(args.check, args.pack_generated)
+        legacy_matches = check_legacy_zen_go_candidate_preamp_meters(
+            args.check, args.legacy_candidate_generated
+        )
         if not rust_matches:
             print(f"generated catalog is stale or missing: {args.generated}", file=sys.stderr)
         if not pack_matches:
             print(f"generated profile pack is stale or missing: {args.pack_generated}", file=sys.stderr)
-        if not rust_matches or not pack_matches:
+        if not legacy_matches:
+            print(
+                "generated legacy Zen Go candidate meters are stale or missing: "
+                f"{args.legacy_candidate_generated}",
+                file=sys.stderr,
+            )
+        if not rust_matches or not pack_matches or not legacy_matches:
             return 1
         return 0
     except ProfileError as exc:

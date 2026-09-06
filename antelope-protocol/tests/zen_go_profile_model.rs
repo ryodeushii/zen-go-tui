@@ -71,6 +71,25 @@ fn zen_go_profile_exposes_candidate_preamp_meters_and_attenuation_fader() {
     let profile = zen_go_profile();
     assert_eq!(profile.candidate_preamp_meter(0), Some(0xce));
     assert_eq!(profile.candidate_preamp_meter(1), Some(0xcf));
+    assert_eq!(
+        profile.candidate_preamp_meters()[0].raw_value_ranges,
+        vec![(0x01, 0x49), (0x52, 0x52)]
+    );
+    assert_eq!(profile.candidate_preamp_meters()[0].status, "observed");
+    assert_eq!(
+        profile.candidate_preamp_meters()[0].confidence,
+        "provisional"
+    );
+    assert_eq!(
+        profile.candidate_preamp_meters()[0].caveat,
+        "mixed-signal candidate"
+    );
+    assert!(profile.candidate_preamp_meters()[0].accepts(0x01));
+    assert!(profile.candidate_preamp_meters()[0].accepts(0x49));
+    assert!(profile.candidate_preamp_meters()[0].accepts(0x52));
+    assert!(!profile.candidate_preamp_meters()[0].accepts(0x00));
+    assert!(!profile.candidate_preamp_meters()[0].accepts(0x4a));
+    assert!(!profile.candidate_preamp_meters()[0].accepts(0x53));
     assert_eq!(profile.mixer_fader(0).expect("fader").unity, 0);
     assert_eq!(profile.mixer_fader(0).expect("fader").max, 90);
 }

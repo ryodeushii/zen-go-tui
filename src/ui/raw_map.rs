@@ -426,7 +426,11 @@ fn build_profile_snapshot_map(
                 Coverage::Observed,
                 label,
                 "Profile candidate only; this is not a confirmed physical-input capability.",
-                vec![profile_range(meter.offset, 1, payload_offset)],
+                vec![profile_range(
+                    SNAPSHOT_PAYLOAD_OFFSET.saturating_add(meter.offset),
+                    1,
+                    payload_offset,
+                )],
                 report_len,
             );
         }
@@ -1709,6 +1713,26 @@ mod tests {
             .iter()
             .any(|entry| entry.label.contains("physical preamp")
                 || entry.label.contains("output meter")));
+    }
+
+    #[test]
+    fn active_zen_go_profile_highlights_candidate_preamp_meters_at_full_report_offsets() {
+        let profile = builtin_profile(0xa015);
+        let map =
+            build_raw_packet_map_for_profile(RawPacketTab::State73, &[0; 320], Some(&profile));
+
+        assert_eq!(
+            entry(&map, "candidate preamp 1 meter").ranges[0].report,
+            0xde..0xdf
+        );
+        assert_eq!(
+            entry(&map, "candidate preamp 2 meter").ranges[0].report,
+            0xdf..0xe0
+        );
+        for offset in [0xde, 0xdf] {
+            let classification = map.classify(offset, RawMapScope::Preamps);
+            assert!(classification.selected, "offset {offset:#x}");
+        }
     }
 
     #[test]

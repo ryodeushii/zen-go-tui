@@ -10,6 +10,7 @@ PROFILES_DIR := $(MODULE_DIR)/profiles
 GENERATOR := tools/generate_device_catalog.py
 GENERATED_RUST := src/device/generated.rs
 GENERATED_PACK := src/device/generated_profiles.json
+GENERATED_LEGACY_CANDIDATES := antelope-protocol/src/legacy_zen_go_candidate_preamp_meters.json
 
 .DEFAULT_GOAL := help
 
@@ -20,8 +21,8 @@ help:
 		'Available targets:' \
 		'  module-sync    Initialize the Antelope-Ctl submodule at the pinned revision.' \
 		'  module-update  Fast-forward the clean submodule branch from its configured upstream.' \
-		'  generate       Generate both checked-in device catalog artifacts.' \
-		'  check-generated  Check both generated artifacts for drift without writing them.' \
+		'  generate       Generate checked-in device catalog artifacts.' \
+		'  check-generated  Check generated artifacts for drift without writing them.' \
 		'  release        Build the locked optimized Rust binary.' \
 		'  test           Run the full Cargo workspace test suite.'
 
@@ -51,13 +52,15 @@ generate:
 	$(PYTHON) $(GENERATOR) \
 		--profiles-dir $(PROFILES_DIR) \
 		--output $(GENERATED_RUST) \
-		--pack-output $(GENERATED_PACK)
+		--pack-output $(GENERATED_PACK) \
+		--legacy-candidate-output $(GENERATED_LEGACY_CANDIDATES)
 
 check-generated:
 	$(PYTHON) $(GENERATOR) \
 		--check $(PROFILES_DIR) \
 		--generated $(GENERATED_RUST) \
-		--pack-generated $(GENERATED_PACK)
+		--pack-generated $(GENERATED_PACK) \
+		--legacy-candidate-generated $(GENERATED_LEGACY_CANDIDATES)
 
 release:
 	$(CARGO) build --release --locked

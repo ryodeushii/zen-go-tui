@@ -1,6 +1,7 @@
 //! Frame parsing: HID report decoding into typed Frame variants.
 
-use crate::mixer::decode_passive_mixer_state;
+use crate::mixer::decode_passive_mixer_state_with_available_candidate_payload;
+use crate::profile::{legacy_zen_go_candidate_preamp_meters, CandidatePreampMeter};
 use crate::query::QueryResponse;
 use crate::types::{
     ClockSource, DeviceStateSnapshot, OutputMode, OutputState, OutputTarget, PreampState,
@@ -55,13 +56,32 @@ pub enum Frame {
 }
 
 impl Frame {
-    /// Parses a frame from a byte slice, copying the data.
+    /// Parses a frame from a byte slice using legacy Zen Go candidate meter defaults.
     pub fn parse(bytes: &[u8]) -> Result<Self, ProtocolError> {
         Self::parse_owned(bytes.to_vec())
     }
 
-    /// Parses a frame from an owned byte vector, preserving the original bytes as `raw`.
+    /// Parses a snapshot with profile-owned candidate preamp meter metadata.
+    pub fn parse_with_candidate_preamp_meters(
+        bytes: &[u8],
+        candidate_preamp_meters: &[CandidatePreampMeter],
+    ) -> Result<Self, ProtocolError> {
+        Self::parse_owned_with_candidate_preamp_meters(bytes.to_vec(), candidate_preamp_meters)
+    }
+
+    /// Parses an owned frame using legacy Zen Go candidate meter defaults.
     pub fn parse_owned(bytes: Vec<u8>) -> Result<Self, ProtocolError> {
+        Self::parse_owned_with_candidate_preamp_meters(
+            bytes,
+            legacy_zen_go_candidate_preamp_meters(),
+        )
+    }
+
+    /// Parses an owned frame using profile-owned candidate preamp meter metadata.
+    pub fn parse_owned_with_candidate_preamp_meters(
+        bytes: Vec<u8>,
+        candidate_preamp_meters: &[CandidatePreampMeter],
+    ) -> Result<Self, ProtocolError> {
         if bytes.len() < 6 {
             return Err(ProtocolError::FrameTooShort(bytes.len()));
         }
@@ -88,12 +108,13 @@ impl Frame {
                 .map_err(|_| ProtocolError::InvalidField("type header"))?,
         );
 
+        let available_payload_len = bytes.len().saturating_sub(SNAPSHOT_PAYLOAD_OFFSET);
         let mut raw = [0_u8; 320];
         raw[..bytes.len()].copy_from_slice(&bytes);
 
         match frame_type {
             FRAME_TYPE_SNAPSHOT => Ok(Self::Snapshot {
-                snapshot: parse_snapshot73(&raw)?,
+                snapshot: parse_snapshot73(&raw, available_payload_len, candidate_preamp_meters)?,
                 raw,
             }),
             FRAME_TYPE_QUERY_REPLY => Ok(Self::QueryReply {
@@ -188,7 +209,11 @@ impl From<Frame> for DeviceSnapshot {
     }
 }
 
-fn parse_snapshot73(bytes: &[u8]) -> Result<DeviceStateSnapshot, ProtocolError> {
+fn parse_snapshot73(
+    bytes: &[u8],
+    available_payload_len: usize,
+    candidate_preamp_meters: &[CandidatePreampMeter],
+) -> Result<DeviceStateSnapshot, ProtocolError> {
     if bytes.len() < MIN_SNAPSHOT_FRAME_LEN {
         return Err(ProtocolError::FrameTooShort(bytes.len()));
     }
@@ -246,7 +271,11 @@ fn parse_snapshot73(bytes: &[u8]) -> Result<DeviceStateSnapshot, ProtocolError> 
             b(OFFSET_PREAMP2_MODE)?,
         ]),
         surface: Surface::from_code(b(OFFSET_SURFACE_SELECTOR)?),
-        mixer_decode: decode_passive_mixer_state(payload),
+        mixer_decode: decode_passive_mixer_state_with_available_candidate_payload(
+            payload,
+            &payload[..available_payload_len.min(payload.len())],
+            candidate_preamp_meters,
+        ),
         late_shadow: {
             let start = OFFSET_LATE_SHADOW_START;
             let end = OFFSET_LATE_SHADOW_END;
@@ -277,6 +306,35 @@ mod tests {
         frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
         frame
+    }
+
+    fn candidate_preamp_meters() -> [CandidatePreampMeter; 2] {
+        [
+            CandidatePreampMeter {
+                input_index: 0,
+                offset: OFFSET_PREAMP1_METER,
+                raw_value_ranges: vec![(0x01, 0x49), (0x52, 0x52)],
+                status: "observed".into(),
+                confidence: "provisional".into(),
+                caveat: "mixed-signal candidate".into(),
+            },
+            CandidatePreampMeter {
+                input_index: 1,
+                offset: OFFSET_PREAMP2_METER,
+                raw_value_ranges: vec![(0x01, 0x49), (0x52, 0x52)],
+                status: "observed".into(),
+                confidence: "provisional".into(),
+                caveat: "mixed-signal candidate".into(),
+            },
+        ]
+    }
+
+    fn parse_snapshot_with_candidates(frame: &[u8]) -> DeviceStateSnapshot {
+        Frame::parse_with_candidate_preamp_meters(frame, &candidate_preamp_meters())
+            .expect("frame should parse")
+            .as_snapshot()
+            .expect("snapshot")
+            .clone()
     }
 
     #[test]
@@ -371,6 +429,77 @@ mod tests {
     }
 
     #[test]
+    fn legacy_default_parser_preserves_zen_go_candidate_meter_behavior() {
+        let mut frame = empty_snapshot_frame();
+        frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_PREAMP1_METER] = 0x2a;
+
+        let legacy = Frame::parse(&frame)
+            .expect("legacy frame")
+            .as_snapshot()
+            .expect("snapshot")
+            .mixer_decode
+            .observed_preamp1_meter;
+        let legacy_owned = Frame::parse_owned(frame.clone())
+            .expect("legacy owned frame")
+            .as_snapshot()
+            .expect("snapshot")
+            .mixer_decode
+            .observed_preamp1_meter;
+        let explicit_empty = Frame::parse_with_candidate_preamp_meters(&frame, &[])
+            .expect("explicit frame")
+            .as_snapshot()
+            .expect("snapshot")
+            .mixer_decode
+            .observed_preamp1_meter;
+        let mut override_meter = candidate_preamp_meters()[0].clone();
+        override_meter.offset = OFFSET_PREAMP1_METER + 2;
+        frame[SNAPSHOT_PAYLOAD_OFFSET + override_meter.offset] = 0x31;
+        let explicit_override =
+            Frame::parse_with_candidate_preamp_meters(&frame, &[override_meter])
+                .expect("override frame")
+                .as_snapshot()
+                .expect("snapshot")
+                .mixer_decode
+                .observed_preamp1_meter;
+
+        assert_eq!(legacy, Some(0x2a));
+        assert_eq!(legacy_owned, Some(0x2a));
+        assert_eq!(explicit_empty, None);
+        assert_eq!(explicit_override, Some(0x31));
+    }
+
+    #[test]
+    fn candidate_decoder_does_not_treat_zero_padding_as_an_available_zero_byte() {
+        let mut frame = empty_snapshot_frame();
+        let zero_valid = CandidatePreampMeter {
+            input_index: 0,
+            offset: 0xea,
+            raw_value_ranges: vec![(0, 0)],
+            status: "observed".into(),
+            confidence: "provisional".into(),
+            caveat: "zero-valid regression".into(),
+        };
+        frame.truncate(SNAPSHOT_PAYLOAD_OFFSET + zero_valid.offset);
+
+        let missing = Frame::parse_with_candidate_preamp_meters(&frame, &[zero_valid.clone()])
+            .expect("short snapshot remains parseable")
+            .as_snapshot()
+            .expect("snapshot")
+            .mixer_decode
+            .observed_preamp1_meter;
+        frame.push(0);
+        let present = Frame::parse_with_candidate_preamp_meters(&frame, &[zero_valid])
+            .expect("snapshot with candidate byte")
+            .as_snapshot()
+            .expect("snapshot")
+            .mixer_decode
+            .observed_preamp1_meter;
+
+        assert_eq!(missing, None);
+        assert_eq!(present, Some(0));
+    }
+
+    #[test]
     fn does_not_decode_observed_preamp1_meter_from_untrusted_lane() {
         let mut frame = vec![0_u8; 320];
         frame[0..4].copy_from_slice(&FRAME_TYPE_SNAPSHOT.to_le_bytes());
@@ -379,11 +508,7 @@ mod tests {
         payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
         payload[0x7e] = 0x18;
 
-        let snapshot = Frame::parse(&frame)
-            .expect("frame should parse")
-            .as_snapshot()
-            .expect("snapshot")
-            .clone();
+        let snapshot = parse_snapshot_with_candidates(&frame);
 
         assert_eq!(snapshot.mixer_decode.observed_preamp1_meter, None);
         assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, None);
@@ -399,11 +524,7 @@ mod tests {
         payload[OFFSET_PREAMP1_METER] = 0x54;
         payload[OFFSET_PREAMP2_METER] = 0x4e;
 
-        let snapshot = Frame::parse(&frame)
-            .expect("frame should parse")
-            .as_snapshot()
-            .expect("snapshot")
-            .clone();
+        let snapshot = parse_snapshot_with_candidates(&frame);
 
         assert_eq!(snapshot.mixer_decode.observed_preamp1_meter, None);
         assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, None);
@@ -418,11 +539,7 @@ mod tests {
         payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
         payload[OFFSET_PREAMP1_METER] = 0x38;
 
-        let snapshot = Frame::parse(&frame)
-            .expect("frame should parse")
-            .as_snapshot()
-            .expect("snapshot")
-            .clone();
+        let snapshot = parse_snapshot_with_candidates(&frame);
 
         assert_eq!(snapshot.mixer_decode.observed_preamp1_meter, Some(0x38));
         assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, None);
@@ -437,11 +554,7 @@ mod tests {
         payload[OFFSET_SURFACE_SELECTOR] = 0x0f;
         payload[OFFSET_PREAMP2_METER] = 0x49;
 
-        let snapshot = Frame::parse(&frame)
-            .expect("frame should parse")
-            .as_snapshot()
-            .expect("snapshot")
-            .clone();
+        let snapshot = parse_snapshot_with_candidates(&frame);
 
         assert_eq!(snapshot.mixer_decode.observed_preamp1_meter, None);
         assert_eq!(snapshot.mixer_decode.observed_preamp2_meter, Some(0x49));
@@ -457,11 +570,7 @@ mod tests {
         payload[OFFSET_PREAMP1_METER] = 0x2a;
         payload[OFFSET_METER_LANES_START] = 0x12;
 
-        let snapshot = Frame::parse(&frame)
-            .expect("frame should parse")
-            .as_snapshot()
-            .expect("snapshot")
-            .clone();
+        let snapshot = parse_snapshot_with_candidates(&frame);
 
         assert_eq!(
             snapshot
@@ -485,11 +594,7 @@ mod tests {
         payload[OFFSET_PREAMP2_METER] = 0x22;
         payload[OFFSET_METER_LANES_START] = 0x12;
 
-        let snapshot = Frame::parse(&frame)
-            .expect("frame should parse")
-            .as_snapshot()
-            .expect("snapshot")
-            .clone();
+        let snapshot = parse_snapshot_with_candidates(&frame);
 
         assert_eq!(
             snapshot

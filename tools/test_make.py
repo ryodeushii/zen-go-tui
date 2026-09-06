@@ -73,13 +73,15 @@ class MakefileTests(unittest.TestCase):
                 "python3 tools/generate_device_catalog.py "
                 "--profiles-dir modules/Antelope-Ctl/profiles "
                 "--output src/device/generated.rs "
-                "--pack-output src/device/generated_profiles.json"
+                "--pack-output src/device/generated_profiles.json "
+                "--legacy-candidate-output antelope-protocol/src/legacy_zen_go_candidate_preamp_meters.json"
             ),
             "check-generated": (
                 "python3 tools/generate_device_catalog.py "
                 "--check modules/Antelope-Ctl/profiles "
                 "--generated src/device/generated.rs "
-                "--pack-generated src/device/generated_profiles.json"
+                "--pack-generated src/device/generated_profiles.json "
+                "--legacy-candidate-generated antelope-protocol/src/legacy_zen_go_candidate_preamp_meters.json"
             ),
             "release": "cargo build --release --locked",
             "test": "cargo test --workspace",
@@ -123,7 +125,8 @@ class MakefileTests(unittest.TestCase):
                 self.read_log(log),
                 [
                     "tools/generate_device_catalog.py --profiles-dir modules/Antelope-Ctl/profiles "
-                    "--output src/device/generated.rs --pack-output src/device/generated_profiles.json"
+                    "--output src/device/generated.rs --pack-output src/device/generated_profiles.json "
+                    "--legacy-candidate-output antelope-protocol/src/legacy_zen_go_candidate_preamp_meters.json"
                 ],
             )
 
@@ -139,7 +142,8 @@ class MakefileTests(unittest.TestCase):
                 [
                     "tools/generate_device_catalog.py --check modules/Antelope-Ctl/profiles "
                     "--generated src/device/generated.rs "
-                    "--pack-generated src/device/generated_profiles.json"
+                    "--pack-generated src/device/generated_profiles.json "
+                    "--legacy-candidate-generated antelope-protocol/src/legacy_zen_go_candidate_preamp_meters.json"
                 ],
             )
 

@@ -296,6 +296,10 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     .map(|meter| CandidatePreampMeter {
                         input_index: meter.input_index,
                         offset: meter.offset,
+                        raw_value_ranges: meter.raw_value_ranges.to_vec(),
+                        status: status(meter.status).into(),
+                        confidence: meter.confidence.into(),
+                        caveat: meter.caveat.into(),
                     })
                     .collect(),
             }),

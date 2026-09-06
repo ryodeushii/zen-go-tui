@@ -234,6 +234,135 @@ fn zen_go_snapshot_uses_profile_candidate_preamp_meters() {
 }
 
 #[test]
+fn zen_go_candidate_preamp_meter_filter_preserves_range_exception_and_rejection() {
+    let profile = test_support::zen_go_profile();
+    let driver = ZenGoDriver::new(profile.clone()).expect("driver");
+    let template = test_support::hex_fixture(include_str!(
+        "fixtures/zen_go/state_with_candidate_meters.hex"
+    ));
+
+    for (raw, expected) in [
+        (0x00, None),
+        (0x01, Some(0x01)),
+        (0x49, Some(0x49)),
+        (0x4a, None),
+        (0x51, None),
+        (0x52, Some(0x52)),
+        (0x53, None),
+    ] {
+        let mut frame = template.clone();
+        for meter in profile.candidate_preamp_meters() {
+            frame[antelope_protocol::SNAPSHOT_PAYLOAD_OFFSET + meter.offset] = raw;
+        }
+        let DeviceEvent::Snapshot { state, .. } =
+            driver.decode(&frame).expect("decode").expect("snapshot")
+        else {
+            panic!("expected snapshot");
+        };
+        assert_eq!(
+            state
+                .inputs
+                .iter()
+                .find(|input| input.address.index == 0)
+                .expect("input 1")
+                .meter,
+            expected,
+            "raw candidate value {raw:#x}"
+        );
+        assert_eq!(
+            state
+                .inputs
+                .iter()
+                .find(|input| input.address.index == 1)
+                .expect("input 2")
+                .meter,
+            expected,
+            "raw candidate value {raw:#x}"
+        );
+    }
+}
+
+#[test]
+fn zen_go_candidate_preamp_meter_uses_profile_offset_and_missing_bytes_stay_unknown() {
+    let mut profile = test_support::zen_go_profile();
+    profile
+        .state_report
+        .as_mut()
+        .expect("state report")
+        .candidate_preamp_meters[0]
+        .offset = 0xd0;
+    let driver = ZenGoDriver::new(profile.clone()).expect("driver");
+    let mut frame = test_support::hex_fixture(include_str!(
+        "fixtures/zen_go/state_with_candidate_meters.hex"
+    ));
+    frame[antelope_protocol::SNAPSHOT_PAYLOAD_OFFSET + 0xce] = 0x41;
+    frame[antelope_protocol::SNAPSHOT_PAYLOAD_OFFSET + 0xd0] = 0x2a;
+    let DeviceEvent::Snapshot { state, .. } =
+        driver.decode(&frame).expect("decode").expect("snapshot")
+    else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(
+        state
+            .inputs
+            .iter()
+            .find(|input| input.address.index == 0)
+            .expect("input 1")
+            .meter,
+        Some(0x2a)
+    );
+
+    let mut truncated = frame;
+    truncated.truncate(antelope_protocol::SNAPSHOT_PAYLOAD_OFFSET + 0xce);
+    let DeviceEvent::Snapshot { state, .. } = driver
+        .decode(&truncated)
+        .expect("decode truncated snapshot")
+        .expect("snapshot")
+    else {
+        panic!("expected snapshot");
+    };
+    assert!(state.inputs.iter().all(|input| input.meter.is_none()));
+    assert!(driver.decode(&truncated[..5]).is_err());
+}
+
+#[test]
+fn zen_go_driver_rejects_reindexed_physical_inputs_and_candidates() {
+    let mut profile = test_support::zen_go_profile();
+    for input in profile
+        .inputs
+        .iter_mut()
+        .filter(|input| input.space == "physical_inputs")
+    {
+        input.index += 1;
+    }
+    for meter in &mut profile
+        .state_report
+        .as_mut()
+        .expect("state report")
+        .candidate_preamp_meters
+    {
+        meter.input_index += 1;
+    }
+
+    let error = ZenGoDriver::new(profile).expect_err("Zen Go physical inputs must stay 0 and 1");
+    assert!(error.to_string().contains("indices 0 and 1"));
+}
+
+#[test]
+fn zen_go_driver_rejects_candidate_meter_outside_payload_geometry() {
+    let mut profile = test_support::zen_go_profile();
+    profile
+        .state_report
+        .as_mut()
+        .expect("state report")
+        .candidate_preamp_meters[0]
+        .offset = 0x130;
+
+    let error = ZenGoDriver::new(profile).expect_err("candidate offset must be bounded");
+    assert!(error.to_string().contains("payload offset"));
+}
+
+#[test]
 fn zen_go_83_report_remains_auxiliary() {
     let driver = ZenGoDriver::new(test_support::zen_go_profile()).expect("driver");
     let event = driver
@@ -259,6 +388,7 @@ fn zen_go_driver_rejects_mapped_meters_without_finite_report_size() {
 fn zen_go_driver_preserves_empty_map_compatibility_without_report_size() {
     let mut profile = test_support::zen_go_profile();
     profile.meter_mappings.clear();
+    profile.state_report = None;
     profile.transport.report_size = None;
 
     ZenGoDriver::new(profile).expect("empty meter maps retain old-profile compatibility");

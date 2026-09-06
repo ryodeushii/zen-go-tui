@@ -302,8 +302,72 @@ class GeneratorTests(unittest.TestCase):
             [(item["input_index"], item["offset"]) for item in meters],
             [(0, 0xCE), (1, 0xCF)],
         )
+        operations = next(
+            frame for frame in normalized_zen_go()["frames"] if frame["id"] == "state_report"
+        )["operations"]
+        self.assertEqual(
+            [
+                (operation["input_index"], operation["offset"])
+                for operation in operations
+                if operation.get("field", "").startswith("candidate_preamp_meter_")
+            ],
+            [(0, 0xDE), (1, 0xDF)],
+        )
         self.assertTrue(all(item["status"] == "observed" for item in meters))
+        self.assertTrue(all(item["confidence"] == "provisional" for item in meters))
         self.assertTrue(all("mixed-signal" in item["caveat"] for item in meters))
+        self.assertTrue(
+            all(item["raw_value_ranges"] == [[0x01, 0x49], [0x52, 0x52]] for item in meters)
+        )
+
+    def test_candidate_preamp_meter_schema_rejects_unbounded_or_overlapping_values(self) -> None:
+        data = profile_data("Test", "0xa001")
+        data["frame"]["state_report"]["candidate_preamp_meters"] = [
+            {
+                "input_index": 0,
+                "offset": "0x130",
+                "status": "observed",
+                "confidence": "provisional",
+                "caveat": "synthetic candidate",
+                "raw_value_ranges": [["0x01", "0x49"], ["0x40", "0x52"]],
+            }
+        ]
+
+        with self.assertRaisesRegex(generator.ProfileError, "falls outside the payload"):
+            generator.normalize_profile(data)
+
+        data["frame"]["state_report"]["candidate_preamp_meters"][0]["offset"] = "0x10"
+        with self.assertRaisesRegex(generator.ProfileError, "overlaps or is out of order"):
+            generator.normalize_profile(data)
+
+    def test_zen_go_candidate_meters_reject_reindexed_physical_inputs(self) -> None:
+        data = profile_data("Zen Go", "0xa015")
+        data["channels"]["count"] = 3
+        data["channels"]["count_confirmed"] = 3
+        data["channels"]["confirmed_indices"] = [0, 1, 2]
+        data["channels"]["names"] = ["A1", "A2", "A3"]
+        data["frame"]["state_report"]["candidate_preamp_meters"] = [
+            {
+                "input_index": 2,
+                "offset": "0xd0",
+                "status": "observed",
+                "confidence": "provisional",
+                "caveat": "synthetic candidate",
+                "raw_value_ranges": [["0x00", "0x00"]],
+            }
+        ]
+
+        with self.assertRaisesRegex(generator.ProfileError, "physical input indices 0 and 1"):
+            generator.normalize_profile(data)
+
+    def test_legacy_zen_go_candidate_artifact_matches_normalized_profile(self) -> None:
+        profiles = generator._load_profiles(generator.DEFAULT_PROFILES_DIR)
+        artifact = json.loads(generator.render_legacy_zen_go_candidate_preamp_meters(profiles))
+
+        self.assertEqual(
+            artifact,
+            normalized_zen_go()["state_report"]["candidate_preamp_meters"],
+        )
 
     def test_zen_go_profile_declares_payload_relative_mix_master_meter_lanes(self) -> None:
         mappings = normalized_zen_go()["meter_mappings"]
@@ -599,6 +663,7 @@ class GeneratorTests(unittest.TestCase):
             root = Path(directory)
             generated = root / "generated.rs"
             pack_generated = root / "generated_profiles.json"
+            legacy_candidates = root / "legacy_zen_go_candidate_preamp_meters.json"
             result = subprocess.run(
                 [
                     sys.executable,
@@ -607,6 +672,8 @@ class GeneratorTests(unittest.TestCase):
                     str(generated),
                     "--pack-output",
                     str(pack_generated),
+                    "--legacy-candidate-output",
+                    str(legacy_candidates),
                 ],
                 cwd=root,
                 capture_output=True,
@@ -620,6 +687,13 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(
                 pack_generated.read_bytes(),
                 (REPO_ROOT / "src/device/generated_profiles.json").read_bytes(),
+            )
+            self.assertEqual(
+                legacy_candidates.read_bytes(),
+                (
+                    REPO_ROOT
+                    / "antelope-protocol/src/legacy_zen_go_candidate_preamp_meters.json"
+                ).read_bytes(),
             )
             self.assertEqual(
                 generator.DEFAULT_PROFILES_DIR,
@@ -2290,11 +2364,16 @@ class GeneratorTests(unittest.TestCase):
             artifacts.mkdir()
             generated = artifacts / "generated.rs"
             pack_generated = artifacts / "generated_profiles.json"
+            legacy_candidates = artifacts / "legacy_zen_go_candidate_preamp_meters.json"
             generated.write_text(generator.generate_catalog(temporary), encoding="utf-8")
             pack_generated.write_text(generator.generate_profile_pack(temporary), encoding="utf-8")
+            legacy_candidates.write_text(
+                generator.generate_legacy_zen_go_candidate_preamp_meters(temporary),
+                encoding="utf-8",
+            )
             self.assertTrue(
                 generator.check_generated_artifacts(
-                    temporary, generated, pack_generated
+                    temporary, generated, pack_generated, legacy_candidates
                 )
             )
 
@@ -2307,7 +2386,7 @@ class GeneratorTests(unittest.TestCase):
             self.assertFalse(generator.check_profile_pack(temporary, pack_generated))
             self.assertFalse(
                 generator.check_generated_artifacts(
-                    temporary, generated, pack_generated
+                    temporary, generated, pack_generated, legacy_candidates
                 )
             )
             regenerated_rust = generator.generate_catalog(temporary)
@@ -2326,10 +2405,13 @@ class GeneratorTests(unittest.TestCase):
             artifacts.mkdir()
             generated = artifacts / "generated.rs"
             pack_generated = artifacts / "generated_profiles.json"
+            legacy_candidates = artifacts / "legacy_zen_go_candidate_preamp_meters.json"
             generated_text = generator.generate_catalog(profiles_dir)
             pack_text = generator.generate_profile_pack(profiles_dir)
+            legacy_text = generator.generate_legacy_zen_go_candidate_preamp_meters(profiles_dir)
             generated.write_text(generated_text, encoding="utf-8")
             pack_generated.write_text(pack_text, encoding="utf-8")
+            legacy_candidates.write_text(legacy_text, encoding="utf-8")
 
             command = [
                 sys.executable,
@@ -2340,6 +2422,8 @@ class GeneratorTests(unittest.TestCase):
                 str(generated),
                 "--pack-generated",
                 str(pack_generated),
+                "--legacy-candidate-generated",
+                str(legacy_candidates),
             ]
             self.assertEqual(subprocess.run(command, check=False).returncode, 0)
 
@@ -2350,6 +2434,10 @@ class GeneratorTests(unittest.TestCase):
             pack_generated.write_text(pack_text + " ", encoding="utf-8")
             self.assertNotEqual(subprocess.run(command, check=False).returncode, 0)
             pack_generated.write_text(pack_text, encoding="utf-8")
+
+            legacy_candidates.write_text(legacy_text + " ", encoding="utf-8")
+            self.assertNotEqual(subprocess.run(command, check=False).returncode, 0)
+            legacy_candidates.write_text(legacy_text, encoding="utf-8")
 
             source = profiles_dir / "zen_go_sc.json"
             source.write_bytes(source.read_bytes() + b" ")

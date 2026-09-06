@@ -28,6 +28,12 @@ impl ZenGoDriver {
             .find(|space| space.kind == "physical_inputs")
             .and_then(|space| space.count)
             .unwrap_or_else(|| profile.inputs_in("physical_inputs") as u16);
+        let physical_input_indices = profile
+            .inputs
+            .iter()
+            .filter(|input| input.space == "physical_inputs")
+            .map(|input| input.index)
+            .collect::<std::collections::HashSet<_>>();
         let valid_mixers = profile.mixers.len() == 2
             && profile
                 .mixers
@@ -47,17 +53,72 @@ impl ZenGoDriver {
         }
         if physical_inputs != 2
             || profile.inputs_in("physical_inputs") != 2
+            || physical_input_indices != std::collections::HashSet::from([0, 1])
             || profile.outputs.len() != 3
             || !valid_mixers
         {
             return Err(DriverError::InvalidAction(
-                "Zen Go driver requires two physical inputs, three outputs, and two 16-strip mixer surfaces".into(),
+                "Zen Go driver requires physical input indices 0 and 1, three outputs, and two 16-strip mixer surfaces".into(),
             ));
         }
         if !profile.meter_mappings.is_empty() && profile.transport.report_size.is_none() {
             return Err(DriverError::InvalidAction(
                 "Zen Go meter mappings require a finite report size".into(),
             ));
+        }
+        let candidate_preamp_meters = profile.candidate_preamp_meters();
+        if !candidate_preamp_meters.is_empty() && profile.transport.report_size.is_none() {
+            return Err(DriverError::InvalidAction(
+                "Zen Go candidate preamp meters require a finite report size".into(),
+            ));
+        }
+        let mut candidate_input_indices = std::collections::HashSet::new();
+        for meter in candidate_preamp_meters {
+            if meter.input_index > 1
+                || !candidate_input_indices.insert(meter.input_index)
+                || !profile.inputs.iter().any(|input| {
+                    input.space == "physical_inputs" && input.index == meter.input_index
+                })
+            {
+                return Err(DriverError::InvalidAction(
+                    "Zen Go candidate preamp meter must target one declared physical input".into(),
+                ));
+            }
+            let full_offset = crate::SNAPSHOT_PAYLOAD_OFFSET
+                .checked_add(meter.offset)
+                .ok_or_else(|| {
+                    DriverError::InvalidAction(
+                        "Zen Go candidate preamp meter payload offset overflows report geometry"
+                            .into(),
+                    )
+                })?;
+            if profile
+                .transport
+                .report_size
+                .is_some_and(|size| full_offset >= usize::from(size))
+            {
+                return Err(DriverError::InvalidAction(
+                    "Zen Go candidate preamp meter payload offset exceeds report geometry".into(),
+                ));
+            }
+            if meter.status.trim().is_empty()
+                || meter.confidence.trim().is_empty()
+                || meter.caveat.trim().is_empty()
+                || meter.raw_value_ranges.is_empty()
+                || meter
+                    .raw_value_ranges
+                    .iter()
+                    .any(|(minimum, maximum)| minimum > maximum)
+                || meter
+                    .raw_value_ranges
+                    .windows(2)
+                    .any(|ranges| ranges[0].1 >= ranges[1].0)
+            {
+                return Err(DriverError::InvalidAction(
+                    "Zen Go candidate preamp meter requires ordered value ranges and provenance"
+                        .into(),
+                ));
+            }
         }
         let mut meter_mapping_keys = std::collections::HashSet::new();
         for mapping in &profile.meter_mappings {
@@ -694,7 +755,10 @@ impl DeviceDriver for ZenGoDriver {
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<Option<DeviceEvent>, DriverError> {
-        let frame = Frame::parse_owned(bytes.to_vec())?;
+        let frame = Frame::parse_owned_with_candidate_preamp_meters(
+            bytes.to_vec(),
+            self.profile.candidate_preamp_meters(),
+        )?;
         Ok(Some(match frame {
             Frame::Snapshot { snapshot, raw } => DeviceEvent::Snapshot {
                 state: Self::state_from_snapshot(snapshot, &self.profile, &raw),
