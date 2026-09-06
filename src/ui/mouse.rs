@@ -6,12 +6,8 @@ use crate::app::{
 };
 use crate::device::DevicePickerState;
 use antelope_protocol::{
-    ClockSource, GlobalControl, InputControl, MixerAddress, MixerAssignment, MixerControl,
-    MixerSurface, OutputControl, PreampMode, RuntimeDriverKind, SampleRate,
-};
-use antelope_protocol::{
-    OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
-    OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
+    ClockSource, DynamicMeterState, GlobalControl, InputControl, MixerAddress, MixerAssignment,
+    MixerControl, OutputControl, PreampMode, RuntimeMeterTarget, SampleRate,
 };
 
 use super::layouts::*;
@@ -828,7 +824,7 @@ fn dynamic_mixer_mouse_action(
     point: (u16, u16),
     wheel: Option<bool>,
 ) -> Option<Intent> {
-    let inner = mixer_strip_panel_layout(area, mix_meter(state).is_some())[0];
+    let inner = mixer_strip_panel_layout_for_meter_lanes(area, mix_meter_lane_count(state))[0];
     let surface = state
         .active_mixer_surface()
         .and_then(|index| state.mixers().get(index))?;
@@ -1253,7 +1249,7 @@ pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) 
     let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout_for_state(page[0], state);
     let mixer = mixer_layout(main[1]);
-    let list = mixer_strip_panel_layout(mixer[1], mix_meter(state).is_some());
+    let list = mixer_strip_panel_layout_for_meter_lanes(mixer[1], mix_meter_lane_count(state));
     contains_point(list[0], (x, y))
 }
 
@@ -1322,34 +1318,48 @@ fn slider_ratio_for_vertical_point(area: Rect, point: (u16, u16)) -> Option<f64>
     )
 }
 
-pub(crate) fn mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
-    let bytes = state
-        .raw_view
-        .latest_raw_73
-        .as_ref()
-        .map(|a| a.as_slice())?;
-    let payload = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..)?;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MixMeterState {
+    pub(crate) name: String,
+    pub(crate) lanes: Vec<DynamicMeterState>,
+}
 
-    let surface_selector = if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
-        Some(match state.active_legacy_mixer_surface() {
-            MixerSurface::Mix1 => SURFACE_CODE_MONITOR_HP1,
-            MixerSurface::Mix2 => SURFACE_CODE_HP2,
-        })
-    } else {
-        payload.get(OFFSET_SURFACE_SELECTOR).copied()
-    };
-
-    match surface_selector {
-        Some(SURFACE_CODE_MONITOR_HP1) => Some((
-            "MIX 1",
-            payload.get(OFFSET_MIX1_LANE_A).copied().unwrap_or(0),
-            payload.get(OFFSET_MIX1_LANE_B).copied().unwrap_or(0),
-        )),
-        Some(SURFACE_CODE_HP2) => Some((
-            "MIX 2",
-            payload.get(OFFSET_MIX2_LANE_A).copied().unwrap_or(0),
-            payload.get(OFFSET_MIX2_LANE_B).copied().unwrap_or(0),
-        )),
-        _ => None,
+impl MixMeterState {
+    pub(crate) fn lane_label(&self, lane: u8) -> String {
+        let is_stereo_pair =
+            self.lanes.len() == 2 && self.lanes.iter().map(|meter| meter.lane).eq([0, 1]);
+        if is_stereo_pair {
+            match lane {
+                0 => "L".to_string(),
+                1 => "R".to_string(),
+                _ => format!("Lane {}", lane.saturating_add(1)),
+            }
+        } else {
+            format!("Lane {}", lane.saturating_add(1))
+        }
     }
+}
+
+pub(crate) fn mix_meter(state: &AppState) -> Option<MixMeterState> {
+    let surface = state
+        .active_mixer_surface()
+        .and_then(|index| state.mixers().get(index))?;
+    let mut lanes: Vec<_> = state
+        .meters
+        .iter()
+        .filter(|meter| {
+            meter.target == RuntimeMeterTarget::MixMaster
+                && meter.target_index == u16::from(surface.surface)
+        })
+        .cloned()
+        .collect();
+    lanes.sort_unstable_by_key(|meter| meter.lane);
+    (!lanes.is_empty()).then(|| MixMeterState {
+        name: surface.name.clone(),
+        lanes,
+    })
+}
+
+pub(crate) fn mix_meter_lane_count(state: &AppState) -> usize {
+    mix_meter(state).map_or(0, |meter| meter.lanes.len())
 }

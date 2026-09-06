@@ -1443,15 +1443,26 @@ class GeneratorTests(unittest.TestCase):
         normalized = generator._normalized_profile_record(profile)
         groups = normalized["routing_groups"]
 
-        self.assertEqual(
-            groups[1]["readback_source_domains"],
-            [{
-                "bank": 2,
-                "indices": [0, 1],
-                "status": "observed",
-                "evidence": "Verified Orion routing readback: AntelopeINIT.json frame 16384, category 0x03/index 1, bytes 17..20 = 02 00 02 01 (Computer Playback 1-2).",
-            }],
-        )
+        expected_readback = [{
+            "bank": 2,
+            "indices": list(range(24)),
+            "status": "observed",
+            "evidence": (
+                "Verified existing Orion captures (ep130 320-byte reports, magic 0x7500): "
+                "destination 13 records AntelopeINIT.json frame 16648; "
+                "macos-antelopeINIT-poweroff-on2-itsavedstate.json frames 39355,42453; "
+                "macos-antelopeINIT-poweroff-on3-itsavedstate.json frames 15840,18966; "
+                "macos-antelopeINIT-poweron.json frames 12884,18118; "
+                "macos-antelopeINIT-poweron1-itresettopreviousstate.json frames 12852,15696 "
+                "all contain category 0x03/index 13 bytes 17..64 = "
+                "0200020102020203020402050206020702080209020a020b020c020d020e020f02100211021202130214021502160217 "
+                "(bank 0x02 indices 0..23). AntelopeINIT.json frame 16406 contains "
+                "category 0x03/index 2 bytes 17..20 = 02020203 (bank 0x02 indices 2,3); "
+                "no captured bank 0x02 index >=24."
+            ),
+        }]
+        self.assertEqual(groups[1]["readback_source_domains"], expected_readback)
+        self.assertTrue(all(group["readback_source_domains"] == expected_readback for group in groups))
         self.assertNotIn(2, {domain["bank"] for domain in groups[1]["source_domains"]})
         self.assertNotIn(12, {domain["bank"] for domain in groups[1]["source_domains"]})
 

@@ -12,6 +12,7 @@ use antelope_protocol::{
 };
 
 use super::super::layouts::*;
+use super::super::mouse::MixMeterState;
 use super::super::styles::*;
 use super::signals::*;
 
@@ -777,38 +778,43 @@ pub(crate) fn mixer_level_value_label(channel: &antelope_protocol::MixerChannelS
         .unwrap_or_else(|| "LVL ?".to_string())
 }
 
-pub(crate) fn render_mix_meter_widget(
-    area: Rect,
-    buffer: &mut Buffer,
-    left_raw: u8,
-    right_raw: u8,
-) {
-    if area.width == 0 || area.height == 0 {
+pub(crate) fn render_mix_meter_widget(area: Rect, buffer: &mut Buffer, meter: &MixMeterState) {
+    if area.width == 0 || area.height == 0 || meter.lanes.is_empty() {
         return;
     }
 
-    if area.height < 2 {
-        let channels = Layout::default()
+    let lane_count = meter.lanes.len();
+    if usize::from(area.height) < lane_count {
+        let columns = (0..lane_count)
+            .map(|_| Constraint::Ratio(1, lane_count as u32))
+            .collect::<Vec<_>>();
+        let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints(columns)
             .split(area);
-        render_mix_meter_channel(channels[0], buffer, "L", left_raw);
-        render_mix_meter_channel(channels[1], buffer, "R", right_raw);
+        for (column, lane) in columns.iter().zip(&meter.lanes) {
+            render_mix_meter_channel(*column, buffer, &meter.lane_label(lane.lane), lane.value);
+        }
         return;
     }
 
+    let rows = (0..lane_count)
+        .map(|_| Constraint::Length(1))
+        .collect::<Vec<_>>();
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1)])
-        .split(Rect::new(area.x, area.y, area.width, 2));
-    render_mix_meter_channel(rows[0], buffer, "L", left_raw);
-    render_mix_meter_channel(rows[1], buffer, "R", right_raw);
+        .constraints(rows)
+        .split(Rect::new(area.x, area.y, area.width, lane_count as u16));
+    for (row, lane) in rows.iter().zip(&meter.lanes) {
+        render_mix_meter_channel(*row, buffer, &meter.lane_label(lane.lane), lane.value);
+    }
 }
 
 pub(crate) fn render_mix_meter_channel(area: Rect, buffer: &mut Buffer, label: &str, raw: u8) {
     use antelope_protocol::{meter_display_db, meter_ratio};
 
-    if area.width <= MIX_METER_CHANNEL_LABEL_WIDTH + MIX_METER_DB_WIDTH {
+    let label_width = MIX_METER_CHANNEL_LABEL_WIDTH.max(label.len() as u16);
+    if area.width <= label_width + MIX_METER_DB_WIDTH {
         let text = format!("{label} {}", render_mix_meter(raw));
         Paragraph::new(Line::from(Span::styled(text, muted_style()))).render(area, buffer);
         return;
@@ -817,7 +823,7 @@ pub(crate) fn render_mix_meter_channel(area: Rect, buffer: &mut Buffer, label: &
     let sections = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(MIX_METER_CHANNEL_LABEL_WIDTH),
+            Constraint::Length(label_width),
             Constraint::Min(1),
             Constraint::Length(MIX_METER_DB_WIDTH),
         ])

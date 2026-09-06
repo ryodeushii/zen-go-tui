@@ -13,13 +13,11 @@ use crate::app::{
     SelectorPopupKind, SelectorPopupState,
 };
 use antelope_protocol::{
-    ClockSource, MixerAddress, MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface,
-    OutputMode, OutputState, OutputTarget, PanState, PreampInputState, PreampMode, SampleRate,
-    Surface, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
-    OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
-    OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2,
-    OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2,
-    SURFACE_CODE_MONITOR_HP1,
+    ClockSource, DynamicMeterState, MixerAddress, MixerAssignment, MixerChannelState,
+    MixerLinkTarget, MixerSurface, OutputMode, OutputState, OutputTarget, PanState,
+    PreampInputState, PreampMode, RuntimeMeterTarget, SampleRate, Surface, OFFSET_MIX1_LANE_A,
+    OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B, OFFSET_SURFACE_SELECTOR,
+    SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
 };
 
 use crate::device::ProfileCatalog;
@@ -442,47 +440,94 @@ fn status_strip_surfaces_message_surface_and_output() {
 }
 
 #[test]
-fn mix_meter_extracts_mix1_lane_pair() {
-    let mut state = AppState::default();
-    let mut frame = [0_u8; 320];
-    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
-    state.raw_view.latest_raw_73 = Some(frame.to_vec());
+fn mix_meter_extracts_selected_profile_lanes() {
+    let mut state = zen_go_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 0,
+            value: 0x0a,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 1,
+            value: 0x05,
+        },
+    ];
 
-    assert_eq!(mouse::mix_meter(&state), Some(("MIX 1", 0x0a, 0x05)));
+    let meter = mouse::mix_meter(&state).expect("selected profile meter");
+    assert_eq!(meter.name, state.mixers()[0].name);
+    assert_eq!(
+        meter
+            .lanes
+            .iter()
+            .map(|lane| (lane.lane, lane.value))
+            .collect::<Vec<_>>(),
+        vec![(0, 0x0a), (1, 0x05)]
+    );
 }
 
 #[test]
-fn zen_go_mix_meter_follows_local_surface_for_both_snapshot_selectors() {
+fn zen_go_mix_meter_follows_local_surface_and_ignores_stale_snapshot_selector() {
     let mut state = zen_go_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 0,
+            value: 0x0a,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 1,
+            value: 0x05,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 1,
+            lane: 0,
+            value: 0x3c,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 1,
+            lane: 1,
+            value: 0x2a,
+        },
+    ];
     let mut frame = [0_u8; 320];
-    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x3c;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x2a;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = SURFACE_CODE_HP2;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0xaa;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0xab;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0xba;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0xbb;
     state.raw_view.latest_raw_73 = Some(frame.to_vec());
 
-    for (surface_index, snapshot_selector, expected) in [
-        (1, SURFACE_CODE_MONITOR_HP1, ("MIX 2", 0x3c, 0x2a)),
-        (0, SURFACE_CODE_HP2, ("MIX 1", 0x0a, 0x05)),
+    for (surface_index, stale_snapshot_selector, expected_values) in [
+        (0, SURFACE_CODE_HP2, vec![(0, 0x0a), (1, 0x05)]),
+        (1, SURFACE_CODE_MONITOR_HP1, vec![(0, 0x3c), (1, 0x2a)]),
     ] {
         state.mixer.surface_index = surface_index;
         state.raw_view.latest_raw_73.as_mut().unwrap()
-            [SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = snapshot_selector;
+            [SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = stale_snapshot_selector;
 
-        assert_eq!(mouse::mix_meter(&state), Some(expected));
-        let expected_text = format!(
-            "{} L {} R {}",
-            expected.0,
-            super::widgets::signals::render_mix_meter(expected.1),
-            super::widgets::signals::render_mix_meter(expected.2),
+        let meter = mouse::mix_meter(&state).expect("selected profile meter");
+        assert_eq!(
+            meter
+                .lanes
+                .iter()
+                .map(|lane| (lane.lane, lane.value))
+                .collect::<Vec<_>>(),
+            expected_values
         );
-        assert_eq!(render::render_mix_meter_state_line(&state), expected_text);
+        let line = render::render_mix_meter_state_line(&state);
+        assert!(line.starts_with(&meter.name));
+        for lane in &meter.lanes {
+            assert!(line.contains(&super::widgets::signals::render_mix_meter(lane.value)));
+        }
     }
 }
 
@@ -498,18 +543,36 @@ fn mixer_strip_panel_layout_reserves_two_rows_for_embedded_mix_meter() {
 }
 
 #[test]
+fn mixer_strip_panel_layout_reserves_only_available_meter_lanes() {
+    let layout = layouts::mixer_strip_panel_layout_for_meter_lanes(Rect::new(0, 0, 80, 14), 1);
+
+    assert_eq!(layout[1].height, 1);
+    assert_eq!(
+        layout[0].height + layout[1].height,
+        layouts::inner_area(Rect::new(0, 0, 80, 14)).height
+    );
+}
+
+#[test]
 fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
-    let mut state = AppState::default();
-    let mut frame = [0_u8; 320];
-    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
-    state.raw_view.latest_raw_73 = Some(frame.to_vec());
+    let mut state = zen_go_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 0,
+            value: 0x0a,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 1,
+            value: 0x05,
+        },
+    ];
 
     let mixer = layouts::mixer_layout(Rect::new(0, 0, 100, 20));
-    let meter_area = layouts::mixer_strip_panel_layout(mixer[1], true)[1];
+    let meter_area = layouts::mixer_strip_panel_layout_for_meter_lanes(mixer[1], 2)[1];
 
     assert_eq!(
         mouse::mixer_list_mouse_action(mixer[1], &state, (meter_area.x + 1, meter_area.y)),
@@ -519,8 +582,25 @@ fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
 
 #[test]
 fn mix_meter_widget_renders_two_row_stereo_bar_and_fixed_db_labels() {
+    let meter = mouse::MixMeterState {
+        name: "MIX 1".into(),
+        lanes: vec![
+            DynamicMeterState {
+                target: RuntimeMeterTarget::MixMaster,
+                target_index: 0,
+                lane: 0,
+                value: 0x00,
+            },
+            DynamicMeterState {
+                target: RuntimeMeterTarget::MixMaster,
+                target_index: 0,
+                lane: 1,
+                value: 0x3c,
+            },
+        ],
+    };
     let rendered = render_buffer(Rect::new(0, 0, 56, 2), |area, buffer| {
-        render::render_mix_meter_widget(area, buffer, 0x00, 0x3c);
+        render::render_mix_meter_widget(area, buffer, &meter);
     });
 
     assert!(rendered.contains("L"));
@@ -533,6 +613,32 @@ fn mix_meter_widget_renders_two_row_stereo_bar_and_fixed_db_labels() {
     assert_eq!(lines.len(), 2);
     assert!(lines[0].contains("L"));
     assert!(lines[1].contains("R"));
+}
+
+#[test]
+fn mix_meter_widget_renders_only_available_lane() {
+    let meter = mouse::MixMeterState {
+        name: "Mix 1".into(),
+        lanes: vec![DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 0,
+            value: 0x3c,
+        }],
+    };
+    let rendered = render_buffer(Rect::new(0, 0, 56, 2), |area, buffer| {
+        render::render_mix_meter_widget(area, buffer, &meter);
+    });
+
+    assert!(rendered.contains("Lane 1"));
+    assert!(!rendered.contains(" R "));
+    assert_eq!(
+        rendered
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -2066,83 +2172,103 @@ fn mixer_strip_line_renders_newly_grounded_pair_link() {
 }
 
 #[test]
-fn pair_state_line_surfaces_mix1_mirrored_lanes() {
-    let mut state = AppState::default();
-    let mut frame = [0_u8; 320];
-    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0f;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_MIRROR_A] = 0x0a;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_MIRROR_B] = 0x05;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_0] = 0x60;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_1] = 0x60;
-    state.raw_view.latest_raw_73 = Some(frame.to_vec());
+fn profile_meter_state_line_surfaces_decoded_stereo_lanes() {
+    let mut state = zen_go_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 0,
+            value: 0x0a,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 1,
+            value: 0x05,
+        },
+    ];
 
     let line = render::render_mix_meter_state_line(&state);
 
-    assert!(line.contains("MIX 1"));
+    assert!(line.contains("MIX 1 / Monitor-HP1"));
     assert!(line.contains("L ███████░ -10 dB"));
     assert!(line.contains("R ███████░  -5 dB"));
 }
 
 #[test]
-fn pair_state_line_surfaces_mix2_compact_lanes() {
-    let mut state = AppState::default();
-    let mut frame = [0_u8; 320];
-    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x00;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x06;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_0] = 0x60;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_1] = 0x60;
-    state.raw_view.latest_raw_73 = Some(frame.to_vec());
+fn profile_meter_state_line_surfaces_zero_and_silence_values() {
+    let mut state = zen_go_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 1,
+            lane: 0,
+            value: 0x00,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 1,
+            lane: 1,
+            value: 0x06,
+        },
+    ];
+    state.mixer.surface_index = 1;
 
     let line = render::render_mix_meter_state_line(&state);
 
-    assert!(line.contains("MIX 2"));
+    assert!(line.contains("MIX 2 / HP2"));
     assert!(line.contains("L ████████   0 dB"));
     assert!(line.contains("R ███████░  -6 dB"));
 }
 
 #[test]
-fn pair_state_line_surfaces_no_signal_family_as_pending_meter() {
-    let mut state = AppState::default();
-    let mut frame = [0_u8; 320];
-    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x5a;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x5a;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_UNKNOWN_6E] = 0x60;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_METER_LANES_START] = 0x60;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SHARED_SHADOW_2] = 0x60;
-    state.raw_view.latest_raw_73 = Some(frame.to_vec());
-
-    let line = render::render_mix_meter_state_line(&state);
-
-    assert!(line.contains("MIX 2"));
-    assert!(line.contains("L ░░░░░░░░  -∞ dB"));
-    assert!(line.contains("R ░░░░░░░░  -∞ dB"));
-}
-
-#[test]
-fn pair_state_line_keeps_unknown_meter_bytes_visible() {
-    let mut state = AppState::default();
-    let mut frame = [0_u8; 320];
-    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
-    frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = 0x0c;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x12;
-    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x34;
-    state.raw_view.latest_raw_73 = Some(frame.to_vec());
+fn profile_meter_state_line_uses_decoded_values_not_raw_bytes() {
+    let mut state = zen_go_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 1,
+            lane: 0,
+            value: 0x12,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 1,
+            lane: 1,
+            value: 0x34,
+        },
+    ];
+    state.mixer.surface_index = 1;
+    state.raw_view.latest_raw_73 = Some(vec![0; 320]);
 
     let line = render::render_mix_meter_state_line(&state);
 
     assert!(line.contains("L ██████░░ -18 dB"));
     assert!(line.contains("R █░░░░░░░ -52 dB"));
+}
+
+#[test]
+fn profile_meter_state_line_renders_only_declared_lane() {
+    let mut state = AppState::from_entry(
+        &ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "orion_studio_3")
+            .expect("Orion profile"),
+    );
+    state.meters = vec![DynamicMeterState {
+        target: RuntimeMeterTarget::MixMaster,
+        target_index: 0,
+        lane: 0,
+        value: 0x3c,
+    }];
+
+    let line = render::render_mix_meter_state_line(&state);
+
+    assert!(line.contains("Lane 1"));
+    assert!(line.contains("-60 dB"));
+    assert!(!line.contains(" R "));
 }
 
 #[test]

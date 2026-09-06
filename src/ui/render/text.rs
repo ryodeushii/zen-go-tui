@@ -3,16 +3,12 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::ListItem;
 
 use crate::app::{AppState, RawMapScope, RawPacketTab, QUERY_REPLY_VISIBLE_COUNT};
-use antelope_protocol::{
-    MixerSurface, RuntimeDriverKind, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A,
-    OFFSET_MIX2_LANE_B, OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2,
-    SURFACE_CODE_MONITOR_HP1,
-};
 
 use super::super::layouts::CONNECTION_STALE_AFTER;
 use super::super::layouts::{
     device_header_labels, DEVICE_HEADER_CHIP_GAP, DEVICE_HEADER_PRODUCT_GAP,
 };
+use super::super::mouse::mix_meter;
 use super::super::raw_map::{
     build_raw_packet_map_for_profile, Coverage, RawDomain, RawMapEntry, RawPacketMap,
 };
@@ -105,46 +101,21 @@ pub(crate) fn build_query_reply_list_items(state: &AppState) -> Vec<ListItem<'st
 }
 
 pub(crate) fn render_mix_meter_state_line(state: &AppState) -> String {
-    let Some(bytes) = state.raw_view.latest_raw_73.as_ref().map(|a| a.as_slice()) else {
-        return "Mix meter: waiting for 0x73 snapshot".to_string();
+    let Some(meter) = mix_meter(state) else {
+        return "Mix meter: unavailable for selected mixer".to_string();
     };
-    let Some(payload) = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..) else {
-        return "Mix meter: short 0x73 snapshot".to_string();
-    };
-
-    let surface_selector = if state.runtime_profile_loaded()
-        && state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo
-    {
-        Some(match state.active_legacy_mixer_surface() {
-            MixerSurface::Mix1 => SURFACE_CODE_MONITOR_HP1,
-            MixerSurface::Mix2 => SURFACE_CODE_HP2,
+    let lanes = meter
+        .lanes
+        .iter()
+        .map(|lane| {
+            format!(
+                "{} {}",
+                meter.lane_label(lane.lane),
+                render_mix_meter(lane.value),
+            )
         })
-    } else {
-        payload.get(OFFSET_SURFACE_SELECTOR).copied()
-    };
-
-    match surface_selector {
-        Some(SURFACE_CODE_MONITOR_HP1) => {
-            let lane_a = payload.get(OFFSET_MIX1_LANE_A).copied().unwrap_or(0);
-            let lane_b = payload.get(OFFSET_MIX1_LANE_B).copied().unwrap_or(0);
-            format!(
-                "MIX 1 L {} R {}",
-                render_mix_meter(lane_a),
-                render_mix_meter(lane_b),
-            )
-        }
-        Some(SURFACE_CODE_HP2) => {
-            let lane_a = payload.get(OFFSET_MIX2_LANE_A).copied().unwrap_or(0);
-            let lane_b = payload.get(OFFSET_MIX2_LANE_B).copied().unwrap_or(0);
-            format!(
-                "MIX 2 L {} R {}",
-                render_mix_meter(lane_a),
-                render_mix_meter(lane_b),
-            )
-        }
-        Some(surface) => format!("Mix meter: unsupported surface {:02x}", surface),
-        None => "Mix meter: missing surface byte".to_string(),
-    }
+        .collect::<Vec<_>>();
+    format!("{} {}", meter.name, lanes.join(" "))
 }
 
 pub(crate) fn render_device_header(state: &AppState) -> Line<'static> {

@@ -2304,48 +2304,78 @@ fn inbound_readback_bounds_and_complete_patches_are_enforced() {
 }
 
 #[test]
-fn observed_readback_domains_accept_host_dependent_bank_without_authorizing_writes() {
+fn observed_readback_domains_accept_complete_host_dependent_bank_without_authorizing_writes() {
     let driver = profile_driver_from_fixture();
     let mut routing = vec![0; 320];
     routing[0] = 0x75;
     routing[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
     routing[8] = 0x03;
-    routing[12] = 1;
-    routing[16] = 1;
-    routing[17..21].copy_from_slice(&[0x02, 0x00, 0x02, 0x01]);
+    routing[12] = 13;
+    routing[16] = 13;
+    for index in 0..24 {
+        routing[17 + index * 2] = 0x02;
+        routing[18 + index * 2] = index as u8;
+    }
+    for index in 0..8 {
+        let channel = 24 + index;
+        routing[17 + channel * 2] = 0;
+        routing[18 + channel * 2] = index as u8;
+    }
 
     let DeviceEvent::QueryReply {
         patch: Some(DynamicStatePatch::Routing(group)),
         ..
     } = driver
         .decode(&routing)
-        .expect("observed bank-2 routing readback")
+        .expect("complete observed bank-2 routing readback")
         .expect("routing event")
     else {
         panic!("routing patch")
     };
-    assert_eq!(
-        group.sources,
-        vec![
-            RoutingSource { bank: 2, index: 0 },
-            RoutingSource { bank: 2, index: 1 },
-        ]
-    );
+    assert_eq!(group.destination, 13);
+    assert_eq!(group.sources.len(), 32);
+    for (index, source) in group.sources.iter().take(24).enumerate() {
+        assert_eq!(source.bank, 2);
+        assert_eq!(source.index, index as u16);
+    }
+    assert_eq!(group.sources[24], RoutingSource { bank: 0, index: 0 });
 
     let outbound_error = driver
         .encode(Action::SetRoutingGroup {
-            destination: 1,
+            destination: 13,
             changed_channel: None,
-            sources: vec![
-                RoutingSource { bank: 2, index: 0 },
-                RoutingSource { bank: 2, index: 1 },
-            ],
+            sources: vec![RoutingSource { bank: 2, index: 0 }; 32],
         })
         .expect_err("observed readback domain must not authorize writes");
     assert!(outbound_error.to_string().contains("source bank 2"));
 
+    let mut destination_two = vec![0; 320];
+    destination_two[0] = 0x75;
+    destination_two[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+    destination_two[8] = 0x03;
+    destination_two[12] = 2;
+    destination_two[16] = 2;
+    destination_two[17..21].copy_from_slice(&[0x02, 0x02, 0x02, 0x03]);
+    let DeviceEvent::QueryReply {
+        patch: Some(DynamicStatePatch::Routing(group)),
+        ..
+    } = driver
+        .decode(&destination_two)
+        .expect("destination 2 observed bank-2 routing readback")
+        .expect("destination 2 routing event")
+    else {
+        panic!("destination 2 routing patch")
+    };
+    assert_eq!(
+        group.sources,
+        vec![
+            RoutingSource { bank: 2, index: 2 },
+            RoutingSource { bank: 2, index: 3 },
+        ]
+    );
+
     let mut unlisted = routing.clone();
-    unlisted[18] = 2;
+    unlisted[18 + 23 * 2] = 24;
     let unlisted_error = driver
         .decode(&unlisted)
         .expect_err("unlisted observed source index must reject");

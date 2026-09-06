@@ -105,6 +105,62 @@ fn typed_mix_master_meter_renders_as_mixer_state_not_physical_output() {
 }
 
 #[test]
+fn selected_orion_mix_meter_uses_each_profile_mapping_without_stereo_inference() {
+    let mut state = orion_ui_state();
+    state.meters = (0_u16..4)
+        .map(|target_index| DynamicMeterState {
+            target: RuntimeMeterTarget::MixMaster,
+            target_index,
+            lane: 0,
+            value: 0x12 + target_index as u8,
+        })
+        .collect();
+
+    for surface_index in 0..4 {
+        state.mixer.surface_index = surface_index as usize;
+        let meter = super::mouse::mix_meter(&state).expect("selected Orion meter");
+        assert_eq!(meter.lanes.len(), 1);
+        assert_eq!(meter.name, state.mixers()[surface_index].name);
+
+        let line = super::render::render_mix_meter_state_line(&state);
+        let lane_label = meter.lane_label(0);
+        let db = antelope_protocol::meter_display_db(meter.lanes[0].value)
+            .expect("fixture meter has a display value");
+        assert!(line.contains(&lane_label));
+        assert!(line.contains(&format!("{db} dB")));
+        assert!(!line.contains(" R "));
+
+        let mut terminal = test_terminal(80, 1);
+        terminal
+            .draw(|frame| {
+                super::render::render_mix_meter_widget(frame.area(), frame.buffer_mut(), &meter)
+            })
+            .expect("render selected Orion meter");
+        let graphical = terminal_text(&terminal);
+        assert!(graphical.contains(&lane_label));
+        assert!(graphical.contains(&format!("{db} dB")));
+        assert!(!graphical.contains(" R "));
+    }
+}
+
+#[test]
+fn physical_output_meter_does_not_render_as_selected_mix_meter() {
+    let mut state = zen_go_ui_state();
+    state.meters = vec![DynamicMeterState {
+        target: RuntimeMeterTarget::PhysicalOutput,
+        target_index: 0,
+        lane: 0,
+        value: 0x12,
+    }];
+
+    assert!(super::mouse::mix_meter(&state).is_none());
+    assert_eq!(
+        super::render::render_mix_meter_state_line(&state),
+        "Mix meter: unavailable for selected mixer"
+    );
+}
+
+#[test]
 fn selected_device_title_uses_runtime_profile_name() {
     let state = orion_ui_state();
     let title = super::render::render_device_header(&state).to_string();

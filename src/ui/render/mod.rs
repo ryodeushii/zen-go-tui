@@ -12,8 +12,7 @@ use crate::app::{
 use crate::device::DevicePickerState;
 use crate::terminal;
 use antelope_protocol::{
-    meter_display_db, ClockSource, MixerAssignment, PreampMode, RuntimeDriverKind,
-    RuntimeMeterTarget, SampleRate,
+    meter_display_db, ClockSource, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate,
 };
 
 use super::layouts::*;
@@ -695,7 +694,13 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     )]))
     .render(header_buttons[1], frame.buffer_mut());
 
-    let content = mixer_strip_panel_layout(layout[1], mix_meter(state).is_some());
+    let selected_mix_meter = mix_meter(state);
+    let content = mixer_strip_panel_layout_for_meter_lanes(
+        layout[1],
+        selected_mix_meter
+            .as_ref()
+            .map_or(0, |meter| meter.lanes.len()),
+    );
     let inner = content[0];
     let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
     let total = state
@@ -719,21 +724,17 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         if surface.master.is_some() {
             title.push_str(" | Master");
         }
-        let meter_text = state
-            .meters
-            .iter()
-            .filter(|meter| {
-                meter.target == RuntimeMeterTarget::MixMaster
-                    && meter.target_index == u16::from(surface.surface)
-            })
-            .map(|meter| {
-                meter_display_db(meter.value).map_or_else(
-                    || format!("L{}:--", meter.lane + 1),
-                    |db| format!("L{}:{}dB", meter.lane + 1, db),
-                )
-            })
-            .collect::<Vec<_>>();
-        if !meter_text.is_empty() {
+        if let Some(meter) = selected_mix_meter.as_ref() {
+            let meter_text = meter
+                .lanes
+                .iter()
+                .map(|lane| {
+                    meter_display_db(lane.value).map_or_else(
+                        || format!("{}:--", meter.lane_label(lane.lane)),
+                        |db| format!("{}:{}dB", meter.lane_label(lane.lane), db),
+                    )
+                })
+                .collect::<Vec<_>>();
             title.push_str(" | MIX MASTER ");
             title.push_str(&meter_text.join(" "));
         }
@@ -828,8 +829,8 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         }
     }
 
-    if let Some((_, left_raw, right_raw)) = mix_meter(state) {
-        render_mix_meter_widget(content[1], frame.buffer_mut(), left_raw, right_raw);
+    if let Some(meter) = selected_mix_meter.as_ref() {
+        render_mix_meter_widget(content[1], frame.buffer_mut(), meter);
     } else if content[1].height > 0 {
         frame.render_widget(
             Paragraph::new(render_status_strip(state)).wrap(Wrap { trim: false }),

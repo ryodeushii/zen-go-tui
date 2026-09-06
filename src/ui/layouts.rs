@@ -366,11 +366,24 @@ pub(crate) fn mixer_layout(area: Rect) -> [Rect; 2] {
 }
 
 pub(crate) fn mixer_strip_panel_layout(area: Rect, with_mix_meter: bool) -> [Rect; 2] {
+    mixer_strip_panel_layout_for_meter_lanes(area, usize::from(with_mix_meter) * 2)
+}
+
+pub(crate) fn mixer_strip_panel_layout_for_meter_lanes(
+    area: Rect,
+    meter_lane_count: usize,
+) -> [Rect; 2] {
     let inner = inner_area(area);
-    if with_mix_meter && inner.height >= 3 {
+    let Some(meter_height) = u16::try_from(meter_lane_count).ok() else {
+        return [
+            inner,
+            Rect::new(inner.x, inner.y + inner.height, inner.width, 0),
+        ];
+    };
+    if meter_height > 0 && inner.height > meter_height {
         let sections = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .constraints([Constraint::Min(1), Constraint::Length(meter_height)])
             .split(inner);
         [sections[0], sections[1]]
     } else {
