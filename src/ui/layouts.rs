@@ -901,6 +901,103 @@ pub(crate) fn dynamic_routing_popup_area(area: Rect, state: &AppState) -> Rect {
     }
 }
 
+pub(crate) fn routing_source_picker_title(
+    state: &AppState,
+    destination: u16,
+    channel: u16,
+) -> String {
+    let name = state
+        .routing_capabilities
+        .iter()
+        .find(|group| group.destination == destination)
+        .map_or_else(
+            || format!("Destination {destination}"),
+            |group| group.name.clone(),
+        );
+    format!("{name} CH {:02}", channel.saturating_add(1))
+}
+
+pub(crate) fn routing_editor_inner_area(popup: Rect) -> Rect {
+    Rect::new(
+        popup.x.saturating_add(1),
+        popup.y.saturating_add(1),
+        popup.width.saturating_sub(2),
+        popup.height.saturating_sub(2),
+    )
+}
+
+pub(crate) fn routing_destination_viewport(
+    popup: Rect,
+    state: &AppState,
+) -> std::ops::Range<usize> {
+    let item_count = state.routing_capabilities.len();
+    if item_count == 0 {
+        return 0..0;
+    }
+    let visible_count =
+        usize::from(routing_editor_inner_area(popup).height.saturating_sub(1)).min(item_count);
+    if visible_count == 0 {
+        return item_count..item_count;
+    }
+    let selected_index = state
+        .popup
+        .routing_editor
+        .and_then(|editor| {
+            state
+                .routing_capabilities
+                .iter()
+                .position(|group| group.destination == editor.destination)
+        })
+        .unwrap_or(0);
+    let start = selected_index
+        .saturating_add(1)
+        .saturating_sub(visible_count)
+        .min(item_count - visible_count);
+    start..start + visible_count
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RoutingEditorRowRects {
+    pub name: Rect,
+    pub previous_channel: Rect,
+    pub channel: Rect,
+    pub next_channel: Rect,
+    pub source: Rect,
+}
+
+pub(crate) fn routing_editor_row_rects(row: Rect) -> RoutingEditorRowRects {
+    let name_width = (row.width / 3).min(row.width);
+    let channel_width = row.width.saturating_sub(name_width).min(13);
+    let source_width = row.width.saturating_sub(name_width + channel_width);
+    let name = Rect::new(row.x, row.y, name_width, row.height);
+    let channel = Rect::new(
+        row.x.saturating_add(name_width),
+        row.y,
+        channel_width,
+        row.height,
+    );
+    let source = Rect::new(
+        channel.x.saturating_add(channel.width),
+        row.y,
+        source_width,
+        row.height,
+    );
+    let previous_channel = Rect::new(channel.x, channel.y, channel.width.min(1), channel.height);
+    let next_channel = Rect::new(
+        channel.x.saturating_add(channel.width.saturating_sub(1)),
+        channel.y,
+        channel.width.min(1),
+        channel.height,
+    );
+    RoutingEditorRowRects {
+        name,
+        previous_channel,
+        channel,
+        next_channel,
+        source,
+    }
+}
+
 pub(crate) fn profiles_popup_area(area: Rect) -> Rect {
     let width = area.width.clamp(44, 64);
     let height = area.height.clamp(12, 16);

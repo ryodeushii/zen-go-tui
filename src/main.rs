@@ -33,9 +33,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use antelope_protocol::{
-        control_panel_startup_queries, ClockSource, MixerAssignment, MixerSurface, OutputMode,
-        OutputState, OutputTarget, PanState, PreampMode, RuntimeRoutingSourceDomain, SampleRate,
-        Surface,
+        control_panel_startup_queries, ClockSource, DynamicRoutingGroup, MixerAssignment,
+        MixerSurface, OutputMode, OutputState, OutputTarget, PanState, PreampMode, ProfileDriver,
+        RoutingSource, RuntimeRoutingSourceDomain, SampleRate, Surface,
     };
     use zen_go_tui::app::{
         AssignmentPickerState, Controller, FocusArea, ProfileEditorMode, ProfileEditorState,
@@ -236,6 +236,95 @@ mod tests {
         assert_eq!(
             controller.state.popup.assignment_picker,
             Some(AssignmentPickerState { strip: 6 })
+        );
+    }
+
+    #[test]
+    fn general_routing_keyboard_reaches_last_target_and_scrolled_source_then_returns_to_editor() {
+        let catalog = ProfileCatalog::builtin();
+        let entry = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "orion_studio_3")
+            .expect("Orion profile")
+            .clone();
+        let transport = MockTransport::default();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+                .expect("Orion controller");
+        controller.state.routing.push(DynamicRoutingGroup {
+            destination: 14,
+            name: "surround_in".into(),
+            sources: vec![RoutingSource { bank: 0, index: 0 }; 16],
+        });
+        seed_first_mixer_strip_state(&mut controller, 0, 0, false, false);
+        let area = ratatui::layout::Rect::new(0, 0, 80, 8);
+
+        controller
+            .apply_intent(ui::Intent::OpenRoutingPopup, area)
+            .expect("open routing editor");
+        for _ in 0..14 {
+            handle_key_press(&mut controller, test_key(AppKeyCode::Down), area)
+                .expect("next destination");
+        }
+        for _ in 0..14 {
+            handle_key_press(&mut controller, test_key(AppKeyCode::Right), area)
+                .expect("next channel");
+        }
+        let target = zen_go_tui::app::RoutingEditorState {
+            destination: 14,
+            channel: 14,
+        };
+        assert_eq!(controller.state.popup.routing_editor, Some(target));
+
+        handle_key_press(&mut controller, test_key(AppKeyCode::Enter), area)
+            .expect("open general source picker");
+        handle_key_press(&mut controller, test_key(AppKeyCode::Down), area)
+            .expect("scroll source picker down");
+        assert_eq!(controller.state.popup.selected_index, 1);
+        handle_key_press(&mut controller, test_key(AppKeyCode::Up), area)
+            .expect("scroll source picker up");
+        assert_eq!(controller.state.popup.selected_index, 0);
+        handle_key_press(&mut controller, test_key(AppKeyCode::Right), area)
+            .expect("ignore editor navigation behind source picker");
+        handle_key_press(&mut controller, test_key(AppKeyCode::Esc), area)
+            .expect("return to routing editor");
+        assert!(controller.state.popup.routing_source_picker.is_none());
+        assert!(controller.state.popup.routing_open);
+        assert_eq!(controller.state.popup.routing_editor, Some(target));
+        assert!(transport.take_writes().is_empty());
+
+        handle_key_press(&mut controller, test_key(AppKeyCode::Enter), area)
+            .expect("reopen source picker");
+        handle_key_press(&mut controller, test_key(AppKeyCode::Char('m')), area)
+            .expect("ignore mute behind source picker");
+        handle_key_press(&mut controller, test_key(AppKeyCode::Char('d')), area)
+            .expect("ignore dim behind source picker");
+        controller
+            .flush_commands()
+            .expect("flush ignored shortcuts");
+        assert!(transport.take_writes().is_empty());
+        assert_eq!(controller.state.popup.routing_editor, Some(target));
+        assert_eq!(
+            controller.state.popup.routing_source_picker,
+            Some(zen_go_tui::app::RoutingSourcePickerState {
+                destination: target.destination,
+                channel: target.channel,
+            })
+        );
+
+        controller.state.popup.selected_index = 118;
+        handle_key_press(&mut controller, test_key(AppKeyCode::Enter), area)
+            .expect("activate scrolled source");
+        assert!(controller.state.popup.routing_source_picker.is_none());
+        assert!(controller.state.popup.routing_open);
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        let final_channel_offset = 19 + 14 * 2;
+        assert_eq!(
+            &writes[0][final_channel_offset..final_channel_offset + 2],
+            &[11, 0]
         );
     }
 

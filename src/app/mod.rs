@@ -382,10 +382,25 @@ impl AppState {
     }
 
     pub fn routing_source_choices(&self, surface: u8) -> Vec<RoutingSourceChoice> {
+        let Some(group) = self.routing_assignment_group(surface) else {
+            return Vec::new();
+        };
+        self.routing_source_choices_for_destination(group.destination)
+    }
+
+    pub fn routing_source_choices_for_destination(
+        &self,
+        destination: u16,
+    ) -> Vec<RoutingSourceChoice> {
         if self.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
             return Vec::new();
         }
-        let Some(group) = self.routing_assignment_group(surface) else {
+        let Some(group) = self.runtime_profile.as_ref().and_then(|profile| {
+            profile
+                .routing_groups
+                .iter()
+                .find(|group| group.destination == destination)
+        }) else {
             return Vec::new();
         };
         group
@@ -414,6 +429,44 @@ impl AppState {
                 })
             })
             .collect()
+    }
+
+    pub fn general_routing_channel_available(&self, destination: u16, channel: u16) -> bool {
+        if self.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo
+            || !self.ui_profile.supports_routing(destination)
+        {
+            return false;
+        }
+        let Some(capability) = self
+            .routing_capabilities
+            .iter()
+            .find(|group| group.destination == destination)
+        else {
+            return false;
+        };
+        channel < capability.channel_count
+            && !self
+                .routing_source_choices_for_destination(destination)
+                .is_empty()
+            && self.routing_group(destination).is_some_and(|snapshot| {
+                snapshot.sources.len() == usize::from(capability.channel_count)
+            })
+    }
+
+    pub fn routing_source_label_for_destination(
+        &self,
+        destination: u16,
+        channel: u16,
+    ) -> Option<String> {
+        let source = *self
+            .routing_group(destination)?
+            .sources
+            .get(usize::from(channel))?;
+        self.routing_source_choices_for_destination(destination)
+            .into_iter()
+            .find(|choice| choice.source == source)
+            .map(|choice| choice.label)
+            .or_else(|| Some(format!("{}:{}", source.bank, source.index)))
     }
 
     fn routing_assignment_group(

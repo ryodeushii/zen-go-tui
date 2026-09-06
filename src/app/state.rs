@@ -10,7 +10,10 @@ use antelope_protocol::{
 };
 
 use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
-use super::{AssignmentPickerState, ProfileEditorState, QueryReplyLogEntry, SelectorPopupState};
+use super::{
+    AssignmentPickerState, ProfileEditorState, QueryReplyLogEntry, RoutingEditorState,
+    RoutingSourcePickerState, SelectorPopupState,
+};
 
 /// Device connection and status tracking.
 #[derive(Debug, Clone)]
@@ -543,6 +546,8 @@ pub struct PopupState {
     pub raw_view_open: bool,
     pub assignment_picker: Option<AssignmentPickerState>,
     pub assignment_picker_address: Option<MixerAddress>,
+    pub routing_editor: Option<RoutingEditorState>,
+    pub routing_source_picker: Option<RoutingSourcePickerState>,
     pub selector_popup: Option<SelectorPopupState>,
     pub profile_names: Vec<String>,
     pub profile_editor: Option<ProfileEditorState>,

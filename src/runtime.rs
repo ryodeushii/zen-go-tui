@@ -403,6 +403,32 @@ fn handle_profiles_popup(
     Ok(KeyAction::Continue)
 }
 
+fn handle_routing_source_picker(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    ctrl: bool,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    let result = match key_code {
+        AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('c') if ctrl => return Ok(KeyAction::Quit),
+        AppKeyCode::Up => controller.apply_intent(Intent::MovePopupSelection(false), area),
+        AppKeyCode::Down => controller.apply_intent(Intent::MovePopupSelection(true), area),
+        AppKeyCode::Enter => activate_popup_selection(controller),
+        AppKeyCode::Esc => controller.apply_intent(Intent::CloseRoutingSourcePicker, area),
+        _ => Ok(()),
+    };
+
+    match result {
+        Ok(()) => Ok(KeyAction::Continue),
+        Err(error) if is_device_error(&error) => {
+            handle_runtime_error(controller, error)?;
+            Ok(KeyAction::ReconnectPending)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn handle_key_press(
     controller: &mut Controller,
     key: AppKeyEvent,
@@ -410,6 +436,10 @@ pub fn handle_key_press(
 ) -> Result<KeyAction> {
     let key_code = key.code;
     let ctrl = key.modifiers.ctrl;
+
+    if controller.state.popup.routing_source_picker.is_some() {
+        return handle_routing_source_picker(controller, key_code, ctrl, area);
+    }
 
     if ctrl {
         match key_code {
@@ -499,6 +529,120 @@ pub fn handle_key_press(
                 || controller.state.popup.selector_popup.is_some() =>
         {
             activate_popup_selection(controller)
+        }
+        AppKeyCode::Up
+            if controller.state.popup.routing_open
+                && controller.state.popup.routing_editor.is_some() =>
+        {
+            let editor = controller
+                .state
+                .popup
+                .routing_editor
+                .expect("guarded above");
+            let index = controller
+                .state
+                .routing_capabilities
+                .iter()
+                .position(|group| group.destination == editor.destination)
+                .unwrap_or(0);
+            let destination =
+                controller.state.routing_capabilities[index.saturating_sub(1)].destination;
+            controller.apply_intent(Intent::SelectRoutingDestination { destination }, area)?;
+            Ok(())
+        }
+        AppKeyCode::Down
+            if controller.state.popup.routing_open
+                && controller.state.popup.routing_editor.is_some() =>
+        {
+            let editor = controller
+                .state
+                .popup
+                .routing_editor
+                .expect("guarded above");
+            let index = controller
+                .state
+                .routing_capabilities
+                .iter()
+                .position(|group| group.destination == editor.destination)
+                .unwrap_or(0);
+            let next = index.saturating_add(1).min(
+                controller
+                    .state
+                    .routing_capabilities
+                    .len()
+                    .saturating_sub(1),
+            );
+            let destination = controller.state.routing_capabilities[next].destination;
+            controller.apply_intent(Intent::SelectRoutingDestination { destination }, area)?;
+            Ok(())
+        }
+        AppKeyCode::Left
+            if controller.state.popup.routing_open
+                && controller.state.popup.routing_editor.is_some() =>
+        {
+            let editor = controller
+                .state
+                .popup
+                .routing_editor
+                .expect("guarded above");
+            controller.apply_intent(
+                Intent::SelectRoutingChannel {
+                    destination: editor.destination,
+                    channel: editor.channel.saturating_sub(1),
+                },
+                area,
+            )?;
+            Ok(())
+        }
+        AppKeyCode::Right
+            if controller.state.popup.routing_open
+                && controller.state.popup.routing_editor.is_some() =>
+        {
+            let editor = controller
+                .state
+                .popup
+                .routing_editor
+                .expect("guarded above");
+            let last = controller
+                .state
+                .routing_capabilities
+                .iter()
+                .find(|group| group.destination == editor.destination)
+                .map_or(0, |group| group.channel_count.saturating_sub(1));
+            controller.apply_intent(
+                Intent::SelectRoutingChannel {
+                    destination: editor.destination,
+                    channel: editor.channel.saturating_add(1).min(last),
+                },
+                area,
+            )?;
+            Ok(())
+        }
+        AppKeyCode::Enter
+            if controller.state.popup.routing_open
+                && controller.state.popup.routing_editor.is_some() =>
+        {
+            let editor = controller
+                .state
+                .popup
+                .routing_editor
+                .expect("guarded above");
+            if controller
+                .state
+                .general_routing_channel_available(editor.destination, editor.channel)
+            {
+                controller.apply_intent(
+                    Intent::OpenRoutingSourcePicker {
+                        destination: editor.destination,
+                        channel: editor.channel,
+                    },
+                    area,
+                )?;
+            } else {
+                controller.state.ui.last_message =
+                    "Routing source is unavailable until complete readback arrives".to_string();
+            }
+            Ok(())
         }
         AppKeyCode::Char('[') if controller.state.popup.raw_view_open => {
             controller.apply_intent(Intent::CycleRawMapScope { forward: false }, area)?;
@@ -789,6 +933,7 @@ pub fn handle_key_press(
         {
             controller.state.popup.assignment_picker = None;
             controller.state.popup.selector_popup = None;
+            controller.state.popup.routing_editor = None;
             controller.state.popup.routing_open = false;
             controller.state.popup.selected_index = 0;
             controller.state.popup.hotkeys_open = false;
@@ -1162,6 +1307,22 @@ pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::l
 }
 
 pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
+    if let Some(picker) = controller.state.popup.routing_source_picker {
+        let choices = controller
+            .state
+            .routing_source_choices_for_destination(picker.destination);
+        if let Some(choice) = choices.get(controller.state.popup.selected_index) {
+            return controller.apply_intent(
+                ui::Intent::PickRoutingSource {
+                    destination: picker.destination,
+                    channel: picker.channel,
+                    source: choice.source,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            );
+        }
+    }
+
     if let Some(picker) = controller.state.popup.assignment_picker {
         if let Some(address) = controller.state.popup.assignment_picker_address {
             let choices = controller.state.routing_source_choices(address.surface);

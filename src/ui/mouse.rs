@@ -232,6 +232,10 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
         );
     }
 
+    if let Some(picker) = state.popup.routing_source_picker {
+        return routing_source_picker_mouse_action(area, state, picker, point);
+    }
+
     if state.popup.routing_open {
         return routing_popup_mouse_action(area, state, point);
     }
@@ -333,14 +337,72 @@ fn routing_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     if !contains_point(popup, point) {
         return Some(Intent::CloseRoutingPopup);
     }
-    if state.routing_capabilities.is_empty() && state.ui_profile.supports_any_routing() {
-        // Compatibility-only AFX layout for legacy state with no profile topology.
-        afx_routing_mouse_action(popup, state, point)
-    } else {
-        // Profile routing rows are summary-only; assignment editing lives on
-        // profile-addressed mixer source controls.
-        None
+    if state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+        return if state.routing_capabilities.is_empty() && state.ui_profile.supports_any_routing() {
+            // Compatibility-only AFX layout for legacy state with no profile topology.
+            afx_routing_mouse_action(popup, state, point)
+        } else {
+            None
+        };
     }
+
+    let inner = routing_editor_inner_area(popup);
+    if point.1 <= inner.y {
+        return None;
+    }
+    let viewport = routing_destination_viewport(popup, state);
+    let visible_row = usize::from(point.1.saturating_sub(inner.y).saturating_sub(1));
+    let capability_index = viewport.start.checked_add(visible_row)?;
+    if capability_index >= viewport.end {
+        return None;
+    }
+    let capability = state.routing_capabilities.get(capability_index)?;
+    let row = Rect::new(
+        inner.x,
+        inner.y.saturating_add(1).saturating_add(visible_row as u16),
+        inner.width,
+        1,
+    );
+    if !contains_point(row, point) {
+        return None;
+    }
+    let Some(editor) = state
+        .popup
+        .routing_editor
+        .filter(|editor| editor.destination == capability.destination)
+    else {
+        return Some(Intent::SelectRoutingDestination {
+            destination: capability.destination,
+        });
+    };
+    let rects = routing_editor_row_rects(row);
+    if contains_point(rects.previous_channel, point) {
+        return Some(Intent::SelectRoutingChannel {
+            destination: capability.destination,
+            channel: editor.channel.saturating_sub(1),
+        });
+    }
+    if contains_point(rects.next_channel, point) {
+        let channel = editor
+            .channel
+            .saturating_add(1)
+            .min(capability.channel_count.saturating_sub(1));
+        return Some(Intent::SelectRoutingChannel {
+            destination: capability.destination,
+            channel,
+        });
+    }
+    if contains_point(rects.source, point)
+        && state.general_routing_channel_available(capability.destination, editor.channel)
+    {
+        return Some(Intent::OpenRoutingSourcePicker {
+            destination: capability.destination,
+            channel: editor.channel,
+        });
+    }
+    Some(Intent::SelectRoutingDestination {
+        destination: capability.destination,
+    })
 }
 
 fn options_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
@@ -642,6 +704,34 @@ fn assignment_picker_mouse_action(
             })
         },
     )
+}
+
+fn routing_source_picker_mouse_action(
+    area: Rect,
+    state: &AppState,
+    picker: crate::app::RoutingSourcePickerState,
+    point: (u16, u16),
+) -> Option<Intent> {
+    let popup = assignment_picker_area(area);
+    if !contains_point(popup, point) {
+        return Some(Intent::CloseRoutingSourcePicker);
+    }
+    let title = routing_source_picker_title(state, picker.destination, picker.channel);
+    let inner = popup_list_inner_area(popup, &title);
+    if !contains_point(inner, point) {
+        return None;
+    }
+    let choices = state.routing_source_choices_for_destination(picker.destination);
+    let viewport = popup_list_viewport(popup, &title, choices.len(), state.popup.selected_index);
+    let index = viewport
+        .start
+        .saturating_add(usize::from(point.1.saturating_sub(inner.y)));
+    let choice = choices.get(index)?;
+    Some(Intent::PickRoutingSource {
+        destination: picker.destination,
+        channel: picker.channel,
+        source: choice.source,
+    })
 }
 
 fn selector_popup_mouse_action(

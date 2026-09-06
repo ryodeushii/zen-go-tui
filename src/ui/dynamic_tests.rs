@@ -912,6 +912,57 @@ fn orion_assignment_picker_mouse_rows_follow_the_rendered_viewport() {
 }
 
 #[test]
+fn orion_general_source_picker_mouse_rows_follow_the_scrolled_viewport() {
+    let area = Rect::new(0, 0, 140, 48);
+    let popup = super::layouts::assignment_picker_area(area);
+    let title = "line_out CH 01";
+    let inner = super::layouts::popup_list_inner_area(popup, title);
+    let mut state = orion_ui_state();
+    state.popup.routing_open = true;
+    state.popup.routing_source_picker = Some(crate::app::RoutingSourcePickerState {
+        destination: 0,
+        channel: 0,
+    });
+    state.popup.selected_index = 118;
+
+    let text = render_to_string(&state);
+    assert!(text.contains("MUTE"));
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y + inner.height - 1),
+        Some(Intent::PickRoutingSource {
+            destination: 0,
+            channel: 0,
+            source: RoutingSource { bank: 11, index: 0 },
+        })
+    );
+}
+
+#[test]
+fn orion_general_routing_small_viewport_reaches_last_destination_with_matching_mouse_row() {
+    let area = Rect::new(0, 0, 80, 8);
+    let mut state = orion_ui_state();
+    state.popup.routing_open = true;
+    state.popup.routing_editor = Some(crate::app::RoutingEditorState {
+        destination: 14,
+        channel: 15,
+    });
+    let popup = super::layouts::dynamic_routing_popup_area(area, &state);
+    let viewport = super::layouts::routing_destination_viewport(popup, &state);
+    assert_eq!(viewport.end, state.routing_capabilities.len());
+
+    let text = render_to_string(&state);
+    assert!(text.contains("surround_in"));
+    let inner = super::layouts::routing_editor_inner_area(popup);
+    let first_visible = viewport.start;
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y + 1),
+        Some(Intent::SelectRoutingDestination {
+            destination: state.routing_capabilities[first_visible].destination,
+        })
+    );
+}
+
+#[test]
 fn dynamic_mixer_source_label_uses_profile_routing_readback_for_each_surface() {
     let mut state = orion_ui_state();
     for (destination, source) in [

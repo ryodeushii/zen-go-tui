@@ -4,6 +4,18 @@ pub struct AssignmentPickerState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingEditorState {
+    pub destination: u16,
+    pub channel: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoutingSourcePickerState {
+    pub destination: u16,
+    pub channel: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectorPopupKind {
     SampleRate,
     ClockSource,

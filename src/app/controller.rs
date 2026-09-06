@@ -13,7 +13,10 @@ use antelope_protocol::{
     RuntimeEntry, SampleRate, Surface,
 };
 
-use super::picker::{AssignmentPickerState, SelectorPopupKind, SelectorPopupState};
+use super::picker::{
+    AssignmentPickerState, RoutingEditorState, RoutingSourcePickerState, SelectorPopupKind,
+    SelectorPopupState,
+};
 use super::profile_editor::{ProfileEditorMode, ProfileEditorState};
 use super::types::{
     FocusArea, Intent, PeakHoldDuration, PendingMutation, RawMapScope, RawPacketTab, RefreshRate,
@@ -1005,6 +1008,23 @@ impl Controller {
             Intent::CloseProfilesPopup => self.handle_close_profiles_popup(),
             Intent::OpenRoutingPopup => self.handle_open_routing_popup(),
             Intent::CloseRoutingPopup => self.handle_close_routing_popup(),
+            Intent::SelectRoutingDestination { destination } => {
+                self.handle_select_routing_destination(destination)?
+            }
+            Intent::SelectRoutingChannel {
+                destination,
+                channel,
+            } => self.handle_select_routing_channel(destination, channel)?,
+            Intent::OpenRoutingSourcePicker {
+                destination,
+                channel,
+            } => self.handle_open_routing_source_picker(destination, channel)?,
+            Intent::CloseRoutingSourcePicker => self.handle_close_routing_source_picker(),
+            Intent::PickRoutingSource {
+                destination,
+                channel,
+                source,
+            } => self.handle_pick_routing_source(destination, channel, source, pending)?,
             Intent::OpenOptionsPopup => self.handle_open_options_popup(),
             Intent::CloseOptionsPopup => self.handle_close_options_popup(),
             Intent::SetRefreshRate(rate) => self.handle_set_refresh_rate(rate),
@@ -1556,30 +1576,159 @@ impl Controller {
         self.state.popup.profiles_open = false;
         self.state.popup.profile_editor = None;
         self.state.popup.routing_open = true;
+        self.state.popup.routing_source_picker = None;
         self.state.ui.focus = FocusArea::Mixer;
         self.state.mixer.selected_channel = self.state.mixer.selected_channel.min(7);
-        self.state.ui.last_message =
-            "Routing popup mirrors mixer assignments for USB recording channels 1-8".to_string();
+        if self.state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+            self.state.popup.routing_editor = None;
+            self.state.ui.last_message =
+                "Routing popup mirrors mixer assignments for USB recording channels 1-8"
+                    .to_string();
+        } else {
+            self.state.popup.routing_editor =
+                self.state
+                    .routing_capabilities
+                    .first()
+                    .map(|group| RoutingEditorState {
+                        destination: group.destination,
+                        channel: 0,
+                    });
+            self.state.ui.last_message = "Routing editor opened".to_string();
+        }
     }
 
     fn handle_close_routing_popup(&mut self) {
         self.state.popup.routing_open = false;
+        if self.state.ui_profile.driver_kind != antelope_protocol::RuntimeDriverKind::ZenGo {
+            self.state.popup.routing_editor = None;
+            self.state.popup.routing_source_picker = None;
+            self.state.popup.selected_index = 0;
+        }
         self.state.ui.last_message = "Closed routing popup".to_string();
     }
 
     fn handle_toggle_routing_popup(&mut self) {
-        self.state.popup.routing_open = !self.state.popup.routing_open;
-        self.state.ui.last_message = if self.state.popup.routing_open {
-            "Routing popup mirrors mixer assignments for USB recording channels 1-8".to_string()
+        if self.state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+            self.state.popup.routing_open = !self.state.popup.routing_open;
+            self.state.ui.last_message = if self.state.popup.routing_open {
+                "Routing popup mirrors mixer assignments for USB recording channels 1-8".to_string()
+            } else {
+                "Closed routing popup".to_string()
+            };
+        } else if self.state.popup.routing_open {
+            self.handle_close_routing_popup();
         } else {
-            "Closed routing popup".to_string()
-        };
+            self.handle_open_routing_popup();
+        }
+    }
+
+    fn handle_select_routing_destination(&mut self, destination: u16) -> Result<()> {
+        if self.state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo {
+            bail!("general routing editor is unsupported");
+        }
+        let capability = self
+            .state
+            .routing_capabilities
+            .iter()
+            .find(|group| group.destination == destination)
+            .ok_or_else(|| anyhow::anyhow!("routing destination {destination} unavailable"))?;
+        let channel = self
+            .state
+            .popup
+            .routing_editor
+            .map_or(0, |editor| editor.channel)
+            .min(capability.channel_count.saturating_sub(1));
+        self.state.popup.routing_editor = Some(RoutingEditorState {
+            destination,
+            channel,
+        });
+        Ok(())
+    }
+
+    fn handle_select_routing_channel(&mut self, destination: u16, channel: u16) -> Result<()> {
+        let capability = self
+            .state
+            .routing_capabilities
+            .iter()
+            .find(|group| group.destination == destination)
+            .ok_or_else(|| anyhow::anyhow!("routing destination {destination} unavailable"))?;
+        if self.state.ui_profile.driver_kind == antelope_protocol::RuntimeDriverKind::ZenGo
+            || channel >= capability.channel_count
+        {
+            bail!("routing channel {channel} unavailable for destination {destination}");
+        }
+        self.state.popup.routing_editor = Some(RoutingEditorState {
+            destination,
+            channel,
+        });
+        Ok(())
+    }
+
+    fn handle_open_routing_source_picker(&mut self, destination: u16, channel: u16) -> Result<()> {
+        if !self
+            .state
+            .general_routing_channel_available(destination, channel)
+        {
+            bail!("routing destination {destination} channel {channel} is unavailable");
+        }
+        let current = self
+            .state
+            .routing_group(destination)
+            .and_then(|group| group.sources.get(usize::from(channel)))
+            .copied();
+        let choices = self
+            .state
+            .routing_source_choices_for_destination(destination);
+        self.state.popup.selected_index = current
+            .and_then(|current| choices.iter().position(|choice| choice.source == current))
+            .unwrap_or(0);
+        self.state.popup.routing_editor = Some(RoutingEditorState {
+            destination,
+            channel,
+        });
+        self.state.popup.routing_source_picker = Some(RoutingSourcePickerState {
+            destination,
+            channel,
+        });
+        self.state.ui.last_message = format!(
+            "Pick source for destination {destination} channel {}",
+            channel + 1
+        );
+        Ok(())
+    }
+
+    fn handle_close_routing_source_picker(&mut self) {
+        self.state.popup.routing_source_picker = None;
+        self.state.popup.selected_index = 0;
+        self.state.ui.last_message = "Returned to routing editor".to_string();
+    }
+
+    fn handle_pick_routing_source(
+        &mut self,
+        destination: u16,
+        channel: u16,
+        source: RoutingSource,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        if !self
+            .state
+            .general_routing_channel_available(destination, channel)
+        {
+            bail!("routing destination {destination} channel {channel} is unavailable");
+        }
+        // Profile routing encodes a complete ordered group and rejects the legacy
+        // changed-channel hint. The typed UI intent still identifies the exact slot.
+        self.commit_routing_source(destination, channel, source, pending, true, false)?;
+        self.handle_close_routing_source_picker();
+        Ok(())
     }
 
     fn handle_open_options_popup(&mut self) {
         self.state.popup.profiles_open = false;
         self.state.popup.profile_editor = None;
         self.state.popup.routing_open = false;
+        self.state.popup.routing_editor = None;
+        self.state.popup.routing_source_picker = None;
         self.state.popup.options_open = true;
         self.state.ui.last_message = "Options popup opened".to_string();
     }
@@ -2450,18 +2599,6 @@ impl Controller {
                     address.surface
                 )
             })?;
-        if !self
-            .state
-            .routing_source_choices(address.surface)
-            .iter()
-            .any(|choice| choice.source == source)
-        {
-            bail!(
-                "routing source {}:{} is unavailable",
-                source.bank,
-                source.index
-            );
-        }
         self.handle_pick_routing_source_for(address, source, pending, destination, false, false)
     }
 
@@ -2503,28 +2640,60 @@ impl Controller {
         } {
             bail!("routing assignment control is unsupported");
         }
-        self.state.popup.assignment_picker = None;
-        self.state.popup.assignment_picker_address = None;
-        self.state.popup.selected_index = 0;
         let changed_channel = u16::from(
             strip
                 .checked_sub(1)
                 .ok_or_else(|| anyhow::anyhow!("routing strip must be one-based"))?,
         );
+        self.commit_routing_source(
+            destination,
+            changed_channel,
+            source,
+            pending,
+            !legacy,
+            include_changed_channel,
+        )?;
+        self.state.popup.assignment_picker = None;
+        self.state.popup.assignment_picker_address = None;
+        self.state.popup.selected_index = 0;
+        Ok(())
+    }
+
+    fn commit_routing_source(
+        &mut self,
+        destination: u16,
+        channel: u16,
+        source: RoutingSource,
+        pending: Option<PendingMutation>,
+        validate_profile_source: bool,
+        include_changed_channel: bool,
+    ) -> Result<()> {
+        if validate_profile_source
+            && !self
+                .state
+                .routing_source_choices_for_destination(destination)
+                .iter()
+                .any(|choice| choice.source == source)
+        {
+            bail!(
+                "routing source {}:{} is unavailable for destination {destination}",
+                source.bank,
+                source.index
+            );
+        }
         let mut sources = self.shared_assignment_sources(destination)?;
         let slot = sources
-            .get_mut(usize::from(changed_channel))
-            .ok_or_else(|| anyhow::anyhow!("invalid routing strip {strip}"))?;
+            .get_mut(usize::from(channel))
+            .ok_or_else(|| anyhow::anyhow!("routing channel {channel} unavailable"))?;
         *slot = source;
         self.send(
             Action::SetRoutingGroup {
                 destination,
-                changed_channel: include_changed_channel.then_some(changed_channel),
+                changed_channel: include_changed_channel.then_some(channel),
                 sources,
             },
             pending,
-        )?;
-        Ok(())
+        )
     }
 
     fn handle_close_assignment_picker(&mut self) {
@@ -2538,6 +2707,8 @@ impl Controller {
         self.state.popup.assignment_picker = None;
         self.state.popup.selector_popup = None;
         self.state.popup.routing_open = false;
+        self.state.popup.routing_editor = None;
+        self.state.popup.routing_source_picker = None;
         self.state.popup.profile_editor = None;
         self.state.popup.profile_names = crate::profile::list_profile_names().unwrap_or_default();
         self.state.clamp_profile_selection();
@@ -2723,7 +2894,11 @@ impl Controller {
     }
 
     fn handle_move_popup_selection(&mut self, down: bool) {
-        let item_count = if self.state.popup.assignment_picker.is_some() {
+        let item_count = if let Some(picker) = self.state.popup.routing_source_picker {
+            self.state
+                .routing_source_choices_for_destination(picker.destination)
+                .len()
+        } else if self.state.popup.assignment_picker.is_some() {
             self.state
                 .popup
                 .assignment_picker_address

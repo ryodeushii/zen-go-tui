@@ -121,6 +121,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     draw_routing_popup(frame, frame.area(), state);
     draw_profiles_popup(frame, frame.area(), state);
     draw_assignment_picker(frame, frame.area(), state);
+    draw_routing_source_picker(frame, frame.area(), state);
     draw_selector_popup(frame, frame.area(), state);
     draw_hotkeys_popup(frame, frame.area(), state);
     draw_options_popup(frame, frame.area(), state);
@@ -195,47 +196,70 @@ fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     frame.render_widget(Clear, popup);
     frame.render_widget(panel_block("Routing", Color::Magenta, true), popup);
 
-    let inner = Rect::new(
-        popup.x.saturating_add(1),
-        popup.y.saturating_add(1),
-        popup.width.saturating_sub(2),
-        popup.height.saturating_sub(2),
-    );
+    let inner = routing_editor_inner_area(popup);
     if inner.height > 0 {
-        Paragraph::new(Line::from(vec![chip(
-            "ROUTING",
-            Color::Black,
-            Color::LightMagenta,
-        )]))
+        Paragraph::new(Line::from(vec![
+            chip("ROUTING", Color::Black, Color::LightMagenta),
+            Span::raw("  ↑↓ destination  ←→ channel  Enter source"),
+        ]))
         .render(
             Rect::new(inner.x, inner.y, inner.width, 1),
             frame.buffer_mut(),
         );
     }
-    for (row, capability) in state
-        .routing_capabilities
+    let editor = state.popup.routing_editor;
+    let viewport = routing_destination_viewport(popup, state);
+    for (visible_row, capability) in state.routing_capabilities[viewport.clone()]
         .iter()
-        .take(usize::from(inner.height.saturating_sub(1)))
         .enumerate()
     {
-        let observed = state
-            .routing_group(capability.destination)
-            .map_or(0, |group| group.sources.len());
-        let label = format!(
-            "{}  {} ch  observed {observed}",
-            capability.name, capability.channel_count
+        let row = Rect::new(
+            inner.x,
+            inner.y.saturating_add(1).saturating_add(visible_row as u16),
+            inner.width,
+            1,
         );
-        Paragraph::new(Line::from(label)).render(
-            Rect::new(
-                inner.x,
-                inner.y.saturating_add(1).saturating_add(row as u16),
-                inner.width,
-                1,
-            ),
-            frame.buffer_mut(),
-        );
+        let rects = routing_editor_row_rects(row);
+        let selected = editor.is_some_and(|editor| editor.destination == capability.destination);
+        let name = format!("{} {}", if selected { ">" } else { " " }, capability.name);
+        Paragraph::new(name)
+            .style(if selected {
+                strong_style(Color::LightMagenta)
+            } else {
+                subdued_style()
+            })
+            .render(rects.name, frame.buffer_mut());
+
+        if let Some(editor) = editor.filter(|editor| editor.destination == capability.destination) {
+            Paragraph::new(format!(
+                "< CH {:02}/{:02} >",
+                editor.channel.saturating_add(1),
+                capability.channel_count
+            ))
+            .render(rects.channel, frame.buffer_mut());
+            let source = if state
+                .general_routing_channel_available(capability.destination, editor.channel)
+            {
+                state
+                    .routing_source_label_for_destination(capability.destination, editor.channel)
+                    .map_or_else(|| "[unavailable]".to_string(), |label| format!("[{label}]"))
+            } else {
+                "[unavailable]".to_string()
+            };
+            Paragraph::new(source)
+                .style(strong_style(Color::LightCyan))
+                .render(rects.source, frame.buffer_mut());
+        } else {
+            let observed = state
+                .routing_group(capability.destination)
+                .map_or(0, |group| group.sources.len());
+            Paragraph::new(format!("{} ch", capability.channel_count))
+                .render(rects.channel, frame.buffer_mut());
+            Paragraph::new(format!("observed {observed}"))
+                .style(subdued_style())
+                .render(rects.source, frame.buffer_mut());
+        }
     }
-    // Routing groups are profile-defined; assignment editing happens from each strip source chip.
 }
 
 fn draw_zen_go_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
@@ -896,6 +920,27 @@ fn draw_assignment_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         .take(viewport.len())
         .collect();
 
+    render_popup_list(frame, popup, &title, items, selected_index, Color::Yellow);
+}
+
+fn draw_routing_source_picker(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let Some(picker) = state.popup.routing_source_picker else {
+        return;
+    };
+    let popup = assignment_picker_area(area);
+    let title = routing_source_picker_title(state, picker.destination, picker.channel);
+    let items = state
+        .routing_source_choices_for_destination(picker.destination)
+        .into_iter()
+        .map(|choice| ListItem::new(choice.label))
+        .collect::<Vec<_>>();
+    let viewport = popup_list_viewport(popup, &title, items.len(), state.popup.selected_index);
+    let selected_index = state.popup.selected_index.saturating_sub(viewport.start);
+    let items = items
+        .into_iter()
+        .skip(viewport.start)
+        .take(viewport.len())
+        .collect();
     render_popup_list(frame, popup, &title, items, selected_index, Color::Yellow);
 }
 

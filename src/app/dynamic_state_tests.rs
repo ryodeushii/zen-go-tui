@@ -2,17 +2,18 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
 
 use antelope_protocol::{
-    load_profile_pack, Action, ControlValue, DeviceEvent, DynamicDeviceState, DynamicGlobalState,
-    DynamicInputState, DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState,
-    DynamicRoutingGroup, DynamicStatePatch, GlobalControl, InputAddress, MixerAddress,
-    OutputAddress, OutputControl, OutputMode, ProfileDriver, RoutingSource, RuntimeDriverKind,
-    RuntimeEntry, RuntimeProfile, RuntimeReadiness, Surface,
+    load_profile_pack, Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent,
+    DriverDefinition, DriverError, DynamicDeviceState, DynamicGlobalState, DynamicInputState,
+    DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
+    DynamicStatePatch, GlobalControl, InputAddress, MixerAddress, OutputAddress, OutputControl,
+    OutputMode, ProfileDriver, QueryRequest, RoutingSource, RuntimeDriverKind, RuntimeEntry,
+    RuntimeProfile, RuntimeReadiness, Surface,
 };
 
 use ratatui::layout::Rect;
@@ -67,6 +68,33 @@ fn supported_profile_without_optional_control() -> RuntimeEntry {
         .params
         .retain(|parameter| parameter.name != "bus_dim");
     entry
+}
+
+struct RecordingProfileDriver {
+    inner: ProfileDriver,
+    actions: Arc<Mutex<Vec<Action>>>,
+}
+
+impl DeviceDriver for RecordingProfileDriver {
+    fn definition(&self) -> &DriverDefinition {
+        self.inner.definition()
+    }
+
+    fn startup_requests(&self) -> &[QueryRequest] {
+        self.inner.startup_requests()
+    }
+
+    fn encode(&self, action: Action) -> Result<CommandBatch, DriverError> {
+        self.actions
+            .lock()
+            .expect("action recorder")
+            .push(action.clone());
+        self.inner.encode(action)
+    }
+
+    fn decode(&self, bytes: &[u8]) -> Result<Option<DeviceEvent>, DriverError> {
+        self.inner.decode(bytes)
+    }
 }
 
 fn controller_for_profile(entry: RuntimeEntry) -> Controller {
@@ -204,6 +232,137 @@ fn orion_selected_mixer_refuses_mutation_without_complete_readback() {
 
     assert!(error.to_string().contains("unsupported"));
     assert!(transport.take_writes().is_empty());
+}
+
+#[test]
+fn orion_general_routing_writes_first_and_last_channels_and_preserves_siblings() {
+    for (destination, channel, replacement) in [
+        (0, 0, RoutingSource { bank: 2, index: 0 }),
+        (14, 15, RoutingSource { bank: 2, index: 23 }),
+    ] {
+        let entry = canonical_orion_entry();
+        let transport = MockTransport::default();
+        let actions = Arc::new(Mutex::new(Vec::new()));
+        let driver = RecordingProfileDriver {
+            inner: ProfileDriver::new(entry.clone()).expect("Orion profile driver"),
+            actions: Arc::clone(&actions),
+        };
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+                .expect("Orion controller");
+        let channel_count = usize::from(
+            controller
+                .state
+                .routing_capabilities
+                .iter()
+                .find(|group| group.destination == destination)
+                .expect("routing capability")
+                .channel_count,
+        );
+        let siblings = (0..channel_count)
+            .map(|index| RoutingSource {
+                bank: 0,
+                index: (index % 12) as u16,
+            })
+            .collect::<Vec<_>>();
+        controller.state.routing.push(DynamicRoutingGroup {
+            destination,
+            name: format!("destination_{destination}"),
+            sources: siblings.clone(),
+        });
+
+        controller
+            .apply_intent(
+                Intent::PickRoutingSource {
+                    destination,
+                    channel,
+                    source: replacement,
+                },
+                Rect::default(),
+            )
+            .expect("general routing write");
+
+        let recorded = actions.lock().expect("recorded routing action");
+        let Action::SetRoutingGroup {
+            destination: recorded_destination,
+            changed_channel,
+            sources,
+        } = recorded.last().expect("routing action")
+        else {
+            panic!("expected complete routing group action");
+        };
+        assert_eq!(*recorded_destination, destination);
+        assert_eq!(*changed_channel, None);
+        assert_eq!(sources.len(), siblings.len());
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        let frame = &writes[0];
+        assert_eq!(&frame[16..19], &[0xd3, 0x41, destination as u8]);
+        for (candidate_channel, sibling) in siblings.iter().enumerate() {
+            let expected = if candidate_channel == usize::from(channel) {
+                replacement
+            } else {
+                *sibling
+            };
+            assert_eq!(sources[candidate_channel], expected);
+            let offset = 19 + candidate_channel * 2;
+            assert_eq!(
+                &frame[offset..offset + 2],
+                &[expected.bank, expected.index as u8],
+                "destination {destination} channel {candidate_channel}"
+            );
+        }
+    }
+}
+
+#[test]
+fn orion_general_routing_rejects_missing_incomplete_and_invalid_targets_without_writes() {
+    let cases = [
+        (0, 0, RoutingSource { bank: 2, index: 0 }, None),
+        (0, 0, RoutingSource { bank: 2, index: 0 }, Some(15)),
+        (15, 0, RoutingSource { bank: 2, index: 0 }, None),
+        (14, 16, RoutingSource { bank: 2, index: 0 }, Some(16)),
+        (14, 15, RoutingSource { bank: 2, index: 24 }, Some(16)),
+    ];
+
+    for (destination, channel, source, snapshot_len) in cases {
+        let entry = canonical_orion_entry();
+        let transport = MockTransport::default();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+                .expect("Orion controller");
+        if let Some(snapshot_len) = snapshot_len {
+            controller.state.routing.push(DynamicRoutingGroup {
+                destination,
+                name: format!("destination_{destination}"),
+                sources: vec![RoutingSource { bank: 0, index: 0 }; snapshot_len],
+            });
+        }
+
+        controller
+            .apply_intent(
+                Intent::PickRoutingSource {
+                    destination,
+                    channel,
+                    source,
+                },
+                Rect::default(),
+            )
+            .expect_err("invalid general route must be rejected");
+        assert!(
+            transport.take_writes().is_empty(),
+            "destination {destination} channel {channel} source {source:?}"
+        );
+    }
+}
+
+#[test]
+fn zen_go_has_no_general_routing_editor_or_source_choices() {
+    let state = AppState::from_profile(&zen_go_profile());
+    assert!(state.routing_source_choices_for_destination(0).is_empty());
+    assert!(!state.general_routing_channel_available(0, 0));
 }
 
 #[test]

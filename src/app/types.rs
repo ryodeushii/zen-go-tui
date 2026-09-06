@@ -34,6 +34,23 @@ pub enum Intent {
     CloseProfilesPopup,
     OpenRoutingPopup,
     CloseRoutingPopup,
+    SelectRoutingDestination {
+        destination: u16,
+    },
+    SelectRoutingChannel {
+        destination: u16,
+        channel: u16,
+    },
+    OpenRoutingSourcePicker {
+        destination: u16,
+        channel: u16,
+    },
+    CloseRoutingSourcePicker,
+    PickRoutingSource {
+        destination: u16,
+        channel: u16,
+        source: RoutingSource,
+    },
     OpenOptionsPopup,
     CloseOptionsPopup,
     CloseSelectorPopup,
@@ -236,6 +253,7 @@ impl Intent {
                 | Self::ToggleMixerSolo(_)
                 | Self::ToggleMixerLink(_)
                 | Self::PickAssignment { .. }
+                | Self::PickRoutingSource { .. }
                 | Self::AdjustMixerLevelAt { .. }
                 | Self::SetMixerLevelAt { .. }
                 | Self::AdjustMixerPanAt { .. }
