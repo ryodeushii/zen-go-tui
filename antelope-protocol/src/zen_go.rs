@@ -2,14 +2,14 @@
 
 use crate::driver::{
     Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition, DriverError,
-    DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMixerStrip,
-    DynamicMixerSurface, DynamicOutputState, GlobalControl, InputAddress, MixerAddress,
-    OutputAddress, OutputControl, RoutingSource, ZenGoCompatibilityState,
+    DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMeterState,
+    DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, GlobalControl, InputAddress,
+    MixerAddress, OutputAddress, OutputControl, RoutingSource, ZenGoCompatibilityState,
 };
 use crate::encoder::{encode_command, encode_query, Command, EncodeResult};
 use crate::frame::Frame;
 use crate::mixer::{MixerAssignment, MixerChannelState, MixerLinkTarget, MixerSurface};
-use crate::profile::RuntimeProfile;
+use crate::profile::{RuntimeMeterTarget, RuntimeProfile};
 use crate::query::QueryRequest;
 use crate::types::{ClockSource, DeviceStateSnapshot, PanState, PreampMode, SampleRate, Surface};
 
@@ -53,6 +53,29 @@ impl ZenGoDriver {
             return Err(DriverError::InvalidAction(
                 "Zen Go driver requires two physical inputs, three outputs, and two 16-strip mixer surfaces".into(),
             ));
+        }
+        if !profile.meter_mappings.is_empty() && profile.transport.report_size.is_none() {
+            return Err(DriverError::InvalidAction(
+                "Zen Go meter mappings require a finite report size".into(),
+            ));
+        }
+        let mut meter_mapping_keys = std::collections::HashSet::new();
+        for mapping in &profile.meter_mappings {
+            if mapping.target != RuntimeMeterTarget::MixMaster
+                || mapping.target_index >= 2
+                || mapping.frame_id != "state_report"
+                || mapping.status.trim().is_empty()
+                || mapping.evidence.trim().is_empty()
+                || profile
+                    .transport
+                    .report_size
+                    .is_some_and(|size| mapping.offset >= usize::from(size))
+                || !meter_mapping_keys.insert((mapping.target_index, mapping.lane))
+            {
+                return Err(DriverError::InvalidAction(
+                    "Zen Go meter mapping must be a unique state-report mix-master lane within the report".into(),
+                ));
+            }
         }
         let readback = profile.readback.as_ref().ok_or_else(|| {
             DriverError::InvalidAction("Zen Go driver requires profile readback metadata".into())
@@ -175,9 +198,33 @@ impl ZenGoDriver {
         Ok(assignment)
     }
 
+    fn mapped_meters(
+        profile: &RuntimeProfile,
+        frame_id: &str,
+        bytes: &[u8],
+    ) -> Vec<DynamicMeterState> {
+        profile
+            .meter_mappings
+            .iter()
+            .filter(|mapping| mapping.frame_id == frame_id)
+            .filter_map(|mapping| {
+                bytes
+                    .get(mapping.offset)
+                    .copied()
+                    .map(|value| DynamicMeterState {
+                        target: mapping.target,
+                        target_index: mapping.target_index,
+                        lane: mapping.lane,
+                        value,
+                    })
+            })
+            .collect()
+    }
+
     fn state_from_snapshot(
         snapshot: DeviceStateSnapshot,
         profile: &RuntimeProfile,
+        raw: &[u8],
     ) -> DynamicDeviceState {
         let compatibility_surfaces: Vec<_> = snapshot
             .mixer_decode
@@ -310,6 +357,7 @@ impl ZenGoDriver {
             inputs,
             outputs,
             mixers,
+            meters: Self::mapped_meters(profile, "state_report", raw),
             routing: Vec::new(),
             zen_go_compatibility: Some(Box::new(ZenGoCompatibilityState {
                 sample_rate: snapshot.sample_rate,
@@ -643,7 +691,7 @@ impl DeviceDriver for ZenGoDriver {
         let frame = Frame::parse_owned(bytes.to_vec())?;
         Ok(Some(match frame {
             Frame::Snapshot { snapshot, raw } => DeviceEvent::Snapshot {
-                state: Self::state_from_snapshot(snapshot, &self.profile),
+                state: Self::state_from_snapshot(snapshot, &self.profile, &raw),
                 raw: raw.to_vec(),
             },
             Frame::QueryReply { reply, raw } => {

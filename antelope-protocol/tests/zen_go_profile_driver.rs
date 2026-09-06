@@ -164,6 +164,40 @@ fn zen_go_q18_readback_emits_both_surfaces_with_declared_solo_field() {
 }
 
 #[test]
+fn zen_go_profile_meter_offsets_convert_payload_to_full_report_and_decode_mix_master_lanes() {
+    let profile = test_support::zen_go_profile();
+    assert_eq!(
+        profile
+            .meter_mappings
+            .iter()
+            .map(|mapping| (mapping.target_index, mapping.lane, mapping.offset))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, 0xea), (0, 1, 0xeb), (1, 0, 0xee), (1, 1, 0xef)]
+    );
+    assert!(profile.meter_mappings.iter().all(|mapping| matches!(
+        mapping.target,
+        antelope_protocol::RuntimeMeterTarget::MixMaster
+    )));
+
+    let driver = ZenGoDriver::new(profile).expect("driver");
+    let mut frame = test_support::hex_fixture(include_str!(
+        "fixtures/zen_go/state_with_candidate_meters.hex"
+    ));
+    frame[0xea..0xf0].copy_from_slice(&[0x11, 0x22, 0, 0, 0x33, 0x44]);
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(
+        state
+            .meters
+            .iter()
+            .map(|meter| (meter.target_index, meter.lane, meter.value))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, 0x11), (0, 1, 0x22), (1, 0, 0x33), (1, 1, 0x44)]
+    );
+}
+
+#[test]
 fn zen_go_snapshot_uses_profile_candidate_preamp_meters() {
     let driver = ZenGoDriver::new(test_support::zen_go_profile()).expect("driver");
     let event = driver
@@ -209,6 +243,25 @@ fn zen_go_83_report_remains_auxiliary() {
         .expect("decode")
         .expect("event");
     assert!(matches!(event, DeviceEvent::Auxiliary { .. }));
+}
+
+#[test]
+fn zen_go_driver_rejects_mapped_meters_without_finite_report_size() {
+    let mut profile = test_support::zen_go_profile();
+    assert!(!profile.meter_mappings.is_empty());
+    profile.transport.report_size = None;
+
+    let error = ZenGoDriver::new(profile).expect_err("mapped meters require report geometry");
+    assert!(error.to_string().contains("finite report size"));
+}
+
+#[test]
+fn zen_go_driver_preserves_empty_map_compatibility_without_report_size() {
+    let mut profile = test_support::zen_go_profile();
+    profile.meter_mappings.clear();
+    profile.transport.report_size = None;
+
+    ZenGoDriver::new(profile).expect("empty meter maps retain old-profile compatibility");
 }
 
 #[test]

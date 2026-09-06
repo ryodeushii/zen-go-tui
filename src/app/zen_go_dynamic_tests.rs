@@ -100,6 +100,7 @@ fn normalized_snapshot_preserves_candidate_preamp_meters() {
         inputs,
         outputs: state.outputs().to_vec(),
         mixers: state.mixers().to_vec(),
+        meters: Vec::new(),
         routing: Vec::new(),
         zen_go_compatibility: None,
     };

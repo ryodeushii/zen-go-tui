@@ -7,7 +7,7 @@ use crate::app::{
 use crate::device::DevicePickerState;
 use antelope_protocol::{
     ClockSource, GlobalControl, InputControl, MixerAddress, MixerAssignment, MixerControl,
-    OutputControl, PreampMode, SampleRate,
+    MixerSurface, OutputControl, PreampMode, RuntimeDriverKind, SampleRate,
 };
 use antelope_protocol::{
     OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
@@ -1330,7 +1330,16 @@ pub(crate) fn mix_meter(state: &AppState) -> Option<(&'static str, u8, u8)> {
         .map(|a| a.as_slice())?;
     let payload = bytes.get(SNAPSHOT_PAYLOAD_OFFSET..)?;
 
-    match payload.get(OFFSET_SURFACE_SELECTOR).copied() {
+    let surface_selector = if state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo {
+        Some(match state.active_legacy_mixer_surface() {
+            MixerSurface::Mix1 => SURFACE_CODE_MONITOR_HP1,
+            MixerSurface::Mix2 => SURFACE_CODE_HP2,
+        })
+    } else {
+        payload.get(OFFSET_SURFACE_SELECTOR).copied()
+    };
+
+    match surface_selector {
         Some(SURFACE_CODE_MONITOR_HP1) => Some((
             "MIX 1",
             payload.get(OFFSET_MIX1_LANE_A).copied().unwrap_or(0),

@@ -4,13 +4,14 @@ use std::collections::{HashMap, HashSet};
 
 use crate::driver::{
     Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition, DriverError,
-    DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMixerStrip,
-    DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup, DynamicStatePatch, GlobalControl,
-    InputAddress, InputControl, MixerAddress, OutputAddress, OutputControl, RoutingSource,
+    DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMeterState,
+    DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
+    DynamicStatePatch, GlobalControl, InputAddress, InputControl, MixerAddress, OutputAddress,
+    OutputControl, RoutingSource,
 };
 use crate::profile::{
-    FrameOperation, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeParam, RuntimeProfile,
-    RuntimeReadiness,
+    FrameOperation, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeMeterTarget,
+    RuntimeParam, RuntimeProfile, RuntimeReadiness,
 };
 use crate::profile_codec;
 use crate::types::PanState;
@@ -152,6 +153,48 @@ impl ProfileDriver {
                     "frame {} report geometry differs from transport",
                     frame.id
                 )));
+            }
+        }
+        let mut meter_mapping_keys = HashSet::new();
+        for mapping in &entry.profile.meter_mappings {
+            if !matches!(mapping.frame_id.as_str(), "state_report" | "meter_report")
+                || !frame_index.contains_key(&mapping.frame_id)
+            {
+                return Err(DriverError::InvalidAction(format!(
+                    "meter mapping references undeclared frame {}",
+                    mapping.frame_id
+                )));
+            }
+            if mapping.offset >= report_size
+                || mapping.status.trim().is_empty()
+                || mapping.evidence.trim().is_empty()
+            {
+                return Err(DriverError::InvalidAction(
+                    "meter mapping is malformed or outside report geometry".into(),
+                ));
+            }
+            let target_exists = match mapping.target {
+                RuntimeMeterTarget::MixMaster => entry
+                    .profile
+                    .mixers
+                    .iter()
+                    .any(|mixer| u16::from(mixer.mix_index) == mapping.target_index),
+                RuntimeMeterTarget::PhysicalOutput => entry
+                    .profile
+                    .outputs
+                    .iter()
+                    .any(|output| output.id == mapping.target_index),
+            };
+            if !target_exists {
+                return Err(DriverError::InvalidAction(format!(
+                    "meter mapping target {} is not in profile topology",
+                    mapping.target_index
+                )));
+            }
+            if !meter_mapping_keys.insert((mapping.target, mapping.target_index, mapping.lane)) {
+                return Err(DriverError::InvalidAction(
+                    "meter target lane is declared more than once across frames".into(),
+                ));
             }
         }
         let confirmed_meter_decoder_count = entry
@@ -1237,6 +1280,25 @@ impl ProfileDriver {
         }
     }
 
+    fn mapped_meters(&self, frame_id: &str, bytes: &[u8]) -> Vec<DynamicMeterState> {
+        self.profile
+            .meter_mappings
+            .iter()
+            .filter(|mapping| mapping.frame_id == frame_id)
+            .filter_map(|mapping| {
+                bytes
+                    .get(mapping.offset)
+                    .copied()
+                    .map(|value| DynamicMeterState {
+                        target: mapping.target,
+                        target_index: mapping.target_index,
+                        lane: mapping.lane,
+                        value,
+                    })
+            })
+            .collect()
+    }
+
     fn topology_state(&self) -> DynamicDeviceState {
         DynamicDeviceState {
             globals: Vec::new(),
@@ -1286,6 +1348,7 @@ impl ProfileDriver {
                         .collect(),
                 })
                 .collect(),
+            meters: Vec::new(),
             routing: Vec::new(),
             zen_go_compatibility: None,
         }
@@ -1467,6 +1530,7 @@ impl ProfileDriver {
     fn decode_state(&self, bytes: &[u8]) -> Result<DynamicDeviceState, DriverError> {
         let frame = self.frame("state_report")?;
         let mut state = self.topology_state();
+        state.meters = self.mapped_meters("state_report", bytes);
         let layouts = [
             ("physical_gain", "gain_base", "physical_inputs"),
             ("physical_status", "status_base", "physical_inputs"),
@@ -2054,6 +2118,7 @@ impl DeviceDriver for ProfileDriver {
             {
                 return Ok(Some(DeviceEvent::Meter {
                     inputs: self.decode_meter(bytes)?,
+                    meters: self.mapped_meters("meter_report", bytes),
                     raw: bytes.to_vec(),
                 }));
             }

@@ -4,8 +4,9 @@ use ratatui::widgets::ListItem;
 
 use crate::app::{AppState, RawMapScope, RawPacketTab, QUERY_REPLY_VISIBLE_COUNT};
 use antelope_protocol::{
-    OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
-    OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2, SURFACE_CODE_MONITOR_HP1,
+    MixerSurface, RuntimeDriverKind, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B, OFFSET_MIX2_LANE_A,
+    OFFSET_MIX2_LANE_B, OFFSET_SURFACE_SELECTOR, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2,
+    SURFACE_CODE_MONITOR_HP1,
 };
 
 use super::super::layouts::CONNECTION_STALE_AFTER;
@@ -104,7 +105,18 @@ pub(crate) fn render_mix_meter_state_line(state: &AppState) -> String {
         return "Mix meter: short 0x73 snapshot".to_string();
     };
 
-    match payload.get(OFFSET_SURFACE_SELECTOR).copied() {
+    let surface_selector = if state.runtime_profile_loaded()
+        && state.ui_profile.driver_kind == RuntimeDriverKind::ZenGo
+    {
+        Some(match state.active_legacy_mixer_surface() {
+            MixerSurface::Mix1 => SURFACE_CODE_MONITOR_HP1,
+            MixerSurface::Mix2 => SURFACE_CODE_HP2,
+        })
+    } else {
+        payload.get(OFFSET_SURFACE_SELECTOR).copied()
+    };
+
+    match surface_selector {
         Some(SURFACE_CODE_MONITOR_HP1) => {
             let lane_a = payload.get(OFFSET_MIX1_LANE_A).copied().unwrap_or(0);
             let lane_b = payload.get(OFFSET_MIX1_LANE_B).copied().unwrap_or(0);

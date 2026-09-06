@@ -71,6 +71,8 @@ pub struct AppState {
     pub input_spaces: Vec<InputSpaceState>,
     pub globals: Vec<DynamicGlobalState>,
     pub routing_capabilities: Vec<RoutingGroupCapability>,
+    /// Explicit profile-owned meter lanes; these are not inferred physical outputs.
+    pub meters: Vec<antelope_protocol::DynamicMeterState>,
     pub routing: Vec<DynamicRoutingGroup>,
     pub ui: UiState,
     pub popup: PopupState,
@@ -316,6 +318,10 @@ impl AppState {
 
     pub fn mixers_mut(&mut self) -> &mut [DynamicMixerSurface] {
         &mut self.mixer.surfaces
+    }
+
+    pub(crate) fn runtime_profile_loaded(&self) -> bool {
+        self.runtime_profile.is_some()
     }
 
     /// Return fader semantics declared by selected runtime profile for mixer surface.
@@ -1086,6 +1092,8 @@ impl AppState {
         for mixer in state.mixers {
             changed |= self.merge_mixer_surface(mixer);
         }
+        changed |= self.meters != state.meters;
+        self.meters = state.meters;
         for group in state.routing {
             changed |= self.merge_routing_group(group);
         }
@@ -1099,6 +1107,7 @@ impl AppState {
         self.validate_input_snapshot(&state.inputs)
             && self.validate_output_snapshot(&state.outputs)
             && self.validate_mixer_snapshot(&state.mixers)
+            && self.validate_meter_snapshot(&state.meters)
             && state
                 .routing
                 .iter()
@@ -1108,6 +1117,23 @@ impl AppState {
                     .iter()
                     .any(|slot| slot.control == global.control)
             })
+    }
+
+    fn validate_meter_snapshot(&self, meters: &[antelope_protocol::DynamicMeterState]) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        meters.iter().all(|meter| {
+            let target_exists = match meter.target {
+                antelope_protocol::RuntimeMeterTarget::MixMaster => self
+                    .mixers()
+                    .iter()
+                    .any(|surface| surface.surface == meter.target_index as u8),
+                antelope_protocol::RuntimeMeterTarget::PhysicalOutput => self
+                    .outputs()
+                    .iter()
+                    .any(|output| output.address.id == meter.target_index),
+            };
+            target_exists && seen.insert((meter.target, meter.target_index, meter.lane))
+        })
     }
 
     fn validate_input_snapshot(&self, inputs: &[DynamicInputState]) -> bool {
@@ -1754,12 +1780,19 @@ impl AppState {
                 self.push_query_reply_log(&reply, raw);
                 !was_connected || true
             }
-            DeviceEvent::Meter { inputs, raw } => {
+            DeviceEvent::Meter {
+                inputs,
+                meters,
+                raw,
+            } => {
                 let was_connected = self.device.connection.connected;
                 self.device.connection.connected = true;
                 self.device.connection.last_snapshot_at = Some(Instant::now());
                 self.device.connection.last_frame_type = Some("0x75 meter");
                 self.apply_meter_patch(inputs);
+                if !meters.is_empty() {
+                    self.meters = meters;
+                }
                 self.raw_view.latest_raw_75 = Some(raw);
                 !was_connected || true
             }

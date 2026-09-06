@@ -4,7 +4,7 @@ use antelope_protocol::{
     DynamicStatePatch, FrameEndian, FrameOperation, GlobalControl, InputAddress, InputControl,
     MixerAddress, MixerControl, OutputAddress, OutputControl, ProfileDriver, QueryRequest,
     RoutingSource, RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
-    RuntimeReadiness, WholeStateField, ZenGoDriver,
+    RuntimeMeterMapping, RuntimeMeterTarget, RuntimeReadiness, WholeStateField, ZenGoDriver,
 };
 
 fn stored_orion_entry() -> RuntimeEntry {
@@ -1012,6 +1012,61 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
 }
 
 #[test]
+fn profile_driver_decodes_explicit_mapped_meter_lanes_from_full_report_offsets() {
+    let mut entry = state_meter_fixture_entry();
+    entry.profile.meter_mappings.push(RuntimeMeterMapping {
+        frame_id: "state_report".into(),
+        target: RuntimeMeterTarget::MixMaster,
+        target_index: 0,
+        lane: 0,
+        offset: 0xea,
+        status: "observed".into(),
+        status_text: "observed".into(),
+        evidence: "synthetic full-report lane".into(),
+    });
+    let driver = ProfileDriver::new(entry).expect("profile driver");
+    let mut frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    frame[0xea] = 0x3c;
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("snapshot")
+    };
+    assert_eq!(state.meters.len(), 1);
+    assert_eq!(state.meters[0].target, RuntimeMeterTarget::MixMaster);
+    assert_eq!(state.meters[0].target_index, 0);
+    assert_eq!(state.meters[0].lane, 0);
+    assert_eq!(state.meters[0].value, 0x3c);
+}
+
+#[test]
+fn profile_driver_rejects_competing_explicit_meter_lane_across_frames() {
+    let mut entry = fixture_entry();
+    entry.profile.meter_mappings = vec![
+        RuntimeMeterMapping {
+            frame_id: "state_report".into(),
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 0,
+            offset: 0xea,
+            status: "observed".into(),
+            status_text: "observed".into(),
+            evidence: "first lane".into(),
+        },
+        RuntimeMeterMapping {
+            frame_id: "meter_report".into(),
+            target: RuntimeMeterTarget::MixMaster,
+            target_index: 0,
+            lane: 0,
+            offset: 0xea,
+            status: "observed".into(),
+            status_text: "observed".into(),
+            evidence: "competing lane".into(),
+        },
+    ];
+    let error = ProfileDriver::new(entry).expect_err("duplicate target lane must fail closed");
+    assert!(error.to_string().contains("declared more than once"));
+}
+
+#[test]
 fn state_only_profile_populates_physical_meters_from_state_report() {
     let driver = ProfileDriver::new(state_meter_fixture_entry()).expect("state meter fixture");
     let frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
@@ -1062,10 +1117,16 @@ fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
     frame[0] = 0x75;
     frame[1] = 0x1f;
     frame[32..44].copy_from_slice(&[1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34]);
-    let DeviceEvent::Meter { inputs, raw } = driver.decode(&frame).unwrap().unwrap() else {
+    let DeviceEvent::Meter {
+        inputs,
+        meters,
+        raw,
+    } = driver.decode(&frame).unwrap().unwrap()
+    else {
         panic!("typed meter event")
     };
     assert_eq!(raw, frame);
+    assert!(meters.is_empty());
     assert_eq!(inputs.len(), 12);
     assert_eq!(
         inputs
@@ -1084,6 +1145,7 @@ fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
 #[test]
 fn canonical_orion_profile_driver_keeps_physical_meters_unavailable() {
     let entry = canonical_orion_entry();
+    assert!(entry.profile.meter_mappings.is_empty());
     assert_eq!(entry.readiness, RuntimeReadiness::Supported);
     assert_eq!(entry.driver_kind, RuntimeDriverKind::Profile);
     assert_eq!(entry.profile.startup_queries.len(), 113);

@@ -28,9 +28,9 @@ pub mod driver;
 pub use driver::{
     Action, CommandBatch, ControlValue, DeviceDefinition, DeviceDriver, DeviceEvent,
     DriverDefinition, DriverError, DynamicDeviceState, DynamicGlobalState, DynamicInputState,
-    DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
-    DynamicStatePatch, GlobalControl, InputAddress, InputControl, MixerAddress, MixerControl,
-    OutputAddress, OutputControl, RoutingSource, WholeStateField,
+    DynamicMeterState, DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState,
+    DynamicRoutingGroup, DynamicStatePatch, GlobalControl, InputAddress, InputControl,
+    MixerAddress, MixerControl, OutputAddress, OutputControl, RoutingSource, WholeStateField,
 };
 mod encoder;
 mod frame;
@@ -61,10 +61,10 @@ pub use profile::{
     ProfileLoadError, ProfilePack, ReadbackCategory, ReadbackDefinition, RuntimeAddressSpace,
     RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
     RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
-    RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMixer, RuntimeOutput, RuntimeParam,
-    RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
-    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport, SafeQuery,
-    PROFILE_PACK_SCHEMA_VERSION,
+    RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping, RuntimeMeterTarget,
+    RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile, RuntimeProvenance, RuntimeReadiness,
+    RuntimeRoutingGroup, RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport,
+    SafeQuery, PROFILE_PACK_SCHEMA_VERSION,
 };
 pub use query::{control_panel_startup_queries, DeviceMetadata, QueryRequest, QueryResponse};
 

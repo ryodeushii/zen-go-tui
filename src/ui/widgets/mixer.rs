@@ -8,7 +8,7 @@ use tui_slider::{Slider, SliderOrientation};
 use crate::app::{AppState, FocusArea};
 use crate::terminal;
 use antelope_protocol::{
-    DynamicMixerStrip, OutputMode, OutputState, PreampInputState, PreampMode, meter_display_db,
+    meter_display_db, DynamicMixerStrip, OutputMode, OutputState, PreampInputState, PreampMode,
 };
 
 use super::super::layouts::*;

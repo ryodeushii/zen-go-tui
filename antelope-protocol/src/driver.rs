@@ -1,4 +1,5 @@
 use crate::mixer::{MixerChannelState, MixerSurface};
+use crate::profile::RuntimeMeterTarget;
 use crate::query::QueryRequest;
 use crate::types::{
     ClockSource, OutputState, PreampInputState, ProtocolError, SampleRate, Surface,
@@ -146,6 +147,14 @@ pub struct DynamicMixerSurface {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DynamicMeterState {
+    pub target: RuntimeMeterTarget,
+    pub target_index: u16,
+    pub lane: u8,
+    pub value: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynamicRoutingGroup {
     pub destination: u16,
     pub name: String,
@@ -158,6 +167,7 @@ pub struct DynamicDeviceState {
     pub inputs: Vec<DynamicInputState>,
     pub outputs: Vec<DynamicOutputState>,
     pub mixers: Vec<DynamicMixerSurface>,
+    pub meters: Vec<DynamicMeterState>,
     pub routing: Vec<DynamicRoutingGroup>,
     /// Private migration payload used only by the fixed Zen Go application state.
     #[doc(hidden)]
@@ -207,6 +217,7 @@ pub enum DeviceEvent {
     /// Confirmed meter values decoded without replacing unrelated snapshot state.
     Meter {
         inputs: Vec<DynamicInputState>,
+        meters: Vec<DynamicMeterState>,
         raw: Vec<u8>,
     },
     Auxiliary {

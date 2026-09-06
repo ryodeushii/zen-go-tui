@@ -2604,6 +2604,7 @@ mod correction_tests {
                 inputs: Vec::new(),
                 outputs: Vec::new(),
                 mixers: Vec::new(),
+                meters: Vec::new(),
                 routing: Vec::new(),
                 zen_go_compatibility: None,
             },

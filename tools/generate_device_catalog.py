@@ -20,6 +20,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 GENERATOR_VERSION = "1.4.0"
 PROFILE_PACK_SCHEMA_VERSION = 1
+SNAPSHOT_PAYLOAD_OFFSET = 0x10
 EXCLUDED_PROFILE_NAMES = frozenset({"mic_models.json"})
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILES_DIR = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
@@ -723,6 +724,7 @@ def normalize_profile(
     _build_link_domains(normalized)
     _build_routing_groups(normalized)
     _readback_definition(normalized)
+    _meter_mappings(normalized)
     return normalized
 
 
@@ -3736,7 +3738,7 @@ def _frame_operations(
 
         for key, raw in value.items():
             key_text = str(key)
-            if key_text.startswith("_"):
+            if key_text.startswith("_") or key_text == "meter_mappings":
                 continue
             if key_text.endswith("_offset") and raw is not None and not isinstance(raw, (Mapping, list)):
                 offset = _checked_u16(raw, f"{context}.{key_text}")
@@ -3919,6 +3921,79 @@ def _candidate_preamp_meter_operations(profile: NormalizedProfile) -> list[dict[
         }
         for meter in _candidate_preamp_meters(profile)
     ]
+
+
+def _meter_mappings(profile: NormalizedProfile) -> list[dict[str, Any]]:
+    """Normalize explicit one-byte meter lanes to full report offsets."""
+
+    outputs = {item["id"] for item in _build_outputs(profile)}
+    mixers = {item["mix_index"] for item in _build_mixers(profile)}
+    report_size = profile.transport.report_size
+    mappings: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int]] = set()
+    for frame_id in ("state_report", "meter_report"):
+        section = profile.frame.get(frame_id)
+        if section is None:
+            continue
+        if not isinstance(section, Mapping):
+            raise ProfileError(f"frame.{frame_id} must be an object")
+        raw_mappings = section.get("meter_mappings", [])
+        if not isinstance(raw_mappings, list):
+            raise ProfileError(f"frame.{frame_id}.meter_mappings must be an array")
+        if raw_mappings and report_size is None:
+            raise ProfileError("meter mappings require a finite transport.report_size")
+        for index, raw_mapping in enumerate(raw_mappings):
+            context = f"frame.{frame_id}.meter_mappings[{index}]"
+            if not isinstance(raw_mapping, Mapping):
+                raise ProfileError(f"{context} must be an object")
+            target = raw_mapping.get("target")
+            if target not in {"mix_master", "physical_output"}:
+                raise ProfileError(
+                    f"{context}.target must be mix_master or physical_output"
+                )
+            target_index = _checked_u16(
+                raw_mapping.get("target_index"), f"{context}.target_index"
+            )
+            target_ids = mixers if target == "mix_master" else outputs
+            if target_index not in target_ids:
+                raise ProfileError(
+                    f"{context}.target_index {target_index} is not declared in profile topology"
+                )
+            lane = _checked_u8(raw_mapping.get("lane"), f"{context}.lane")
+            key = (target, target_index, lane)
+            if key in seen:
+                raise ProfileError(
+                    f"{context} target lane is declared more than once across meter frames"
+                )
+            seen.add(key)
+            payload_offset = _checked_u16(
+                raw_mapping.get("payload_offset"), f"{context}.payload_offset"
+            )
+            offset = payload_offset + SNAPSHOT_PAYLOAD_OFFSET
+            if not _report_span_fits(offset, 1, report_size):
+                raise ProfileError(
+                    f"{context}.payload_offset {payload_offset:#x} falls outside report size {report_size} after payload conversion"
+                )
+            status = raw_mapping.get("status")
+            evidence = raw_mapping.get("evidence")
+            if not isinstance(status, str) or not status.strip():
+                raise ProfileError(f"{context}.status must be a non-empty string")
+            if not isinstance(evidence, str) or not evidence.strip():
+                raise ProfileError(f"{context}.evidence must be a non-empty string")
+            mappings.append(
+                {
+                    "frame_id": frame_id,
+                    "target": target,
+                    "target_index": target_index,
+                    "lane": lane,
+                    "offset": offset,
+                    "payload_offset": payload_offset,
+                    "status": status,
+                    "status_text": status,
+                    "evidence": evidence,
+                }
+            )
+    return mappings
 
 
 def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | None, list[dict[str, int]]]:
@@ -4150,11 +4225,12 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
             }
             for group in _build_routing_groups(profile)
         ],
-        **(
-            {"state_report": {"candidate_preamp_meters": _candidate_preamp_meters(profile)}}
+        "state_report": (
+            {"candidate_preamp_meters": _candidate_preamp_meters(profile)}
             if _candidate_preamp_meters(profile)
-            else {}
+            else None
         ),
+        "meter_mappings": _meter_mappings(profile),
         "frames": [
             {
                 "id": frame["id"],
@@ -4482,7 +4558,8 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         "    OutputDefinition, ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReference, RoutingGroupDefinition, RoutingSourceDomainDefinition,",
         "    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition,",
         "    SafeQueryDefinition, MixerReadbackLayoutDefinition, StateReportDefinition,",
-        "    CandidatePreampMeterDefinition, FaderDirectionDefinition, FaderSemanticsDefinition,",
+        "    CandidatePreampMeterDefinition, MeterMappingDefinition, MeterTargetDefinition,",
+        "    FaderDirectionDefinition, FaderSemanticsDefinition,",
         "    Readiness, StartupQueryDefinition, Status, SupportLevel, TransportDefinition, TransportKind,",
         "};",
         "",
@@ -4739,12 +4816,26 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             )
         lines.append("];\n")
 
+        meter_mappings = runtime_record["meter_mappings"]
+        lines.append(f"static {slug}_METER_MAPPINGS: &[MeterMappingDefinition] = &[")
+        for mapping in meter_mappings:
+            target = "MixMaster" if mapping["target"] == "mix_master" else "PhysicalOutput"
+            lines.append(
+                "    MeterMappingDefinition { "
+                f"frame_id: {_rust_string(mapping['frame_id'])}, "
+                f"target: MeterTargetDefinition::{target}, "
+                f"target_index: {mapping['target_index']}u16, lane: {mapping['lane']}u8, "
+                f"offset: {mapping['offset']}usize, status: Status::{_status_variant(mapping['status'])}, "
+                f"status_text: {_rust_string(mapping['status'])}, evidence: {_rust_string(mapping['evidence'])} }},"
+            )
+        lines.append("];\n")
+
         state_report = runtime_record.get("state_report")
-        if state_report is None:
+        if not state_report:
             state_report_name = "None"
         else:
             lines.append(f"static {slug}_CANDIDATE_PREAMP_METERS: &[CandidatePreampMeterDefinition] = &[")
-            for meter in state_report["candidate_preamp_meters"]:
+            for meter in state_report.get("candidate_preamp_meters", []):
                 lines.append(
                     "    CandidatePreampMeterDefinition { "
                     f"input_index: {meter['input_index']}u16, offset: {meter['offset']}usize }},"
@@ -4824,6 +4915,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 "params": f"{slug}_PARAMS",
                 "constraints": f"{slug}_CONSTRAINTS",
                 "hazards": f"{slug}_HAZARDS",
+                "meter_mappings": f"{slug}_METER_MAPPINGS",
                 "startup_queries": f"{slug}_STARTUP_QUERIES",
                 "state_report": state_report_name,
                 "readback": readback_name,
@@ -4877,7 +4969,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             f"            address_spaces: {item['spaces']}, inputs: {item['inputs']}, outputs: {item['outputs']}, mixers: {item['mixers']}, link_domains: {item['link_domains']}, routing_groups: {item['routing_groups']},"
         )
         lines.append(
-            f"            frames: {item['frames']}, decoders: {item['decoders']}, params: {item['params']}, constraints: {item['constraints']}, hazards: {item['hazards']},"
+            f"            frames: {item['frames']}, decoders: {item['decoders']}, params: {item['params']}, constraints: {item['constraints']}, hazards: {item['hazards']}, meter_mappings: {item['meter_mappings']},"
         )
         lines.append(
             f"            startup_queries: {item['startup_queries']}, state_report: {item['state_report']}, readback: {item['readback']},"

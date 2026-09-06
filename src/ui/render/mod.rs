@@ -11,7 +11,10 @@ use crate::app::{
 };
 use crate::device::DevicePickerState;
 use crate::terminal;
-use antelope_protocol::{ClockSource, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate};
+use antelope_protocol::{
+    meter_display_db, ClockSource, MixerAssignment, PreampMode, RuntimeDriverKind,
+    RuntimeMeterTarget, SampleRate,
+};
 
 use super::layouts::*;
 use super::mouse::mix_meter;
@@ -709,12 +712,31 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             total
         )
     };
-    if state
+    if let Some(surface) = state
         .active_mixer_surface()
         .and_then(|index| state.mixers().get(index))
-        .is_some_and(|surface| surface.master.is_some())
     {
-        title.push_str(" | Master");
+        if surface.master.is_some() {
+            title.push_str(" | Master");
+        }
+        let meter_text = state
+            .meters
+            .iter()
+            .filter(|meter| {
+                meter.target == RuntimeMeterTarget::MixMaster
+                    && meter.target_index == u16::from(surface.surface)
+            })
+            .map(|meter| {
+                meter_display_db(meter.value).map_or_else(
+                    || format!("L{}:--", meter.lane + 1),
+                    |db| format!("L{}:{}dB", meter.lane + 1, db),
+                )
+            })
+            .collect::<Vec<_>>();
+        if !meter_text.is_empty() {
+            title.push_str(" | MIX MASTER ");
+            title.push_str(&meter_text.join(" "));
+        }
     }
     frame.render_widget(
         panel_block(

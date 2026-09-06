@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use antelope_protocol::{
-    InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl, OutputControl,
-    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeReadiness,
+    DynamicMeterState, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
+    OutputControl, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeMeterTarget,
+    RuntimeReadiness,
 };
 use ratatui::{
     backend::TestBackend,
@@ -84,6 +85,23 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
         text.push('\n');
     }
     text
+}
+
+#[test]
+fn typed_mix_master_meter_renders_as_mixer_state_not_physical_output() {
+    let mut state = zen_go_ui_state();
+    state.meters = vec![DynamicMeterState {
+        target: RuntimeMeterTarget::MixMaster,
+        target_index: 0,
+        lane: 0,
+        value: 0x21,
+    }];
+    let mut terminal = test_terminal(220, 48);
+    draw_page(&mut terminal, &state);
+    let text = terminal_text(&terminal);
+
+    assert!(text.contains("MIX MASTER"));
+    assert!(!text.contains("OUTPUT METER"));
 }
 
 #[test]

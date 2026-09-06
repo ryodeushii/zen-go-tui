@@ -11,9 +11,9 @@ use antelope_protocol::{
     ReadbackCategory, ReadbackDefinition as RuntimeReadbackDefinition, RuntimeAddressSpace,
     RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
     RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
-    RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMixer, RuntimeOutput, RuntimeParam,
-    RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
-    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport,
+    RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping, RuntimeMeterTarget,
+    RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile, RuntimeProvenance, RuntimeReadiness,
+    RuntimeRoutingGroup, RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport,
 };
 use std::collections::HashSet;
 
@@ -265,6 +265,27 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     status_text: mixer.status_text.into(),
                     notes: mixer.notes.into(),
                     metadata: mixer.metadata.into(),
+                })
+                .collect(),
+            meter_mappings: definition
+                .meter_mappings
+                .iter()
+                .map(|mapping| RuntimeMeterMapping {
+                    frame_id: mapping.frame_id.into(),
+                    target: match mapping.target {
+                        super::MeterTargetDefinition::MixMaster => {
+                            RuntimeMeterTarget::MixMaster
+                        }
+                        super::MeterTargetDefinition::PhysicalOutput => {
+                            RuntimeMeterTarget::PhysicalOutput
+                        }
+                    },
+                    target_index: mapping.target_index,
+                    lane: mapping.lane,
+                    offset: mapping.offset,
+                    status: status(mapping.status).into(),
+                    status_text: mapping.status_text.into(),
+                    evidence: mapping.evidence.into(),
                 })
                 .collect(),
             state_report: definition.state_report.map(|state_report| RuntimeStateReport {

@@ -18,7 +18,8 @@ use antelope_protocol::{
     Surface, OFFSET_METER_LANES_START, OFFSET_MIX1_LANE_A, OFFSET_MIX1_LANE_B,
     OFFSET_MIX1_MIRROR_A, OFFSET_MIX1_MIRROR_B, OFFSET_MIX2_LANE_A, OFFSET_MIX2_LANE_B,
     OFFSET_SHARED_SHADOW_0, OFFSET_SHARED_SHADOW_1, OFFSET_SHARED_SHADOW_2,
-    OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET,
+    OFFSET_SURFACE_SELECTOR, OFFSET_UNKNOWN_6E, SNAPSHOT_PAYLOAD_OFFSET, SURFACE_CODE_HP2,
+    SURFACE_CODE_MONITOR_HP1,
 };
 
 use crate::device::ProfileCatalog;
@@ -452,6 +453,37 @@ fn mix_meter_extracts_mix1_lane_pair() {
     state.raw_view.latest_raw_73 = Some(frame.to_vec());
 
     assert_eq!(mouse::mix_meter(&state), Some(("MIX 1", 0x0a, 0x05)));
+}
+
+#[test]
+fn zen_go_mix_meter_follows_local_surface_for_both_snapshot_selectors() {
+    let mut state = zen_go_state();
+    let mut frame = [0_u8; 320];
+    frame[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+    frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_A] = 0x0a;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX1_LANE_B] = 0x05;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_A] = 0x3c;
+    frame[SNAPSHOT_PAYLOAD_OFFSET + OFFSET_MIX2_LANE_B] = 0x2a;
+    state.raw_view.latest_raw_73 = Some(frame.to_vec());
+
+    for (surface_index, snapshot_selector, expected) in [
+        (1, SURFACE_CODE_MONITOR_HP1, ("MIX 2", 0x3c, 0x2a)),
+        (0, SURFACE_CODE_HP2, ("MIX 1", 0x0a, 0x05)),
+    ] {
+        state.mixer.surface_index = surface_index;
+        state.raw_view.latest_raw_73.as_mut().unwrap()
+            [SNAPSHOT_PAYLOAD_OFFSET + OFFSET_SURFACE_SELECTOR] = snapshot_selector;
+
+        assert_eq!(mouse::mix_meter(&state), Some(expected));
+        let expected_text = format!(
+            "{} L {} R {}",
+            expected.0,
+            super::widgets::signals::render_mix_meter(expected.1),
+            super::widgets::signals::render_mix_meter(expected.2),
+        );
+        assert_eq!(render::render_mix_meter_state_line(&state), expected_text);
+    }
 }
 
 #[test]

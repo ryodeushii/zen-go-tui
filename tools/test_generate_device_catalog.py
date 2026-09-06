@@ -275,6 +275,54 @@ class GeneratorTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == "observed" for item in meters))
         self.assertTrue(all("mixed-signal" in item["caveat"] for item in meters))
 
+    def test_zen_go_profile_declares_payload_relative_mix_master_meter_lanes(self) -> None:
+        mappings = normalized_zen_go()["meter_mappings"]
+
+        self.assertEqual(
+            [
+                (item["frame_id"], item["target"], item["target_index"], item["lane"], item["offset"])
+                for item in mappings
+            ],
+            [
+                ("state_report", "mix_master", 0, 0, 0xEA),
+                ("state_report", "mix_master", 0, 1, 0xEB),
+                ("state_report", "mix_master", 1, 0, 0xEE),
+                ("state_report", "mix_master", 1, 1, 0xEF),
+            ],
+        )
+        self.assertTrue(all(item["status"] == "observed" for item in mappings))
+        self.assertTrue(all(item["target"] == "mix_master" for item in mappings))
+
+    def test_meter_mapping_rejects_competing_target_lane_across_frames(self) -> None:
+        data = profile_data("Test", "0xa001")
+        data["frame"]["state_report"]["meter_mappings"] = [
+            {
+                "target": "mix_master",
+                "target_index": 0,
+                "lane": 0,
+                "payload_offset": "0xda",
+                "status": "observed",
+                "evidence": "synthetic meter lane",
+            }
+        ]
+        data["frame"]["meter_report"] = {
+            "magic_offset": 0,
+            "magic": "0x75",
+            "meter_mappings": [
+                {
+                    "target": "mix_master",
+                    "target_index": 0,
+                    "lane": 0,
+                    "payload_offset": "0xda",
+                    "status": "observed",
+                    "evidence": "competing synthetic meter lane",
+                }
+            ],
+        }
+
+        with self.assertRaisesRegex(generator.ProfileError, "target lane is declared more than once"):
+            generator.normalize_profile(data)
+
     def test_zen_go_profile_declares_attenuation_fader_domain(self) -> None:
         fader = normalized_zen_go()["mixers"][0]["fader"]
 

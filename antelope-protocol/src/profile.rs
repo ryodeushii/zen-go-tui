@@ -33,6 +33,8 @@ pub struct RuntimeProfile {
     pub outputs: Vec<RuntimeOutput>,
     pub mixers: Vec<RuntimeMixer>,
     #[serde(default)]
+    pub meter_mappings: Vec<RuntimeMeterMapping>,
+    #[serde(default)]
     pub state_report: Option<RuntimeStateReport>,
     #[serde(default)]
     pub link_domains: Vec<RuntimeLinkDomain>,
@@ -114,6 +116,25 @@ pub struct FaderSemantics {
 pub struct ReadbackCategory {
     pub category: u8,
     pub count: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeMeterTarget {
+    MixMaster,
+    PhysicalOutput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeMeterMapping {
+    pub frame_id: String,
+    pub target: RuntimeMeterTarget,
+    pub target_index: u16,
+    pub lane: u8,
+    pub offset: usize,
+    pub status: String,
+    pub status_text: String,
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1019,6 +1040,76 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                     detail: "fader min must not exceed max and unity must fit the domain".into(),
                 });
             }
+        }
+    }
+    let mut meter_mapping_keys = HashSet::new();
+    for (mapping_index, mapping) in profile.meter_mappings.iter().enumerate() {
+        let field = format!("profiles[{entry_index}].meter_mappings[{mapping_index}]");
+        let Some(frame) = profile
+            .frames
+            .iter()
+            .find(|frame| frame.id == mapping.frame_id)
+        else {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: format!("meter frame {} is not declared", mapping.frame_id),
+            });
+        };
+        if !matches!(mapping.frame_id.as_str(), "state_report" | "meter_report")
+            || !matches!(frame.kind.as_str(), "state_report" | "meter_report")
+        {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: "meter mappings must target state_report or meter_report".into(),
+            });
+        }
+        if mapping.status.trim().is_empty() || mapping.evidence.trim().is_empty() {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: "meter mappings require status and evidence".into(),
+            });
+        }
+        if profile
+            .transport
+            .report_size
+            .is_some_and(|size| mapping.offset >= usize::from(size))
+        {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: format!("meter offset {} exceeds report size", mapping.offset),
+            });
+        }
+        let target_exists = match mapping.target {
+            RuntimeMeterTarget::MixMaster => profile
+                .mixers
+                .iter()
+                .any(|mixer| u16::from(mixer.mix_index) == mapping.target_index),
+            RuntimeMeterTarget::PhysicalOutput => profile
+                .outputs
+                .iter()
+                .any(|output| output.id == mapping.target_index),
+        };
+        if !target_exists {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: format!(
+                    "meter target index {} is not in profile topology",
+                    mapping.target_index
+                ),
+            });
+        }
+        let key = (&mapping.target, mapping.target_index, mapping.lane);
+        if !meter_mapping_keys.insert(key) {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: "meter target lane is declared more than once across frames".into(),
+            });
         }
     }
     if let (Some(report_size), Some(state_report)) =

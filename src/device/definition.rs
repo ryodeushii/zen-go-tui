@@ -474,6 +474,26 @@ pub struct CandidatePreampMeterDefinition {
     pub offset: usize,
 }
 
+/// Typed target kind for an explicit one-byte meter lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeterTargetDefinition {
+    MixMaster,
+    PhysicalOutput,
+}
+
+/// One explicit profile-owned meter lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeterMappingDefinition {
+    pub frame_id: &'static str,
+    pub target: MeterTargetDefinition,
+    pub target_index: u16,
+    pub lane: u8,
+    pub offset: usize,
+    pub status: Status,
+    pub status_text: &'static str,
+    pub evidence: &'static str,
+}
+
 /// State-report metadata retained in the built-in artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StateReportDefinition {
@@ -512,6 +532,7 @@ pub struct DeviceDefinition {
     pub params: &'static [ParamDefinition],
     pub constraints: &'static [ConstraintDefinition],
     pub hazards: &'static [HazardDefinition],
+    pub meter_mappings: &'static [MeterMappingDefinition],
     pub state_report: Option<StateReportDefinition>,
     pub startup_queries: &'static [StartupQueryDefinition],
     pub readback: Option<ReadbackDefinition>,

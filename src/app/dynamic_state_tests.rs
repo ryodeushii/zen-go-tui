@@ -142,6 +142,7 @@ fn dynamic_state_snapshot_keeps_owned_raw_bytes() {
         inputs: vec![],
         outputs: vec![],
         mixers: vec![],
+        meters: vec![],
         routing: vec![],
         zen_go_compatibility: None,
     };
