@@ -45,6 +45,7 @@ Protocol facts come from canonical profiles, USB HID captures, and reviewed test
 ## Requirements
 
 - **Rust 1.70+** (edition 2021)
+- **GNU Make** and **Python 3** for the repository workflows
 - **Linux** — primary supported platform
 - A supported Antelope device for real-device control. Zen Go Synergy Core is currently supported.
 
@@ -67,53 +68,32 @@ This places the `zen-go-tui` binary in Cargo's bin directory.
 ```bash
 git clone https://github.com/ryodeushii/zen-go-tui.git
 cd zen-go-tui
-cargo build --release
+make release
 ```
 
-Output: `target/release/zen-go-tui`
+Output with the checked-in Cargo target configuration: `target/x86_64-unknown-linux-gnu/release/zen-go-tui`.
 
-### Regenerate device profiles after updates
+### Make workflows
 
-Normal builds use the checked-in `src/device/generated.rs` and `src/device/generated_profiles.json` files. They do not require profile regeneration or the Antelope-Ctl submodule.
+The Makefile keeps submodule synchronization, profile generation, drift checks, and Rust commands explicit. Targets do not invoke one another implicitly.
 
-After changing profiles or updating the Antelope-Ctl submodule revision, regenerate both files before compiling. Cargo does not regenerate them automatically. Without regeneration, the binary uses the previous embedded profile data.
+| Target | Purpose |
+| --- | --- |
+| `make help` | Show the available targets (the default). |
+| `make module-sync` | Initialize the Antelope-Ctl submodule and check out the revision pinned by this repository. |
+| `make module-update` | Fast-forward the currently checked-out Antelope-Ctl branch from its configured upstream. It refuses dirty or detached submodule state. |
+| `make generate` | Write both embedded artifacts: `src/device/generated.rs` and `src/device/generated_profiles.json`. |
+| `make check-generated` | Check both generated artifacts for drift using the full generator check arguments; it does not write files. |
+| `make release` | Run `cargo build --release --locked` using the checked-in generated artifacts. |
+| `make test` | Run `cargo test --workspace`. |
 
-Run these commands from the repository root. Regeneration requires Python 3.
+After updating the profile branch, use this explicit workflow:
 
-1. Initialize the submodule at the revision recorded by this repository:
+```bash
+make module-update && make generate && make release
+```
 
-   ```bash
-   git submodule update --init --recursive modules/Antelope-Ctl
-   ```
-
-   Skip this step if you have intentionally checked out a different submodule revision for an update. This command restores the recorded revision.
-
-2. Generate both embedded profile files:
-
-   ```bash
-   python3 tools/generate_device_catalog.py \
-     --profiles-dir modules/Antelope-Ctl/profiles \
-     --output src/device/generated.rs \
-     --pack-output src/device/generated_profiles.json
-   ```
-
-3. Check that the generated files match the profiles:
-
-   ```bash
-   python3 tools/generate_device_catalog.py \
-     --check modules/Antelope-Ctl/profiles \
-     --generated src/device/generated.rs \
-     --pack-generated src/device/generated_profiles.json
-   ```
-
-4. Review the generated diff before building:
-
-   ```bash
-   git diff -- src/device/generated.rs src/device/generated_profiles.json
-   cargo build --release
-   ```
-
-Commit both generated files with the profile changes or submodule revision update. The drift check reports stale files without rewriting them. Regeneration incorporates profile data but does not verify hardware behavior or resolve conflicting protocol evidence.
+Normal releases do not fetch the submodule or regenerate artifacts implicitly. After changing profiles or the submodule revision, review the generated diff and run `make check-generated` before committing both generated files with the profile or submodule update. `make module-sync` restores the recorded submodule revision; skip it when intentionally working on a configured branch for `make module-update`. Generation and drift checks do not verify hardware behavior or resolve conflicting protocol evidence.
 
 ### Windows cross-build (from Linux)
 
