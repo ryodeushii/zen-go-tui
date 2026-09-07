@@ -196,8 +196,13 @@ impl<C: TerminalControl> TerminalSession<C> {
         self.raw_mode = true;
         self.control.enable_raw_mode()?;
 
-        // Enhancement is optional: unsupported terminals and bounded query errors keep the
-        // application usable, but keyboard hold-to-talk remains disabled.
+        self.alternate_screen = true;
+        self.control.enter_alternate_screen()?;
+
+        // Main and alternate screens have independent keyboard-protocol stacks, so negotiate
+        // after entering the alternate screen and pop before leaving it during cleanup.
+        // Unsupported terminals and bounded query errors keep the application usable, but
+        // keyboard hold-to-talk remains disabled.
         if matches!(self.control.supports_keyboard_enhancement(), Ok(true)) {
             // A failed write can be partial, so always attempt the matching pop.
             self.keyboard_flags_pushed = true;
@@ -208,8 +213,6 @@ impl<C: TerminalControl> TerminalSession<C> {
             }
         }
 
-        self.alternate_screen = true;
-        self.control.enter_alternate_screen()?;
         self.mouse_capture = true;
         self.control.enable_mouse_capture()?;
         Ok(())
@@ -552,9 +555,58 @@ mod tests {
         PopKeyboard,
     }
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Screen {
+        Main,
+        Alternate,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum KeyboardSetting {
+        PreexistingMain,
+        DefaultAlternate,
+        Application,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct MockTerminalState {
+        operations: Vec<TerminalOperation>,
+        active_screen: Screen,
+        main_keyboard_stack: Vec<KeyboardSetting>,
+        alternate_keyboard_stack: Vec<KeyboardSetting>,
+        raw_mode: bool,
+        mouse_capture: bool,
+    }
+
+    impl Default for MockTerminalState {
+        fn default() -> Self {
+            Self {
+                operations: Vec::new(),
+                active_screen: Screen::Main,
+                main_keyboard_stack: vec![KeyboardSetting::PreexistingMain],
+                alternate_keyboard_stack: vec![KeyboardSetting::DefaultAlternate],
+                raw_mode: false,
+                mouse_capture: false,
+            }
+        }
+    }
+
+    impl MockTerminalState {
+        fn active_keyboard_stack(&mut self) -> &mut Vec<KeyboardSetting> {
+            match self.active_screen {
+                Screen::Main => &mut self.main_keyboard_stack,
+                Screen::Alternate => &mut self.alternate_keyboard_stack,
+            }
+        }
+    }
+
+    fn terminal_state(state: &Arc<Mutex<MockTerminalState>>) -> MockTerminalState {
+        state.lock().unwrap().clone()
+    }
+
     #[derive(Clone)]
     struct MockTerminalControl {
-        operations: Arc<Mutex<Vec<TerminalOperation>>>,
+        state: Arc<Mutex<MockTerminalState>>,
         query_result: Result<bool, io::ErrorKind>,
         fail_operation: Option<TerminalOperation>,
     }
@@ -562,7 +614,7 @@ mod tests {
     impl MockTerminalControl {
         fn new(query_result: Result<bool, io::ErrorKind>) -> Self {
             Self {
-                operations: Arc::new(Mutex::new(Vec::new())),
+                state: Arc::new(Mutex::new(MockTerminalState::default())),
                 query_result,
                 fail_operation: None,
             }
@@ -574,9 +626,30 @@ mod tests {
         }
 
         fn run(&self, operation: TerminalOperation) -> io::Result<()> {
-            self.operations.lock().unwrap().push(operation);
+            let mut state = self.state.lock().unwrap();
+            state.operations.push(operation);
+            match operation {
+                TerminalOperation::EnableRaw => state.raw_mode = true,
+                TerminalOperation::DisableRaw => state.raw_mode = false,
+                TerminalOperation::EnterAlternate => state.active_screen = Screen::Alternate,
+                TerminalOperation::LeaveAlternate => state.active_screen = Screen::Main,
+                TerminalOperation::EnableMouse => state.mouse_capture = true,
+                TerminalOperation::DisableMouse => state.mouse_capture = false,
+                TerminalOperation::PushKeyboard => state
+                    .active_keyboard_stack()
+                    .push(KeyboardSetting::Application),
+                TerminalOperation::PopKeyboard => {
+                    let stack = state.active_keyboard_stack();
+                    if stack.len() > 1 {
+                        stack.pop();
+                    }
+                }
+                TerminalOperation::QueryKeyboard => {}
+            }
             if self.fail_operation == Some(operation) {
-                Err(io::Error::other("mock terminal failure"))
+                Err(io::Error::other(
+                    "mock terminal failure after partial write",
+                ))
             } else {
                 Ok(())
             }
@@ -634,19 +707,34 @@ mod tests {
     }
 
     #[test]
-    fn terminal_setup_enables_release_events_only_after_supported_push_and_restores_modes() {
+    fn keyboard_flags_use_alternate_stack_and_restore_preexisting_main_settings() {
         let control = MockTerminalControl::new(Ok(true));
-        let operations = control.operations.clone();
+        let state = control.state.clone();
         let mut session = TerminalSession::setup(control).expect("terminal setup");
         assert!(session.keyboard_release_events_enabled());
-        session.cleanup().expect("terminal cleanup");
+        let active_state = terminal_state(&state);
+        assert_eq!(active_state.active_screen, Screen::Alternate);
         assert_eq!(
-            *operations.lock().unwrap(),
+            active_state.main_keyboard_stack,
+            vec![KeyboardSetting::PreexistingMain]
+        );
+        assert_eq!(
+            active_state.alternate_keyboard_stack,
+            vec![
+                KeyboardSetting::DefaultAlternate,
+                KeyboardSetting::Application
+            ]
+        );
+
+        session.cleanup().expect("terminal cleanup");
+        let state = terminal_state(&state);
+        assert_eq!(
+            state.operations,
             vec![
                 TerminalOperation::EnableRaw,
+                TerminalOperation::EnterAlternate,
                 TerminalOperation::QueryKeyboard,
                 TerminalOperation::PushKeyboard,
-                TerminalOperation::EnterAlternate,
                 TerminalOperation::EnableMouse,
                 TerminalOperation::PopKeyboard,
                 TerminalOperation::DisableMouse,
@@ -654,47 +742,85 @@ mod tests {
                 TerminalOperation::DisableRaw,
             ]
         );
+        assert_eq!(state.active_screen, Screen::Main);
+        assert_eq!(
+            state.main_keyboard_stack,
+            vec![KeyboardSetting::PreexistingMain]
+        );
+        assert_eq!(
+            state.alternate_keyboard_stack,
+            vec![KeyboardSetting::DefaultAlternate]
+        );
+        assert!(!state.raw_mode);
+        assert!(!state.mouse_capture);
     }
 
     #[test]
     fn unsupported_or_failed_keyboard_query_keeps_terminal_available_without_push() {
         for query_result in [Ok(false), Err(io::ErrorKind::TimedOut)] {
             let control = MockTerminalControl::new(query_result);
-            let operations = control.operations.clone();
+            let state = control.state.clone();
             let mut session = TerminalSession::setup(control).expect("fallback setup");
             assert!(!session.keyboard_release_events_enabled());
             session.cleanup().expect("fallback cleanup");
-            let operations = operations.lock().unwrap();
-            assert!(!operations.contains(&TerminalOperation::PushKeyboard));
-            assert!(!operations.contains(&TerminalOperation::PopKeyboard));
-            assert!(operations.contains(&TerminalOperation::EnableMouse));
+            let state = state.lock().unwrap();
+            assert!(!state.operations.contains(&TerminalOperation::PushKeyboard));
+            assert!(!state.operations.contains(&TerminalOperation::PopKeyboard));
+            assert!(state.operations.contains(&TerminalOperation::EnableMouse));
+            assert_eq!(
+                state.main_keyboard_stack,
+                vec![KeyboardSetting::PreexistingMain]
+            );
         }
     }
 
     #[test]
-    fn failed_keyboard_push_is_popped_and_does_not_disable_the_application() {
+    fn partially_failed_keyboard_push_is_popped_on_alternate_stack() {
         let control = MockTerminalControl::new(Ok(true)).fail_on(TerminalOperation::PushKeyboard);
-        let operations = control.operations.clone();
+        let state = control.state.clone();
         let mut session = TerminalSession::setup(control).expect("fallback setup");
         assert!(!session.keyboard_release_events_enabled());
+        let active_state = terminal_state(&state);
+        assert_eq!(active_state.active_screen, Screen::Alternate);
+        assert_eq!(
+            active_state.alternate_keyboard_stack,
+            vec![KeyboardSetting::DefaultAlternate]
+        );
+        assert_eq!(
+            active_state.main_keyboard_stack,
+            vec![KeyboardSetting::PreexistingMain]
+        );
         session.cleanup().expect("fallback cleanup");
-        let operations = operations.lock().unwrap();
-        assert!(operations.contains(&TerminalOperation::PopKeyboard));
-        assert!(operations.contains(&TerminalOperation::EnableMouse));
+        let state = terminal_state(&state);
+        assert_eq!(
+            state.operations,
+            vec![
+                TerminalOperation::EnableRaw,
+                TerminalOperation::EnterAlternate,
+                TerminalOperation::QueryKeyboard,
+                TerminalOperation::PushKeyboard,
+                TerminalOperation::PopKeyboard,
+                TerminalOperation::EnableMouse,
+                TerminalOperation::DisableMouse,
+                TerminalOperation::LeaveAlternate,
+                TerminalOperation::DisableRaw,
+            ]
+        );
     }
 
     #[test]
-    fn setup_failure_after_keyboard_push_pops_flags_and_restores_prior_modes() {
+    fn mouse_enable_failure_pops_flags_before_leaving_alternate_screen() {
         let control = MockTerminalControl::new(Ok(true)).fail_on(TerminalOperation::EnableMouse);
-        let operations = control.operations.clone();
+        let state = control.state.clone();
         assert!(TerminalSession::setup(control).is_err());
+        let state = state.lock().unwrap();
         assert_eq!(
-            *operations.lock().unwrap(),
+            state.operations,
             vec![
                 TerminalOperation::EnableRaw,
+                TerminalOperation::EnterAlternate,
                 TerminalOperation::QueryKeyboard,
                 TerminalOperation::PushKeyboard,
-                TerminalOperation::EnterAlternate,
                 TerminalOperation::EnableMouse,
                 TerminalOperation::PopKeyboard,
                 TerminalOperation::DisableMouse,
@@ -702,6 +828,81 @@ mod tests {
                 TerminalOperation::DisableRaw,
             ]
         );
+        assert_eq!(state.active_screen, Screen::Main);
+        assert_eq!(
+            state.main_keyboard_stack,
+            vec![KeyboardSetting::PreexistingMain]
+        );
+        assert_eq!(
+            state.alternate_keyboard_stack,
+            vec![KeyboardSetting::DefaultAlternate]
+        );
+        assert!(!state.raw_mode);
+        assert!(!state.mouse_capture);
+    }
+
+    #[test]
+    fn partial_alternate_screen_entry_failure_restores_raw_mode_without_keyboard_negotiation() {
+        let control = MockTerminalControl::new(Ok(true)).fail_on(TerminalOperation::EnterAlternate);
+        let state = control.state.clone();
+        assert!(TerminalSession::setup(control).is_err());
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.operations,
+            vec![
+                TerminalOperation::EnableRaw,
+                TerminalOperation::EnterAlternate,
+                TerminalOperation::LeaveAlternate,
+                TerminalOperation::DisableRaw,
+            ]
+        );
+        assert_eq!(state.active_screen, Screen::Main);
+        assert_eq!(
+            state.main_keyboard_stack,
+            vec![KeyboardSetting::PreexistingMain]
+        );
+        assert_eq!(
+            state.alternate_keyboard_stack,
+            vec![KeyboardSetting::DefaultAlternate]
+        );
+        assert!(!state.raw_mode);
+    }
+
+    #[test]
+    fn drop_pops_keyboard_flags_before_leaving_alternate_screen() {
+        let control = MockTerminalControl::new(Ok(true));
+        let state = control.state.clone();
+        {
+            let session = TerminalSession::setup(control).expect("terminal setup");
+            assert!(session.keyboard_release_events_enabled());
+        }
+
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.operations,
+            vec![
+                TerminalOperation::EnableRaw,
+                TerminalOperation::EnterAlternate,
+                TerminalOperation::QueryKeyboard,
+                TerminalOperation::PushKeyboard,
+                TerminalOperation::EnableMouse,
+                TerminalOperation::PopKeyboard,
+                TerminalOperation::DisableMouse,
+                TerminalOperation::LeaveAlternate,
+                TerminalOperation::DisableRaw,
+            ]
+        );
+        assert_eq!(state.active_screen, Screen::Main);
+        assert_eq!(
+            state.main_keyboard_stack,
+            vec![KeyboardSetting::PreexistingMain]
+        );
+        assert_eq!(
+            state.alternate_keyboard_stack,
+            vec![KeyboardSetting::DefaultAlternate]
+        );
+        assert!(!state.raw_mode);
+        assert!(!state.mouse_capture);
     }
 
     #[test]
