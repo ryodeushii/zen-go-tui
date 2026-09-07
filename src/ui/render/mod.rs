@@ -594,7 +594,7 @@ fn render_dynamic_input_row(
         render_stacked_signal_rows(
             sections[0],
             buffer,
-            &meter_slider_label("OBS", input.meter),
+            &meter_slider_label(input.meter),
             input.meter.map(antelope_protocol::meter_ratio),
             &signal_slider_label("GAIN", Some(gain_label)),
             gain_ratio,

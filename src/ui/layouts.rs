@@ -2093,9 +2093,6 @@ pub(crate) fn signal_slider_label(prefix: &str, value: Option<String>) -> String
         .unwrap_or_else(|| prefix.to_string())
 }
 
-pub(crate) fn meter_slider_label(prefix: &str, raw: Option<u8>) -> String {
-    let value = raw
-        .map(meter_display_db)
-        .map_or_else(|| "?".to_string(), |value| format_meter_value_label(value));
-    format!("{prefix} {value}")
+pub(crate) fn meter_slider_label(raw: Option<u8>) -> String {
+    format_meter_value_label(raw.and_then(meter_display_db))
 }

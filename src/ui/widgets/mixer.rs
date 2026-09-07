@@ -475,7 +475,7 @@ pub(crate) fn render_preamp_visual_widget(
     render_stacked_signal_rows(
         sections[0],
         buffer,
-        &meter_slider_label("OBS", input.observed_meter),
+        &meter_slider_label(input.observed_meter),
         input.observed_meter_ratio(),
         &signal_slider_label("GAIN", Some(input.gain_db_label())),
         Some(input.gain_ratio()),

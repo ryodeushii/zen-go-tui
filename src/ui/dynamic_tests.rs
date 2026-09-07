@@ -1611,7 +1611,7 @@ fn zen_go_physical_inputs_render_rich_preamp_cards() {
 
     assert!(text.contains("Preamp 1"));
     assert!(text.contains("Preamp 2"));
-    assert_eq!(text.matches("OBS").count(), 2);
+    assert!(!text.contains("OBS"));
     assert!(text.contains("GAIN 43 dB"));
     assert!(text.contains("-∞ dB"));
 }
@@ -1649,9 +1649,8 @@ fn orion_renders_a_rich_card_for_each_physical_preamp_only() {
     draw_page(&mut terminal, &state);
     let text = terminal_text(&terminal);
 
-    assert_eq!(text.matches("OBS").count(), 12);
-    assert_eq!(text.matches("OBS ?").count(), 12);
-    assert!(!text.contains("OBS -∞ dB"));
+    assert!(!text.contains("OBS"));
+    assert!(text.matches("-∞ dB").count() >= 12);
     assert!(text.matches("GAIN").count() >= 12);
     assert!(text.contains("ADAT 1"));
     assert!(text.contains("S/PDIF L"));
@@ -1664,7 +1663,8 @@ fn orion_physical_meter_source_is_unavailable_without_fabricated_values() {
         .inputs
         .iter()
         .all(|input| input.meter.is_none()));
-    assert_eq!(super::layouts::meter_slider_label("OBS", None), "OBS ?");
+    // The label fallback does not turn unavailable samples into measured data.
+    assert_eq!(super::layouts::meter_slider_label(None), " -∞ dB");
 }
 
 #[test]

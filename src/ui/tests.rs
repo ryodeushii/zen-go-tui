@@ -298,6 +298,14 @@ fn mouse_action_hits_output_hotkeys_button() {
 }
 
 #[test]
+fn preamp_meter_labels_omit_prefix_and_use_infinity_for_no_reading() {
+    assert_eq!(layouts::meter_slider_label(Some(48)), "-48 dB");
+    assert_eq!(layouts::meter_slider_label(Some(0)), "  0 dB");
+    assert_eq!(layouts::meter_slider_label(Some(96)), " -∞ dB");
+    assert_eq!(layouts::meter_slider_label(None), " -∞ dB");
+}
+
+#[test]
 fn meter_value_labels_reserve_width_and_use_negative_infinity() {
     assert_eq!(layouts::format_meter_value_label(Some(0)), "  0 dB");
     assert_eq!(layouts::format_meter_value_label(Some(-48)), "-48 dB");
@@ -373,7 +381,8 @@ fn preamp_visual_stacks_observed_meter_and_gain_sliders() {
 
     assert!(rendered.contains("Preamp 1"));
     assert!(rendered.contains("GAIN 20 dB"));
-    assert!(rendered.contains("OBS -48 dB"));
+    assert!(rendered.contains("-48 dB"));
+    assert!(!rendered.contains("OBS"));
     assert!(rendered.contains("░"));
     assert!(rendered.contains("─"));
     assert!(rendered.contains("●"));
