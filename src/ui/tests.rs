@@ -276,21 +276,23 @@ fn hotkeys_popup_text_lists_core_shortcuts() {
 #[test]
 fn mouse_action_returns_intent_not_mouse_action() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = AppState::default();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let button = layouts::output_hotkeys_button_rect(page[1]);
+    let button = layouts::output_hotkeys_button_rect(page[1], state.outputs().len());
 
-    let result = mouse_action(area, &AppState::default(), button.x + 1, button.y);
+    let result = mouse_action(area, &state, button.x + 1, button.y);
     assert_eq!(result, Some(Intent::ToggleHotkeysPopup));
 }
 
 #[test]
 fn mouse_action_hits_output_hotkeys_button() {
     let area = Rect::new(0, 0, 120, 50);
+    let state = AppState::default();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let button = layouts::output_hotkeys_button_rect(page[1]);
+    let button = layouts::output_hotkeys_button_rect(page[1], state.outputs().len());
 
     assert_eq!(
-        mouse_action(area, &AppState::default(), button.x + 1, button.y),
+        mouse_action(area, &state, button.x + 1, button.y),
         Some(Intent::ToggleHotkeysPopup)
     );
 }
@@ -1564,7 +1566,7 @@ fn mouse_action_hits_visible_surface_tab_position() {
 fn mouse_action_hits_visible_output_dim_chip_position() {
     let area = Rect::new(0, 0, 120, 50);
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let list_inner = layouts::inner_area(page[1]);
+    let list_inner = layouts::output_panel_inner_area(page[1]);
     let row_area = layouts::output_card_areas(list_inner)[0];
     let state = AppState::default();
     let dim = layouts::output_control_rects(row_area)[2];
@@ -1579,7 +1581,7 @@ fn mouse_action_hits_visible_output_dim_chip_position() {
 fn mouse_action_hits_visible_output_mute_chip_position_on_hp1() {
     let area = Rect::new(0, 0, 120, 50);
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let list_inner = layouts::inner_area(page[1]);
+    let list_inner = layouts::output_panel_inner_area(page[1]);
     let row_area = layouts::output_card_areas(list_inner)[1];
     let state = AppState::default();
     let mute = layouts::output_control_rects(row_area)[3];
@@ -1722,8 +1724,10 @@ fn slider_wheel_action_adjusts_output_level_one_step() {
     let area = Rect::new(0, 0, 120, 50);
     let state = zen_go_state();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let row =
-        layouts::dynamic_output_card_areas(layouts::inner_area(page[1]), state.outputs().len())[0];
+    let row = layouts::dynamic_output_card_areas(
+        layouts::output_panel_inner_area(page[1]),
+        state.outputs().len(),
+    )[0];
     let controls = layouts::dynamic_output_control_rects(row, &state, 0).expect("output controls");
     let track = controls.level.expect("output level control");
 
@@ -1825,8 +1829,10 @@ fn mouse_action_hits_visible_output_level_slider_position() {
     let area = Rect::new(0, 0, 120, 50);
     let state = zen_go_state();
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
-    let row =
-        layouts::dynamic_output_card_areas(layouts::inner_area(page[1]), state.outputs().len())[0];
+    let row = layouts::dynamic_output_card_areas(
+        layouts::output_panel_inner_area(page[1]),
+        state.outputs().len(),
+    )[0];
     let controls = layouts::dynamic_output_control_rects(row, &state, 0).expect("output controls");
     let track = controls.level.expect("output level control");
 

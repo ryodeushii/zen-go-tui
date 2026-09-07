@@ -438,7 +438,7 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         ),
         area,
     );
-    let inner = inner_area(area);
+    let inner = output_panel_inner_area(area);
     for (index, row) in dynamic_output_card_areas(inner, state.outputs().len())
         .into_iter()
         .enumerate()
@@ -454,7 +454,7 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state.ui.focus == FocusArea::Outputs && state.output.selected == index,
         );
     }
-    let help_button = output_hotkeys_button_rect(area);
+    let help_button = output_hotkeys_button_rect(area, state.outputs().len());
     if help_button.height > 0 {
         Paragraph::new(Line::from(chip(
             "? HOTKEYS",

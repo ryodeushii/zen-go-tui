@@ -1376,10 +1376,13 @@ fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
         return None;
     }
 
-    if contains_point(output_hotkeys_button_rect(area), point) {
+    if contains_point(
+        output_hotkeys_button_rect(area, state.outputs().len()),
+        point,
+    ) {
         return Some(Intent::ToggleHotkeysPopup);
     }
-    let inner = inner_area(area);
+    let inner = output_panel_inner_area(area);
     for (index, row) in dynamic_output_card_areas(inner, state.outputs().len())
         .into_iter()
         .enumerate()
@@ -1426,7 +1429,7 @@ fn output_list_slider_mouse_action(
     if !contains_point(area, point) {
         return None;
     }
-    let inner = inner_area(area);
+    let inner = output_panel_inner_area(area);
     for (index, row) in dynamic_output_card_areas(inner, state.outputs().len())
         .into_iter()
         .enumerate()
@@ -1456,7 +1459,7 @@ fn output_list_slider_wheel_action(
     if !contains_point(area, point) {
         return None;
     }
-    let inner = inner_area(area);
+    let inner = output_panel_inner_area(area);
     for (index, row) in dynamic_output_card_areas(inner, state.outputs().len())
         .into_iter()
         .enumerate()

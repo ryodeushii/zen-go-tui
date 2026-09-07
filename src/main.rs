@@ -699,10 +699,10 @@ mod tests {
             ])
             .split(chunks[1]);
         let inner = ratatui::layout::Rect::new(
-            page[1].x + 2,
-            page[1].y + 2,
-            page[1].width.saturating_sub(4),
-            page[1].height.saturating_sub(4),
+            page[1].x + 1,
+            page[1].y + 1,
+            page[1].width.saturating_sub(2),
+            page[1].height.saturating_sub(2),
         );
         let card = ratatui::layout::Layout::default()
             .direction(ratatui::layout::Direction::Horizontal)

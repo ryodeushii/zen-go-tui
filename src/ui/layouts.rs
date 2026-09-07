@@ -1179,6 +1179,11 @@ pub(crate) fn afx_routing_row_rects(area: Rect, state: &AppState, pair: usize) -
 }
 
 pub(crate) fn output_card_height() -> u16 {
+    4
+}
+
+// Header, level, and control rows remain the minimum compact control geometry.
+pub(crate) fn output_card_control_height() -> u16 {
     3
 }
 
@@ -1190,7 +1195,12 @@ pub(crate) fn output_card_areas(area: Rect) -> [Rect; 3] {
             Constraint::Percentage(33),
             Constraint::Percentage(33),
         ])
-        .split(Rect::new(area.x, area.y, area.width, output_card_height()));
+        .split(Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            output_card_height().min(area.height),
+        ));
     [areas[0], areas[1], areas[2]]
 }
 
@@ -1251,7 +1261,7 @@ pub(crate) fn dynamic_output_control_rects(
     index: usize,
 ) -> Option<DynamicOutputControlRects> {
     let output = state.outputs().get(index)?;
-    if row.height >= output_card_height() {
+    if row.height >= output_card_control_height() {
         let buttons = output_control_rects(row);
         let visible = |rect: Rect| {
             (rect.x.saturating_add(rect.width) <= row.x.saturating_add(row.width)).then_some(rect)
@@ -1279,14 +1289,15 @@ pub(crate) fn dynamic_output_control_rects(
                 .declares_output(output.address, OutputControl::Mono)
                 .then(|| {
                     visible(buttons[4]).or_else(|| {
-                        (row.height >= output_card_height() && row.width >= chip_width("MONO"))
-                            .then_some(Rect::new(
-                                row.x
-                                    .saturating_add(row.width.saturating_sub(chip_width("MONO"))),
-                                row.y,
-                                chip_width("MONO"),
-                                1,
-                            ))
+                        (row.height >= output_card_control_height()
+                            && row.width >= chip_width("MONO"))
+                        .then_some(Rect::new(
+                            row.x
+                                .saturating_add(row.width.saturating_sub(chip_width("MONO"))),
+                            row.y,
+                            chip_width("MONO"),
+                            1,
+                        ))
                     })
                 })
                 .flatten(),
@@ -1757,6 +1768,15 @@ pub(crate) fn dynamic_input_row_count_for_test(state: &AppState) -> usize {
         .sum()
 }
 
+pub(crate) fn output_panel_inner_area(area: Rect) -> Rect {
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
+}
+
 pub(crate) fn dynamic_output_card_areas(area: Rect, count: usize) -> Vec<Rect> {
     if count == 0 || area.width == 0 || area.height == 0 {
         return Vec::new();
@@ -1801,7 +1821,11 @@ pub(crate) fn dynamic_output_card_areas(area: Rect, count: usize) -> Vec<Rect> {
 pub(crate) fn output_control_rects(area: Rect) -> Vec<Rect> {
     inline_chip_rects(
         area.x,
-        area.y + output_card_height() - 1,
+        area.y.saturating_add(
+            area.height
+                .min(output_card_control_height())
+                .saturating_sub(1),
+        ),
         &[
             ADJUST_DOWN_BUTTON_LABEL,
             ADJUST_UP_BUTTON_LABEL,
@@ -1813,15 +1837,7 @@ pub(crate) fn output_control_rects(area: Rect) -> Vec<Rect> {
 }
 
 pub(crate) fn output_level_slider_rect(area: Rect) -> Rect {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(area);
-    horizontal_labeled_slider_track(rows[1])
+    horizontal_labeled_slider_track(Rect::new(area.x, area.y.saturating_add(1), area.width, 1))
 }
 
 #[cfg(test)]
@@ -1829,20 +1845,27 @@ pub(crate) fn mixer_strip_height() -> u16 {
     18
 }
 
-pub(crate) fn output_hotkeys_button_rect(area: Rect) -> Rect {
-    let inner = inner_area(area);
-    let y = inner.y.saturating_add(output_card_height());
-    if inner.height <= output_card_height() {
-        return Rect::new(inner.x, y, 0, 0);
+pub(crate) fn output_hotkeys_button_rect(area: Rect, output_count: usize) -> Rect {
+    let inner = output_panel_inner_area(area);
+    let width = chip_width("? HOTKEYS");
+    let hidden = Rect::new(inner.x, inner.y, 0, 0);
+    if inner.width < width || inner.height == 0 {
+        return hidden;
     }
 
-    let width = chip_width("? HOTKEYS");
-    Rect::new(
-        inner.x + inner.width.saturating_sub(width),
-        y,
-        width.min(inner.width),
-        1,
-    )
+    let cards = dynamic_output_card_areas(inner, output_count);
+    let x = inner.x.saturating_add(inner.width.saturating_sub(width));
+    (inner.y..inner.y.saturating_add(inner.height))
+        .map(|y| Rect::new(x, y, width, 1))
+        .find(|candidate| {
+            cards.iter().all(|card| {
+                candidate.x.saturating_add(candidate.width) <= card.x
+                    || card.x.saturating_add(card.width) <= candidate.x
+                    || candidate.y.saturating_add(candidate.height) <= card.y
+                    || card.y.saturating_add(card.height) <= candidate.y
+            })
+        })
+        .unwrap_or(hidden)
 }
 
 pub(crate) fn preamp_gain_slider_rect(area: Rect) -> Rect {
