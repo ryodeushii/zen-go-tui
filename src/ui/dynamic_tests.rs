@@ -7,6 +7,7 @@ use antelope_protocol::{
 };
 use ratatui::{
     backend::TestBackend,
+    buffer::Buffer,
     layout::Rect,
     style::Color,
     widgets::{Block, Borders},
@@ -88,76 +89,87 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
 }
 
 #[test]
-fn typed_mix_master_meter_renders_as_mixer_state_not_physical_output() {
+fn zen_go_output_cards_render_three_independent_stereo_meter_pairs() {
     let mut state = zen_go_ui_state();
-    state.meters = vec![DynamicMeterState {
-        target: RuntimeMeterTarget::MixMaster,
-        target_index: 0,
-        lane: 0,
-        value: 0x21,
-    }];
-    let mut terminal = test_terminal(220, 48);
+    state.meters = (0_u16..3)
+        .flat_map(|target_index| {
+            [0_u8, 1].map(move |lane| DynamicMeterState {
+                target: RuntimeMeterTarget::PhysicalOutput,
+                target_index,
+                lane,
+                value: 0x10 + target_index as u8 * 2 + lane,
+            })
+        })
+        .collect();
+
+    for index in 0..3 {
+        let status = super::render::output_meter_status(&state, index).expect("output meter");
+        assert!(status.contains("P-FEED(stage?)"));
+        assert!(status.contains("L:"));
+        assert!(status.contains("R:"));
+        assert_ne!(
+            state.output_meter_lanes(index as u16)[0].1,
+            state.output_meter_lanes(index as u16)[1].1
+        );
+    }
+    let mut terminal = test_terminal(140, 48);
     draw_page(&mut terminal, &state);
     let text = terminal_text(&terminal);
-
-    assert!(text.contains("MIX MASTER"));
-    assert!(!text.contains("OUTPUT METER"));
+    assert!(text.contains("P-FEED(stage?)"));
+    assert!(text.contains("L:-16dB R:-17dB"));
+    assert!(!text.contains("MIX MASTER"));
 }
 
 #[test]
-fn selected_orion_mix_meter_uses_each_profile_mapping_without_stereo_inference() {
+fn orion_output_meters_are_one_lane_each_and_ignore_selected_mix() {
     let mut state = orion_ui_state();
-    state.meters = (0_u16..4)
+    state.meters = (0_u16..6)
         .map(|target_index| DynamicMeterState {
-            target: RuntimeMeterTarget::MixMaster,
+            target: RuntimeMeterTarget::PhysicalOutput,
             target_index,
             lane: 0,
             value: 0x12 + target_index as u8,
         })
         .collect();
 
-    for surface_index in 0..4 {
-        state.mixer.surface_index = surface_index as usize;
-        let meter = super::mouse::mix_meter(&state).expect("selected Orion meter");
-        assert_eq!(meter.lanes.len(), 1);
-        assert_eq!(meter.name, state.mixers()[surface_index].name);
+    let before = (0..6)
+        .map(|index| super::render::output_meter_status(&state, index).unwrap())
+        .collect::<Vec<_>>();
+    state.mixer.surface_index = 3;
+    let after = (0..6)
+        .map(|index| super::render::output_meter_status(&state, index).unwrap())
+        .collect::<Vec<_>>();
 
-        let line = super::render::render_mix_meter_state_line(&state);
-        let lane_label = meter.lane_label(0);
-        let db = antelope_protocol::meter_display_db(meter.lanes[0].value)
-            .expect("fixture meter has a display value");
-        assert!(line.contains(&lane_label));
-        assert!(line.contains(&format!("{db} dB")));
-        assert!(!line.contains(" R "));
-
-        let mut terminal = test_terminal(80, 1);
-        terminal
-            .draw(|frame| {
-                super::render::render_mix_meter_widget(frame.area(), frame.buffer_mut(), &meter)
-            })
-            .expect("render selected Orion meter");
-        let graphical = terminal_text(&terminal);
-        assert!(graphical.contains(&lane_label));
-        assert!(graphical.contains(&format!("{db} dB")));
-        assert!(!graphical.contains(" R "));
-    }
+    assert_eq!(before, after);
+    assert!(before.iter().all(|status| status.contains("LANE1:")));
+    assert!(before
+        .iter()
+        .all(|status| !status.contains("L:") && !status.contains("R:")));
 }
 
 #[test]
-fn physical_output_meter_does_not_render_as_selected_mix_meter() {
+fn output_meter_missing_and_silence_are_distinct_without_fake_zero() {
     let mut state = zen_go_ui_state();
-    state.meters = vec![DynamicMeterState {
-        target: RuntimeMeterTarget::PhysicalOutput,
-        target_index: 0,
-        lane: 0,
-        value: 0x12,
-    }];
-
-    assert!(super::mouse::mix_meter(&state).is_none());
-    assert_eq!(
-        super::render::render_mix_meter_state_line(&state),
-        "Mix meter: unavailable for selected mixer"
-    );
+    assert!(super::render::output_meter_status(&state, 0)
+        .unwrap()
+        .contains("L:-- R:--"));
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index: 0,
+            lane: 0,
+            value: 0x60,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index: 0,
+            lane: 1,
+            value: 0,
+        },
+    ];
+    let status = super::render::output_meter_status(&state, 0).unwrap();
+    assert!(status.contains("L:silence"));
+    assert!(status.contains("R:0dB"));
 }
 
 #[test]
@@ -730,11 +742,55 @@ fn orion_output_mono_chip_geometry_render_and_mouse_share_exact_targets() {
 }
 
 #[test]
-fn narrow_output_cards_clip_mono_geometry_consistently() {
+fn zen_go_compact_output_card_keeps_independent_stereo_readings_and_controls() {
+    let mut state = zen_go_ui_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index: 0,
+            lane: 0,
+            value: 0x10,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index: 0,
+            lane: 1,
+            value: 0x11,
+        },
+    ];
+    let area = Rect::new(0, 0, 80, 1);
+    let controls = super::layouts::dynamic_output_control_rects(area, &state, 0).unwrap();
+    assert!(controls.level.is_some());
+    assert!(controls.dim.is_some());
+    assert!(controls.mute.is_some());
+    assert!(controls.mono.is_none());
+
+    let mut buffer = Buffer::empty(area);
+    super::render::render_dynamic_output_card_widget(controls, &mut buffer, &state, 0, false);
+    let text = (0..area.width)
+        .map(|x| buffer[(x, 0)].symbol())
+        .collect::<String>();
+    assert!(text.contains("P-FEED(stage?) L:-16dB R:-17dB"), "{text}");
+    assert!(text.contains("LVL"), "{text}");
+    assert!(text.contains("DIM"), "{text}");
+    assert!(text.contains("MUTE"), "{text}");
+}
+
+#[test]
+fn narrow_output_cards_keep_provisional_meters_visible_without_mono_hitboxes() {
     let mut state = orion_ui_state();
     let mut outputs = state.outputs().to_vec();
     outputs[0].mono = Some(false);
     observe_output_patch(&mut state, outputs);
+    state.meters = (0_u16..6)
+        .map(|target_index| DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index,
+            lane: 0,
+            value: 0x12 + target_index as u8,
+        })
+        .collect();
+
     let area = Rect::new(0, 0, 36, 20);
     let panel = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1])[1];
     let inner = super::layouts::inner_area(panel);
@@ -744,6 +800,12 @@ fn narrow_output_cards_clip_mono_geometry_consistently() {
 
     let mut terminal = test_terminal(area.width, area.height);
     draw_page(&mut terminal, &state);
+    let text = terminal_text(&terminal);
+    // At this height only the last output row has nonzero height.
+    // Every visible card must retain its own reading, not just a lane label.
+    for value in ["P-F1:-21", "P-F1:-22", "P-F1:-23"] {
+        assert!(text.contains(value), "{text}");
+    }
     assert!(!(0..area.height).any(|y| {
         (0..area.width).any(|x| {
             matches!(

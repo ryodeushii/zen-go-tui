@@ -256,28 +256,36 @@ class GeneratorTests(unittest.TestCase):
             *[{"category": 0x19, "index": index} for index in range(12)],
         ]))
 
-    def test_orion_profile_declares_four_single_lane_mix_master_meters(self) -> None:
+    def test_orion_profile_declares_six_provisional_output_meter_candidates(self) -> None:
         profile = normalized_orion()
         mappings = profile["meter_mappings"]
 
         self.assertEqual(
             [
-                (item["frame_id"], item["target"], item["target_index"], item["lane"], item["offset"])
+                (
+                    item["frame_id"],
+                    item["target"],
+                    item["target_index"],
+                    item["lane"],
+                    item["offset"],
+                    item["raw_min"],
+                    item["raw_max"],
+                )
                 for item in mappings
             ],
             [
-                ("state_report", "mix_master", 0, 0, 157),
-                ("state_report", "mix_master", 1, 0, 158),
-                ("state_report", "mix_master", 2, 0, 159),
-                ("state_report", "mix_master", 3, 0, 160),
+                ("state_report", "physical_output", 0, 0, 157, 0, 96),
+                ("state_report", "physical_output", 1, 0, 158, 0, 96),
+                ("state_report", "physical_output", 2, 0, 159, 0, 96),
+                ("state_report", "physical_output", 3, 0, 160, 0, 96),
+                ("state_report", "physical_output", 4, 0, 177, 0, 96),
+                ("state_report", "physical_output", 5, 0, 178, 0, 96),
             ],
         )
         self.assertTrue(all(item["status"] == "observed" for item in mappings))
-        self.assertTrue(all("mono" in item["evidence"] for item in mappings))
-        self.assertTrue(all("no L/R" in item["evidence"] for item in mappings))
-        self.assertEqual([mixer["mix_index"] for mixer in profile["mixers"]], [0, 1, 2, 3])
-        self.assertTrue(all(mixer["has_master"] for mixer in profile["mixers"]))
-        self.assertFalse(any(item["target"] == "physical_output" for item in mappings))
+        self.assertTrue(all("packet-order hypothesis" in item["evidence"] for item in mappings))
+        self.assertTrue(all("stage unknown" in item["evidence"] for item in mappings))
+        self.assertFalse(any(item["target"] == "mix_master" for item in mappings))
 
     def test_zen_go_profile_declares_capture_scoped_mixer_layouts(self) -> None:
         layouts = normalized_zen_go()["readback"]["layouts"]
@@ -372,23 +380,33 @@ class GeneratorTests(unittest.TestCase):
             normalized_zen_go()["state_report"]["candidate_preamp_meters"],
         )
 
-    def test_zen_go_profile_declares_payload_relative_mix_master_meter_lanes(self) -> None:
+    def test_zen_go_profile_declares_three_independent_stereo_output_meters(self) -> None:
         mappings = normalized_zen_go()["meter_mappings"]
 
         self.assertEqual(
             [
-                (item["frame_id"], item["target"], item["target_index"], item["lane"], item["offset"])
+                (
+                    item["frame_id"],
+                    item["target"],
+                    item["target_index"],
+                    item["lane"],
+                    item["offset"],
+                    item["raw_min"],
+                    item["raw_max"],
+                )
                 for item in mappings
             ],
             [
-                ("state_report", "mix_master", 0, 0, 0xEA),
-                ("state_report", "mix_master", 0, 1, 0xEB),
-                ("state_report", "mix_master", 1, 0, 0xEE),
-                ("state_report", "mix_master", 1, 1, 0xEF),
+                ("state_report", "physical_output", 0, 0, 0xEA, 0, 96),
+                ("state_report", "physical_output", 0, 1, 0xEB, 0, 96),
+                ("state_report", "physical_output", 1, 0, 0xEC, 0, 96),
+                ("state_report", "physical_output", 1, 1, 0xED, 0, 96),
+                ("state_report", "physical_output", 2, 0, 0xEE, 0, 96),
+                ("state_report", "physical_output", 2, 1, 0xEF, 0, 96),
             ],
         )
         self.assertTrue(all(item["status"] == "observed" for item in mappings))
-        self.assertTrue(all(item["target"] == "mix_master" for item in mappings))
+        self.assertTrue(all(item["target"] == "physical_output" for item in mappings))
 
     def test_meter_mapping_rejects_competing_target_lane_across_frames(self) -> None:
         data = profile_data("Test", "0xa001")
@@ -398,6 +416,7 @@ class GeneratorTests(unittest.TestCase):
                 "target_index": 0,
                 "lane": 0,
                 "payload_offset": "0xda",
+                "raw_range": [0, 96],
                 "status": "observed",
                 "evidence": "synthetic meter lane",
             }
@@ -411,6 +430,7 @@ class GeneratorTests(unittest.TestCase):
                     "target_index": 0,
                     "lane": 0,
                     "payload_offset": "0xda",
+                    "raw_range": [0, 96],
                     "status": "observed",
                     "evidence": "competing synthetic meter lane",
                 }
@@ -418,6 +438,25 @@ class GeneratorTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(generator.ProfileError, "target lane is declared more than once"):
+            generator.normalize_profile(data)
+
+    def test_meter_mapping_requires_ordered_byte_range(self) -> None:
+        data = profile_data("Test", "0xa001")
+        mapping = {
+            "target": "mix_master",
+            "target_index": 0,
+            "lane": 0,
+            "payload_offset": "0xda",
+            "status": "observed",
+            "evidence": "synthetic meter lane",
+        }
+        data["frame"]["state_report"]["meter_mappings"] = [mapping]
+
+        with self.assertRaisesRegex(generator.ProfileError, "raw_range must contain"):
+            generator.normalize_profile(data)
+
+        mapping["raw_range"] = [96, 0]
+        with self.assertRaisesRegex(generator.ProfileError, "minimum must not exceed maximum"):
             generator.normalize_profile(data)
 
     def test_zen_go_profile_declares_attenuation_fader_domain(self) -> None:

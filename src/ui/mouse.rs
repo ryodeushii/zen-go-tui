@@ -5,9 +5,11 @@ use crate::app::{
     SelectorPopupState, QUERY_REPLY_VISIBLE_COUNT,
 };
 use crate::device::DevicePickerState;
+#[cfg(test)]
+use antelope_protocol::{DynamicMeterState, RuntimeMeterTarget};
 use antelope_protocol::{
-    DynamicMeterState, GlobalControl, InputControl, MixerAddress, MixerAssignment, MixerControl,
-    OutputControl, OutputTrimAddress, PreampMode, RuntimeMeterTarget, SampleRate,
+    GlobalControl, InputControl, MixerAddress, MixerAssignment, MixerControl, OutputControl,
+    OutputTrimAddress, PreampMode, SampleRate,
 };
 
 use super::layouts::*;
@@ -1033,7 +1035,7 @@ fn dynamic_mixer_mouse_action(
     point: (u16, u16),
     wheel: Option<bool>,
 ) -> Option<Intent> {
-    let inner = mixer_strip_panel_layout_for_meter_lanes(area, mix_meter_lane_count(state))[0];
+    let inner = inner_area(area);
     let surface = state
         .active_mixer_surface()
         .and_then(|index| state.mixers().get(index))?;
@@ -1496,8 +1498,7 @@ pub fn mixer_strip_panel_contains(area: Rect, state: &AppState, x: u16, y: u16) 
     let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout_for_state(page[0], state);
     let mixer = mixer_layout(main[1]);
-    let list = mixer_strip_panel_layout_for_meter_lanes(mixer[1], mix_meter_lane_count(state));
-    contains_point(list[0], (x, y))
+    contains_point(inner_area(mixer[1]), (x, y))
 }
 
 fn afx_routing_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
@@ -1565,12 +1566,14 @@ fn slider_ratio_for_vertical_point(area: Rect, point: (u16, u16)) -> Option<f64>
     )
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MixMeterState {
     pub(crate) name: String,
     pub(crate) lanes: Vec<DynamicMeterState>,
 }
 
+#[cfg(test)]
 impl MixMeterState {
     pub(crate) fn lane_label(&self, lane: u8) -> String {
         let is_stereo_pair =
@@ -1587,6 +1590,7 @@ impl MixMeterState {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn mix_meter(state: &AppState) -> Option<MixMeterState> {
     let surface = state
         .active_mixer_surface()
@@ -1607,6 +1611,7 @@ pub(crate) fn mix_meter(state: &AppState) -> Option<MixMeterState> {
     })
 }
 
+#[cfg(test)]
 pub(crate) fn mix_meter_lane_count(state: &AppState) -> usize {
     mix_meter(state).map_or(0, |meter| meter.lanes.len())
 }

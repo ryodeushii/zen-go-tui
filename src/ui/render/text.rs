@@ -8,6 +8,7 @@ use super::super::layouts::CONNECTION_STALE_AFTER;
 use super::super::layouts::{
     device_header_labels, DEVICE_HEADER_CHIP_GAP, DEVICE_HEADER_PRODUCT_GAP,
 };
+#[cfg(test)]
 use super::super::mouse::mix_meter;
 use super::super::raw_map::{
     build_raw_packet_map_for_profile, Coverage, RawDomain, RawMapEntry, RawPacketMap,
@@ -16,6 +17,7 @@ use super::super::styles::{
     chip, labeled_value_chip, muted_style, raw_coverage_color, strong_style,
     style_for_raw_ascii_byte, style_for_raw_hex_byte,
 };
+#[cfg(test)]
 use super::super::widgets::signals::render_mix_meter;
 
 pub(crate) fn selected_query_reply_bytes<'a>(fallback: &'a [u8], state: &'a AppState) -> &'a [u8] {
@@ -100,6 +102,7 @@ pub(crate) fn build_query_reply_list_items(state: &AppState) -> Vec<ListItem<'st
     items
 }
 
+#[cfg(test)]
 pub(crate) fn render_mix_meter_state_line(state: &AppState) -> String {
     let Some(meter) = mix_meter(state) else {
         return "Mix meter: unavailable for selected mixer".to_string();
@@ -209,6 +212,7 @@ pub(crate) fn connection_badge_color(state: &AppState) -> Color {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn render_status_strip(state: &AppState) -> Line<'static> {
     Line::from(Span::styled(
         render_mix_meter_state_line(state),

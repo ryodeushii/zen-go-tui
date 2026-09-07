@@ -164,7 +164,7 @@ fn zen_go_q18_readback_emits_both_surfaces_with_declared_solo_field() {
 }
 
 #[test]
-fn zen_go_profile_meter_offsets_convert_payload_to_full_report_and_decode_mix_master_lanes() {
+fn zen_go_profile_decodes_each_output_meter_byte_as_three_independent_stereo_pairs() {
     let profile = test_support::zen_go_profile();
     assert_eq!(
         profile
@@ -172,18 +172,25 @@ fn zen_go_profile_meter_offsets_convert_payload_to_full_report_and_decode_mix_ma
             .iter()
             .map(|mapping| (mapping.target_index, mapping.lane, mapping.offset))
             .collect::<Vec<_>>(),
-        vec![(0, 0, 0xea), (0, 1, 0xeb), (1, 0, 0xee), (1, 1, 0xef)]
+        vec![
+            (0, 0, 0xea),
+            (0, 1, 0xeb),
+            (1, 0, 0xec),
+            (1, 1, 0xed),
+            (2, 0, 0xee),
+            (2, 1, 0xef),
+        ]
     );
     assert!(profile.meter_mappings.iter().all(|mapping| matches!(
         mapping.target,
-        antelope_protocol::RuntimeMeterTarget::MixMaster
+        antelope_protocol::RuntimeMeterTarget::PhysicalOutput
     )));
 
     let driver = ZenGoDriver::new(profile).expect("driver");
     let mut frame = test_support::hex_fixture(include_str!(
         "fixtures/zen_go/state_with_candidate_meters.hex"
     ));
-    frame[0xea..0xf0].copy_from_slice(&[0x11, 0x22, 0, 0, 0x33, 0x44]);
+    frame[0xea..0xf0].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x60]);
     let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
         panic!("expected snapshot");
     };
@@ -193,7 +200,47 @@ fn zen_go_profile_meter_offsets_convert_payload_to_full_report_and_decode_mix_ma
             .iter()
             .map(|meter| (meter.target_index, meter.lane, meter.value))
             .collect::<Vec<_>>(),
-        vec![(0, 0, 0x11), (0, 1, 0x22), (1, 0, 0x33), (1, 1, 0x44)]
+        vec![
+            (0, 0, 0x11),
+            (0, 1, 0x22),
+            (1, 0, 0x33),
+            (1, 1, 0x44),
+            (2, 0, 0x55),
+            (2, 1, 0x60),
+        ]
+    );
+}
+
+#[test]
+fn zen_go_output_meter_range_keeps_silence_and_omits_invalid_values() {
+    let driver = ZenGoDriver::new(test_support::zen_go_profile()).expect("driver");
+    let mut frame = test_support::hex_fixture(include_str!(
+        "fixtures/zen_go/state_with_candidate_meters.hex"
+    ));
+    frame[0xea..0xf0].copy_from_slice(&[0x60, 0x61, 0x10, 0x20, 0x30, 0x40]);
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("expected snapshot");
+    };
+    assert!(state
+        .meters
+        .iter()
+        .any(|meter| meter.target_index == 0 && meter.lane == 0 && meter.value == 0x60));
+    assert!(!state
+        .meters
+        .iter()
+        .any(|meter| meter.target_index == 0 && meter.lane == 1));
+
+    frame.truncate(0xed);
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("expected truncated snapshot");
+    };
+    assert_eq!(
+        state
+            .meters
+            .iter()
+            .map(|meter| (meter.target_index, meter.lane))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 0)]
     );
 }
 

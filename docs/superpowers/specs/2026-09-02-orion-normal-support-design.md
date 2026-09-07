@@ -4,7 +4,7 @@
 - **Status:** Architecture approved. Implementation complete; hardware verification pending.
 - **Scope:** Orion Studio III (`0x23e5:0xa221`)
 
-> **Meter evidence correction (2026-09-06):** Historical offset-157 physical-preamp and universal-mirror claims recorded below were overconfident. Current runtime retains observed full-report `0x73` offsets 157..160 as one provisional mono `mix_master` lane per current Mix 1..4 label, with low confidence in fixed ownership and no physical/stereo inference. Free-running `0x75` reports require byte 1 `0x1f`; byte 1 `0x00` readback responses are excluded. See [the bounded Orion meter evidence](../../protocol/orion-meter-evidence.md). This note supersedes only those meter claims and preserves the approved design history.
+> **Meter implementation supersession (2026-09-06):** Historical offset-157 physical-preamp, universal-mirror, and Mix 1..4 claims recorded below are superseded. The current runtime stores the user-approved packet-order hypothesis `0x73` @157/@158/@159/@160/@177/@178 → output ids 0/1/2/3/4/5, one provisional mono candidate each. This does not prove physical post-fader ownership or meter stage, and it does not infer L/R geometry. @177/@178 were observed playback-coupled; splitting them across Reamp and Monitor B is an explicit ordering assumption. Mirror regions and duplicate `0x75` @34/@35 are excluded. See [the bounded Orion meter evidence](../../protocol/orion-meter-evidence.md). This note supersedes only meter claims and preserves the approved design history.
 
 ## Context
 

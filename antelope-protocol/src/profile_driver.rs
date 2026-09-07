@@ -567,6 +567,7 @@ impl ProfileDriver {
                 )));
             }
             if mapping.offset >= report_size
+                || mapping.raw_min > mapping.raw_max
                 || mapping.status.trim().is_empty()
                 || mapping.evidence.trim().is_empty()
             {
@@ -1811,6 +1812,7 @@ impl ProfileDriver {
                 bytes
                     .get(mapping.offset)
                     .copied()
+                    .filter(|value| (mapping.raw_min..=mapping.raw_max).contains(value))
                     .map(|value| DynamicMeterState {
                         target: mapping.target,
                         target_index: mapping.target_index,

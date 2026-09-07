@@ -5041,6 +5041,13 @@ def _meter_mappings(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 raise ProfileError(
                     f"{context}.payload_offset {payload_offset:#x} falls outside report size {report_size} after payload conversion"
                 )
+            raw_range = raw_mapping.get("raw_range")
+            if not isinstance(raw_range, list) or len(raw_range) != 2:
+                raise ProfileError(f"{context}.raw_range must contain [minimum, maximum]")
+            raw_min = _checked_u8(raw_range[0], f"{context}.raw_range[0]")
+            raw_max = _checked_u8(raw_range[1], f"{context}.raw_range[1]")
+            if raw_min > raw_max:
+                raise ProfileError(f"{context}.raw_range minimum must not exceed maximum")
             status = raw_mapping.get("status")
             evidence = raw_mapping.get("evidence")
             if not isinstance(status, str) or not status.strip():
@@ -5055,6 +5062,8 @@ def _meter_mappings(profile: NormalizedProfile) -> list[dict[str, Any]]:
                     "lane": lane,
                     "offset": offset,
                     "payload_offset": payload_offset,
+                    "raw_min": raw_min,
+                    "raw_max": raw_max,
                     "status": status,
                     "status_text": status,
                     "evidence": evidence,
@@ -5996,7 +6005,8 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 f"frame_id: {_rust_string(mapping['frame_id'])}, "
                 f"target: MeterTargetDefinition::{target}, "
                 f"target_index: {mapping['target_index']}u16, lane: {mapping['lane']}u8, "
-                f"offset: {mapping['offset']}usize, status: Status::{_status_variant(mapping['status'])}, "
+                f"offset: {mapping['offset']}usize, raw_min: {mapping['raw_min']}u8, "
+                f"raw_max: {mapping['raw_max']}u8, status: Status::{_status_variant(mapping['status'])}, "
                 f"status_text: {_rust_string(mapping['status'])}, evidence: {_rust_string(mapping['evidence'])} }},"
             )
         lines.append("];\n")

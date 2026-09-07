@@ -20,12 +20,16 @@ pub(crate) const MAX_SIGNAL_ROW_WIDTH: u16 = 40;
 pub(crate) const CONNECTION_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(2);
 pub(crate) const MIX_METER_YELLOW_START_RATIO: f64 = 0.8;
 pub(crate) const MIX_METER_RED_START_RATIO: f64 = 0.95;
+#[cfg(test)]
 pub(crate) const MIX_METER_CHANNEL_LABEL_WIDTH: u16 = 2;
+#[cfg(test)]
 pub(crate) const MIX_METER_DB_WIDTH: u16 = 7;
 pub(crate) const PREAMP_CARD_HEIGHT: u16 = 5;
 const PREAMP_CARD_MIN_WIDTH: u16 = 27;
 const PREAMP_CARD_MAX_COLUMNS: usize = 6;
 const COMPACT_INPUT_SPACE_WIDTH: u16 = 15;
+const COMPACT_OUTPUT_NAME_WIDTH: u16 = 19;
+const COMPACT_OUTPUT_METER_WIDTH: u16 = 34;
 
 pub(crate) fn root_chunks(area: Rect) -> [Rect; 2] {
     let chunks = Layout::default()
@@ -369,10 +373,12 @@ pub(crate) fn mixer_layout(area: Rect) -> [Rect; 2] {
     [sections[0], sections[1]]
 }
 
+#[cfg(test)]
 pub(crate) fn mixer_strip_panel_layout(area: Rect, with_mix_meter: bool) -> [Rect; 2] {
     mixer_strip_panel_layout_for_meter_lanes(area, usize::from(with_mix_meter) * 2)
 }
 
+#[cfg(test)]
 pub(crate) fn mixer_strip_panel_layout_for_meter_lanes(
     area: Rect,
     meter_lane_count: usize,
@@ -1191,6 +1197,7 @@ pub(crate) fn output_card_areas(area: Rect) -> [Rect; 3] {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DynamicOutputControlRects {
     pub row: Rect,
+    pub header: Rect,
     pub level: Option<Rect>,
     pub dim: Option<Rect>,
     pub mute: Option<Rect>,
@@ -1251,6 +1258,7 @@ pub(crate) fn dynamic_output_control_rects(
         };
         return Some(DynamicOutputControlRects {
             row,
+            header: Rect::new(row.x, row.y, row.width, 1),
             level: (state
                 .ui_profile
                 .declares_output(output.address, OutputControl::Level)
@@ -1284,11 +1292,31 @@ pub(crate) fn dynamic_output_control_rects(
                 .flatten(),
         });
     }
-    let mut x = row.x.saturating_add(row.width.min(20));
+    let (header, mut x, controls_y) = if row.height >= 2 {
+        (
+            Rect::new(row.x, row.y, row.width, 1),
+            row.x,
+            row.y.saturating_add(1),
+        )
+    } else {
+        let header_width = if state.output_meter_lanes(output.address.id).is_empty() {
+            COMPACT_OUTPUT_NAME_WIDTH
+        } else {
+            COMPACT_OUTPUT_METER_WIDTH
+        }
+        .min(row.width);
+        (
+            Rect::new(row.x, row.y, header_width, row.height.min(1)),
+            row.x
+                .saturating_add(header_width)
+                .saturating_add(u16::from(header_width < row.width)),
+            row.y,
+        )
+    };
     let end = row.x.saturating_add(row.width);
     let mut take = |width: u16| {
         let width = width.min(end.saturating_sub(x));
-        let rect = Rect::new(x, row.y, width, row.height.min(1));
+        let rect = Rect::new(x, controls_y, width, 1);
         x = x.saturating_add(width).saturating_add(1);
         (width > 0).then_some(rect)
     };
@@ -1315,6 +1343,7 @@ pub(crate) fn dynamic_output_control_rects(
         .flatten();
     Some(DynamicOutputControlRects {
         row,
+        header,
         level,
         dim,
         mute,

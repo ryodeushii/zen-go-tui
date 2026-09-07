@@ -1441,6 +1441,8 @@ fn profile_driver_decodes_explicit_mapped_meter_lanes_from_full_report_offsets()
         target_index: 0,
         lane: 0,
         offset: 0xea,
+        raw_min: 0,
+        raw_max: 96,
         status: "observed".into(),
         status_text: "observed".into(),
         evidence: "synthetic full-report lane".into(),
@@ -1468,6 +1470,8 @@ fn profile_driver_rejects_competing_explicit_meter_lane_across_frames() {
             target_index: 0,
             lane: 0,
             offset: 0xea,
+            raw_min: 0,
+            raw_max: 96,
             status: "observed".into(),
             status_text: "observed".into(),
             evidence: "first lane".into(),
@@ -1478,6 +1482,8 @@ fn profile_driver_rejects_competing_explicit_meter_lane_across_frames() {
             target_index: 0,
             lane: 0,
             offset: 0xea,
+            raw_min: 0,
+            raw_max: 96,
             status: "observed".into(),
             status_text: "observed".into(),
             evidence: "competing lane".into(),
@@ -1564,7 +1570,7 @@ fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
 }
 
 #[test]
-fn canonical_orion_profile_driver_keeps_state_meters_unavailable_and_exposes_mixer_lanes() {
+fn canonical_orion_profile_driver_exposes_approved_provisional_output_lanes() {
     let entry = canonical_orion_entry();
     assert_eq!(
         entry
@@ -1579,10 +1585,12 @@ fn canonical_orion_profile_driver_keeps_state_meters_unavailable_and_exposes_mix
             ))
             .collect::<Vec<_>>(),
         vec![
-            (RuntimeMeterTarget::MixMaster, 0, 0, 157),
-            (RuntimeMeterTarget::MixMaster, 1, 0, 158),
-            (RuntimeMeterTarget::MixMaster, 2, 0, 159),
-            (RuntimeMeterTarget::MixMaster, 3, 0, 160),
+            (RuntimeMeterTarget::PhysicalOutput, 0, 0, 157),
+            (RuntimeMeterTarget::PhysicalOutput, 1, 0, 158),
+            (RuntimeMeterTarget::PhysicalOutput, 2, 0, 159),
+            (RuntimeMeterTarget::PhysicalOutput, 3, 0, 160),
+            (RuntimeMeterTarget::PhysicalOutput, 4, 0, 177),
+            (RuntimeMeterTarget::PhysicalOutput, 5, 0, 178),
         ]
     );
     assert_eq!(entry.readiness, RuntimeReadiness::Supported);
@@ -1596,7 +1604,10 @@ fn canonical_orion_profile_driver_keeps_state_meters_unavailable_and_exposes_mix
             && decoder.status.eq_ignore_ascii_case("confirmed")));
 
     let driver = ProfileDriver::new(entry).expect("canonical Orion profile driver");
-    let state_frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    let mut state_frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    for (offset, value) in [157, 158, 159, 160, 177, 178].into_iter().zip(1_u8..=6) {
+        state_frame[offset] = value;
+    }
     let DeviceEvent::Snapshot { state, .. } = driver
         .decode(&state_frame)
         .unwrap()
@@ -1609,7 +1620,21 @@ fn canonical_orion_profile_driver_keeps_state_meters_unavailable_and_exposes_mix
         .iter()
         .filter(|input| input.address.space == 0)
         .all(|input| input.meter.is_none()));
-    assert_eq!(state.meters.len(), 4);
+    assert_eq!(
+        state
+            .meters
+            .iter()
+            .map(|meter| (meter.target_index, meter.lane, meter.value))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, 0, 1),
+            (1, 0, 2),
+            (2, 0, 3),
+            (3, 0, 4),
+            (4, 0, 5),
+            (5, 0, 6)
+        ]
+    );
 }
 
 #[test]

@@ -1679,7 +1679,7 @@ mod tests {
     }
 
     #[test]
-    fn active_orion_profile_maps_four_single_lane_mix_masters_at_full_offsets() {
+    fn active_orion_profile_maps_six_provisional_single_lane_outputs_at_full_offsets() {
         let profile = builtin_profile(0xa221);
         let map =
             build_raw_packet_map_for_profile(RawPacketTab::State73, &[0; 320], Some(&profile));
@@ -1688,18 +1688,18 @@ mod tests {
             .iter()
             .filter(|entry| {
                 entry.coverage == Coverage::Observed
-                    && entry.domain == RawDomain::Mixer
-                    && entry.label.contains("master meter")
+                    && entry.domain == RawDomain::Output
+                    && entry.label.contains("output meter")
             })
             .collect::<Vec<_>>();
 
-        assert_eq!(observed.len(), 4);
+        assert_eq!(observed.len(), 6);
         assert_eq!(
             observed
                 .iter()
                 .map(|entry| entry.ranges[0].report.start)
                 .collect::<Vec<_>>(),
-            vec![157, 158, 159, 160]
+            vec![157, 158, 159, 160, 177, 178]
         );
         assert!(observed.iter().all(|entry| entry.ranges.len() == 1));
         assert!(observed.iter().all(|entry| !entry.label.contains(" L ")));
@@ -1712,7 +1712,7 @@ mod tests {
             .entries()
             .iter()
             .any(|entry| entry.label.contains("physical preamp")
-                || entry.label.contains("output meter")));
+                || entry.label.contains("master meter")));
     }
 
     #[test]

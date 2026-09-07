@@ -122,9 +122,10 @@ impl ZenGoDriver {
         }
         let mut meter_mapping_keys = std::collections::HashSet::new();
         for mapping in &profile.meter_mappings {
-            if mapping.target != RuntimeMeterTarget::MixMaster
-                || mapping.target_index >= 2
+            if mapping.target != RuntimeMeterTarget::PhysicalOutput
+                || mapping.target_index >= 3
                 || mapping.frame_id != "state_report"
+                || mapping.raw_min > mapping.raw_max
                 || mapping.status.trim().is_empty()
                 || mapping.evidence.trim().is_empty()
                 || profile
@@ -134,7 +135,7 @@ impl ZenGoDriver {
                 || !meter_mapping_keys.insert((mapping.target_index, mapping.lane))
             {
                 return Err(DriverError::InvalidAction(
-                    "Zen Go meter mapping must be a unique state-report mix-master lane within the report".into(),
+                    "Zen Go meter mapping must be a unique state-report physical-output lane with an ordered range within the report".into(),
                 ));
             }
         }
@@ -293,6 +294,7 @@ impl ZenGoDriver {
                 bytes
                     .get(mapping.offset)
                     .copied()
+                    .filter(|value| (mapping.raw_min..=mapping.raw_max).contains(value))
                     .map(|value| DynamicMeterState {
                         target: mapping.target,
                         target_index: mapping.target_index,
@@ -786,7 +788,9 @@ impl DeviceDriver for ZenGoDriver {
         )?;
         Ok(Some(match frame {
             Frame::Snapshot { snapshot, raw } => DeviceEvent::Snapshot {
-                state: Self::state_from_snapshot(snapshot, &self.profile, &raw),
+                // Legacy snapshot parsing pads its structural compatibility frame.
+                // Meter availability must instead reflect bytes actually received.
+                state: Self::state_from_snapshot(snapshot, &self.profile, bytes),
                 raw: raw.to_vec(),
             },
             Frame::QueryReply { reply, raw } => {

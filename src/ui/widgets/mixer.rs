@@ -12,6 +12,7 @@ use antelope_protocol::{
 };
 
 use super::super::layouts::*;
+#[cfg(test)]
 use super::super::mouse::MixMeterState;
 use super::super::styles::*;
 use super::signals::*;
@@ -70,6 +71,117 @@ pub(crate) fn render_output_card_widget(
     .render(rows[2], buffer);
 }
 
+fn output_meter_parts(state: &AppState, index: usize) -> Option<(bool, Vec<(String, String)>)> {
+    let output = state.outputs().get(index)?;
+    let lanes = state.output_meter_lanes(output.address.id);
+    if lanes.is_empty() {
+        return None;
+    }
+    let is_stereo = lanes.len() == 2 && lanes.iter().map(|(lane, _)| *lane).eq([0_u8, 1_u8]);
+    let values = lanes
+        .into_iter()
+        .map(|(lane, value)| {
+            let label = if is_stereo {
+                if lane == 0 {
+                    "L".to_string()
+                } else {
+                    "R".to_string()
+                }
+            } else {
+                format!("LANE{}", lane.saturating_add(1))
+            };
+            let reading = match value {
+                None => "--".to_string(),
+                Some(0x60) => "silence".to_string(),
+                Some(raw) => meter_display_db(raw)
+                    .map(|db| format!("{db}dB"))
+                    .unwrap_or_else(|| "<-60dB".to_string()),
+            };
+            (label, reading)
+        })
+        .collect();
+    Some((state.output_meter_is_provisional(output.address.id), values))
+}
+
+pub(crate) fn output_meter_status(state: &AppState, index: usize) -> Option<String> {
+    let (provisional, lanes) = output_meter_parts(state, index)?;
+    let values = lanes
+        .iter()
+        .map(|(label, reading)| format!("{label}:{reading}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let status = if provisional {
+        "P-FEED(stage?)"
+    } else {
+        "METER"
+    };
+    Some(format!("{status} {values}"))
+}
+
+fn output_meter_status_for_width(state: &AppState, index: usize, width: u16) -> Option<String> {
+    let full = output_meter_status(state, index)?;
+    if full.chars().count() <= usize::from(width) {
+        return Some(full);
+    }
+
+    let (provisional, lanes) = output_meter_parts(state, index)?;
+    let prefix = if provisional { "P-F" } else { "M" };
+    let values = lanes
+        .iter()
+        .map(|(label, reading)| format!("{label}:{reading}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let with_values = format!("{prefix} {values}");
+    if with_values.chars().count() <= usize::from(width) {
+        return Some(with_values);
+    }
+
+    let compact_values = lanes
+        .iter()
+        .map(|(label, reading)| {
+            let lane = label.strip_prefix("LANE").unwrap_or(label);
+            let value = reading.strip_suffix("dB").unwrap_or(reading);
+            format!("{lane}:{value}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(format!("{prefix}{compact_values}"))
+}
+
+fn render_dynamic_output_header(
+    area: Rect,
+    buffer: &mut Buffer,
+    state: &AppState,
+    index: usize,
+    name: &str,
+    accent: Color,
+) {
+    let name = chip(name, Color::Black, accent);
+    let Some(meter) = output_meter_status(state, index) else {
+        Paragraph::new(Line::from(name)).render(area, buffer);
+        return;
+    };
+    let combined_width = name
+        .content
+        .chars()
+        .count()
+        .saturating_add(1)
+        .saturating_add(meter.chars().count());
+    if combined_width <= usize::from(area.width) {
+        Paragraph::new(Line::from(vec![
+            name,
+            Span::raw(" "),
+            Span::styled(meter, muted_style()),
+        ]))
+        .render(area, buffer);
+        return;
+    }
+
+    if let Some(compact) = output_meter_status_for_width(state, index, area.width) {
+        Paragraph::new(Line::from(Span::styled(compact, muted_style()))).render(area, buffer);
+    }
+}
+
 pub(crate) fn render_dynamic_output_card_widget(
     controls: DynamicOutputControlRects,
     buffer: &mut Buffer,
@@ -94,8 +206,7 @@ pub(crate) fn render_dynamic_output_card_widget(
                 Constraint::Length(1),
             ])
             .split(controls.row);
-        Paragraph::new(Line::from(vec![chip(&output.name, Color::Black, accent)]))
-            .render(rows[0], buffer);
+        render_dynamic_output_header(controls.header, buffer, state, index, &output.name, accent);
         if let (Some(_), Some(semantics)) = (
             controls.level,
             state.output_semantics(antelope_protocol::OutputControl::Level),
@@ -145,15 +256,7 @@ pub(crate) fn render_dynamic_output_card_widget(
         }
         return;
     }
-    Paragraph::new(Line::from(chip(&output.name, Color::Black, accent))).render(
-        Rect::new(
-            controls.row.x,
-            controls.row.y,
-            controls.row.width.min(19),
-            1,
-        ),
-        buffer,
-    );
+    render_dynamic_output_header(controls.header, buffer, state, index, &output.name, accent);
     if let Some(rect) = controls.level {
         let enabled = state
             .ui_profile
@@ -797,6 +900,7 @@ pub(crate) fn mixer_level_value_label(channel: &antelope_protocol::MixerChannelS
         .unwrap_or_else(|| "LVL ?".to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn render_mix_meter_widget(area: Rect, buffer: &mut Buffer, meter: &MixMeterState) {
     if area.width == 0 || area.height == 0 || meter.lanes.is_empty() {
         return;
@@ -829,6 +933,7 @@ pub(crate) fn render_mix_meter_widget(area: Rect, buffer: &mut Buffer, meter: &M
     }
 }
 
+#[cfg(test)]
 pub(crate) fn render_mix_meter_channel(area: Rect, buffer: &mut Buffer, label: &str, raw: u8) {
     use antelope_protocol::{meter_display_db, meter_ratio};
 

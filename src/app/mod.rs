@@ -360,6 +360,46 @@ impl AppState {
         &mut self.mixer.surfaces
     }
 
+    /// Declared output-meter lanes paired with the latest independently decoded value.
+    /// A missing value remains `None`; it is never rendered as a zero reading.
+    pub(crate) fn output_meter_lanes(&self, output_id: u16) -> Vec<(u8, Option<u8>)> {
+        let Some(profile) = self.runtime_profile.as_ref() else {
+            return Vec::new();
+        };
+        let mut lanes = profile
+            .meter_mappings
+            .iter()
+            .filter(|mapping| {
+                mapping.target == antelope_protocol::RuntimeMeterTarget::PhysicalOutput
+                    && mapping.target_index == output_id
+            })
+            .map(|mapping| {
+                let value = self
+                    .meters
+                    .iter()
+                    .find(|meter| {
+                        meter.target == mapping.target
+                            && meter.target_index == mapping.target_index
+                            && meter.lane == mapping.lane
+                    })
+                    .map(|meter| meter.value);
+                (mapping.lane, value)
+            })
+            .collect::<Vec<_>>();
+        lanes.sort_unstable_by_key(|(lane, _)| *lane);
+        lanes
+    }
+
+    pub(crate) fn output_meter_is_provisional(&self, output_id: u16) -> bool {
+        self.runtime_profile.as_ref().is_some_and(|profile| {
+            profile.meter_mappings.iter().any(|mapping| {
+                mapping.target == antelope_protocol::RuntimeMeterTarget::PhysicalOutput
+                    && mapping.target_index == output_id
+                    && !mapping.status.eq_ignore_ascii_case("confirmed")
+            })
+        })
+    }
+
     pub(crate) fn runtime_profile_loaded(&self) -> bool {
         self.runtime_profile.is_some()
     }

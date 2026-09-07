@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 
 use crate::terminal;
+#[cfg(test)]
 use antelope_protocol::{meter_display_db, meter_ratio};
 
 use super::super::layouts::*;
@@ -35,6 +36,7 @@ pub(crate) fn render_colored_meter_bar(area: Rect, buffer: &mut Buffer, ratio: f
     }
 }
 
+#[cfg(test)]
 pub(crate) fn render_mix_meter(raw: u8) -> String {
     let bar = render_symbol_bar(meter_ratio(raw), 8, '█', '░');
     format!(

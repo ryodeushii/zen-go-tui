@@ -365,9 +365,7 @@ Important boundary of the implementation:
 - it currently updates only the grounded strip/pair subset above
 - the newer `antelope_pcap/mutes/` captures show promising surface-local pair-state bytes, but they are still not clean mute-only fields and should not yet be promoted into a broader passive mute decoder
 - the shared strip-meter lane `0x8e..0x9d` is now grounded enough for a narrow passive per-channel parser across `CH1..16`
-- the mixer view can now surface the active mix raw meter lanes directly from the late-row pair bytes:
-  - active `MIX 1`: `0xda/0xdb` (mirrored at `0xdc/0xdd`)
-  - active `MIX 2`: `0xde/0xdf`
+- the former active-mix interpretation of late-row pair bytes has been superseded by the approved provisional output assignment below; the UI no longer renders an active-mix-only meter strip
 - narrow observed preamp-meter indicators remain grounded enough for app use on both preamps:
   - `A1` at `0xce`
   - `A2` at `0xcf`
@@ -381,9 +379,9 @@ The current meter captures are now sufficient for a narrow strip-meter parser, b
 
 ### Profile-owned typed lanes
 
-The profile catalog carries explicit one-byte `meter_mappings` rather than inferring targets from moving bytes. A mapping names its report frame, target kind (`mix_master` or `physical_output`), target index, lane, status, and evidence. Source profiles declare payload-relative offsets; the generator adds the 16-byte snapshot payload prefix and emits full-report offsets for both drivers.
+The profile catalog carries explicit one-byte `meter_mappings` rather than inferring targets from moving bytes. A mapping names its report frame, target kind (`mix_master` or `physical_output`), target index, lane, accepted raw range, status, and evidence. Source profiles declare payload-relative offsets; the generator adds the 16-byte snapshot payload prefix and emits full-report offsets for both drivers. A malformed mapping is rejected, including an inverted raw range, an offset outside report geometry, an unknown target, or a duplicate target/lane declaration across frames.
 
-Zen Go declares only the four capture-backed `mix_master` lanes (`MIX 1` at `0xda/0xdb`, `MIX 2` at `0xde/0xdf` in the payload, emitted as `0xea/0xeb/0xee/0xef` in the full report). Orion now declares four observed `mix_master` candidate lanes at full-report `0x73` offsets `157..160` (payload `0x8d..0x90`), one mono lane per current Mix 1..4 label. Those labels are provisional, with low fixed-ownership confidence and no physical/stereo claim; see the [bounded evidence note](orion-meter-evidence.md). A malformed mapping is rejected, including duplicate target/lane declarations across frames; no frame-order precedence is applied.
+Zen Go declares six independently read bytes as three user-approved provisional stereo output pairs: full-report `0xea/0xeb` → Monitor L/R, `0xec/0xed` → HP1 L/R, and `0xee/0xef` → HP2 L/R. Orion declares six one-lane output candidates under the approved packet-order hypothesis: full-report @157/@158/@159/@160/@177/@178 → output ids 0/1/2/3/4/5. Orion's assignments do not claim observed physical ownership or L/R geometry. The @177/@178 playback-coupled observation is split across Reamp and Monitor B only as an explicit ordering assumption. Both profiles accept raw `0..96`, retain 96 as silence/rest, and omit invalid values rather than fabricating zero. See the [bounded evidence note](orion-meter-evidence.md).
 
 What is grounded:
 
@@ -391,7 +389,7 @@ What is grounded:
 - `0x83` remains stable in the tested meter captures, including the two new `capture_mixer_20_*` surface-isolated files
 - meter-correlated movement is visible in `0x73` late rows and in the 6-byte async packets on endpoint `0x81`
 - the shared per-channel strip meter now has a grounded raw-byte lane at `0x8e..0x9d`, mapping directly to `CH1..16`
-- the mixer view can now surface the active mix raw meter lanes from `0xda/0xdb` / `0xdc/0xdd` (`MIX 1`) and `0xde/0xdf` (`MIX 2`)
+- output cards surface only the explicit profile-owned output lanes and label their feed/stage provisional or unknown
 - the preamp panel can now surface narrow observed input meters from `0xce` (`A1`) and `0xcf` (`A2`)
 - app code only treats the lower raw range as plausible direct-preamp metering on those lanes, which avoids promoting late-row status values like `0x4b/0x4c/0x4e/0x51/0x54/0x5a/0x60` into fake meters
 - the UI presents all meters on a shared `-60..0 dB` scale; raw values that land below that floor stay hidden rather than being mislabeled as exactly `-60 dB`
@@ -406,7 +404,7 @@ What is grounded:
 Current implementation boundary:
 
 - app code now decodes raw strip meter bytes from `0x8e..0x9d` and applies them as shared `CH1..16` meter state across both visible mixes
-- app code no longer surfaces separate output meters under the outputs panel; instead the mixer view shows the active mix raw late-row meter lanes directly
+- app code surfaces output meters on their output cards, independently of the selected mixer, and does not also duplicate them in an active-mix meter strip
 - app code now surfaces narrow observed preamp meters at `0xce` (`A1`) and `0xcf` (`A2`)
 
 What is not grounded enough yet:

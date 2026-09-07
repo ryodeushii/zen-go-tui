@@ -538,6 +538,8 @@ pub struct MeterMappingDefinition {
     pub target_index: u16,
     pub lane: u8,
     pub offset: usize,
+    pub raw_min: u8,
+    pub raw_max: u8,
     pub status: Status,
     pub status_text: &'static str,
     pub evidence: &'static str,

@@ -564,7 +564,7 @@ fn mixer_strip_panel_layout_reserves_only_available_meter_lanes() {
 }
 
 #[test]
-fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
+fn mixer_list_mouse_action_has_no_obsolete_embedded_meter_dead_zone() {
     let mut state = zen_go_state();
     state.meters = vec![
         DynamicMeterState {
@@ -586,7 +586,7 @@ fn mixer_list_mouse_action_ignores_embedded_mix_meter_rows() {
 
     assert_eq!(
         mouse::mixer_list_mouse_action(mixer[1], &state, (meter_area.x + 1, meter_area.y)),
-        None
+        Some(Intent::SelectMixerChannel(0))
     );
 }
 

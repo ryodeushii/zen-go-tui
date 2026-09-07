@@ -33,7 +33,7 @@ Orion currently encodes much of this information through established scalar fiel
 | Preamp status bits | Mode `0x03`, phantom `0x10`, phase `0x40` | Same masks | Shared semantic bit names |
 | Gain ranges | Mic `0..75`, line `-6..20`, Hi-Z `0..65` | Mic `0..65`, line ungrounded, Hi-Z `0..45` | Per-device and per-mode ranges |
 | Mixer names | Derived as `Mix N` | Explicit display names | Optional display metadata |
-| Meter source | No confirmed per-channel source; prior state-report offset 157 mapping was retracted as mix-master data | Zen `0x83` meter report plus observed state-report candidates | Shared meter semantics, device-specific source |
+| Meter source | Six user-approved provisional one-lane output assignments: state-report offsets 157/158/159/160/177/178 → output ids 0/1/2/3/4/5. Feed stage and physical ownership remain unknown; splitting the playback-coupled 177/178 pair across outputs 4/5 is an ordering assumption, not proof of distinct outputs. | Zen `0x83` meter report plus observed state-report candidates | Shared meter semantics, device-specific source |
 
 ## Readback queries
 

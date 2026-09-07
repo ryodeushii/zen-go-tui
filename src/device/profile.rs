@@ -284,6 +284,8 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     target_index: mapping.target_index,
                     lane: mapping.lane,
                     offset: mapping.offset,
+                    raw_min: mapping.raw_min,
+                    raw_max: mapping.raw_max,
                     status: status(mapping.status).into(),
                     status_text: mapping.status_text.into(),
                     evidence: mapping.evidence.into(),

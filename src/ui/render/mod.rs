@@ -12,11 +12,10 @@ use crate::app::{
 use crate::device::DevicePickerState;
 use crate::terminal;
 use antelope_protocol::{
-    meter_display_db, GlobalControl, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate,
+    GlobalControl, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate,
 };
 
 use super::layouts::*;
-use super::mouse::mix_meter;
 use super::raw_map::build_raw_packet_map_for_profile;
 use super::styles::*;
 use super::widgets::mixer;
@@ -37,6 +36,7 @@ pub(crate) use text::render_hotkeys_popup_text;
 pub(crate) use text::render_query_reply_panel;
 #[cfg(test)]
 pub(crate) use text::render_query_request_panel;
+#[cfg(test)]
 pub(crate) use text::render_status_strip;
 pub(crate) use text::render_system_summary;
 
@@ -745,14 +745,7 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     )]))
     .render(header_buttons[1], frame.buffer_mut());
 
-    let selected_mix_meter = mix_meter(state);
-    let content = mixer_strip_panel_layout_for_meter_lanes(
-        layout[1],
-        selected_mix_meter
-            .as_ref()
-            .map_or(0, |meter| meter.lanes.len()),
-    );
-    let inner = content[0];
+    let inner = inner_area(layout[1]);
     let (visible_start, visible_end) = mixer_strip_visible_bounds(inner, state);
     let total = state
         .active_mixer_surface()
@@ -774,20 +767,6 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     {
         if surface.master.is_some() {
             title.push_str(" | Master");
-        }
-        if let Some(meter) = selected_mix_meter.as_ref() {
-            let meter_text = meter
-                .lanes
-                .iter()
-                .map(|lane| {
-                    meter_display_db(lane.value).map_or_else(
-                        || format!("{}:--", meter.lane_label(lane.lane)),
-                        |db| format!("{}:{}dB", meter.lane_label(lane.lane), db),
-                    )
-                })
-                .collect::<Vec<_>>();
-            title.push_str(" | MIX MASTER ");
-            title.push_str(&meter_text.join(" "));
         }
     }
     frame.render_widget(
@@ -878,15 +857,6 @@ fn draw_mixer_main(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 strip,
             );
         }
-    }
-
-    if let Some(meter) = selected_mix_meter.as_ref() {
-        render_mix_meter_widget(content[1], frame.buffer_mut(), meter);
-    } else if content[1].height > 0 {
-        frame.render_widget(
-            Paragraph::new(render_status_strip(state)).wrap(Wrap { trim: false }),
-            content[1],
-        );
     }
 }
 

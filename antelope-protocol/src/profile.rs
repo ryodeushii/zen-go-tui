@@ -174,6 +174,8 @@ pub struct RuntimeMeterMapping {
     pub target_index: u16,
     pub lane: u8,
     pub offset: usize,
+    pub raw_min: u8,
+    pub raw_max: u8,
     pub status: String,
     pub status_text: String,
     pub evidence: String,
@@ -1235,11 +1237,14 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                 detail: "meter mappings must target state_report or meter_report".into(),
             });
         }
-        if mapping.status.trim().is_empty() || mapping.evidence.trim().is_empty() {
+        if mapping.status.trim().is_empty()
+            || mapping.evidence.trim().is_empty()
+            || mapping.raw_min > mapping.raw_max
+        {
             return Err(ProfileLoadError::InvalidReportGeometry {
                 profile_id: profile_id.to_owned(),
                 field,
-                detail: "meter mappings require status and evidence".into(),
+                detail: "meter mappings require an ordered raw range, status, and evidence".into(),
             });
         }
         if profile
