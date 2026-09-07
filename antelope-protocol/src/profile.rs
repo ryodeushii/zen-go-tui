@@ -482,11 +482,17 @@ mod runtime_param_tests {
                 text: String::new(),
                 formula: String::new(),
                 offsets: Vec::new(),
+                frame: String::new(),
+                semantic: String::new(),
+                fields: Vec::new(),
             },
             readback: ParamReference {
                 text: String::new(),
                 formula: String::new(),
                 offsets: Vec::new(),
+                frame: String::new(),
+                semantic: String::new(),
+                fields: Vec::new(),
             },
             metadata: String::new(),
         };
@@ -580,11 +586,33 @@ pub struct RuntimeProvenance {
     pub generator_version: String,
 }
 
+/// Canonical full-report field used to read back one parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ParamReadbackField {
+    Scalar {
+        offset: u16,
+        width: u8,
+    },
+    BitField {
+        target: u8,
+        offset: u16,
+        mask: u8,
+        shift: u8,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParamReference {
     pub text: String,
     pub formula: String,
     pub offsets: Vec<(String, u16)>,
+    #[serde(default)]
+    pub frame: String,
+    #[serde(default)]
+    pub semantic: String,
+    #[serde(default)]
+    pub fields: Vec<ParamReadbackField>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1344,7 +1372,7 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                 || param.frame.text.trim().is_empty()
                 || param.frame.offsets.is_empty()
                 || !param.frame.formula.trim().is_empty()
-                || param.readback.text.trim().is_empty()
+                || (param.readback.text.trim().is_empty() && param.readback.fields.is_empty())
                 || param.readback.offsets.is_empty()
                 || !param.readback.formula.trim().is_empty()
                 || (numeric_type && param.range.is_none())
@@ -1379,6 +1407,68 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                             ),
                             detail: format!("offset {offset} exceeds report size {report_size}"),
                         });
+                    }
+                }
+                if reference.fields.is_empty() {
+                    if !reference.frame.is_empty() || !reference.semantic.is_empty() {
+                        return Err(ProfileLoadError::InvalidReportGeometry {
+                            profile_id: profile_id.to_owned(),
+                            field: format!(
+                                "profiles[{entry_index}].params[{param_index}].{reference_name}.fields"
+                            ),
+                            detail: "reference frame and semantic require explicit fields".into(),
+                        });
+                    }
+                } else {
+                    if reference.frame.trim().is_empty() || reference.semantic.trim().is_empty() {
+                        return Err(ProfileLoadError::InvalidReportGeometry {
+                            profile_id: profile_id.to_owned(),
+                            field: format!(
+                                "profiles[{entry_index}].params[{param_index}].{reference_name}.fields"
+                            ),
+                            detail: "structured fields require a frame and semantic".into(),
+                        });
+                    }
+                    let mut fields = HashSet::new();
+                    let mut targets = HashSet::new();
+                    for (field_index, readback_field) in reference.fields.iter().enumerate() {
+                        if !fields.insert(readback_field) {
+                            return Err(ProfileLoadError::InvalidReportGeometry {
+                                profile_id: profile_id.to_owned(),
+                                field: format!(
+                                    "profiles[{entry_index}].params[{param_index}].{reference_name}.fields[{field_index}]"
+                                ),
+                                detail: "structured readback fields must be unique".into(),
+                            });
+                        }
+                        let valid = match readback_field {
+                            ParamReadbackField::Scalar { offset, width } => {
+                                *width > 0
+                                    && usize::from(*offset) + usize::from(*width)
+                                        <= usize::from(report_size)
+                            }
+                            ParamReadbackField::BitField {
+                                target,
+                                offset,
+                                mask,
+                                shift,
+                            } => {
+                                targets.insert(*target)
+                                    && *offset < report_size
+                                    && *mask != 0
+                                    && *shift < 8
+                                    && (*mask & ((1u8 << *shift) - 1)) == 0
+                            }
+                        };
+                        if !valid {
+                            return Err(ProfileLoadError::InvalidReportGeometry {
+                                profile_id: profile_id.to_owned(),
+                                field: format!(
+                                    "profiles[{entry_index}].params[{param_index}].{reference_name}.fields[{field_index}]"
+                                ),
+                                detail: "structured readback field geometry or target is invalid".into(),
+                            });
+                        }
                     }
                 }
             }

@@ -175,6 +175,35 @@ fn promoted_orion_fixture_constructs_profile_driver() {
 }
 
 #[test]
+fn external_pack_rejects_extra_or_conflicting_readback_field_members() {
+    for (parameter_name, extra_key, extra_value) in [
+        ("screen_brightness", "target", 0),
+        ("screen_brightness", "mask", 255),
+        ("screen_brightness", "unexpected", 1),
+        ("output_trim", "width", 1),
+        ("output_trim", "unexpected", 1),
+    ] {
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(include_bytes!("fixtures/orion/profile_driver_pack.json"))
+                .expect("canonical fixture JSON");
+        let parameter = raw["profiles"][0]["params"]
+            .as_array_mut()
+            .expect("parameters")
+            .iter_mut()
+            .find(|parameter| parameter["name"] == parameter_name)
+            .expect("setting parameter");
+        parameter["readback"]["fields"][0][extra_key] = extra_value.into();
+        let bytes = serde_json::to_vec(&raw).expect("mutated external pack");
+        let error = load_profile_pack(&bytes)
+            .expect_err("extra readback-field members must fail before driver construction");
+        assert!(
+            error.to_string().contains("unknown field"),
+            "{parameter_name}.{extra_key}: {error}"
+        );
+    }
+}
+
+#[test]
 fn promoted_orion_spdif_link_domain_requires_exact_scope_and_capability() {
     let fixture = || {
         load_profile_pack(include_bytes!("fixtures/orion/profile_driver_pack.json"))

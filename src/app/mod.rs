@@ -70,6 +70,8 @@ pub struct AppState {
     pub preamp: PreampData,
     pub input_spaces: Vec<InputSpaceState>,
     pub globals: Vec<DynamicGlobalState>,
+    /// Confirmed readback-only settings; absent entries remain visibly unknown.
+    pub profile_settings: std::collections::HashMap<GlobalControl, i32>,
     pub routing_capabilities: Vec<RoutingGroupCapability>,
     /// Explicit profile-owned meter lanes; these are not inferred physical outputs.
     pub meters: Vec<antelope_protocol::DynamicMeterState>,
@@ -83,6 +85,21 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn global_value(&self, control: GlobalControl) -> Option<i32> {
+        if let Some(value) = self.profile_settings.get(&control) {
+            return Some(*value);
+        }
+        self.globals.iter().find_map(|global| {
+            if global.control != control {
+                return None;
+            }
+            match global.value {
+                ControlValue::Int(value) | ControlValue::Enum(value) => Some(value),
+                ControlValue::Bool(_) => None,
+            }
+        })
+    }
+
     /// Allocate UI metadata and addressable storage from one catalog entry.
     pub fn from_entry(entry: &RuntimeEntry) -> Self {
         let mut state = Self::from_profile(&entry.profile);
@@ -191,8 +208,9 @@ impl AppState {
             .params
             .iter()
             .filter(|parameter| {
-                parameter.applies_to == "globals"
-                    || matches!(parameter.name.as_str(), "sample_rate" | "clock_source")
+                parameter.name != "screen_brightness"
+                    && (parameter.applies_to == "globals"
+                        || matches!(parameter.name.as_str(), "sample_rate" | "clock_source"))
             })
             .filter_map(|parameter| {
                 let control = match parameter.name.as_str() {
@@ -227,6 +245,7 @@ impl AppState {
             runtime_profile: Some(profile.clone()),
             input_spaces,
             globals,
+            profile_settings: std::collections::HashMap::new(),
             routing_capabilities: profile
                 .routing_groups
                 .iter()
@@ -1227,7 +1246,16 @@ impl AppState {
         self.device.connection.last_snapshot_at = Some(Instant::now());
         self.device.connection.last_frame_type = Some("0x73 snapshot");
         for global in state.globals {
-            if let Some(slot) = self
+            if matches!(
+                global.control,
+                GlobalControl::Brightness | GlobalControl::OutputTrim(_)
+            ) {
+                let value = match global.value {
+                    ControlValue::Int(value) | ControlValue::Enum(value) => value,
+                    ControlValue::Bool(_) => continue,
+                };
+                changed |= self.profile_settings.insert(global.control, value) != Some(value);
+            } else if let Some(slot) = self
                 .globals
                 .iter_mut()
                 .find(|slot| slot.control == global.control)
@@ -1272,7 +1300,26 @@ impl AppState {
                 self.globals
                     .iter()
                     .any(|slot| slot.control == global.control)
+                    || self.state_setting_value_is_valid(global)
             })
+    }
+
+    fn state_setting_value_is_valid(&self, global: &DynamicGlobalState) -> bool {
+        let value = match global.value {
+            ControlValue::Int(value) | ControlValue::Enum(value) => value,
+            ControlValue::Bool(_) => return false,
+        };
+        match global.control {
+            GlobalControl::Brightness => {
+                self.ui_profile.supports_global(global.control) && (0..=100).contains(&value)
+            }
+            GlobalControl::OutputTrim(address) => {
+                self.ui_profile.supports_global(global.control)
+                    && address.target <= 2
+                    && (0..=6).contains(&value)
+            }
+            _ => false,
+        }
     }
 
     fn validate_meter_snapshot(&self, meters: &[antelope_protocol::DynamicMeterState]) -> bool {

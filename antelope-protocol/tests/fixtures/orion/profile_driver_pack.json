@@ -1,5 +1,5 @@
 {
-  "generator_version": "1.4.0",
+  "generator_version": "1.4.1",
   "profiles": [
     {
       "address_spaces": [
@@ -384,6 +384,46 @@
           "scalar": 20,
           "status": "confirmed",
           "text": "",
+          "values": []
+        },
+        {
+          "metadata": "{\"0\":\"monitor_a output trim -- CONFIRMED (capture order + dBu labels read off the Launcher, 2026-09-02)\",\"1\":\"monitor_b output trim -- CONFIRMED (same)\",\"2\":\"line_out output trim -- CONFIRMED, SAME dBu scale as the monitors (user, 2026-09-02)\"}",
+          "name": "parameter_target.output_trim",
+          "range": null,
+          "scalar": null,
+          "status": "confirmed",
+          "text": "Confirmed finite output-trim target domain",
+          "values": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "metadata": "\"monitor_a output trim -- CONFIRMED (capture order + dBu labels read off the Launcher, 2026-09-02)\"",
+          "name": "output_trim_target.0",
+          "range": null,
+          "scalar": 0,
+          "status": "confirmed",
+          "text": "Monitor A",
+          "values": []
+        },
+        {
+          "metadata": "\"monitor_b output trim -- CONFIRMED (same)\"",
+          "name": "output_trim_target.1",
+          "range": null,
+          "scalar": 1,
+          "status": "confirmed",
+          "text": "Monitor B",
+          "values": []
+        },
+        {
+          "metadata": "\"line_out output trim -- CONFIRMED, SAME dBu scale as the monitors (user, 2026-09-02)\"",
+          "name": "output_trim_target.2",
+          "range": null,
+          "scalar": 2,
+          "status": "confirmed",
+          "text": "Line Out",
           "values": []
         }
       ],
@@ -2159,7 +2199,7 @@
           "values": []
         },
         {
-          "applies_to": "",
+          "applies_to": "output_trim_targets",
           "direction": null,
           "frame": {
             "formula": "",
@@ -2175,9 +2215,9 @@
             ],
             "text": "command (opcode 0x13 / SET_PARAM) -- target index at offset 17, value 0-6 at offset 18"
           },
-          "id": null,
+          "id": 75,
           "internal_value": null,
-          "metadata": "{\"evidence\":\"capture settings-trim-mona-monb-line-panlaw (2026-08): each of the 3 targets swept 0->6 and back to 0; the packed readback bytes tracked value<<shift exactly on every one of the 20 steps.\",\"frame\":\"command (opcode 0x13 / SET_PARAM) -- target index at offset 17, value 0-6 at offset 18\",\"id\":\"0x4b\",\"panlaw_note\":\"The capture is named '...-panlaw' but never sent a 4th target or any other param_id -- pan law was not actually captured. TESTED LIVE 2026-09-03: SET_PARAM 0x4b target 3, values 0..3 -- zero effect on 0x73 [24]/[25], on readback cat 0x16, or anywhere. So pan law is NOT a 4th target of 0x4b. It is a different param_id (or opcode); the spare bits at 0x73 [25] bits 0-1 / [24] bits 0-3 stayed 0 throughout, so if pan law lands there it needs its own write to reveal the param. Still needs a Launcher capture (a pan-law-only click).\",\"range\":[0,6],\"readback\":\"state_report.output_trim_block -- target 0 at offset 24 (value<<4), target 1 at offset 25 bits 2-4 (value<<2), target 2 at offset 25 bits 5-7 (value<<5)\",\"status\":\"confirmed (3 targets; dBu scale user-confirmed 2026-09-02; RE-CONFIRMED live on the device 2026-09-03 -- swept all 3 targets, 0x73 [24]/[25] tracked value<<shift exactly, restored). Pan law: NOT param 0x4b target 3 (tested live 2026-09-03, no effect) -- still needs a Launcher capture.\",\"targets\":{\"0\":\"monitor_a output trim -- CONFIRMED (capture order + dBu labels read off the Launcher, 2026-09-02)\",\"1\":\"monitor_b output trim -- CONFIRMED (same)\",\"2\":\"line_out output trim -- CONFIRMED, SAME dBu scale as the monitors (user, 2026-09-02)\"},\"trim_dbu\":{\"0\":20,\"1\":19,\"2\":18,\"3\":17,\"4\":16,\"5\":15,\"6\":14},\"type\":\"enum\",\"value_meaning\":\"7-position output-reference-level selector, 1 dBu per step: index 0 = 20 dBu, 1 = 19, 2 = 18, 3 = 17, 4 = 16, 5 = 15, 6 = 14 dBu. Same scale on all three targets (Monitor A, Monitor B, Line Out). USER-CONFIRMED against the Antelope Launcher / Orion Studio Synergy Core, 2026-09-02 -- resolves the earlier 'meaning not known from the capture'. The 2026-08 sweep covered exactly these 7 stops (0-6); the readback field is 3 bits so a value 7 is representable but the hardware offers no 8th stop.\"}",
+          "metadata": "{\"evidence\":\"capture settings-trim-mona-monb-line-panlaw (2026-08): each of the 3 targets swept 0->6 and back to 0; the packed readback bytes tracked value<<shift exactly on every one of the 20 steps.\",\"frame\":\"command (opcode 0x13 / SET_PARAM) -- target index at offset 17, value 0-6 at offset 18\",\"id\":\"0x4b\",\"panlaw_note\":\"The capture is named '...-panlaw' but never sent a 4th target or any other param_id -- pan law was not actually captured. TESTED LIVE 2026-09-03: SET_PARAM 0x4b target 3, values 0..3 -- zero effect on 0x73 [24]/[25], on readback cat 0x16, or anywhere. So pan law is NOT a 4th target of 0x4b. It is a different param_id (or opcode); the spare bits at 0x73 [25] bits 0-1 / [24] bits 0-3 stayed 0 throughout, so if pan law lands there it needs its own write to reveal the param. Still needs a Launcher capture (a pan-law-only click).\",\"range\":[0,6],\"readback\":\"state_report.output_trim_block -- target 0 at offset 24 (value<<4), target 1 at offset 25 bits 2-4 (value<<2), target 2 at offset 25 bits 5-7 (value<<5)\",\"runtime_readback\":{\"fields\":[{\"kind\":\"bit_field\",\"mask\":\"0x70\",\"offset\":24,\"shift\":4,\"target\":0},{\"kind\":\"bit_field\",\"mask\":\"0x1c\",\"offset\":25,\"shift\":2,\"target\":1},{\"kind\":\"bit_field\",\"mask\":\"0xe0\",\"offset\":25,\"shift\":5,\"target\":2}],\"frame\":\"state_report\",\"semantic\":\"output_trim\"},\"status\":\"confirmed (3 targets; dBu scale user-confirmed 2026-09-02; RE-CONFIRMED live on the device 2026-09-03 -- swept all 3 targets, 0x73 [24]/[25] tracked value<<shift exactly, restored). Pan law: NOT param 0x4b target 3 (tested live 2026-09-03, no effect) -- still needs a Launcher capture.\",\"targets\":{\"0\":\"monitor_a output trim -- CONFIRMED (capture order + dBu labels read off the Launcher, 2026-09-02)\",\"1\":\"monitor_b output trim -- CONFIRMED (same)\",\"2\":\"line_out output trim -- CONFIRMED, SAME dBu scale as the monitors (user, 2026-09-02)\"},\"trim_dbu\":{\"0\":20,\"1\":19,\"2\":18,\"3\":17,\"4\":16,\"5\":15,\"6\":14},\"type\":\"enum\",\"value_meaning\":\"7-position output-reference-level selector, 1 dBu per step: index 0 = 20 dBu, 1 = 19, 2 = 18, 3 = 17, 4 = 16, 5 = 15, 6 = 14 dBu. Same scale on all three targets (Monitor A, Monitor B, Line Out). USER-CONFIRMED against the Antelope Launcher / Orion Studio Synergy Core, 2026-09-02 -- resolves the earlier 'meaning not known from the capture'. The 2026-08 sweep covered exactly these 7 stops (0-6); the readback field is 3 bits so a value 7 is representable but the hardware offers no 8th stop.\"}",
           "name": "output_trim",
           "range": [
             0,
@@ -2185,17 +2225,46 @@
           ],
           "range_by_mode": [],
           "readback": {
+            "fields": [
+              {
+                "kind": "bit_field",
+                "mask": 112,
+                "offset": 24,
+                "shift": 4,
+                "target": 0
+              },
+              {
+                "kind": "bit_field",
+                "mask": 28,
+                "offset": 25,
+                "shift": 2,
+                "target": 1
+              },
+              {
+                "kind": "bit_field",
+                "mask": 224,
+                "offset": 25,
+                "shift": 5,
+                "target": 2
+              }
+            ],
             "formula": "",
+            "frame": "state_report",
             "offsets": [
               [
-                "offset_0",
+                "field_0",
                 24
               ],
               [
-                "offset_1",
+                "field_1",
+                25
+              ],
+              [
+                "field_2",
                 25
               ]
             ],
+            "semantic": "output_trim",
             "text": "state_report.output_trim_block -- target 0 at offset 24 (value<<4), target 1 at offset 25 bits 2-4 (value<<2), target 2 at offset 25 bits 5-7 (value<<5)"
           },
           "status": "confirmed",
@@ -2204,31 +2273,31 @@
           "values": [
             [
               0,
-              "raw_0"
+              "20 dBu"
             ],
             [
               1,
-              "raw_1"
+              "19 dBu"
             ],
             [
               2,
-              "raw_2"
+              "18 dBu"
             ],
             [
               3,
-              "raw_3"
+              "17 dBu"
             ],
             [
               4,
-              "raw_4"
+              "16 dBu"
             ],
             [
               5,
-              "raw_5"
+              "15 dBu"
             ],
             [
               6,
-              "raw_6"
+              "14 dBu"
             ]
           ]
         },
@@ -2342,7 +2411,7 @@
           },
           "id": 14,
           "internal_value": null,
-          "metadata": "{\"evidence\":\"capture macos-scrbrght-0-100-50-multvalue (2026-08, native macOS): user dragged the brightness slider through 0 / 100 / 50 and many intermediate values while watching the device's physical screen change. 25 outgoing frames, all opcode 0x12 / param 0x0e / value at offset 17 (0x00..0x64); every one matched offset 26 in the next 0x73 report exactly (25/25). This overturns the earlier 'screen brightness is host-side, sends nothing' conclusion -- that was a VM artifact (the slider did nothing under the VM; the frames never reached the device). On native macOS it is a real, persisted, readable device parameter.\",\"frame\":\"global_command (opcode 0x12) -- value 0-100 at offset 17, no target byte. Build with build_global_command(profile, 0x0e, value).\",\"id\":\"0x0e\",\"notes\":\"First confirmed user of opcode 0x12 with a genuine 0x73 readback (talkback params 0x1f/0x20/0x27 use 0x12 too but read back in the packed talkback_block). WIRED INTO cli.py (2026-08): `set-brightness <0-100>`, via protocol.build_global_command(profile, 'screen_brightness', value) + protocol.parse_state_scalar(profile, data, 'screen_brightness_byte_offset'). HARDWARE ROUND-TRIP CONFIRMED by the user (2026-08) -- the CLI command changes the device's physical screen.\",\"range\":[0,100],\"readback\":\"state_report offset 26 (state_report.screen_brightness_byte_offset) -- one plain byte, equals the last commanded value.\",\"status\":\"confirmed\",\"type\":\"int\",\"value_meaning\":\"Front-panel screen brightness as a percentage, 0 = off/darkest, 100 (0x64) = brightest. Raw byte == the percentage, no scaling.\"}",
+          "metadata": "{\"evidence\":\"capture macos-scrbrght-0-100-50-multvalue (2026-08, native macOS): user dragged the brightness slider through 0 / 100 / 50 and many intermediate values while watching the device's physical screen change. 25 outgoing frames, all opcode 0x12 / param 0x0e / value at offset 17 (0x00..0x64); every one matched offset 26 in the next 0x73 report exactly (25/25). This overturns the earlier 'screen brightness is host-side, sends nothing' conclusion -- that was a VM artifact (the slider did nothing under the VM; the frames never reached the device). On native macOS it is a real, persisted, readable device parameter.\",\"frame\":\"global_command (opcode 0x12) -- value 0-100 at offset 17, no target byte. Build with build_global_command(profile, 0x0e, value).\",\"id\":\"0x0e\",\"notes\":\"First confirmed user of opcode 0x12 with a genuine 0x73 readback (talkback params 0x1f/0x20/0x27 use 0x12 too but read back in the packed talkback_block). WIRED INTO cli.py (2026-08): `set-brightness <0-100>`, via protocol.build_global_command(profile, 'screen_brightness', value) + protocol.parse_state_scalar(profile, data, 'screen_brightness_byte_offset'). HARDWARE ROUND-TRIP CONFIRMED by the user (2026-08) -- the CLI command changes the device's physical screen.\",\"range\":[0,100],\"readback\":\"state_report offset 26 (state_report.screen_brightness_byte_offset) -- one plain byte, equals the last commanded value.\",\"runtime_readback\":{\"fields\":[{\"kind\":\"scalar\",\"offset\":26,\"width\":1}],\"frame\":\"state_report\",\"semantic\":\"brightness\"},\"status\":\"confirmed\",\"type\":\"int\",\"value_meaning\":\"Front-panel screen brightness as a percentage, 0 = off/darkest, 100 (0x64) = brightest. Raw byte == the percentage, no scaling.\"}",
           "name": "screen_brightness",
           "range": [
             0,
@@ -2350,13 +2419,22 @@
           ],
           "range_by_mode": [],
           "readback": {
+            "fields": [
+              {
+                "kind": "scalar",
+                "offset": 26,
+                "width": 1
+              }
+            ],
             "formula": "",
+            "frame": "state_report",
             "offsets": [
               [
-                "offset_0",
+                "field_0",
                 26
               ]
             ],
+            "semantic": "brightness",
             "text": "state_report offset 26 (state_report.screen_brightness_byte_offset) -- one plain byte, equals the last commanded value."
           },
           "status": "confirmed",
@@ -3271,9 +3349,9 @@
         }
       ],
       "provenance": {
-        "generator_version": "1.4.0",
+        "generator_version": "1.4.1",
         "source_path": "profiles/orion_studio_sc.json",
-        "source_sha256": "b91486118a4bee72cac1da7b6b186414899fa7d6c427014920431ae6c62724af"
+        "source_sha256": "72071072f4a3d5736317760db9391a20951819da6ba3cafba286dfaa6650d5f2"
       },
       "readback": {
         "category_counts": [

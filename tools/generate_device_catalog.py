@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-GENERATOR_VERSION = "1.4.0"
+GENERATOR_VERSION = "1.4.1"
 PROFILE_PACK_SCHEMA_VERSION = 1
 SNAPSHOT_PAYLOAD_OFFSET = 0x10
 EXCLUDED_PROFILE_NAMES = frozenset({"mic_models.json"})
@@ -3361,7 +3361,10 @@ def _parameter_reference(value: Any, context: str) -> dict[str, Any]:
     """Normalize string or structured reference while exposing offsets/formulas."""
 
     if value is None:
-        return {"text": "", "formula": "", "offsets": []}
+        return {
+            "text": "", "formula": "", "offsets": [],
+            "frame": "", "semantic": "", "fields": [],
+        }
     if isinstance(value, str):
         text = value
         formula = ""
@@ -3445,7 +3448,77 @@ def _parameter_reference(value: Any, context: str) -> dict[str, Any]:
                 "formula": offset_formula,
             }
         )
-    return {"text": text, "formula": formula, "offsets": offsets}
+    return {
+        "text": text, "formula": formula, "offsets": offsets,
+        "frame": "", "semantic": "", "fields": [],
+    }
+
+
+def _settings_readback_reference(
+    name: str, value: Any, provenance: Any, context: str
+) -> dict[str, Any]:
+    """Normalize the two canonical Orion setting readbacks without reading prose."""
+
+    if not isinstance(value, Mapping) or set(value) != {"frame", "semantic", "fields"}:
+        raise ProfileError(
+            f"{context} must contain exactly frame, semantic, and fields"
+        )
+    expected_semantic = {
+        "screen_brightness": "brightness",
+        "output_trim": "output_trim",
+    }[name]
+    if value.get("frame") != "state_report" or value.get("semantic") != expected_semantic:
+        raise ProfileError(
+            f"{context} must reference state_report semantic {expected_semantic}"
+        )
+    raw_fields = value.get("fields")
+    if not isinstance(raw_fields, list):
+        raise ProfileError(f"{context}.fields must be an array")
+    fields: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_fields):
+        field_context = f"{context}.fields[{index}]"
+        if not isinstance(raw, Mapping):
+            raise ProfileError(f"{field_context} must be an object")
+        kind = raw.get("kind")
+        if kind == "scalar":
+            if set(raw) != {"kind", "offset", "width"}:
+                raise ProfileError(
+                    f"{field_context} scalar must contain exactly kind, offset, and width"
+                )
+            fields.append({
+                "kind": "scalar",
+                "offset": _checked_u16(raw.get("offset"), f"{field_context}.offset"),
+                "width": _checked_u8(raw.get("width"), f"{field_context}.width"),
+            })
+        elif kind == "bit_field":
+            if set(raw) != {"kind", "target", "offset", "mask", "shift"}:
+                raise ProfileError(
+                    f"{field_context} bit_field must contain exactly kind, target, offset, mask, and shift"
+                )
+            fields.append({
+                "kind": "bit_field",
+                "target": _checked_u8(raw.get("target"), f"{field_context}.target"),
+                "offset": _checked_u16(raw.get("offset"), f"{field_context}.offset"),
+                "mask": _checked_u8(raw.get("mask"), f"{field_context}.mask"),
+                "shift": _checked_u8(raw.get("shift"), f"{field_context}.shift"),
+            })
+        else:
+            raise ProfileError(f"{field_context}.kind is invalid")
+    if provenance is None:
+        provenance = ""
+    elif not isinstance(provenance, str):
+        raise ProfileError(f"params.{name}.readback provenance must be text when present")
+    return {
+        "text": provenance,
+        "formula": "",
+        "offsets": [
+            {"name": f"field_{index}", "offset": field["offset"], "formula": ""}
+            for index, field in enumerate(fields)
+        ],
+        "frame": "state_report",
+        "semantic": expected_semantic,
+        "fields": fields,
+    }
 
 
 def _normalize_range_form(value: Any, context: str) -> tuple[int, int] | str:
@@ -3501,6 +3574,7 @@ def _orion_runtime_parameter_defaults(name: str) -> dict[str, Any] | None:
         "bus_mono": ("state_report bus_block status offset 29 + 3 * bus_id, bit 0x10", 29),
         "sample_rate": ("state_report sample-rate byte offset 18", 18),
         "screen_brightness": ("state_report screen-brightness byte offset 26", 26),
+        "output_trim": ("state_report packed output-trim fields at offsets 24 and 25", 24),
         "adat_gain": ("state_report adat_gain_base_offset 75 + ADAT channel", 75),
         "talkback_button": ("state_report talkback status offset 73, bit 0x40", 73),
         "talkback_source": ("state_report talkback status offset 73, source bits 0-1", 73),
@@ -3519,6 +3593,7 @@ def _orion_runtime_parameter_defaults(name: str) -> dict[str, Any] | None:
         "bus_mono": "outputs",
         "sample_rate": "globals",
         "screen_brightness": "globals",
+        "output_trim": "output_trim_targets",
         "adat_gain": "adat_inputs",
         "talkback_button": "globals",
         "talkback_source": "globals",
@@ -3545,7 +3620,6 @@ def _orion_source_only_parameter(name: str) -> bool:
     """Return whether Orion ID lacks a safe generic command mapping."""
 
     return name in {
-        "output_trim",
         "routing",
         "oscillator",
         "surround_monitor",
@@ -3555,7 +3629,180 @@ def _orion_source_only_parameter(name: str) -> bool:
     }
 
 
+def _require_orion_settings_semantics(profile: NormalizedProfile) -> None:
+    """Validate both bounded Orion settings as one complete source contract."""
+
+    if not _is_orion(profile):
+        return
+
+    def confirmed_parameter(name: str, expected_id: int, expected_type: str,
+                            expected_range: tuple[int, int]) -> Mapping[str, Any]:
+        parameter = profile.params.get(name)
+        if not isinstance(parameter, Mapping):
+            raise ProfileError(f"params.{name} must be an object")
+        if _status_variant(str(parameter.get("status", ""))) != "Confirmed":
+            raise ProfileError(f"params.{name}.status must be confirmed")
+        if _checked_u16(parameter.get("id"), f"params.{name}.id") != expected_id:
+            raise ProfileError(f"params.{name}.id must be {expected_id:#x}")
+        if _param_type(parameter.get("runtime_type", parameter.get("type"))) != expected_type:
+            raise ProfileError(f"params.{name}.type must be {expected_type.lower()}")
+        if _range(parameter.get("range"), f"params.{name}.range") != expected_range:
+            raise ProfileError(f"params.{name}.range must be {list(expected_range)}")
+        if not str(parameter.get("evidence", "")).strip():
+            raise ProfileError(f"params.{name}.evidence must be non-empty")
+        return parameter
+
+    brightness = confirmed_parameter("screen_brightness", 0x0E, "Int", (0, 100))
+    trim = confirmed_parameter("output_trim", 0x4B, "Enum", (0, 6))
+    brightness_readback = _settings_readback_reference(
+        "screen_brightness",
+        brightness.get("runtime_readback"),
+        brightness.get("readback"),
+        "params.screen_brightness.runtime_readback",
+    )
+    trim_readback = _settings_readback_reference(
+        "output_trim",
+        trim.get("runtime_readback"),
+        trim.get("readback"),
+        "params.output_trim.runtime_readback",
+    )
+    if brightness_readback["fields"] != [
+        {"kind": "scalar", "offset": 26, "width": 1}
+    ]:
+        raise ProfileError(
+            "screen_brightness runtime readback must be exactly one full byte at offset 26"
+        )
+    expected_trim_fields = [
+        {"kind": "bit_field", "target": 0, "offset": 24, "mask": 0x70, "shift": 4},
+        {"kind": "bit_field", "target": 1, "offset": 25, "mask": 0x1C, "shift": 2},
+        {"kind": "bit_field", "target": 2, "offset": 25, "mask": 0xE0, "shift": 5},
+    ]
+    if trim_readback["fields"] != expected_trim_fields:
+        raise ProfileError(
+            "output_trim runtime readback fields must be complete, ordered, and exact"
+        )
+
+    command_contracts = {
+        "global_command": {
+            "magic_offset": 0, "magic": 0x70, "opcode_offset": 4, "opcode": 0x12,
+            "param_id_offset": 16, "value_offset": 17,
+        },
+        "command": {
+            "magic_offset": 0, "magic": 0x70, "opcode_offset": 4, "opcode": 0x13,
+            "param_id_offset": 16, "channel_offset": 17, "value_offset": 18,
+        },
+    }
+    for frame_name, expected_fields in command_contracts.items():
+        frame = profile.frame.get(frame_name)
+        if not isinstance(frame, Mapping):
+            raise ProfileError(f"frame.{frame_name} is required by Orion settings")
+        for field, expected in expected_fields.items():
+            if parse_int(frame.get(field), f"frame.{frame_name}.{field}") != expected:
+                raise ProfileError(
+                    f"frame.{frame_name}.{field} must be {expected:#x} for Orion settings"
+                )
+
+    for frame_name, opcode, has_target in [
+        ("global_command", 0x12, False),
+        ("command", 0x13, True),
+    ]:
+        operations = _frame_operations(profile, frame_name, profile.frame[frame_name])
+        expected = [
+            {"op": "fixed_byte", "offset": 0, "value": 0x70},
+            {"op": "fixed_byte", "offset": 4, "value": opcode},
+            {"op": "scalar", "field": "param_id", "offset": 16, "width": 1,
+             "endian": "not_applicable"},
+            {"op": "scalar", "field": "value", "offset": 18 if has_target else 17,
+             "width": 1, "endian": "not_applicable"},
+        ]
+        if has_target:
+            expected.append({"op": "scalar", "field": "channel", "offset": 17,
+                             "width": 1, "endian": "not_applicable"})
+        if len(operations) != len(expected) or any(operations.count(item) != 1 for item in expected):
+            raise ProfileError(
+                f"frame.{frame_name} must contain exactly the complete Orion settings contract"
+            )
+
+    state = profile.frame.get("state_report")
+    if not isinstance(state, Mapping):
+        raise ProfileError("frame.state_report is required by Orion settings")
+    brightness_offset = state.get("screen_brightness_byte_offset")
+    if isinstance(brightness_offset, Mapping):
+        brightness_offset = brightness_offset.get("offset")
+    if parse_int(brightness_offset,
+                 "frame.state_report.screen_brightness_byte_offset") != 26:
+        raise ProfileError("screen_brightness readback must be state_report offset 26")
+
+    targets = trim.get("targets")
+    if not isinstance(targets, Mapping) or set(targets) != {"0", "1", "2"}:
+        raise ProfileError("params.output_trim.targets must declare exactly 0, 1, and 2")
+    for target, source_name in targets.items():
+        expected_prefix = {"0": "monitor_a", "1": "monitor_b", "2": "line_out"}[target]
+        if not isinstance(source_name, str) or not source_name.lower().startswith(expected_prefix):
+            raise ProfileError(
+                f"params.output_trim.targets.{target} must preserve the confirmed {expected_prefix} label"
+            )
+    dbu = trim.get("trim_dbu")
+    if not isinstance(dbu, Mapping) or {
+        str(index): _checked_i32(value, f"params.output_trim.trim_dbu.{index}")
+        for index, value in dbu.items()
+    } != {str(index): 20 - index for index in range(7)}:
+        raise ProfileError("params.output_trim.trim_dbu must declare the confirmed 20..14 dBu labels")
+    block = state.get("output_trim_block")
+    fields = block.get("fields") if isinstance(block, Mapping) else None
+    expected_trim = {
+        "target_0": (24, 0x70, 4),
+        "target_1": (25, 0x1C, 2),
+        "target_2": (25, 0xE0, 5),
+    }
+    if not isinstance(fields, Mapping) or set(fields) != set(expected_trim):
+        raise ProfileError("frame.state_report.output_trim_block.fields must declare exactly three targets")
+    for name, (offset, mask, shift) in expected_trim.items():
+        field = fields[name]
+        if not isinstance(field, Mapping):
+            raise ProfileError(f"frame.state_report.output_trim_block.fields.{name} must be an object")
+        actual = (
+            parse_int(field.get("byte_offset"), f"output_trim.{name}.byte_offset"),
+            parse_int(field.get("mask"), f"output_trim.{name}.mask"),
+            parse_int(field.get("shift"), f"output_trim.{name}.shift"),
+        )
+        if actual != (offset, mask, shift):
+            raise ProfileError(f"output_trim {name} readback geometry is invalid")
+
+    state_operations = _frame_operations(profile, "state_report", state)
+    if sum(
+        operation.get("op") == "scalar"
+        and operation.get("field") == "screen_brightness_byte_offset"
+        and operation.get("offset") == 26
+        and operation.get("width") == 1
+        for operation in state_operations
+    ) != 1:
+        raise ProfileError("screen_brightness readback operation must be unique")
+    for offset, mask, shift in expected_trim.values():
+        if sum(
+            operation.get("op") == "bit_field"
+            and operation.get("offset") == offset
+            and operation.get("mask") == mask
+            and operation.get("shift") == shift
+            for operation in state_operations
+        ) != 1:
+            raise ProfileError("output_trim readback operations must be complete and unique")
+
+
+def _validated_orion_settings_semantics(profile: NormalizedProfile) -> bool:
+    """Return whether explicit source declarations are safe to expose as capabilities."""
+
+    if not _is_orion(profile):
+        return False
+    try:
+        _require_orion_settings_semantics(profile)
+    except (ProfileError, KeyError, TypeError):
+        return False
+    return True
+
+
 def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
+    settings_valid = _validated_orion_settings_semantics(profile)
     result: list[dict[str, Any]] = []
     runtime_profile = profile.raw.get("runtime_profile", {})
     compile_confirmed_only = isinstance(runtime_profile, Mapping) and runtime_profile.get(
@@ -3660,7 +3907,13 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
         values: list[dict[str, Any]] = []
         enum_values = value.get("runtime_values", value.get("values"))
         if enum_values is None and _is_orion(profile) and name in {"output_trim", "talkback_source"}:
-            if name == "output_trim":
+            if name == "output_trim" and settings_valid:
+                trim_dbu = value.get("trim_dbu")
+                enum_values = {
+                    str(index): f"{_checked_i32(trim_dbu[str(index)], f'params.output_trim.trim_dbu.{index}')} dBu"
+                    for index in range(7)
+                }
+            elif name == "output_trim":
                 enum_values = {str(index): f"raw_{index}" for index in range(7)}
             else:
                 enum_values = {"0": "INT"} | {
@@ -3700,6 +3953,21 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 applies_to = runtime_defaults["applies_to"]
         if readback_value is None and "state_report_offset_formula" in value:
             readback_value = value.get("state_report_offset_formula")
+        if _is_orion(profile) and name in {"screen_brightness", "output_trim"}:
+            readback_reference = (
+                _settings_readback_reference(
+                    name,
+                    value.get("runtime_readback"),
+                    value.get("readback"),
+                    f"params.{name}.runtime_readback",
+                )
+                if settings_valid
+                else _parameter_reference(value.get("readback"), f"params.{name}.readback")
+            )
+        else:
+            readback_reference = _parameter_reference(
+                readback_value, f"params.{name}.readback"
+            )
         result.append(
             {
                 "name": name,
@@ -3712,6 +3980,7 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                     and (not _is_orion(profile) or (
                         _status_variant(status) == "Confirmed"
                         and not _orion_source_only_parameter(name)
+                        and (name not in {"screen_brightness", "output_trim"} or settings_valid)
                     ))
                     else None
                 ),
@@ -3728,7 +3997,7 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 "range_forms": range_forms,
                 "values": values,
                 "frame_reference": _parameter_reference(frame_value, f"params.{name}.frame"),
-                "readback_reference": _parameter_reference(readback_value, f"params.{name}.readback"),
+                "readback_reference": readback_reference,
                 "encoding": str(value.get("encoding", "")),
                 "metadata": _metadata(value),
             }
@@ -3941,11 +4210,35 @@ def _validated_output_mono_semantics(
 
 def _build_constraints(profile: NormalizedProfile) -> list[dict[str, Any]]:
     _validated_output_mono_semantics(profile)
+    settings_valid = _validated_orion_settings_semantics(profile)
     result: list[dict[str, Any]] = []
     for name, value in profile.constraints.items():
         if name.startswith("_"):
             continue
         result.extend(_flatten_constraints(name, value))
+    if _is_orion(profile) and settings_valid:
+        trim = profile.params.get("output_trim")
+        result.append(
+            _empty_constraint(
+                "parameter_target.output_trim",
+                status="confirmed",
+                values=[0, 1, 2],
+                text="Confirmed finite output-trim target domain",
+                metadata=trim.get("targets") if isinstance(trim, Mapping) else None,
+            )
+        )
+        target_labels = ["Monitor A", "Monitor B", "Line Out"]
+        source_targets = trim.get("targets") if isinstance(trim, Mapping) else {}
+        for target, label in enumerate(target_labels):
+            result.append(
+                _empty_constraint(
+                    f"output_trim_target.{target}",
+                    status="confirmed",
+                    scalar=target,
+                    text=label,
+                    metadata=source_targets.get(str(target)),
+                )
+            )
     return result
 
 
@@ -4905,11 +5198,21 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
                     "text": param["frame_reference"]["text"],
                     "formula": param["frame_reference"]["formula"],
                     "offsets": [[offset["name"], offset["offset"]] for offset in param["frame_reference"]["offsets"]],
+                    **({
+                        "frame": param["frame_reference"]["frame"],
+                        "semantic": param["frame_reference"]["semantic"],
+                        "fields": [dict(field) for field in param["frame_reference"]["fields"]],
+                    } if param["frame_reference"].get("fields") else {}),
                 },
                 "readback": {
                     "text": param["readback_reference"]["text"],
                     "formula": param["readback_reference"]["formula"],
                     "offsets": [[offset["name"], offset["offset"]] for offset in param["readback_reference"]["offsets"]],
+                    **({
+                        "frame": param["readback_reference"]["frame"],
+                        "semantic": param["readback_reference"]["semantic"],
+                        "fields": [dict(field) for field in param["readback_reference"]["fields"]],
+                    } if param["readback_reference"].get("fields") else {}),
                 },
                 "metadata": param["metadata"],
             }
@@ -5183,10 +5486,31 @@ def _render_parameter_reference(
         offsets_name = f"{helper}_OFFSETS"
     else:
         offsets_name = "&[]"
+    fields = reference.get("fields", [])
+    if fields:
+        lines.append(f"static {helper}_FIELDS: &[ParamReadbackFieldDefinition] = &[")
+        for field in fields:
+            if field["kind"] == "scalar":
+                rendered = (
+                    f"Scalar {{ offset: {field['offset']}u16, width: {field['width']}u8 }}"
+                )
+            elif field["kind"] == "bit_field":
+                rendered = (
+                    f"BitField {{ target: {field['target']}u8, offset: {field['offset']}u16, "
+                    f"mask: {field['mask']}u8, shift: {field['shift']}u8 }}"
+                )
+            else:
+                raise ProfileError(f"unsupported parameter readback field {field['kind']!r}")
+            lines.append(f"    ParamReadbackFieldDefinition::{rendered},")
+        lines.append("];")
+        fields_name = f"{helper}_FIELDS"
+    else:
+        fields_name = "&[]"
     lines.append(
         f"static {helper}: ParamReference = ParamReference {{ text: "
         f"{_rust_string(reference['text'])}, formula: {_rust_string(reference.get('formula', ''))}, "
-        f"offsets: {offsets_name} }};"
+        f"offsets: {offsets_name}, frame: {_rust_string(reference.get('frame', ''))}, "
+        f"semantic: {_rust_string(reference.get('semantic', ''))}, fields: {fields_name} }};"
     )
     return helper
 
@@ -5206,7 +5530,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         "    InputCapabilityDefinition, InputControlKind,",
         "    DecoderDefinition, DeviceDefinition, DeviceEntry, DeviceIdentity, FrameDefinition,",
         "    FrameEndianDefinition, FrameFieldDefinition, FrameKind, FrameOperationDefinition, HazardDefinition, InputDefinition, LinkDomainDefinition, LinkDomainKind, MixerDefinition,",
-        "    OutputDefinition, ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReference, RoutingGroupDefinition, RoutingReadbackSourceDomainDefinition, RoutingSourceDomainDefinition,",
+        "    OutputDefinition, ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReadbackFieldDefinition, ParamReference, RoutingGroupDefinition, RoutingReadbackSourceDomainDefinition, RoutingSourceDomainDefinition,",
         "    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition,",
         "    SafeQueryDefinition, MixerReadbackLayoutDefinition, StateReportDefinition,",
         "    CandidatePreampMeterDefinition, MeterMappingDefinition, MeterTargetDefinition,",

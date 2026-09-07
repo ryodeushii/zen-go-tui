@@ -7,11 +7,12 @@ use crate::driver::{
     DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMeterState,
     DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
     DynamicStatePatch, GlobalControl, InputAddress, InputControl, MixerAddress, OutputAddress,
-    OutputControl, RoutingSource,
+    OutputControl, OutputTrimAddress, RoutingSource,
 };
 use crate::profile::{
-    FrameOperation, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeInputControlKind,
-    RuntimeLinkDomainKind, RuntimeMeterTarget, RuntimeParam, RuntimeProfile, RuntimeReadiness,
+    FrameOperation, ParamReadbackField, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
+    RuntimeInputControlKind, RuntimeLinkDomainKind, RuntimeMeterTarget, RuntimeParam,
+    RuntimeProfile, RuntimeReadiness,
 };
 use crate::profile_codec;
 use crate::types::PanState;
@@ -91,6 +92,234 @@ impl ProfileDriver {
             ));
         }
         Ok(())
+    }
+
+    fn validate_setting_command_frame(
+        frame: &RuntimeFrame,
+        opcode: u8,
+        has_target: bool,
+    ) -> Result<(), DriverError> {
+        let mut expected = vec![
+            FrameOperation::FixedByte {
+                offset: 0,
+                value: 0x70,
+            },
+            FrameOperation::FixedByte {
+                offset: 4,
+                value: opcode,
+            },
+            FrameOperation::Scalar {
+                field: "param_id".into(),
+                offset: 16,
+                width: 1,
+                endian: crate::profile::FrameEndian::NotApplicable,
+            },
+            FrameOperation::Scalar {
+                field: "value".into(),
+                offset: if has_target { 18 } else { 17 },
+                width: 1,
+                endian: crate::profile::FrameEndian::NotApplicable,
+            },
+        ];
+        if has_target {
+            expected.push(FrameOperation::Scalar {
+                field: "channel".into(),
+                offset: 17,
+                width: 1,
+                endian: crate::profile::FrameEndian::NotApplicable,
+            });
+        }
+        if frame.operations.len() != expected.len()
+            || expected.iter().any(|operation| {
+                frame
+                    .operations
+                    .iter()
+                    .filter(|candidate| *candidate == operation)
+                    .count()
+                    != 1
+            })
+        {
+            return Err(DriverError::InvalidAction(format!(
+                "frame {} is not the complete canonical settings command contract",
+                frame.id
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_settings_contract(
+        profile: &RuntimeProfile,
+        frame_index: &HashMap<String, usize>,
+    ) -> Result<(), DriverError> {
+        let parameters = |name: &str| {
+            profile
+                .params
+                .iter()
+                .filter(|parameter| {
+                    parameter.name == name && profile_codec::is_confirmed(&parameter.status)
+                })
+                .collect::<Vec<_>>()
+        };
+        let brightness = parameters("screen_brightness");
+        let trim = parameters("output_trim");
+        if brightness.is_empty() && trim.is_empty() {
+            return Ok(());
+        }
+        if brightness.len() != 1 || trim.len() != 1 {
+            return Err(DriverError::InvalidAction(
+                "settings declarations must be complete and unambiguous".into(),
+            ));
+        }
+        let brightness = brightness[0];
+        let trim = trim[0];
+        if brightness.id != Some(0x0e)
+            || brightness.applies_to != "globals"
+            || brightness.value_type != "int"
+            || brightness.range != Some((0, 100))
+            || brightness.readback.frame != "state_report"
+            || brightness.readback.semantic != "brightness"
+            || brightness.readback.offsets != [("field_0".into(), 26)]
+            || brightness.readback.fields
+                != [ParamReadbackField::Scalar {
+                    offset: 26,
+                    width: 1,
+                }]
+        {
+            return Err(DriverError::InvalidAction(
+                "screen_brightness declaration is not the confirmed bounded contract".into(),
+            ));
+        }
+        if trim.id != Some(0x4b)
+            || trim.applies_to != "output_trim_targets"
+            || trim.value_type != "enum"
+            || trim.range != Some((0, 6))
+            || trim.values.len() != 7
+            || trim.readback.frame != "state_report"
+            || trim.readback.semantic != "output_trim"
+            || trim.readback.offsets
+                != [
+                    ("field_0".into(), 24),
+                    ("field_1".into(), 25),
+                    ("field_2".into(), 25),
+                ]
+            || trim.readback.fields
+                != [
+                    ParamReadbackField::BitField {
+                        target: 0,
+                        offset: 24,
+                        mask: 0x70,
+                        shift: 4,
+                    },
+                    ParamReadbackField::BitField {
+                        target: 1,
+                        offset: 25,
+                        mask: 0x1c,
+                        shift: 2,
+                    },
+                    ParamReadbackField::BitField {
+                        target: 2,
+                        offset: 25,
+                        mask: 0xe0,
+                        shift: 5,
+                    },
+                ]
+            || !trim
+                .values
+                .iter()
+                .enumerate()
+                .all(|(index, (value, label))| *value == index as i32 && !label.trim().is_empty())
+        {
+            return Err(DriverError::InvalidAction(
+                "output_trim declaration is not the confirmed bounded indexed contract".into(),
+            ));
+        }
+        let targets = profile
+            .constraints
+            .iter()
+            .filter(|constraint| {
+                constraint.name == "parameter_target.output_trim"
+                    && profile_codec::is_confirmed(&constraint.status)
+            })
+            .collect::<Vec<_>>();
+        if targets.len() != 1 || targets[0].values != [0, 1, 2] {
+            return Err(DriverError::InvalidAction(
+                "output_trim requires exactly targets 0, 1, and 2".into(),
+            ));
+        }
+        for (target, label) in [(0, "Monitor A"), (1, "Monitor B"), (2, "Line Out")] {
+            let labels = profile
+                .constraints
+                .iter()
+                .filter(|constraint| {
+                    constraint.name == format!("output_trim_target.{target}")
+                        && profile_codec::is_confirmed(&constraint.status)
+                        && constraint.scalar == Some(target)
+                        && constraint.text == label
+                })
+                .count();
+            if labels != 1 {
+                return Err(DriverError::InvalidAction(
+                    "output_trim target topology and labels must be complete and unambiguous"
+                        .into(),
+                ));
+            }
+        }
+        let command = frame_index
+            .get("command")
+            .and_then(|index| profile.frames.get(*index))
+            .ok_or_else(|| {
+                DriverError::InvalidAction("output_trim command frame is missing".into())
+            })?;
+        let global = frame_index
+            .get("global_command")
+            .and_then(|index| profile.frames.get(*index))
+            .ok_or_else(|| {
+                DriverError::InvalidAction("brightness global command frame is missing".into())
+            })?;
+        Self::validate_setting_command_frame(command, 0x13, true)?;
+        Self::validate_setting_command_frame(global, 0x12, false)?;
+        let state = frame_index
+            .get("state_report")
+            .and_then(|index| profile.frames.get(*index))
+            .ok_or_else(|| DriverError::InvalidAction("settings state report is missing".into()))?;
+        let brightness_count = state.operations.iter().filter(|operation| matches!(operation,
+            FrameOperation::Scalar { field, offset: 26, width: 1, endian: crate::profile::FrameEndian::NotApplicable }
+                if field == "screen_brightness_byte_offset"
+        )).count();
+        if brightness_count != 1 {
+            return Err(DriverError::InvalidAction(
+                "brightness readback must have exactly one scalar at offset 26".into(),
+            ));
+        }
+        for (offset, mask, shift) in [(24, 0x70, 4), (25, 0x1c, 2), (25, 0xe0, 5)] {
+            let count = state.operations.iter().filter(|operation| matches!(operation,
+                FrameOperation::BitField { offset: actual_offset, mask: actual_mask, shift: actual_shift, .. }
+                    if *actual_offset == offset && *actual_mask == mask && *actual_shift == shift
+            )).count();
+            if count != 1 {
+                return Err(DriverError::InvalidAction(
+                    "output_trim readback fields must be complete and unambiguous".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether a runtime profile carries the complete canonical bounded settings contract.
+    pub fn supports_complete_settings_contract(profile: &RuntimeProfile) -> bool {
+        if !profile.params.iter().any(|parameter| {
+            matches!(parameter.name.as_str(), "screen_brightness" | "output_trim")
+                && profile_codec::is_confirmed(&parameter.status)
+        }) {
+            return false;
+        }
+        let mut frame_index = HashMap::new();
+        for (index, frame) in profile.frames.iter().enumerate() {
+            if frame_index.insert(frame.id.clone(), index).is_some() {
+                return false;
+            }
+        }
+        Self::validate_settings_contract(profile, &frame_index).is_ok()
     }
 
     fn validate_declared_state_meter_layout(
@@ -252,6 +481,7 @@ impl ProfileDriver {
                 ));
             }
         }
+        Self::validate_settings_contract(&entry.profile, &frame_index)?;
         let confirmed_meter_decoder_count = entry
             .profile
             .decoders
@@ -1907,10 +2137,38 @@ impl ProfileDriver {
                 )?)),
             });
         }
-        state.globals.push(DynamicGlobalState {
-            control: GlobalControl::Parameter(0x0e),
-            value: ControlValue::Int(i32::from(Self::scalar_value(frame, bytes, "brightness")?)),
-        });
+        if self.parameter("globals", "screen_brightness").is_ok() {
+            state.globals.push(DynamicGlobalState {
+                control: GlobalControl::Brightness,
+                value: ControlValue::Int(i32::from(Self::scalar_value(
+                    frame,
+                    bytes,
+                    "brightness",
+                )?)),
+            });
+        }
+        if let Ok(parameter) = self.parameter("output_trim_targets", "output_trim") {
+            for field in &parameter.readback.fields {
+                let ParamReadbackField::BitField {
+                    target,
+                    offset,
+                    mask,
+                    shift,
+                } = field
+                else {
+                    continue;
+                };
+                let byte = *bytes.get(usize::from(*offset)).ok_or_else(|| {
+                    DriverError::InvalidAction(format!(
+                        "output trim target {target} readback is truncated"
+                    ))
+                })?;
+                state.globals.push(DynamicGlobalState {
+                    control: GlobalControl::OutputTrim(OutputTrimAddress { target: *target }),
+                    value: ControlValue::Enum(i32::from((byte & mask) >> shift)),
+                });
+            }
+        }
         Ok(state)
     }
 
@@ -2294,6 +2552,12 @@ impl DeviceDriver for ProfileDriver {
                     GlobalControl::SampleRate => "sample_rate",
                     GlobalControl::ClockSource => "clock_source",
                     GlobalControl::Surface => "surface",
+                    GlobalControl::Brightness => "screen_brightness",
+                    GlobalControl::OutputTrim(_) => {
+                        return Err(DriverError::InvalidAction(
+                            "output trim requires Action::SetOutputTrim".into(),
+                        ))
+                    }
                     GlobalControl::Parameter(id) => {
                         return self.encode_parameter(
                             "global_command",
@@ -2308,6 +2572,27 @@ impl DeviceDriver for ProfileDriver {
                     self.parameter("globals", name)?,
                     None,
                     value,
+                )
+            }
+            Action::SetOutputTrim { address, value } => {
+                let targets = self
+                    .constraint_values("parameter_target.output_trim")
+                    .ok_or_else(|| {
+                        DriverError::UnsupportedAction(
+                            "profile does not declare output trim targets".into(),
+                        )
+                    })?;
+                if !targets.contains(&i32::from(address.target)) {
+                    return Err(DriverError::InvalidAction(format!(
+                        "output trim target {} outside confirmed domain",
+                        address.target
+                    )));
+                }
+                self.encode_parameter(
+                    "command",
+                    self.parameter("output_trim_targets", "output_trim")?,
+                    Some(u16::from(address.target)),
+                    ControlValue::Enum(value),
                 )
             }
             Action::SetWholeState {

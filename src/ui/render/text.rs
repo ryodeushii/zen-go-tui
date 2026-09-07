@@ -180,13 +180,18 @@ pub(crate) fn render_system_summary(state: &AppState) -> Line<'static> {
     } else {
         Color::Cyan
     };
-    Line::from(vec![
+    let mut spans = vec![
         chip("RAW", Color::Black, raw_color),
         Span::raw(" "),
         chip("OPTNS", Color::Black, options_color),
         Span::raw(" "),
-        chip("X", Color::Black, Color::DarkGray),
-    ])
+    ];
+    if state.ui_profile.supports_settings() {
+        spans.push(chip("SET", Color::Black, Color::LightMagenta));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(chip("X", Color::Black, Color::DarkGray));
+    Line::from(spans)
 }
 
 pub(crate) fn connection_badge_color(state: &AppState) -> Color {

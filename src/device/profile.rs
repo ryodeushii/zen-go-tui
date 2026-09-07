@@ -7,14 +7,14 @@ use super::{
 };
 use antelope_protocol::{
     CandidatePreampMeter, FaderDirection, FaderSemantics, FrameEndian, FrameOperation,
-    MixerReadbackLayout, ParamReference, ProfileLoadError, ProfilePack, QueryRequest,
-    ReadbackCategory, ReadbackDefinition as RuntimeReadbackDefinition, RuntimeAddressSpace,
-    RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
-    RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
-    RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping, RuntimeMeterTarget,
-    RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile, RuntimeProvenance, RuntimeReadiness,
-    RuntimeRoutingGroup, RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain,
-    RuntimeStateReport, RuntimeTransport,
+    MixerReadbackLayout, ParamReadbackField, ParamReference, ProfileLoadError, ProfilePack,
+    QueryRequest, ReadbackCategory, ReadbackDefinition as RuntimeReadbackDefinition,
+    RuntimeAddressSpace, RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry,
+    RuntimeFrame, RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability,
+    RuntimeInputControlKind, RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping,
+    RuntimeMeterTarget, RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile,
+    RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup, RuntimeRoutingReadbackSourceDomain,
+    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport,
 };
 use std::collections::HashSet;
 
@@ -573,6 +573,31 @@ fn convert_reference(reference: super::ParamReference) -> ParamReference {
             .offsets
             .iter()
             .map(|offset| (offset.name.into(), offset.offset))
+            .collect(),
+        frame: reference.frame.into(),
+        semantic: reference.semantic.into(),
+        fields: reference
+            .fields
+            .iter()
+            .map(|field| match field {
+                super::ParamReadbackFieldDefinition::Scalar { offset, width } => {
+                    ParamReadbackField::Scalar {
+                        offset: *offset,
+                        width: *width,
+                    }
+                }
+                super::ParamReadbackFieldDefinition::BitField {
+                    target,
+                    offset,
+                    mask,
+                    shift,
+                } => ParamReadbackField::BitField {
+                    target: *target,
+                    offset: *offset,
+                    mask: *mask,
+                    shift: *shift,
+                },
+            })
             .collect(),
     }
 }

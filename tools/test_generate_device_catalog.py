@@ -892,6 +892,151 @@ class GeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(generator.ProfileError, "runtime_internal_value"):
             generator._build_params(generator.normalize_profile(data, path=ORION_PROFILE))
 
+    def test_orion_settings_runtime_shape_preserves_confirmed_brightness_and_indexed_trim(self) -> None:
+        profile = normalized_orion()
+        params = {item["name"]: item for item in profile["params"]}
+
+        brightness = params["screen_brightness"]
+        self.assertEqual(brightness["id"], 0x0E)
+        self.assertEqual(brightness["applies_to"], "globals")
+        self.assertEqual(brightness["range"], (0, 100))
+        self.assertEqual(
+            brightness["readback"],
+            {
+                "text": brightness["readback"]["text"],
+                "formula": "",
+                "offsets": [["field_0", 26]],
+                "frame": "state_report",
+                "semantic": "brightness",
+                "fields": [{"kind": "scalar", "offset": 26, "width": 1}],
+            },
+        )
+
+        trim = params["output_trim"]
+        self.assertEqual(trim["id"], 0x4B)
+        self.assertEqual(trim["applies_to"], "output_trim_targets")
+        self.assertEqual(trim["range"], (0, 6))
+        self.assertEqual(trim["readback"]["frame"], "state_report")
+        self.assertEqual(trim["readback"]["semantic"], "output_trim")
+        self.assertEqual(
+            trim["readback"]["fields"],
+            [
+                {"kind": "bit_field", "target": 0, "offset": 24, "mask": 0x70, "shift": 4},
+                {"kind": "bit_field", "target": 1, "offset": 25, "mask": 0x1C, "shift": 2},
+                {"kind": "bit_field", "target": 2, "offset": 25, "mask": 0xE0, "shift": 5},
+            ],
+        )
+        self.assertEqual(
+            trim["values"],
+            [[0, "20 dBu"], [1, "19 dBu"], [2, "18 dBu"], [3, "17 dBu"],
+             [4, "16 dBu"], [5, "15 dBu"], [6, "14 dBu"]],
+        )
+        constraints = {item["name"]: item for item in profile["constraints"]}
+        self.assertEqual(constraints["parameter_target.output_trim"]["values"], [0, 1, 2])
+        self.assertEqual(
+            [constraints[f"output_trim_target.{target}"]["text"] for target in range(3)],
+            ["Monitor A", "Monitor B", "Line Out"],
+        )
+
+    def test_orion_settings_prose_is_provenance_not_capability_proof(self) -> None:
+        data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        data["params"]["screen_brightness"]["readback"] = "unrelated prose"
+        data["params"]["output_trim"].pop("readback")
+        record = generator._normalized_profile_record(
+            generator.normalize_profile(data, path=ORION_PROFILE)
+        )
+        params = {item["name"]: item for item in record["params"]}
+        self.assertEqual(params["screen_brightness"]["id"], 0x0E)
+        self.assertEqual(params["output_trim"]["id"], 0x4B)
+        self.assertEqual(
+            params["screen_brightness"]["readback"]["text"],
+            "unrelated prose",
+        )
+        self.assertEqual(params["output_trim"]["readback"]["text"], "")
+
+    def test_orion_settings_structured_readbacks_fail_closed_without_prose_inference(self) -> None:
+        mutations = {
+            "missing brightness reference": lambda data: data["params"]["screen_brightness"].pop(
+                "runtime_readback"
+            ),
+            "wrong brightness offset with convincing prose": lambda data: data["params"][
+                "screen_brightness"
+            ]["runtime_readback"]["fields"][0].update({"offset": 99}),
+            "wrong brightness frame": lambda data: data["params"]["screen_brightness"][
+                "runtime_readback"
+            ].update({"frame": "global_command"}),
+            "false brightness semantic": lambda data: data["params"]["screen_brightness"][
+                "runtime_readback"
+            ].update({"semantic": "output_trim"}),
+            "ambiguous brightness field": lambda data: data["params"]["screen_brightness"][
+                "runtime_readback"
+            ]["fields"].append({"kind": "scalar", "offset": 26, "width": 1}),
+            "missing trim reference": lambda data: data["params"]["output_trim"].pop(
+                "runtime_readback"
+            ),
+            "missing trim field": lambda data: data["params"]["output_trim"][
+                "runtime_readback"
+            ]["fields"].pop(),
+            "duplicate trim target": lambda data: data["params"]["output_trim"][
+                "runtime_readback"
+            ]["fields"][2].update({"target": 1}),
+            "conflicting trim geometry": lambda data: data["params"]["output_trim"][
+                "runtime_readback"
+            ]["fields"][1].update({"offset": 26}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+                mutate(data)
+                record = generator._normalized_profile_record(
+                    generator.normalize_profile(data, path=ORION_PROFILE)
+                )
+                params = {item["name"]: item for item in record["params"]}
+                self.assertIsNone(params["screen_brightness"]["id"])
+                self.assertIsNone(params["output_trim"]["id"])
+                self.assertEqual(params["screen_brightness"]["readback"].get("fields", []), [])
+                self.assertEqual(params["output_trim"]["readback"].get("fields", []), [])
+
+    def test_orion_settings_semantics_fail_closed_when_status_or_geometry_is_malformed(self) -> None:
+        mutations = {
+            "brightness status": lambda data: data["params"]["screen_brightness"].update(
+                {"status": "observed"}
+            ),
+            "brightness range": lambda data: data["params"]["screen_brightness"].update(
+                {"range": [0, 101]}
+            ),
+            "brightness readback": lambda data: data["frame"]["state_report"].update(
+                {"screen_brightness_byte_offset": 27}
+            ),
+            "trim missing target": lambda data: data["params"]["output_trim"]["targets"].pop("2"),
+            "trim range": lambda data: data["params"]["output_trim"].update({"range": [0, 7]}),
+            "trim mask": lambda data: data["frame"]["state_report"]["output_trim_block"][
+                "fields"
+            ]["target_1"].update({"mask": "0x3c"}),
+            "added global operation": lambda data: data["frame"]["global_command"].update({
+                "runtime_operations": [
+                    {"op": "fixed_byte", "offset": 0, "value": 0x70},
+                    {"op": "fixed_byte", "offset": 4, "value": 0x12},
+                    {"op": "scalar", "field": "param_id", "offset": 16},
+                    {"op": "scalar", "field": "value", "offset": 17},
+                    {"op": "fixed_byte", "offset": 5, "value": 0},
+                ]
+            }),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+                mutate(data)
+                profile = generator.normalize_profile(data, path=ORION_PROFILE)
+                record = generator._normalized_profile_record(profile)
+                params = {item["name"]: item for item in record["params"]}
+                self.assertIsNone(params["screen_brightness"]["id"])
+                self.assertIsNone(params["output_trim"]["id"])
+                self.assertNotIn(
+                    "parameter_target.output_trim",
+                    {constraint["name"] for constraint in record["constraints"]},
+                )
+
     def test_orion_mono_runtime_shape_preserves_source_targets_and_bit(self) -> None:
         source = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
         declaration = source["constraints"]["output_mono_targets"]
@@ -1011,6 +1156,7 @@ class GeneratorTests(unittest.TestCase):
             "bus_mono",
             "sample_rate",
             "screen_brightness",
+            "output_trim",
             "adat_gain",
             "talkback_button",
             "talkback_source",
@@ -1026,7 +1172,6 @@ class GeneratorTests(unittest.TestCase):
             self.assertTrue(parameter["readback"]["text"].strip(), name)
             self.assertTrue(parameter["readback"]["offsets"], name)
         for name in (
-            "output_trim",
             "routing",
             "oscillator",
             "surround_monitor",

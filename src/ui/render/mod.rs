@@ -12,7 +12,7 @@ use crate::app::{
 use crate::device::DevicePickerState;
 use crate::terminal;
 use antelope_protocol::{
-    meter_display_db, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate,
+    meter_display_db, GlobalControl, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate,
 };
 
 use super::layouts::*;
@@ -999,6 +999,63 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             [PreampMode::Mic, PreampMode::Line, PreampMode::HiZ]
                 .iter()
                 .map(|mode| ListItem::new(mode.label()))
+                .collect::<Vec<_>>(),
+        ),
+        SelectorPopupKind::Settings => (
+            "Device Settings",
+            state
+                .ui_profile
+                .setting_rows()
+                .into_iter()
+                .map(|control| {
+                    let label = match control {
+                        GlobalControl::Brightness => format!(
+                            "Brightness: {}",
+                            state
+                                .global_value(control)
+                                .map_or_else(|| "?".into(), |value| format!("{value}%"))
+                        ),
+                        GlobalControl::OutputTrim(address) => format!(
+                            "{} trim: {}",
+                            state
+                                .ui_profile
+                                .output_trim_target_label(address.target)
+                                .unwrap_or("Output"),
+                            state.global_value(control).map_or_else(
+                                || "?".into(),
+                                |value| state
+                                    .ui_profile
+                                    .output_trim_value_labels()
+                                    .into_iter()
+                                    .find(|(candidate, _)| *candidate == value)
+                                    .map(|(_, label)| label)
+                                    .unwrap_or_else(|| format!("raw {value}"))
+                            )
+                        ),
+                        _ => "Unavailable setting".into(),
+                    };
+                    ListItem::new(label)
+                })
+                .collect::<Vec<_>>(),
+        ),
+        SelectorPopupKind::Brightness => (
+            "Brightness",
+            (0..=100)
+                .map(|value| ListItem::new(format!("{value}%")))
+                .collect::<Vec<_>>(),
+        ),
+        SelectorPopupKind::OutputTrim { target } => (
+            match target {
+                0 => "Output Trim 0",
+                1 => "Output Trim 1",
+                2 => "Output Trim 2",
+                _ => "Output Trim",
+            },
+            state
+                .ui_profile
+                .output_trim_value_labels()
+                .into_iter()
+                .map(|(_, label)| ListItem::new(label))
                 .collect::<Vec<_>>(),
         ),
     };

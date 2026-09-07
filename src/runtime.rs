@@ -1414,6 +1414,33 @@ pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
                     .copied()
                     .map(|mode| ui::Intent::PickPreampMode { input, mode })
             }
+            SelectorPopupKind::Settings => controller
+                .state
+                .ui_profile
+                .setting_rows()
+                .get(controller.state.popup.selected_index)
+                .and_then(|control| match control {
+                    antelope_protocol::GlobalControl::Brightness => {
+                        Some(ui::Intent::OpenBrightnessSelector)
+                    }
+                    antelope_protocol::GlobalControl::OutputTrim(address) => {
+                        Some(ui::Intent::OpenOutputTrimSelector(*address))
+                    }
+                    _ => None,
+                }),
+            SelectorPopupKind::Brightness => (controller.state.popup.selected_index <= 100)
+                .then_some(ui::Intent::PickBrightness(
+                    controller.state.popup.selected_index as i32,
+                )),
+            SelectorPopupKind::OutputTrim { target } => controller
+                .state
+                .ui_profile
+                .output_trim_value_labels()
+                .get(controller.state.popup.selected_index)
+                .map(|(value, _)| ui::Intent::PickOutputTrim {
+                    address: antelope_protocol::OutputTrimAddress { target },
+                    value: *value,
+                }),
         };
 
         if let Some(action) = action {
@@ -1467,11 +1494,12 @@ pub fn handle_mouse_event(
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use super::*;
     use antelope_protocol::{
-        CommandBatch, DeviceDriver, DeviceEvent, DriverDefinition, DriverError, InputAddress,
-        QueryRequest,
+        CommandBatch, DeviceDriver, DeviceEvent, DriverDefinition, DriverError, GlobalControl,
+        InputAddress, OutputTrimAddress, ProfileDriver, QueryRequest,
     };
     use ratatui::{backend::TestBackend, Terminal};
     use zen_go_tui::terminal::AppModifiers;
@@ -1750,6 +1778,187 @@ mod tests {
             handle_device_selector_key(&mut picker, AppKeyCode::Enter),
             DeviceSelectorAction::Cancel
         );
+    }
+
+    fn orion_settings_controller(transport: Box<dyn Transport>) -> Controller {
+        let entry = zen_go_tui::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "orion_studio_3")
+            .expect("Orion entry")
+            .clone();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        Controller::new_for_entry(transport, Box::new(driver), &entry).expect("controller")
+    }
+
+    #[derive(Default)]
+    struct FailingSettingsTransport;
+
+    impl Transport for FailingSettingsTransport {
+        fn write(&self, _data: &[u8]) -> Result<()> {
+            anyhow::bail!("synthetic settings write failure")
+        }
+
+        fn read(&self, _timeout: Duration) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        fn is_available(&self) -> Result<bool> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn settings_selectors_are_modal_and_escape_restores_parent_selection() {
+        let mut controller = orion_settings_controller(Box::new(MockTransport::default()));
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        controller
+            .apply_intent(Intent::OpenSettingsSelector, area)
+            .expect("open settings");
+        controller.state.popup.selected_index = 3;
+        activate_popup_selection(&mut controller).expect("open trim target 2");
+        assert_eq!(
+            controller.state.popup.selector_popup,
+            Some(SelectorPopupState {
+                kind: SelectorPopupKind::OutputTrim { target: 2 }
+            })
+        );
+        handle_key_press(&mut controller, key(AppKeyCode::Esc), area).expect("back to settings");
+        assert_eq!(
+            controller.state.popup.selector_popup,
+            Some(SelectorPopupState {
+                kind: SelectorPopupKind::Settings
+            })
+        );
+        assert_eq!(controller.state.popup.selected_index, 3);
+        handle_key_press(&mut controller, key(AppKeyCode::Esc), area).expect("close settings");
+        assert!(controller.state.popup.selector_popup.is_none());
+    }
+
+    #[test]
+    fn settings_values_become_authoritative_only_from_snapshot_readback() {
+        let transport = MockTransport::default();
+        let mut controller = orion_settings_controller(Box::new(transport.clone()));
+        let mut raw = include_str!("../antelope-protocol/tests/fixtures/orion/state_report_73.hex")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .flat_map(|line| line.split_whitespace())
+            .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+            .collect::<Vec<_>>();
+        raw[24] = 0x60;
+        raw[25] = 0x98;
+        raw[26] = 75;
+        transport.push_read(raw);
+
+        assert!(controller
+            .poll_device(Duration::ZERO)
+            .expect("snapshot poll"));
+        assert_eq!(
+            controller.state.global_value(GlobalControl::Brightness),
+            Some(75)
+        );
+        assert_eq!(
+            controller
+                .state
+                .global_value(GlobalControl::OutputTrim(OutputTrimAddress { target: 0 })),
+            Some(6)
+        );
+        assert_eq!(
+            controller
+                .state
+                .global_value(GlobalControl::OutputTrim(OutputTrimAddress { target: 1 })),
+            Some(6)
+        );
+        assert_eq!(
+            controller
+                .state
+                .global_value(GlobalControl::OutputTrim(OutputTrimAddress { target: 2 })),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn settings_writes_never_become_authoritative_without_readback() {
+        let mut controller = orion_settings_controller(Box::new(FailingSettingsTransport));
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        assert_eq!(
+            controller.state.global_value(GlobalControl::Brightness),
+            None
+        );
+        controller
+            .apply_intent(Intent::PickBrightness(75), area)
+            .expect("queue brightness");
+        assert_eq!(
+            controller.state.global_value(GlobalControl::Brightness),
+            None
+        );
+        assert!(controller.flush_commands().is_err());
+        assert_eq!(
+            controller.state.global_value(GlobalControl::Brightness),
+            None
+        );
+
+        let mut controller = orion_settings_controller(Box::new(FailingSettingsTransport));
+        let trim = GlobalControl::OutputTrim(OutputTrimAddress { target: 1 });
+        controller
+            .apply_intent(
+                Intent::PickOutputTrim {
+                    address: OutputTrimAddress { target: 1 },
+                    value: 4,
+                },
+                area,
+            )
+            .expect("queue trim");
+        assert_eq!(controller.state.global_value(trim), None);
+        assert!(controller.flush_commands().is_err());
+        assert_eq!(controller.state.global_value(trim), None);
+
+        let transport = MockTransport::default();
+        let mut controller = orion_settings_controller(Box::new(transport.clone()));
+        controller
+            .apply_intent(Intent::PickBrightness(75), area)
+            .expect("queue valid brightness");
+        controller
+            .apply_intent(
+                Intent::PickOutputTrim {
+                    address: OutputTrimAddress { target: 1 },
+                    value: 4,
+                },
+                area,
+            )
+            .expect("queue valid trim");
+        controller.flush_commands().expect("settings write");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0][4], 0x12);
+        assert_eq!(&writes[0][16..18], &[0x0e, 75]);
+        assert_eq!(writes[1][4], 0x13);
+        assert_eq!(&writes[1][16..19], &[0x4b, 1, 4]);
+        assert_eq!(
+            controller.state.global_value(GlobalControl::Brightness),
+            None
+        );
+        assert_eq!(
+            controller
+                .state
+                .global_value(GlobalControl::OutputTrim(OutputTrimAddress { target: 1 })),
+            None
+        );
+
+        controller
+            .apply_intent(Intent::PickBrightness(101), area)
+            .expect("invalid brightness is ignored");
+        controller
+            .apply_intent(
+                Intent::PickOutputTrim {
+                    address: OutputTrimAddress { target: 3 },
+                    value: 0,
+                },
+                area,
+            )
+            .expect("invalid trim target is ignored");
+        controller.flush_commands().expect("no queued settings");
+        assert!(transport.take_writes().is_empty());
     }
 
     #[test]

@@ -2,7 +2,8 @@ use std::time::Duration;
 
 use antelope_protocol::{
     DynamicInputState, DynamicMixerStrip, DynamicOutputState, DynamicRoutingGroup, InputAddress,
-    MixerAddress, MixerAssignment, PanState, PreampMode, RoutingSource, SampleRate, Surface,
+    MixerAddress, MixerAssignment, OutputTrimAddress, PanState, PreampMode, RoutingSource,
+    SampleRate, Surface,
 };
 
 use crate::app::AppState;
@@ -220,8 +221,16 @@ pub enum Intent {
     // Selector popups
     OpenSampleRateSelector,
     OpenClockSourceSelector,
+    OpenSettingsSelector,
+    OpenBrightnessSelector,
+    OpenOutputTrimSelector(OutputTrimAddress),
     PickSampleRate(SampleRate),
     PickClockSource(i32),
+    PickBrightness(i32),
+    PickOutputTrim {
+        address: OutputTrimAddress,
+        value: i32,
+    },
 
     // Keyboard-only (context-resolved in handle_key_press)
     AdjustFocused(bool),
@@ -284,6 +293,8 @@ impl Intent {
                 | Self::SetInputPairLink { .. }
                 | Self::PickSampleRate(_)
                 | Self::PickClockSource(_)
+                | Self::PickBrightness(_)
+                | Self::PickOutputTrim { .. }
                 | Self::AdjustFocused(_)
                 | Self::ToggleFocusedMute
                 | Self::ToggleFocusedDim

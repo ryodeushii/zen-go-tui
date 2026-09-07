@@ -9,8 +9,8 @@ use crate::transport::Transport;
 use antelope_protocol::{
     Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DynamicStatePatch,
     GlobalControl, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
-    MixerSurface, OutputAddress, OutputControl, OutputMode, PanState, PreampMode, QueryRequest,
-    RoutingSource, RuntimeEntry, SampleRate, Surface,
+    MixerSurface, OutputAddress, OutputControl, OutputMode, OutputTrimAddress, PanState,
+    PreampMode, QueryRequest, RoutingSource, RuntimeEntry, SampleRate, Surface,
 };
 
 use super::picker::{
@@ -1113,6 +1113,11 @@ impl Controller {
             Intent::PageMixerStripsRight => self.handle_page_mixer_strips(area, true),
             Intent::OpenSampleRateSelector => self.handle_open_sample_rate_selector(),
             Intent::OpenClockSourceSelector => self.handle_open_clock_source_selector(),
+            Intent::OpenSettingsSelector => self.handle_open_settings_selector(),
+            Intent::OpenBrightnessSelector => self.handle_open_brightness_selector(),
+            Intent::OpenOutputTrimSelector(address) => {
+                self.handle_open_output_trim_selector(address)
+            }
             Intent::SelectRawPacketTab(tab) => self.handle_select_raw_packet_tab(tab),
             Intent::SelectRawMapScope(scope) => self.handle_select_raw_map_scope(scope),
             Intent::CycleRawMapScope { forward } => self.handle_cycle_raw_map_scope(forward),
@@ -1190,6 +1195,10 @@ impl Controller {
             Intent::CyclePreampMode(input) => self.handle_cycle_preamp_mode(input, pending)?,
             Intent::PickSampleRate(rate) => self.handle_pick_sample_rate(rate, pending)?,
             Intent::PickClockSource(source) => self.handle_pick_clock_source(source, pending)?,
+            Intent::PickBrightness(value) => self.handle_pick_brightness(value)?,
+            Intent::PickOutputTrim { address, value } => {
+                self.handle_pick_output_trim(address, value)?
+            }
             Intent::PickPreampMode { input, mode } => {
                 self.handle_pick_preamp_mode(input, mode, pending)?
             }
@@ -1636,6 +1645,98 @@ impl Controller {
         self.state.popup.selector_popup = Some(SelectorPopupState {
             kind: SelectorPopupKind::ClockSource,
         });
+    }
+
+    fn handle_open_settings_selector(&mut self) {
+        if !self.state.ui_profile.supports_settings() {
+            return;
+        }
+        self.state.popup.selected_index = 0;
+        self.state.popup.selector_parent_index = None;
+        self.state.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::Settings,
+        });
+    }
+
+    fn handle_open_brightness_selector(&mut self) {
+        if !self
+            .state
+            .ui_profile
+            .supports_global(GlobalControl::Brightness)
+        {
+            return;
+        }
+        self.state.popup.selector_parent_index = Some(self.state.popup.selected_index);
+        self.state.popup.selected_index = self
+            .state
+            .global_value(GlobalControl::Brightness)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value <= 100)
+            .unwrap_or(0);
+        self.state.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::Brightness,
+        });
+    }
+
+    fn handle_open_output_trim_selector(&mut self, address: OutputTrimAddress) {
+        let control = GlobalControl::OutputTrim(address);
+        if !self.state.ui_profile.supports_global(control) {
+            return;
+        }
+        self.state.popup.selector_parent_index = Some(self.state.popup.selected_index);
+        self.state.popup.selected_index = self
+            .state
+            .global_value(control)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value <= 6)
+            .unwrap_or(0);
+        self.state.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::OutputTrim {
+                target: address.target,
+            },
+        });
+    }
+
+    fn return_to_settings_selector(&mut self) {
+        self.state.popup.selected_index =
+            self.state.popup.selector_parent_index.take().unwrap_or(0);
+        self.state.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::Settings,
+        });
+    }
+
+    fn handle_pick_brightness(&mut self, value: i32) -> Result<()> {
+        if !(0..=100).contains(&value)
+            || !self
+                .state
+                .ui_profile
+                .supports_global(GlobalControl::Brightness)
+        {
+            return Ok(());
+        }
+        self.send(
+            Action::SetGlobal {
+                control: GlobalControl::Brightness,
+                value: ControlValue::Int(value),
+            },
+            None,
+        )?;
+        self.return_to_settings_selector();
+        Ok(())
+    }
+
+    fn handle_pick_output_trim(&mut self, address: OutputTrimAddress, value: i32) -> Result<()> {
+        if !(0..=6).contains(&value)
+            || !self
+                .state
+                .ui_profile
+                .supports_global(GlobalControl::OutputTrim(address))
+        {
+            return Ok(());
+        }
+        self.send(Action::SetOutputTrim { address, value }, None)?;
+        self.return_to_settings_selector();
+        Ok(())
     }
 
     fn handle_pick_sample_rate(
@@ -3091,6 +3192,11 @@ impl Controller {
                     self.state.ui_profile.clock_source_choices().len()
                 }
                 SelectorPopupKind::PreampMode { .. } => 3,
+                SelectorPopupKind::Settings => self.state.ui_profile.setting_rows().len(),
+                SelectorPopupKind::Brightness => 101,
+                SelectorPopupKind::OutputTrim { .. } => {
+                    self.state.ui_profile.output_trim_value_labels().len()
+                }
             }
         } else {
             0
@@ -3173,7 +3279,17 @@ impl Controller {
     }
 
     fn handle_close_selector_popup(&mut self) {
+        if self.state.popup.selector_popup.is_some_and(|popup| {
+            matches!(
+                popup.kind,
+                SelectorPopupKind::Brightness | SelectorPopupKind::OutputTrim { .. }
+            )
+        }) {
+            self.return_to_settings_selector();
+            return;
+        }
         self.state.popup.selector_popup = None;
+        self.state.popup.selector_parent_index = None;
         self.state.popup.selected_index = 0;
         self.state.ui.last_message = "Closed selector".to_string();
     }

@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use antelope_protocol::{
     DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState, GlobalControl,
     InputAddress, InputControl, MixerAddress, MixerChannelState, MixerControl, OutputAddress,
-    OutputControl, OutputMode, OutputState, OutputTarget, PreampState, RoutingSource,
-    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeLinkDomainKind,
-    RuntimeProfile, RuntimeReadiness, SampleRate, Surface,
+    OutputControl, OutputMode, OutputState, OutputTarget, OutputTrimAddress, PreampState,
+    ProfileDriver, RoutingSource, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind,
+    RuntimeLinkDomainKind, RuntimeProfile, RuntimeReadiness, SampleRate, Surface,
 };
 
 use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
@@ -197,6 +197,7 @@ pub struct UiProfileState {
     input_capabilities: HashMap<InputAddress, Vec<UiInputCapability>>,
     input_link_domains: HashMap<u16, (u8, u16)>,
     parameter_values: HashMap<String, HashMap<i32, String>>,
+    output_trim_targets: HashMap<u8, String>,
     clock_source_choices: Vec<ClockSourceChoice>,
     internal_clock_value: Option<i32>,
     output_controls: HashSet<(OutputAddress, OutputControl)>,
@@ -219,6 +220,7 @@ impl UiProfileState {
                 .iter()
                 .any(|param| param.name == name && param.status.eq_ignore_ascii_case("confirmed"))
         };
+        let settings_valid = ProfileDriver::supports_complete_settings_contract(profile);
         let parameter_values = profile
             .params
             .iter()
@@ -370,7 +372,7 @@ impl UiProfileState {
             .filter(|_| link_confirmed)
             .map(|mixer| mixer.mix_index)
             .collect();
-        let global_controls = [
+        let mut global_controls: HashSet<_> = [
             ("sample_rate", GlobalControl::SampleRate),
             ("clock_source", GlobalControl::ClockSource),
         ]
@@ -378,6 +380,29 @@ impl UiProfileState {
         .filter(|(name, _)| confirmed(name))
         .map(|(_, control)| control)
         .collect();
+        if settings_valid {
+            global_controls.insert(GlobalControl::Brightness);
+        }
+        let output_trim_targets: HashMap<u8, String> = profile
+            .constraints
+            .iter()
+            .filter_map(|constraint| {
+                let target = constraint
+                    .name
+                    .strip_prefix("output_trim_target.")?
+                    .parse::<u8>()
+                    .ok()?;
+                (constraint.status.eq_ignore_ascii_case("confirmed")
+                    && constraint.scalar == Some(i32::from(target))
+                    && !constraint.text.trim().is_empty())
+                .then(|| (target, constraint.text.clone()))
+            })
+            .collect();
+        if settings_valid {
+            for target in 0..=2 {
+                global_controls.insert(GlobalControl::OutputTrim(OutputTrimAddress { target }));
+            }
+        }
         let routing_destinations = profile
             .routing_groups
             .iter()
@@ -414,6 +439,7 @@ impl UiProfileState {
             input_capabilities,
             input_link_domains,
             parameter_values,
+            output_trim_targets,
             clock_source_choices,
             internal_clock_value,
             output_controls,
@@ -438,6 +464,7 @@ impl UiProfileState {
             input_capabilities: HashMap::new(),
             input_link_domains: HashMap::new(),
             parameter_values: HashMap::new(),
+            output_trim_targets: HashMap::new(),
             clock_source_choices: Vec::new(),
             internal_clock_value: None,
             output_controls: HashSet::new(),
@@ -536,6 +563,45 @@ impl UiProfileState {
         self.actionable && self.global_controls.contains(&control)
     }
 
+    pub fn supports_settings(&self) -> bool {
+        self.supports_global(GlobalControl::Brightness)
+            || (0..=2).any(|target| {
+                self.supports_global(GlobalControl::OutputTrim(OutputTrimAddress { target }))
+            })
+    }
+
+    pub fn setting_rows(&self) -> Vec<GlobalControl> {
+        let mut rows = Vec::new();
+        if self.supports_global(GlobalControl::Brightness) {
+            rows.push(GlobalControl::Brightness);
+        }
+        let mut targets = self.output_trim_targets.keys().copied().collect::<Vec<_>>();
+        targets.sort_unstable();
+        rows.extend(targets.into_iter().filter_map(|target| {
+            let control = GlobalControl::OutputTrim(OutputTrimAddress { target });
+            self.supports_global(control).then_some(control)
+        }));
+        rows
+    }
+
+    pub fn output_trim_target_label(&self, target: u8) -> Option<&str> {
+        self.output_trim_targets.get(&target).map(String::as_str)
+    }
+
+    pub fn output_trim_value_labels(&self) -> Vec<(i32, String)> {
+        self.parameter_values
+            .get("output_trim")
+            .map(|values| {
+                let mut values = values
+                    .iter()
+                    .map(|(value, label)| (*value, label.clone()))
+                    .collect::<Vec<_>>();
+                values.sort_by_key(|(value, _)| *value);
+                values
+            })
+            .unwrap_or_default()
+    }
+
     pub fn clock_source_choices(&self) -> &[ClockSourceChoice] {
         &self.clock_source_choices
     }
@@ -619,6 +685,7 @@ impl Default for UiProfileState {
             input_capabilities: HashMap::new(),
             input_link_domains: HashMap::new(),
             parameter_values: HashMap::new(),
+            output_trim_targets: HashMap::new(),
             clock_source_choices: (0..=2)
                 .map(|value| ClockSourceChoice {
                     value,
@@ -661,6 +728,7 @@ pub struct PopupState {
     pub routing_editor: Option<RoutingEditorState>,
     pub routing_source_picker: Option<RoutingSourcePickerState>,
     pub selector_popup: Option<SelectorPopupState>,
+    pub selector_parent_index: Option<usize>,
     pub profile_names: Vec<String>,
     pub profile_editor: Option<ProfileEditorState>,
     pub selected_index: usize,

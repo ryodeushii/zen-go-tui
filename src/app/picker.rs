@@ -20,6 +20,9 @@ pub enum SelectorPopupKind {
     SampleRate,
     ClockSource,
     PreampMode { input: u8 },
+    Settings,
+    Brightness,
+    OutputTrim { target: u8 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

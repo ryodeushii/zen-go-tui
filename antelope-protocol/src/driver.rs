@@ -35,6 +35,12 @@ pub struct OutputAddress {
     pub id: u16,
 }
 
+/// Finite address for one profile-declared output-reference trim selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OutputTrimAddress {
+    pub target: u8,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MixerAddress {
     pub surface: u8,
@@ -94,6 +100,8 @@ pub enum GlobalControl {
     SampleRate,
     ClockSource,
     Surface,
+    Brightness,
+    OutputTrim(OutputTrimAddress),
     Parameter(u16),
 }
 
@@ -277,6 +285,10 @@ pub enum Action {
     SetGlobal {
         control: GlobalControl,
         value: ControlValue,
+    },
+    SetOutputTrim {
+        address: OutputTrimAddress,
+        value: i32,
     },
     /// Complete generic whole-state command. Profiles define field IDs, ranges,
     /// frame offsets, and fixed operation bytes; partial writes are rejected.

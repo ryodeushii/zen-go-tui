@@ -2,10 +2,10 @@ use antelope_protocol::{
     encode_command, encode_mixer_assignment_frames_with_table, encode_query, load_profile_pack,
     Action, Command, ControlValue, DeviceDriver, DeviceEvent, DriverError, DynamicMixerSurface,
     DynamicStatePatch, FrameEndian, FrameOperation, GlobalControl, InputAddress, InputControl,
-    MixerAddress, MixerControl, OutputAddress, OutputControl, ProfileDriver, QueryRequest,
-    RoutingSource, RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
-    RuntimeMeterMapping, RuntimeMeterTarget, RuntimeReadiness, RuntimeRoutingReadbackSourceDomain,
-    WholeStateField, ZenGoDriver,
+    MixerAddress, MixerControl, OutputAddress, OutputControl, OutputTrimAddress,
+    ParamReadbackField, ProfileDriver, QueryRequest, RoutingSource, RuntimeConstraint,
+    RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeMeterMapping, RuntimeMeterTarget,
+    RuntimeReadiness, RuntimeRoutingReadbackSourceDomain, WholeStateField, ZenGoDriver,
 };
 
 fn stored_orion_entry() -> RuntimeEntry {
@@ -628,8 +628,12 @@ fn required_orion_actions() -> Vec<Action> {
             value: ControlValue::Enum(6),
         },
         Action::SetGlobal {
-            control: GlobalControl::Parameter(0x0e),
+            control: GlobalControl::Brightness,
             value: ControlValue::Int(73),
+        },
+        Action::SetOutputTrim {
+            address: OutputTrimAddress { target: 2 },
+            value: 6,
         },
         Action::SetMixerStripState {
             address: MixerAddress {
@@ -798,7 +802,7 @@ fn profile_derived_confirmed_parameter_families_match_complete_frames() {
         ),
         (
             Action::SetGlobal {
-                control: GlobalControl::Parameter(0x0e),
+                control: GlobalControl::Brightness,
                 value: ControlValue::Int(73),
             },
             0x12,
@@ -806,6 +810,37 @@ fn profile_derived_confirmed_parameter_families_match_complete_frames() {
         ),
     ] {
         assert_complete_parameter_frame(action, opcode, &payload);
+    }
+}
+
+#[test]
+fn profile_driver_encodes_all_bounded_output_trim_targets() {
+    let driver = profile_driver_from_fixture();
+    for value in [-1, 101] {
+        assert!(driver
+            .encode(Action::SetGlobal {
+                control: GlobalControl::Brightness,
+                value: ControlValue::Int(value),
+            })
+            .is_err());
+    }
+    for target in 0..=2 {
+        let batch = driver
+            .encode(Action::SetOutputTrim {
+                address: OutputTrimAddress { target },
+                value: 6,
+            })
+            .expect("confirmed trim target");
+        assert_eq!(batch.frames[0][4], 0x13);
+        assert_eq!(&batch.frames[0][16..19], &[0x4b, target, 6]);
+    }
+    for (target, value) in [(3, 0), (0, -1), (0, 7)] {
+        assert!(driver
+            .encode(Action::SetOutputTrim {
+                address: OutputTrimAddress { target },
+                value,
+            })
+            .is_err());
     }
 }
 
@@ -1144,8 +1179,20 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
                 value: ControlValue::Enum(0),
             },
             antelope_protocol::DynamicGlobalState {
-                control: GlobalControl::Parameter(0x0e),
+                control: GlobalControl::Brightness,
                 value: ControlValue::Int(73),
+            },
+            antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::OutputTrim(OutputTrimAddress { target: 0 }),
+                value: ControlValue::Enum(0),
+            },
+            antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::OutputTrim(OutputTrimAddress { target: 1 }),
+                value: ControlValue::Enum(0),
+            },
+            antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::OutputTrim(OutputTrimAddress { target: 2 }),
+                value: ControlValue::Enum(0),
             },
         ]
     );
@@ -1154,6 +1201,40 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
         .mixers
         .iter()
         .all(|surface| surface.master.is_some() && surface.strips.len() == 32));
+}
+
+#[test]
+fn orion_output_trim_readback_extracts_each_packed_field_independently() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let cases = [
+        (0, 24, 0x6f, [6, 0, 0]),
+        (1, 25, 0x1c, [0, 7, 0]),
+        (2, 25, 0xc3, [0, 0, 6]),
+    ];
+    for (_changed_target, offset, packed, expected) in cases {
+        let mut frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+        frame[24] = 0;
+        frame[25] = 0;
+        frame[offset] = packed;
+        let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+            panic!("snapshot")
+        };
+        let values = state
+            .globals
+            .iter()
+            .filter_map(|global| match global.control {
+                GlobalControl::OutputTrim(address) => match global.value {
+                    ControlValue::Enum(value) => Some((address.target, value)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            values,
+            vec![(0, expected[0]), (1, expected[1]), (2, expected[2])]
+        );
+    }
 }
 
 #[test]
@@ -1835,6 +1916,221 @@ fn constructor_rejects_missing_confirmed_decoder_mapping() {
 }
 
 #[test]
+fn constructor_rejects_malformed_or_incomplete_settings_contracts() {
+    for mutation in 0..18 {
+        let mut entry = fixture_entry();
+        match mutation {
+            0 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "screen_brightness")
+                    .unwrap()
+                    .status = "observed".into()
+            }
+            1 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "screen_brightness")
+                    .unwrap()
+                    .range = Some((0, 101))
+            }
+            2 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "output_trim")
+                    .unwrap()
+                    .range = Some((0, 7))
+            }
+            3 => {
+                entry
+                    .profile
+                    .constraints
+                    .iter_mut()
+                    .find(|constraint| constraint.name == "parameter_target.output_trim")
+                    .unwrap()
+                    .values = vec![0, 1]
+            }
+            4 => entry
+                .profile
+                .frames
+                .iter_mut()
+                .find(|frame| frame.id == "global_command")
+                .unwrap()
+                .operations
+                .push(FrameOperation::FixedByte {
+                    offset: 5,
+                    value: 0,
+                }),
+            5 => {
+                let frame = entry
+                    .profile
+                    .frames
+                    .iter_mut()
+                    .find(|frame| frame.id == "command")
+                    .unwrap();
+                frame.operations.push(frame.operations[0].clone());
+            }
+            6 => entry
+                .profile
+                .constraints
+                .retain(|constraint| constraint.name != "output_trim_target.2"),
+            7 => entry
+                .profile
+                .frames
+                .iter_mut()
+                .find(|frame| frame.id == "state_report")
+                .unwrap()
+                .operations
+                .retain(|operation| {
+                    !matches!(
+                        operation,
+                        FrameOperation::BitField {
+                            offset: 25,
+                            mask: 0xe0,
+                            shift: 5,
+                            ..
+                        }
+                    )
+                }),
+            8 => {
+                let frame = entry
+                    .profile
+                    .frames
+                    .iter_mut()
+                    .find(|frame| frame.id == "state_report")
+                    .unwrap();
+                let duplicate = frame
+                    .operations
+                    .iter()
+                    .find(|operation| {
+                        matches!(operation,
+                            FrameOperation::Scalar { field, offset: 26, .. }
+                                if field == "screen_brightness_byte_offset"
+                        )
+                    })
+                    .unwrap()
+                    .clone();
+                frame.operations.push(duplicate);
+            }
+            9 => entry
+                .profile
+                .params
+                .iter_mut()
+                .find(|parameter| parameter.name == "screen_brightness")
+                .unwrap()
+                .readback
+                .fields
+                .clear(),
+            10 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "screen_brightness")
+                    .unwrap()
+                    .readback
+                    .frame = "global_command".into()
+            }
+            11 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "screen_brightness")
+                    .unwrap()
+                    .readback
+                    .fields[0] = ParamReadbackField::Scalar {
+                    offset: 99,
+                    width: 1,
+                }
+            }
+            12 => {
+                let reference = &mut entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "screen_brightness")
+                    .unwrap()
+                    .readback;
+                reference.fields.push(reference.fields[0].clone());
+            }
+            13 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "output_trim")
+                    .unwrap()
+                    .readback
+                    .fields
+                    .pop();
+            }
+            14 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "output_trim")
+                    .unwrap()
+                    .readback
+                    .fields[2] = ParamReadbackField::BitField {
+                    target: 1,
+                    offset: 25,
+                    mask: 0xe0,
+                    shift: 5,
+                }
+            }
+            15 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "output_trim")
+                    .unwrap()
+                    .readback
+                    .semantic = "brightness".into()
+            }
+            16 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "output_trim")
+                    .unwrap()
+                    .readback
+                    .fields[1] = ParamReadbackField::BitField {
+                    target: 1,
+                    offset: 26,
+                    mask: 0x1c,
+                    shift: 2,
+                }
+            }
+            _ => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "output_trim")
+                    .unwrap()
+                    .readback
+                    .offsets[0]
+                    .1 = 99
+            }
+        }
+        assert!(
+            ProfileDriver::new(entry).is_err(),
+            "mutation {mutation} must fail closed"
+        );
+    }
+}
+
+#[test]
 fn constructor_rejects_ambiguous_semantic_operation() {
     let mut entry = fixture_entry();
     let frame = entry
@@ -2028,11 +2324,19 @@ fn constructor_rejects_bit_field_mask_below_shift_before_encode() {
 
 #[test]
 fn shifted_semantic_offsets_and_big_endian_width_are_profile_driven() {
+    let remove_fixed_settings = |entry: &mut RuntimeEntry| {
+        entry.profile.constraints.retain(|constraint| {
+            !matches!(
+                constraint.name.as_str(),
+                "output_mono_targets" | "parameter_target.output_trim"
+            )
+        });
+        entry.profile.params.retain(|parameter| {
+            !matches!(parameter.name.as_str(), "screen_brightness" | "output_trim")
+        });
+    };
     let mut entry = fixture_entry();
-    entry
-        .profile
-        .constraints
-        .retain(|constraint| constraint.name != "output_mono_targets");
+    remove_fixed_settings(&mut entry);
     let frame = entry
         .profile
         .frames
@@ -2077,10 +2381,7 @@ fn shifted_semantic_offsets_and_big_endian_width_are_profile_driven() {
     assert_eq!(&frame[16..19], &[0, 0, 0]);
 
     let mut entry = fixture_entry();
-    entry
-        .profile
-        .constraints
-        .retain(|constraint| constraint.name != "output_mono_targets");
+    remove_fixed_settings(&mut entry);
     let frame = entry
         .profile
         .frames

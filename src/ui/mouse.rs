@@ -7,7 +7,7 @@ use crate::app::{
 use crate::device::DevicePickerState;
 use antelope_protocol::{
     DynamicMeterState, GlobalControl, InputControl, MixerAddress, MixerAssignment, MixerControl,
-    OutputControl, PreampMode, RuntimeMeterTarget, SampleRate,
+    OutputControl, OutputTrimAddress, PreampMode, RuntimeMeterTarget, SampleRate,
 };
 
 use super::layouts::*;
@@ -169,6 +169,10 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
         Intent::SetInputPairLink { address, .. } => state.ui_profile.supports_input_link(*address),
         Intent::PickSampleRate(_) => state.ui_profile.supports_global(GlobalControl::SampleRate),
         Intent::PickClockSource(_) => state.ui_profile.supports_global(GlobalControl::ClockSource),
+        Intent::PickBrightness(_) => state.ui_profile.supports_global(GlobalControl::Brightness),
+        Intent::PickOutputTrim { address, .. } => state
+            .ui_profile
+            .supports_global(GlobalControl::OutputTrim(*address)),
         Intent::SelectSurface(_) => state.ui_profile.supports_global(GlobalControl::Surface),
         Intent::AdjustFocused(_) | Intent::ToggleFocusedMute | Intent::ToggleFocusedDim => {
             state.ui_profile.actionable
@@ -756,6 +760,12 @@ fn selector_popup_mouse_action(
         SelectorPopupKind::SampleRate => "Sample Rate",
         SelectorPopupKind::ClockSource => "Clock Source",
         SelectorPopupKind::PreampMode { .. } => "Preamp Mode",
+        SelectorPopupKind::Settings => "Device Settings",
+        SelectorPopupKind::Brightness => "Brightness",
+        SelectorPopupKind::OutputTrim { target: 0 } => "Output Trim 0",
+        SelectorPopupKind::OutputTrim { target: 1 } => "Output Trim 1",
+        SelectorPopupKind::OutputTrim { target: 2 } => "Output Trim 2",
+        SelectorPopupKind::OutputTrim { .. } => "Output Trim",
     };
     let inner = popup_list_inner_area(popup_area, title);
     if point.1 < inner.y {
@@ -765,6 +775,9 @@ fn selector_popup_mouse_action(
         SelectorPopupKind::SampleRate => SampleRate::all_confirmed().len(),
         SelectorPopupKind::ClockSource => state.ui_profile.clock_source_choices().len(),
         SelectorPopupKind::PreampMode { .. } => 3,
+        SelectorPopupKind::Settings => state.ui_profile.setting_rows().len(),
+        SelectorPopupKind::Brightness => 101,
+        SelectorPopupKind::OutputTrim { .. } => state.ui_profile.output_trim_value_labels().len(),
     };
     let viewport = popup_list_viewport(popup_area, title, item_count, state.popup.selected_index);
     let index = viewport
@@ -786,6 +799,30 @@ fn selector_popup_mouse_action(
                 .copied()
                 .map(|mode| Intent::PickPreampMode { input, mode })
         }
+        SelectorPopupKind::Settings => {
+            state
+                .ui_profile
+                .setting_rows()
+                .get(index)
+                .and_then(|control| match control {
+                    GlobalControl::Brightness => Some(Intent::OpenBrightnessSelector),
+                    GlobalControl::OutputTrim(address) => {
+                        Some(Intent::OpenOutputTrimSelector(*address))
+                    }
+                    _ => None,
+                })
+        }
+        SelectorPopupKind::Brightness => {
+            (index <= 100).then_some(Intent::PickBrightness(index as i32))
+        }
+        SelectorPopupKind::OutputTrim { target } => state
+            .ui_profile
+            .output_trim_value_labels()
+            .get(index)
+            .map(|(value, _)| Intent::PickOutputTrim {
+                address: OutputTrimAddress { target },
+                value: *value,
+            }),
     }
 }
 
@@ -796,7 +833,11 @@ fn system_panel_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) ->
     // panel_block has 1-cell borders; chips render at x+1, y+1.
     let x = area.x.saturating_add(1);
     let y = area.y.saturating_add(1);
-    let labels = ["RAW", "OPTNS", "X"];
+    let labels = if state.ui_profile.supports_settings() {
+        vec!["RAW", "OPTNS", "SET", "X"]
+    } else {
+        vec!["RAW", "OPTNS", "X"]
+    };
     let rects = inline_chip_rects(x, y, &labels);
     if contains_point(rects[0], point) {
         return Some(Intent::ToggleRawView);
@@ -808,7 +849,11 @@ fn system_panel_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) ->
             return Some(Intent::OpenOptionsPopup);
         }
     }
-    if contains_point(rects[2], point) {
+    let quit_index = labels.len() - 1;
+    if state.ui_profile.supports_settings() && contains_point(rects[2], point) {
+        return Some(Intent::OpenSettingsSelector);
+    }
+    if contains_point(rects[quit_index], point) {
         return Some(Intent::Quit);
     }
     None

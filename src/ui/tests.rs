@@ -2054,6 +2054,97 @@ fn scrolled_clock_selector_mouse_pick_uses_visible_profile_choice() {
 }
 
 #[test]
+fn profile_settings_are_orion_owned_and_unknown_until_readback() {
+    let mut orion = orion_state();
+    assert!(render::render_system_summary(&orion)
+        .to_string()
+        .contains("SET"));
+    assert!(!render::render_system_summary(&zen_go_state())
+        .to_string()
+        .contains("SET"));
+
+    orion.popup.selector_popup = Some(SelectorPopupState {
+        kind: SelectorPopupKind::Settings,
+    });
+    let area = Rect::new(0, 0, 60, 12);
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|frame| render::draw(frame, &orion)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("Brightness: ?"));
+    assert!(rendered.contains("Monitor A trim: ?"));
+    assert!(rendered.contains("Line Out trim: ?"));
+
+    let mut malformed = ProfileCatalog::builtin()
+        .entries()
+        .iter()
+        .find(|entry| entry.id == "orion_studio_3")
+        .unwrap()
+        .clone();
+    let command = malformed
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "command")
+        .unwrap();
+    command.operations.push(command.operations[0].clone());
+    assert!(!AppState::from_entry(&malformed)
+        .ui_profile
+        .supports_settings());
+
+    let mut missing_structured_readback = ProfileCatalog::builtin()
+        .entries()
+        .iter()
+        .find(|entry| entry.id == "orion_studio_3")
+        .unwrap()
+        .clone();
+    missing_structured_readback
+        .profile
+        .params
+        .iter_mut()
+        .find(|parameter| parameter.name == "screen_brightness")
+        .unwrap()
+        .readback
+        .fields
+        .clear();
+    assert!(!AppState::from_entry(&missing_structured_readback)
+        .ui_profile
+        .supports_settings());
+}
+
+#[test]
+fn brightness_selector_mouse_uses_scrolled_shared_viewport_for_all_101_values() {
+    let area = Rect::new(0, 0, 40, 8);
+    let mut state = orion_state();
+    state.popup.selector_popup = Some(SelectorPopupState {
+        kind: SelectorPopupKind::Brightness,
+    });
+    state.popup.selected_index = 100;
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("100%"));
+
+    let popup = layouts::assignment_picker_area(area);
+    let inner = layouts::popup_list_inner_area(popup, "Brightness");
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y + inner.height - 1),
+        Some(Intent::PickBrightness(100))
+    );
+}
+
+#[test]
 fn mouse_action_picks_preamp_mode_from_selector_popup() {
     let area = Rect::new(0, 0, 120, 50);
     let mut state = zen_go_state();

@@ -377,12 +377,30 @@ pub struct ParamOffsetDefinition {
     pub formula: &'static str,
 }
 
+/// Canonical full-report field used to read back one parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamReadbackFieldDefinition {
+    Scalar {
+        offset: u16,
+        width: u8,
+    },
+    BitField {
+        target: u8,
+        offset: u16,
+        mask: u8,
+        shift: u8,
+    },
+}
+
 /// A parameter frame or readback reference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParamReference {
     pub text: &'static str,
     pub formula: &'static str,
     pub offsets: &'static [ParamOffsetDefinition],
+    pub frame: &'static str,
+    pub semantic: &'static str,
+    pub fields: &'static [ParamReadbackFieldDefinition],
 }
 
 /// One named numeric or explanatory parameter range form.

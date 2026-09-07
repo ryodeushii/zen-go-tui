@@ -31,6 +31,9 @@ fn coalesce_key_for_command(command: &Action) -> Option<CoalesceKey> {
             pair: *pair,
         }),
         Action::SetGlobal { control, .. } => Some(CoalesceKey::Global(*control)),
+        Action::SetOutputTrim { address, .. } => {
+            Some(CoalesceKey::Global(GlobalControl::OutputTrim(*address)))
+        }
         Action::SetMixer { .. }
         | Action::SetRouting { .. }
         | Action::SetRoutingGroup { .. }
