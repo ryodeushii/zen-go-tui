@@ -430,19 +430,27 @@ fn draw_profiles_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 }
 
 fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let inner = output_panel_inner_area(area);
+    let viewport = dynamic_output_viewport(inner, state.outputs().len(), state.output.selected);
+    let title = if viewport.start > 0 || viewport.end < viewport.total {
+        format!(
+            "Outputs [{}-{}/{}]",
+            viewport.start + 1,
+            viewport.end,
+            viewport.total
+        )
+    } else {
+        "Outputs".to_string()
+    };
     frame.render_widget(
         panel_block(
-            "Outputs",
+            &title,
             Color::Rgb(70, 120, 90),
             state.ui.focus == FocusArea::Outputs,
         ),
         area,
     );
-    let inner = output_panel_inner_area(area);
-    for (index, row) in dynamic_output_card_areas(inner, state.outputs().len())
-        .into_iter()
-        .enumerate()
-    {
+    for (index, row) in viewport.cards {
         let Some(controls) = dynamic_output_control_rects(row, state, index) else {
             continue;
         };
@@ -454,7 +462,8 @@ fn draw_output_panel(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             state.ui.focus == FocusArea::Outputs && state.output.selected == index,
         );
     }
-    let help_button = output_hotkeys_button_rect(area, state.outputs().len());
+    let help_button =
+        output_hotkeys_button_rect_for_viewport(area, state.outputs().len(), state.output.selected);
     if help_button.height > 0 {
         Paragraph::new(Line::from(chip(
             "? HOTKEYS",

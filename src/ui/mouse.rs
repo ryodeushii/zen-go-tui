@@ -220,18 +220,6 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
         return Some(Intent::ToggleHotkeysPopup);
     }
 
-    if let Some(action) = device_header_mouse_action(area, state, point) {
-        return Some(action);
-    }
-
-    if state.popup.raw_view_open {
-        return raw_mouse_action(area, state, point);
-    }
-
-    if contains_point(titlebar_layout(chunks[0])[1], point) {
-        return system_panel_mouse_action(titlebar_layout(chunks[0])[1], state, point);
-    }
-
     if state.popup.profile_editor.is_some() {
         return profile_editor_mouse_action(area, point);
     }
@@ -264,6 +252,18 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
 
     if state.popup.options_open {
         return options_popup_mouse_action(area, state, point);
+    }
+
+    if let Some(action) = device_header_mouse_action(area, state, point) {
+        return Some(action);
+    }
+
+    if state.popup.raw_view_open {
+        return raw_mouse_action(area, state, point);
+    }
+
+    if contains_point(titlebar_layout(chunks[0])[1], point) {
+        return system_panel_mouse_action(titlebar_layout(chunks[0])[1], state, point);
     }
 
     let page = mixer_page_layout(chunks[1]);
@@ -1377,15 +1377,14 @@ fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
     }
 
     if contains_point(
-        output_hotkeys_button_rect(area, state.outputs().len()),
+        output_hotkeys_button_rect_for_viewport(area, state.outputs().len(), state.output.selected),
         point,
     ) {
         return Some(Intent::ToggleHotkeysPopup);
     }
     let inner = output_panel_inner_area(area);
-    for (index, row) in dynamic_output_card_areas(inner, state.outputs().len())
-        .into_iter()
-        .enumerate()
+    for (index, row) in
+        dynamic_output_viewport(inner, state.outputs().len(), state.output.selected).cards
     {
         let controls = dynamic_output_control_rects(row, state, index)?;
         if let Some(level) = controls.level {
@@ -1430,9 +1429,8 @@ fn output_list_slider_mouse_action(
         return None;
     }
     let inner = output_panel_inner_area(area);
-    for (index, row) in dynamic_output_card_areas(inner, state.outputs().len())
-        .into_iter()
-        .enumerate()
+    for (index, row) in
+        dynamic_output_viewport(inner, state.outputs().len(), state.output.selected).cards
     {
         let controls = dynamic_output_control_rects(row, state, index)?;
         if let Some(level) = controls.level {
@@ -1460,9 +1458,8 @@ fn output_list_slider_wheel_action(
         return None;
     }
     let inner = output_panel_inner_area(area);
-    for (index, row) in dynamic_output_card_areas(inner, state.outputs().len())
-        .into_iter()
-        .enumerate()
+    for (index, row) in
+        dynamic_output_viewport(inner, state.outputs().len(), state.output.selected).cards
     {
         let controls = dynamic_output_control_rects(row, state, index)?;
         if controls

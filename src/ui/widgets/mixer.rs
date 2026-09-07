@@ -127,19 +127,8 @@ pub(crate) fn output_meter_status(state: &AppState, index: usize) -> Option<Stri
     Some(format!("{status} {values}"))
 }
 
-fn render_dynamic_output_name(
-    area: Rect,
-    buffer: &mut Buffer,
-    name: &str,
-    accent: Color,
-    provisional: bool,
-) {
-    let mut spans = vec![chip(name, Color::Black, accent)];
-    if provisional {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled("P-F", muted_style()));
-    }
-    Paragraph::new(Line::from(spans)).render(area, buffer);
+fn render_dynamic_output_name(area: Rect, buffer: &mut Buffer, name: &str, accent: Color) {
+    Paragraph::new(Line::from(chip(name, Color::Black, accent))).render(area, buffer);
 }
 
 fn render_output_meter_lane(area: Rect, buffer: &mut Buffer, label: &str, value: Option<u8>) {
@@ -179,36 +168,25 @@ fn render_inline_output_meters(
     buffer: &mut Buffer,
     name: &str,
     accent: Color,
-    provisional: bool,
     lanes: &[(String, Option<u8>)],
 ) {
     if area.width == 0 || area.height == 0 || lanes.is_empty() {
-        render_dynamic_output_name(area, buffer, name, accent, provisional);
+        render_dynamic_output_name(area, buffer, name, accent);
         return;
     }
 
-    let marker_width: u16 = if provisional { 4 } else { 0 };
     let name_width = u16::try_from(name.chars().count())
         .unwrap_or(u16::MAX)
         .saturating_add(2);
     let lane_minimum = u16::try_from(lanes.len())
         .unwrap_or(u16::MAX)
         .saturating_mul(3);
-    let show_name = area.width
-        >= marker_width
-            .saturating_add(name_width)
-            .saturating_add(lane_minimum);
+    let show_name = area.width >= name_width.saturating_add(lane_minimum);
     let mut x = area.x;
     if show_name {
         let rect = Rect::new(x, area.y, name_width.min(area.width), 1);
         Paragraph::new(Line::from(chip(name, Color::Black, accent))).render(rect, buffer);
         x = x.saturating_add(rect.width);
-    }
-    if provisional {
-        let width = marker_width.min(area.x.saturating_add(area.width).saturating_sub(x));
-        Paragraph::new(Line::from(Span::styled("P-F ", muted_style())))
-            .render(Rect::new(x, area.y, width, 1), buffer);
-        x = x.saturating_add(width);
     }
 
     for (lane_index, (label, value)) in lanes.iter().enumerate() {
@@ -234,11 +212,84 @@ fn render_dynamic_output_header(
     name: &str,
     accent: Color,
 ) {
-    let Some((provisional, lanes)) = output_meter_values(state, index) else {
-        render_dynamic_output_name(area, buffer, name, accent, false);
+    let Some((_, lanes)) = output_meter_values(state, index) else {
+        render_dynamic_output_name(area, buffer, name, accent);
         return;
     };
-    render_inline_output_meters(area, buffer, name, accent, provisional, &lanes);
+    render_inline_output_meters(area, buffer, name, accent, &lanes);
+}
+
+fn render_vertical_output_meters(area: Rect, buffer: &mut Buffer, lanes: &[(String, Option<u8>)]) {
+    if area.width == 0 || area.height < 2 || lanes.is_empty() {
+        return;
+    }
+    let lane_count = u16::try_from(lanes.len()).unwrap_or(u16::MAX);
+    let rendered_width = if lane_count == 1 {
+        1
+    } else {
+        lane_count.saturating_mul(2).saturating_sub(1)
+    }
+    .min(area.width);
+    let rendered_lanes = if lane_count == 1 {
+        1
+    } else {
+        rendered_width.saturating_add(1) / 2
+    };
+    let start_x = area
+        .x
+        .saturating_add(area.width.saturating_sub(rendered_width) / 2);
+    let meter_height = area.height.saturating_sub(1);
+    for (index, (label, value)) in lanes.iter().take(usize::from(rendered_lanes)).enumerate() {
+        let lane_offset = u16::try_from(index).unwrap_or(u16::MAX);
+        let x = start_x.saturating_add(if lane_count == 1 {
+            lane_offset
+        } else {
+            lane_offset.saturating_mul(2)
+        });
+        let compact_label = if lanes.len() == 1 {
+            label.as_str()
+        } else {
+            &label[..1]
+        };
+        let label_width = u16::try_from(compact_label.chars().count()).unwrap_or(u16::MAX);
+        let label_x = if lanes.len() == 1 {
+            area.x
+                .saturating_add(area.width.saturating_sub(label_width) / 2)
+        } else {
+            x
+        };
+        buffer.set_string(
+            label_x,
+            area.y,
+            compact_label,
+            terminal::adapt_style(strong_style(Color::White)),
+        );
+        let Some(raw) = value else {
+            buffer[(x, area.y.saturating_add(1))]
+                .set_symbol("-")
+                .set_style(terminal::adapt_style(muted_style()));
+            continue;
+        };
+        let filled_cells =
+            (meter_ratio(*raw).clamp(0.0, 1.0) * f64::from(meter_height)).round() as u16;
+        for offset in 0..meter_height {
+            let y = area.y.saturating_add(1).saturating_add(offset);
+            let from_bottom = meter_height.saturating_sub(offset);
+            let filled = from_bottom <= filled_cells;
+            let color = if !filled {
+                Color::DarkGray
+            } else if offset == 0 {
+                Color::LightRed
+            } else if offset == 1 && meter_height >= 3 {
+                Color::Yellow
+            } else {
+                Color::LightGreen
+            };
+            buffer[(x, y)]
+                .set_symbol(if filled { "█" } else { "░" })
+                .set_style(terminal::adapt_style(Style::default().fg(color)));
+        }
+    }
 }
 
 pub(crate) fn render_dynamic_output_card_widget(
@@ -257,80 +308,22 @@ pub(crate) fn render_dynamic_output_card_widget(
         Color::LightBlue
     };
     if controls.row.height >= output_card_control_height() {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(terminal::adapt_style(Style::default().fg(accent)))
+            .render(controls.row, buffer);
         let meter_values = output_meter_values(state, index);
-        let meter_count = meter_values.as_ref().map_or(0, |(_, lanes)| {
-            u16::try_from(lanes.len()).unwrap_or(u16::MAX)
-        });
-        let stacked_meters = meter_count > 1
-            && controls.row.height
-                >= output_card_control_height().saturating_add(meter_count.saturating_sub(1));
-        if let Some((provisional, lanes)) = meter_values.as_ref().filter(|_| stacked_meters) {
-            let dedicated_header =
-                controls.row.height >= output_card_control_height().saturating_add(meter_count);
-            if dedicated_header {
-                render_dynamic_output_name(
-                    controls.header,
-                    buffer,
-                    &output.name,
-                    accent,
-                    *provisional,
-                );
-            } else {
-                render_inline_output_meters(
-                    controls.header,
-                    buffer,
-                    &output.name,
-                    accent,
-                    *provisional,
-                    &lanes[..1],
-                );
-            }
-            for (lane_index, (label, value)) in lanes
-                .iter()
-                .enumerate()
-                .skip(usize::from(!dedicated_header))
-            {
-                let meter_row = if dedicated_header {
-                    lane_index
-                } else {
-                    lane_index.saturating_sub(1)
-                };
-                let y_offset = output_card_control_height()
-                    .saturating_add(u16::try_from(meter_row).unwrap_or(u16::MAX));
-                render_output_meter_lane(
-                    Rect::new(
-                        controls.row.x,
-                        controls.row.y.saturating_add(y_offset),
-                        controls.row.width,
-                        1,
-                    ),
-                    buffer,
-                    label,
-                    *value,
-                );
-            }
-        } else {
-            render_dynamic_output_header(
-                controls.header,
-                buffer,
-                state,
-                index,
-                &output.name,
-                accent,
-            );
+        render_dynamic_output_name(controls.header, buffer, &output.name, accent);
+        if let (Some(rect), Some((_, lanes))) = (controls.meter_bay, meter_values.as_ref()) {
+            render_vertical_output_meters(rect, buffer, lanes);
         }
-        if let (Some(_), Some(semantics)) = (
+        if let (Some(rect), Some(semantics)) = (
             controls.level,
             state.output_semantics(antelope_protocol::OutputControl::Level),
         ) {
             let value = output.level.unwrap_or(semantics.min);
             render_labeled_slider(
-                Rect::new(
-                    controls.row.x,
-                    controls.row.y.saturating_add(1),
-                    controls.row.width,
-                    1,
-                ),
+                rect,
                 buffer,
                 &format!("LVL {} dB", output_display_db(value, semantics)),
                 Some(output_ratio(value, semantics)),

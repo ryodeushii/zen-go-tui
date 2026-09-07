@@ -89,6 +89,197 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
 }
 
 #[test]
+fn output_cards_keep_a_minimum_useful_width_and_wrap_before_overflow() {
+    let area = Rect::new(0, 0, 80, 12);
+    let cards = super::layouts::dynamic_output_card_areas(area, 6);
+
+    assert_eq!(cards.len(), 4);
+    assert_eq!(cards[0], Rect::new(0, 0, 40, 6));
+    assert_eq!(cards[1], Rect::new(40, 0, 40, 6));
+    assert_eq!(cards[2], Rect::new(0, 6, 40, 6));
+    assert_eq!(cards[3], Rect::new(40, 6, 40, 6));
+}
+
+#[test]
+fn selected_output_drives_the_shared_overflow_viewport() {
+    let area = Rect::new(0, 0, 80, 12);
+    let first = super::layouts::dynamic_output_viewport(area, 8, 0);
+    let last = super::layouts::dynamic_output_viewport(area, 8, 7);
+
+    assert_eq!((first.start, first.end), (0, 4));
+    assert_eq!(
+        first
+            .cards
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2, 3]
+    );
+    assert_eq!((last.start, last.end), (4, 8));
+    assert_eq!(
+        last.cards
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>(),
+        vec![4, 5, 6, 7]
+    );
+}
+
+#[test]
+fn synthetic_many_outputs_keep_the_last_output_rendered_and_mouse_reachable() {
+    let mut state = orion_ui_state();
+    let template = state.output.dynamic[0].clone();
+    for id in 6_u16..20 {
+        let mut output = template.clone();
+        output.address.id = id;
+        output.name = format!("Synthetic {}", id + 1);
+        state.output.dynamic.push(output);
+    }
+    state.output.selected = 19;
+    let area = Rect::new(0, 0, 80, 48);
+    let panel = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1])[1];
+    let viewport = super::layouts::dynamic_output_viewport(
+        super::layouts::output_panel_inner_area(panel),
+        state.outputs().len(),
+        state.output.selected,
+    );
+    assert_eq!((viewport.start, viewport.end, viewport.total), (18, 20, 20));
+    let last = viewport.cards[1].1;
+
+    let mut terminal = test_terminal(area.width, area.height);
+    draw_page(&mut terminal, &state);
+    let text = terminal_text(&terminal);
+    assert!(text.contains("Outputs [19-20/20]"), "{text}");
+    assert!(text.contains("Synthetic 20"), "{text}");
+    assert_eq!(
+        mouse_action(area, &state, last.x + 1, last.y + 1),
+        Some(Intent::SelectOutput(19))
+    );
+}
+
+#[test]
+fn short_output_section_uses_bounded_compact_cards() {
+    let area = Rect::new(2, 3, 50, 4);
+    let viewport = super::layouts::dynamic_output_viewport(area, 6, 5);
+
+    assert_eq!(viewport.cards.len(), 1);
+    let (index, card) = viewport.cards[0];
+    assert_eq!(index, 5);
+    assert_eq!(card, area);
+    let state = orion_ui_state();
+    let controls = super::layouts::dynamic_output_control_rects(card, &state, index).unwrap();
+    for rect in [
+        Some(controls.header),
+        controls.level,
+        controls.dim,
+        controls.mute,
+        controls.mono,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        assert!(rect.x >= card.x && rect.y >= card.y);
+        assert!(rect.x + rect.width <= card.x + card.width);
+        assert!(rect.y + rect.height <= card.y + card.height);
+    }
+}
+
+#[test]
+fn zen_go_output_card_places_stereo_lanes_around_one_blank_gutter() {
+    let mut state = zen_go_ui_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index: 0,
+            lane: 0,
+            value: 0,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index: 0,
+            lane: 1,
+            value: 0x30,
+        },
+    ];
+    let area = Rect::new(0, 0, 32, 6);
+    let controls = super::layouts::dynamic_output_control_rects(area, &state, 0).unwrap();
+    let mut buffer = Buffer::empty(area);
+    super::render::render_dynamic_output_card_widget(controls, &mut buffer, &state, 0, false);
+
+    let left_x = area.x + area.width - 4;
+    let gutter_x = left_x + 1;
+    let right_x = left_x + 2;
+    assert_eq!(controls.meter_bay, Some(Rect::new(left_x, 1, 3, 4)));
+    assert_eq!(buffer[(left_x, 1)].symbol(), "L");
+    assert_eq!(buffer[(gutter_x, 1)].symbol(), " ");
+    assert_eq!(buffer[(right_x, 1)].symbol(), "R");
+    for y in 2..5 {
+        assert_eq!(buffer[(left_x, y)].symbol(), "█");
+        assert_eq!(buffer[(gutter_x, y)].symbol(), " ");
+    }
+    assert_eq!(buffer[(right_x, 2)].symbol(), "░");
+    let mut card_text = String::new();
+    for y in 0..area.height {
+        for x in 0..area.width {
+            card_text.push_str(buffer[(x, y)].symbol());
+        }
+    }
+    assert!(!card_text.contains("P-F"), "{card_text}");
+
+    // Moving the existing controls-to-meter spacer inside the stereo pair must not move or
+    // resize any control or its shared mouse hitbox.
+    assert_eq!(controls.header, Rect::new(1, 1, 27, 1));
+    assert_eq!(controls.level, Some(Rect::new(13, 2, 15, 1)));
+    assert_eq!(controls.dim, Some(Rect::new(1, 4, 5, 1)));
+    assert_eq!(controls.mute, Some(Rect::new(7, 4, 6, 1)));
+    assert_eq!(controls.mono, None);
+}
+
+#[test]
+fn stereo_meter_gutter_preserves_output_control_mouse_hitboxes() {
+    let mut state = zen_go_ui_state();
+    state.meters = vec![
+        DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index: 0,
+            lane: 0,
+            value: 0x10,
+        },
+        DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index: 0,
+            lane: 1,
+            value: 0x20,
+        },
+    ];
+    let screen = Rect::new(0, 0, 140, 55);
+    let panel = super::layouts::mixer_page_layout(super::layouts::root_chunks(screen)[1])[1];
+    let inner = super::layouts::output_panel_inner_area(panel);
+    let card = super::layouts::dynamic_output_viewport(inner, state.outputs().len(), 0).cards[0].1;
+    let controls = super::layouts::dynamic_output_control_rects(card, &state, 0).unwrap();
+    let meter = controls.meter_bay.expect("stereo meter bay");
+
+    assert_eq!(meter.width, 3);
+    assert_eq!(controls.header.width, card.width - 5);
+    assert_eq!(controls.header.x + controls.header.width, meter.x);
+    let level = controls.level.expect("level hitbox");
+    assert!(matches!(
+        mouse_action(screen, &state, level.x + level.width / 2, level.y),
+        Some(Intent::SetOutputLevel { index: 0, .. })
+    ));
+    let dim = controls.dim.expect("dim hitbox");
+    assert_eq!(
+        mouse_action(screen, &state, dim.x + dim.width / 2, dim.y),
+        Some(Intent::ToggleOutputDim(0))
+    );
+    let mute = controls.mute.expect("mute hitbox");
+    assert_eq!(
+        mouse_action(screen, &state, mute.x + mute.width / 2, mute.y),
+        Some(Intent::ToggleOutputMute(0))
+    );
+}
+
+#[test]
 fn zen_go_output_cards_render_three_independent_stereo_meter_pairs() {
     let mut state = zen_go_ui_state();
     state.meters = (0_u16..3)
@@ -115,9 +306,8 @@ fn zen_go_output_cards_render_three_independent_stereo_meter_pairs() {
     let mut terminal = test_terminal(140, 48);
     draw_page(&mut terminal, &state);
     let text = terminal_text(&terminal);
-    assert!(text.contains("P-F"), "{text}");
-    assert!(text.contains("L "), "{text}");
-    assert!(text.contains("R "), "{text}");
+    assert!(!text.contains("P-F"), "{text}");
+    assert!(text.contains("L R"), "{text}");
     assert!(text.contains('█'), "{text}");
     assert!(text.contains('░'), "{text}");
     assert!(!text.contains("MIX MASTER"));
@@ -149,7 +339,7 @@ fn orion_output_meters_are_one_lane_each_and_ignore_selected_mix() {
         .iter()
         .all(|status| !status.contains("L:") && !status.contains("R:")));
 
-    let area = Rect::new(0, 0, 32, 3);
+    let area = Rect::new(0, 0, 32, 6);
     let controls = super::layouts::dynamic_output_control_rects(area, &state, 0).unwrap();
     let mut selected_buffer = Buffer::empty(area);
     super::render::render_dynamic_output_card_widget(
@@ -169,12 +359,25 @@ fn orion_output_meters_are_one_lane_each_and_ignore_selected_mix() {
         false,
     );
     assert_eq!(selected_buffer, other_selector_buffer);
-    let row = (0..area.width)
-        .map(|x| selected_buffer[(x, 0)].symbol())
+    let label_row = (0..area.width)
+        .map(|x| selected_buffer[(x, 1)].symbol())
         .collect::<String>();
-    assert!(row.contains("LANE1"), "{row}");
-    assert!(!row.contains("L ") && !row.contains("R "), "{row}");
-    assert!(row.contains('█') && row.contains('░'), "{row}");
+    assert!(label_row.contains("LANE1"), "{label_row}");
+    assert!(!label_row.contains(" R"), "{label_row}");
+    let meter_symbols = (2..5)
+        .map(|y| selected_buffer[(28, y)].symbol())
+        .collect::<String>();
+    assert!(
+        meter_symbols.contains('█') && meter_symbols.contains('░'),
+        "{meter_symbols}"
+    );
+    assert_eq!(controls.meter_bay, Some(Rect::new(26, 1, 5, 4)));
+    for y in 2..5 {
+        assert!(matches!(selected_buffer[(28, y)].symbol(), "█" | "░"));
+        for x in [26, 27, 29, 30] {
+            assert_eq!(selected_buffer[(x, y)].symbol(), " ");
+        }
+    }
 }
 
 #[test]
@@ -187,13 +390,12 @@ fn output_meter_missing_and_silence_are_distinct_without_fake_zero() {
     let controls = super::layouts::dynamic_output_control_rects(area, &state, 0).unwrap();
     let mut missing = Buffer::empty(area);
     super::render::render_dynamic_output_card_widget(controls, &mut missing, &state, 0, false);
-    for y in [0, 3] {
-        let row = (0..area.width)
-            .map(|x| missing[(x, y)].symbol())
-            .collect::<String>();
-        assert!(row.contains("--"), "{row}");
-        assert!(!row.contains('█') && !row.contains('░'), "{row}");
-    }
+    assert_eq!(missing[(26, 2)].symbol(), "-");
+    assert_eq!(missing[(27, 2)].symbol(), " ");
+    assert_eq!(missing[(28, 2)].symbol(), "-");
+    assert!(
+        !(2..5).any(|y| (0..area.width).any(|x| { matches!(missing[(x, y)].symbol(), "█" | "░") }))
+    );
 
     state.meters = vec![
         DynamicMeterState {
@@ -215,17 +417,11 @@ fn output_meter_missing_and_silence_are_distinct_without_fake_zero() {
 
     let mut values = Buffer::empty(area);
     super::render::render_dynamic_output_card_widget(controls, &mut values, &state, 0, false);
-    let silence = (0..area.width)
-        .map(|x| values[(x, 0)].symbol())
-        .collect::<String>();
-    let full_scale = (0..area.width)
-        .map(|x| values[(x, 3)].symbol())
-        .collect::<String>();
-    assert!(silence.contains('░') && !silence.contains('█'), "{silence}");
-    assert!(
-        full_scale.contains('█') && !full_scale.contains('░'),
-        "{full_scale}"
-    );
+    for y in 2..5 {
+        assert_eq!(values[(26, y)].symbol(), "░");
+        assert_eq!(values[(27, y)].symbol(), " ");
+        assert_eq!(values[(28, y)].symbol(), "█");
+    }
 }
 
 #[test]
@@ -245,22 +441,71 @@ fn output_meter_bars_render_threshold_colors_for_distinct_lane_values() {
             value: 30,
         },
     ];
-    let area = Rect::new(0, 0, 30, 5);
+    let area = Rect::new(0, 0, 30, 6);
     let controls = super::layouts::dynamic_output_control_rects(area, &state, 0).unwrap();
     let mut buffer = Buffer::empty(area);
     super::render::render_dynamic_output_card_widget(controls, &mut buffer, &state, 0, false);
 
-    assert_eq!(buffer[(2, 3)].symbol(), "█");
-    assert_eq!(buffer[(23, 3)].symbol(), "█");
-    assert_eq!(buffer[(27, 3)].symbol(), "█");
-    assert_eq!(buffer[(2, 4)].symbol(), "█");
-    assert_eq!(buffer[(15, 4)].symbol(), "█");
-    assert_eq!(buffer[(16, 4)].symbol(), "░");
+    assert_eq!(buffer[(26, 2)].symbol(), "█");
+    assert_eq!(buffer[(26, 3)].symbol(), "█");
+    assert_eq!(buffer[(26, 4)].symbol(), "█");
+    assert_eq!(buffer[(27, 2)].symbol(), " ");
+    assert_eq!(buffer[(27, 3)].symbol(), " ");
+    assert_eq!(buffer[(27, 4)].symbol(), " ");
+    assert_eq!(buffer[(28, 2)].symbol(), "░");
+    assert_eq!(buffer[(28, 3)].symbol(), "█");
+    assert_eq!(buffer[(28, 4)].symbol(), "█");
     let expected = crate::terminal::adapt_color;
-    assert_eq!(buffer[(2, 3)].fg, expected(Color::LightGreen));
-    assert_eq!(buffer[(23, 3)].fg, expected(Color::Yellow));
-    assert_eq!(buffer[(27, 3)].fg, expected(Color::LightRed));
-    assert_eq!(buffer[(16, 4)].fg, expected(Color::DarkGray));
+    assert_eq!(buffer[(26, 2)].fg, expected(Color::LightRed));
+    assert_eq!(buffer[(26, 3)].fg, expected(Color::Yellow));
+    assert_eq!(buffer[(26, 4)].fg, expected(Color::LightGreen));
+    assert_eq!(buffer[(28, 2)].fg, expected(Color::DarkGray));
+}
+
+#[test]
+#[ignore = "writes mock TestBackend visual artifacts on demand"]
+fn capture_output_card_visuals_from_mock_states() {
+    let visual_dir = std::path::Path::new("target/tui-visuals");
+    std::fs::create_dir_all(visual_dir).expect("create visual artifact directory");
+
+    let mut zen = zen_go_ui_state();
+    zen.ui.focus = crate::app::FocusArea::Outputs;
+    zen.meters = (0_u16..3)
+        .flat_map(|target_index| {
+            [0_u8, 1].map(move |lane| DynamicMeterState {
+                target: RuntimeMeterTarget::PhysicalOutput,
+                target_index,
+                lane,
+                value: 8 + target_index as u8 * 14 + lane * 9,
+            })
+        })
+        .collect();
+    let mut wide = test_terminal(160, 55);
+    draw_page(&mut wide, &zen);
+    std::fs::write(
+        visual_dir.join("output-cards-wide-zen.txt"),
+        terminal_text(&wide),
+    )
+    .expect("write wide visual artifact");
+
+    let mut orion = orion_ui_state();
+    orion.ui.focus = crate::app::FocusArea::Outputs;
+    orion.output.selected = 5;
+    orion.meters = (0_u16..6)
+        .map(|target_index| DynamicMeterState {
+            target: RuntimeMeterTarget::PhysicalOutput,
+            target_index,
+            lane: 0,
+            value: 10 + target_index as u8 * 8,
+        })
+        .collect();
+    let mut narrow = test_terminal(72, 48);
+    draw_page(&mut narrow, &orion);
+    std::fs::write(
+        visual_dir.join("output-cards-narrow-orion-overflow.txt"),
+        terminal_text(&narrow),
+    )
+    .expect("write narrow visual artifact");
 }
 
 #[test]
@@ -428,15 +673,17 @@ fn orion_header_includes_device_name_and_supported_readiness() {
 
 #[test]
 fn orion_outputs_and_input_spaces_use_complete_profile_topology() {
-    let state = orion_ui_state();
-    let text = render_to_string(&state);
-    for output in state.outputs() {
+    let mut state = orion_ui_state();
+    for index in 0..state.outputs().len() {
+        state.output.selected = index;
+        let text = render_to_string(&state);
         assert!(
-            text.contains(&output.name),
-            "missing output {}",
-            output.name
+            text.contains(&state.outputs()[index].name),
+            "selected output {} is unreachable",
+            state.outputs()[index].name
         );
     }
+    let text = render_to_string(&state);
     for space in &state.input_spaces {
         assert!(text.contains(&space.name), "missing space {}", space.name);
         for input in &space.inputs {
@@ -799,7 +1046,7 @@ fn orion_output_mono_chip_geometry_render_and_mouse_share_exact_targets() {
     }
     observe_output_patch(&mut state, outputs);
 
-    let area = Rect::new(0, 0, 140, 48);
+    let area = Rect::new(0, 0, 140, 55);
     let panel = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1])[1];
     let inner = super::layouts::output_panel_inner_area(panel);
     let cards = super::layouts::dynamic_output_card_areas(inner, state.outputs().len());
@@ -833,7 +1080,7 @@ fn orion_output_mono_chip_geometry_render_and_mouse_share_exact_targets() {
 }
 
 #[test]
-fn orion_full_output_grid_keeps_hotkeys_off_the_last_level_control() {
+fn orion_overflow_viewport_keeps_hotkeys_off_the_last_level_control() {
     let mut orion = entry("orion_studio_3");
     let zen = entry("zen_go_sc");
     // Keep profile evidence unchanged while making the collision fixture's level action available.
@@ -853,43 +1100,44 @@ fn orion_full_output_grid_keeps_hotkeys_off_the_last_level_control() {
     orion_level.unity = zen_level.unity;
     let mut state = AppState::from_entry(&orion);
     state.ui_profile.actionable = true;
+    state.output.selected = 5;
     let area = Rect::new(0, 0, 140, 48);
     let panel = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1])[1];
     let inner = super::layouts::output_panel_inner_area(panel);
     assert_eq!(inner, Rect::new(1, 41, 138, 6));
 
-    let cards = super::layouts::dynamic_output_card_areas(inner, state.outputs().len());
-    assert_eq!(cards.len(), 6);
-    let last_controls = super::layouts::dynamic_output_control_rects(cards[5], &state, 5)
-        .expect("last output controls");
-    assert!(last_controls
-        .level
-        .is_some_and(|level| level.contains(ratatui::layout::Position::new(129, 45))));
-
-    let hotkeys = super::layouts::output_hotkeys_button_rect(panel, state.outputs().len());
-    assert_eq!(hotkeys, Rect::new(inner.x, inner.y, 0, 0));
-    assert!(state
-        .ui_profile
-        .supports_output(state.outputs()[5].address, OutputControl::Level));
-    assert!(state.output_semantics(OutputControl::Level).is_some());
-    let action = mouse_action(area, &state, 129, 45);
-    assert!(
-        matches!(action, Some(Intent::SetOutputLevel { index: 5, .. })),
-        "action {action:?}, level {:?}",
-        last_controls.level
+    let viewport = super::layouts::dynamic_output_viewport(
+        inner,
+        state.outputs().len(),
+        state.output.selected,
     );
+    assert_eq!((viewport.start, viewport.end), (4, 6));
+    let last_card = viewport
+        .cards
+        .iter()
+        .find(|(index, _)| *index == 5)
+        .map(|(_, card)| *card)
+        .expect("last output card");
+    let last_controls = super::layouts::dynamic_output_control_rects(last_card, &state, 5)
+        .expect("last output controls");
+    let level = last_controls.level.expect("last level");
+
+    let hotkeys = super::layouts::output_hotkeys_button_rect_for_viewport(
+        panel,
+        state.outputs().len(),
+        state.output.selected,
+    );
+    assert!(hotkeys.x >= last_card.x.saturating_add(last_card.width));
+    assert!(matches!(
+        mouse_action(area, &state, level.x + level.width / 2, level.y),
+        Some(Intent::SetOutputLevel { index: 5, .. })
+    ));
 
     let mut terminal = test_terminal(area.width, area.height);
     draw_page(&mut terminal, &state);
-    let level_row = (cards[5].x..cards[5].x.saturating_add(cards[5].width))
-        .map(|x| terminal.backend().buffer()[(x, 45)].symbol())
-        .collect::<String>();
-    assert!(level_row.contains("LVL"), "{level_row}");
-    assert!(
-        level_row.contains('─') || level_row.contains('●'),
-        "{level_row}"
-    );
-    assert!(!level_row.contains("HOTKEYS"), "{level_row}");
+    let text = terminal_text(&terminal);
+    assert!(text.contains("Outputs [5-6/6]"), "{text}");
+    assert!(text.contains("monitor_b"), "{text}");
 }
 
 #[test]
@@ -926,8 +1174,14 @@ fn output_hotkeys_use_only_space_outside_dynamic_cards() {
 
     let compact_panel = Rect::new(0, 0, 36, 8);
     let compact_hotkeys = super::layouts::output_hotkeys_button_rect(compact_panel, 6);
-    assert_eq!(compact_hotkeys.width, 0);
-    assert_eq!(compact_hotkeys.height, 0);
+    assert_eq!(compact_hotkeys.height, 1);
+    assert_eq!(compact_hotkeys.y, compact_panel.y);
+    assert!(super::layouts::dynamic_output_card_areas(
+        super::layouts::output_panel_inner_area(compact_panel),
+        6,
+    )
+    .iter()
+    .all(|card| !overlaps(compact_hotkeys, *card)));
 }
 
 #[test]
@@ -959,7 +1213,7 @@ fn zen_go_compact_output_card_keeps_independent_stereo_readings_and_controls() {
     let text = (0..area.width)
         .map(|x| buffer[(x, 0)].symbol())
         .collect::<String>();
-    assert!(text.contains("P-F"), "{text}");
+    assert!(!text.contains("P-F"), "{text}");
     assert!(text.contains("L "), "{text}");
     assert!(text.contains("R "), "{text}");
     assert!(text.contains('█') && text.contains('░'), "{text}");
@@ -970,7 +1224,7 @@ fn zen_go_compact_output_card_keeps_independent_stereo_readings_and_controls() {
 }
 
 #[test]
-fn narrow_output_cards_keep_provisional_meters_visible_without_mono_hitboxes() {
+fn narrow_output_cards_keep_meters_visible_without_mono_hitboxes() {
     let mut state = orion_ui_state();
     let mut outputs = state.outputs().to_vec();
     outputs[0].mono = Some(false);
@@ -994,8 +1248,10 @@ fn narrow_output_cards_keep_provisional_meters_visible_without_mono_hitboxes() {
     let mut terminal = test_terminal(area.width, area.height);
     draw_page(&mut terminal, &state);
     let text = terminal_text(&terminal);
-    // Every visible output card keeps a provisional marker and a graphical lane reading.
-    assert_eq!(text.matches("P-F").count(), 3, "{text}");
+    // The narrow viewport is explicit and its one visible card keeps an honest lane reading.
+    assert_eq!(text.matches("P-F").count(), 0, "{text}");
+    assert!(text.contains("Outputs [1-1/6]"), "{text}");
+    assert!(text.contains("LANE1"), "{text}");
     assert!(text.contains('█') && text.contains('░'), "{text}");
     assert!(
         !text.contains("-21") && !text.contains("-22") && !text.contains("-23"),

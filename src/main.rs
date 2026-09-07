@@ -684,64 +684,23 @@ mod tests {
         let mut controller = test_controller(Box::new(transport.clone()));
         controller.state.output.dynamic[0].level = Some(0x30);
         let area = ratatui::layout::Rect::new(0, 0, 120, 50);
-        let chunks = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Vertical)
-            .constraints([
-                ratatui::layout::Constraint::Length(3),
-                ratatui::layout::Constraint::Min(17),
-            ])
-            .split(area);
-        let page = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Vertical)
-            .constraints([
-                ratatui::layout::Constraint::Min(14),
-                ratatui::layout::Constraint::Length(8),
-            ])
-            .split(chunks[1]);
-        let inner = ratatui::layout::Rect::new(
-            page[1].x + 1,
-            page[1].y + 1,
-            page[1].width.saturating_sub(2),
-            page[1].height.saturating_sub(2),
-        );
-        let card = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Horizontal)
-            .constraints([
-                ratatui::layout::Constraint::Percentage(34),
-                ratatui::layout::Constraint::Percentage(33),
-                ratatui::layout::Constraint::Percentage(33),
-            ])
-            .split(ratatui::layout::Rect::new(inner.x, inner.y, inner.width, 3))[0];
-        let slider_row = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Vertical)
-            .constraints([
-                ratatui::layout::Constraint::Length(1),
-                ratatui::layout::Constraint::Length(1),
-                ratatui::layout::Constraint::Length(1),
-            ])
-            .split(card)[1];
-        let slider_area = ratatui::layout::Rect::new(
-            slider_row.x,
-            slider_row.y,
-            slider_row.width.min(40),
-            slider_row.height,
-        );
-        let label_width = 12.min(slider_area.width.saturating_sub(1)).max(1);
-        let track = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Horizontal)
-            .constraints([
-                ratatui::layout::Constraint::Length(label_width),
-                ratatui::layout::Constraint::Min(1),
-            ])
-            .split(slider_area)[1];
+        let (slider_x, slider_y) = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .find(|(x, y)| {
+                matches!(
+                    ui::slider_wheel_action(area, &controller.state, *x, *y, true),
+                    Some(ui::Intent::AdjustOutputLevel { index: 0, .. })
+                )
+            })
+            .expect("visible output slider hitbox");
 
         handle_mouse_event(
             area,
             &mut controller,
             AppMouseEvent {
                 kind: AppMouseEventKind::ScrollUp,
-                column: track.x,
-                row: track.y,
+                column: slider_x,
+                row: slider_y,
                 modifiers: Default::default(),
             },
         )

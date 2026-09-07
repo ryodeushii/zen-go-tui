@@ -1653,6 +1653,8 @@ mod tests {
                 .expect("controller");
         controller.state.device.status.clock_source = Some(0);
         controller.state.device.status.sample_rate = Some(SampleRate::Hz48000);
+        controller.state.ui.focus = FocusArea::Outputs;
+        controller.state.output.selected = 3;
         controller
             .apply_intent(Intent::OpenClockSourceSelector, area)
             .expect("open clock selector");
@@ -1674,6 +1676,7 @@ mod tests {
         assert!(actions.lock().expect("recorded actions").is_empty());
         assert!(transport.take_writes().is_empty());
         assert_eq!(controller.state.device.status.clock_source, Some(0));
+        assert_eq!(controller.state.output.selected, 3);
         assert_eq!(
             controller.state.device.status.sample_rate,
             Some(SampleRate::Hz48000)

@@ -9,8 +9,9 @@ use ratatui::widgets::{Paragraph, Widget, Wrap};
 use ratatui::Terminal;
 
 use crate::app::{
-    AppState, AssignmentPickerState, Controller, FocusArea, Intent, RawMapScope, RawPacketTab,
-    SelectorPopupKind, SelectorPopupState,
+    AppState, AssignmentPickerState, Controller, FocusArea, Intent, ProfileEditorMode,
+    ProfileEditorState, RawMapScope, RawPacketTab, RoutingSourcePickerState, SelectorPopupKind,
+    SelectorPopupState,
 };
 use antelope_protocol::{
     DynamicMeterState, MixerAddress, MixerAssignment, MixerChannelState, MixerLinkTarget,
@@ -1047,6 +1048,138 @@ fn mouse_action_hits_status_raw_view_toggle() {
 }
 
 #[test]
+fn modal_mouse_dispatch_has_priority_over_every_header_action() {
+    fn modal_cases(base: &AppState) -> Vec<(&'static str, AppState, Intent)> {
+        let mut profile_editor = base.clone();
+        profile_editor.popup.profile_editor = Some(ProfileEditorState {
+            mode: ProfileEditorMode::Save,
+            original_name: None,
+            value: "profile".to_string(),
+        });
+        let mut profiles = base.clone();
+        profiles.popup.profiles_open = true;
+        let mut selector = base.clone();
+        selector.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::SampleRate,
+        });
+        let mut general_settings = base.clone();
+        general_settings.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::Settings,
+        });
+        let mut assignment = base.clone();
+        assignment.popup.assignment_picker = Some(AssignmentPickerState { strip: 1 });
+        let mut routing_source = base.clone();
+        routing_source.popup.routing_open = true;
+        routing_source.popup.routing_source_picker = Some(RoutingSourcePickerState {
+            destination: 0,
+            channel: 0,
+        });
+        let mut routing = base.clone();
+        routing.popup.routing_open = true;
+        let mut options = base.clone();
+        options.popup.options_open = true;
+
+        vec![
+            ("profile editor", profile_editor, Intent::CloseProfilesPopup),
+            ("profiles", profiles, Intent::CloseProfilesPopup),
+            ("selector", selector, Intent::CloseSelectorPopup),
+            (
+                "general settings selector",
+                general_settings,
+                Intent::CloseSelectorPopup,
+            ),
+            (
+                "assignment picker",
+                assignment,
+                Intent::CloseAssignmentPicker,
+            ),
+            (
+                "routing source picker",
+                routing_source,
+                Intent::CloseRoutingSourcePicker,
+            ),
+            ("routing", routing, Intent::CloseRoutingPopup),
+            ("options", options, Intent::CloseOptionsPopup),
+        ]
+    }
+
+    let area = Rect::new(0, 0, 140, 50);
+    let mut zen = zen_go_state();
+    zen.device.status.clock_source = Some(0);
+    let zen_titlebar = layouts::titlebar_layout(layouts::root_chunks(area)[0]);
+    let device_chips = layouts::device_header_hit_areas(zen_titlebar[0], &zen);
+    let zen_system_inner = layouts::inner_area(zen_titlebar[1]);
+    let zen_system_chips = layouts::inline_chip_rects(
+        zen_system_inner.x,
+        zen_system_inner.y,
+        &["RAW", "OPTNS", "X"],
+    );
+
+    let orion = orion_state();
+    let orion_titlebar = layouts::titlebar_layout(layouts::root_chunks(area)[0]);
+    let system_inner = layouts::inner_area(orion_titlebar[1]);
+    let system_chips = layouts::inline_chip_rects(
+        system_inner.x,
+        system_inner.y,
+        &["RAW", "OPTNS", "SET", "X"],
+    );
+    let header_actions = vec![
+        (
+            "sample rate",
+            zen.clone(),
+            (device_chips[1].x + 1, device_chips[1].y),
+            Intent::OpenSampleRateSelector,
+        ),
+        (
+            "clock source",
+            zen.clone(),
+            (device_chips[2].x + 1, device_chips[2].y),
+            Intent::OpenClockSourceSelector,
+        ),
+        (
+            "raw view",
+            orion.clone(),
+            (system_chips[0].x, system_chips[0].y),
+            Intent::ToggleRawView,
+        ),
+        (
+            "options",
+            orion.clone(),
+            (system_chips[1].x, system_chips[1].y),
+            Intent::OpenOptionsPopup,
+        ),
+        (
+            "settings",
+            orion.clone(),
+            (system_chips[2].x, system_chips[2].y),
+            Intent::OpenSettingsSelector,
+        ),
+        (
+            "quit",
+            zen,
+            (zen_system_chips[2].x, zen_system_chips[2].y),
+            Intent::Quit,
+        ),
+    ];
+
+    for (header_name, base, point, underlying) in &header_actions {
+        assert_eq!(
+            mouse_action(area, base, point.0, point.1),
+            Some(underlying.clone()),
+            "header action {header_name} should remain unchanged without a modal"
+        );
+
+        for (modal_name, state, expected) in modal_cases(base) {
+            assert_eq!(
+                mouse_action(area, &state, point.0, point.1),
+                Some(expected),
+                "{modal_name} must consume {header_name}, not retarget to {underlying:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn selecting_packet_resets_unsupported_scope_and_scroll() {
     let mut state = AppState::default();
     state.raw_view.raw_map_scope = RawMapScope::Mixer;
@@ -1576,9 +1709,12 @@ fn mouse_action_hits_visible_output_dim_chip_position() {
     let area = Rect::new(0, 0, 120, 50);
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
     let list_inner = layouts::output_panel_inner_area(page[1]);
-    let row_area = layouts::output_card_areas(list_inner)[0];
     let state = AppState::default();
-    let dim = layouts::output_control_rects(row_area)[2];
+    let row_area =
+        layouts::dynamic_output_viewport(list_inner, state.outputs().len(), 0).cards[0].1;
+    let dim = layouts::dynamic_output_control_rects(row_area, &state, 0)
+        .and_then(|controls| controls.dim)
+        .expect("dim control");
 
     assert_eq!(
         mouse_action(area, &state, dim.x + dim.width / 2, dim.y),
@@ -1591,9 +1727,12 @@ fn mouse_action_hits_visible_output_mute_chip_position_on_hp1() {
     let area = Rect::new(0, 0, 120, 50);
     let page = layouts::mixer_page_layout(layouts::root_chunks(area)[1]);
     let list_inner = layouts::output_panel_inner_area(page[1]);
-    let row_area = layouts::output_card_areas(list_inner)[1];
     let state = AppState::default();
-    let mute = layouts::output_control_rects(row_area)[3];
+    let row_area =
+        layouts::dynamic_output_viewport(list_inner, state.outputs().len(), 1).cards[1].1;
+    let mute = layouts::dynamic_output_control_rects(row_area, &state, 1)
+        .and_then(|controls| controls.mute)
+        .expect("mute control");
 
     assert_eq!(
         mouse_action(area, &state, mute.x + mute.width / 2, mute.y),
