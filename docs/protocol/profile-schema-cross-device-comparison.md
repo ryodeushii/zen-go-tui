@@ -122,7 +122,7 @@ The layout values differ:
 - Orion: gain base 49 and status base 61; no confirmed physical-input meter base.
 - Zen Go: gain base 40, status base 42, observed preamp-meter candidates at `0xce` and `0xcf`.
 
-Gain ranges also differ by hardware and evidence quality. Zen's line-mode range remains intentionally ungrounded and must not inherit Orion's `-6..20` range.
+Gain ranges also differ by hardware and evidence quality. Orion's profile-owned runtime envelope is `-6..75` dB, with mode-specific ranges Mic `0..75`, Line `-6..20`, Hi-Z `0..65`, and Direct `0..20`; Line values use signed two's-complement bytes (`-6` is `0xfa`) and the lower endpoint is user-confirmed. Zen's line-mode range remains intentionally ungrounded and must not inherit Orion's `-6..20` range.
 
 Relevant sources:
 

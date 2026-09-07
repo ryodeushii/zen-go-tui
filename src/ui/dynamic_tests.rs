@@ -884,6 +884,69 @@ fn rich_preamp_gain_slider_uses_mode_specific_profile_endpoints() {
 }
 
 #[test]
+fn orion_line_gain_range_and_display_follow_mode_specific_profile_bounds() {
+    let area = Rect::new(0, 0, 200, 55);
+    let mut state = orion_ui_state();
+    let address = state.input_spaces[0].inputs[0].address;
+    let page = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1]);
+    let main = super::layouts::mixer_main_layout_for_state(page[0], &state);
+    let row = super::layouts::dynamic_input_rows(main[0], &state)[0].2;
+    let gain = super::layouts::dynamic_input_control_rects(row, &state, 0, 0)
+        .and_then(|controls| controls.gain)
+        .expect("Orion preamp gain slider");
+
+    for (mode, expected) in [(0, (0, 75)), (1, (-6, 20)), (2, (0, 65)), (3, (0, 20))] {
+        state.input_spaces[0].inputs[0].mode = Some(mode);
+        assert_eq!(state.input_range(address, Some(mode)), Some(expected));
+        assert_eq!(
+            slider_mouse_action(area, &state, gain.x, gain.y),
+            Some(Intent::SetInputGainAt {
+                address,
+                raw: expected.0,
+            })
+        );
+        assert_eq!(
+            slider_mouse_action(
+                area,
+                &state,
+                gain.x.saturating_add(gain.width.saturating_sub(1)),
+                gain.y,
+            ),
+            Some(Intent::SetInputGainAt {
+                address,
+                raw: expected.1,
+            })
+        );
+    }
+
+    state.input_spaces[0].inputs[0].mode = Some(1);
+    state.input_spaces[0].inputs[0].gain = Some(-6);
+    let mut terminal = test_terminal(area.width, area.height);
+    draw_page(&mut terminal, &state);
+    assert!(terminal_text(&terminal).contains("-6 dB"));
+
+    state.input_spaces[0].inputs[0].mode = Some(99);
+    assert_eq!(state.input_range(address, Some(99)), None);
+    assert_eq!(slider_mouse_action(area, &state, gain.x, gain.y), None);
+    assert_eq!(
+        slider_mouse_action(
+            area,
+            &state,
+            gain.x.saturating_add(gain.width.saturating_sub(1)),
+            gain.y,
+        ),
+        None
+    );
+    let mode = super::layouts::dynamic_input_control_rects(row, &state, 0, 0)
+        .and_then(|controls| controls.mode)
+        .expect("mode control remains available");
+    assert_eq!(
+        mouse_action(area, &state, mode.x, mode.y),
+        Some(Intent::CycleInputModeAt { address })
+    );
+}
+
+#[test]
 fn rich_preamp_gain_slider_requires_a_grounded_mode_range() {
     let area = Rect::new(0, 0, 200, 55);
     let state = zen_go_ui_state();
@@ -962,7 +1025,8 @@ fn non_first_input_space_uses_stable_address_intent() {
         .find(|param| param.name == "gain")
         .expect("gain parameter")
         .range = Some((0, 65));
-    let state = AppState::from_entry(&entry);
+    let mut state = AppState::from_entry(&entry);
+    state.input_spaces[1].inputs[0].mode = Some(0);
     let address = InputAddress { space: 9, index: 0 };
     let area = Rect::new(0, 0, 140, 48);
     let page = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1]);

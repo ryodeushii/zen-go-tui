@@ -209,21 +209,35 @@ fn dynamic_mouse_rejects_out_of_profile_addresses() {
 }
 
 #[test]
-fn input_range_does_not_fallback_to_another_mode() {
+fn input_range_uses_profile_mode_values_without_fallback() {
     let mut entry = synthetic_topology_entry();
+    let mode = entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|param| param.name == "input_mode")
+        .expect("mode parameter");
+    mode.values.push((3, "Direct".into()));
     let gain = entry
         .profile
         .params
         .iter_mut()
         .find(|param| param.name == "gain")
         .expect("gain parameter");
-    gain.range = None;
-    gain.range_by_mode = vec![("mic".into(), (0, 65)), ("hiz".into(), (0, 45))];
+    gain.range = Some((-6, 75));
+    gain.range_by_mode = vec![
+        ("mic".into(), (0, 65)),
+        ("hiz".into(), (0, 45)),
+        ("direct".into(), (0, 20)),
+    ];
     let state = AppState::from_entry(&entry);
     let address = state.input_spaces[0].inputs[0].address;
+    assert_eq!(state.input_range(address, None), None);
     assert_eq!(state.input_range(address, Some(0)), Some((0, 65)));
     assert_eq!(state.input_range(address, Some(1)), None);
     assert_eq!(state.input_range(address, Some(2)), Some((0, 45)));
+    assert_eq!(state.input_range(address, Some(3)), Some((0, 20)));
+    assert_eq!(state.input_range(address, Some(99)), None);
 }
 
 #[test]

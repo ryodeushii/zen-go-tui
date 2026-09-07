@@ -1704,6 +1704,37 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(startup, expected)
         self.assertEqual(len(startup), 113)
 
+    def test_canonical_orion_gain_ranges_include_signed_line_endpoint(self) -> None:
+        profiles = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
+        canonical = generator.load_profile(
+            profiles / "orion_studio_sc.json",
+            profiles,
+        )
+        gain = next(
+            parameter
+            for parameter in generator._build_params(canonical)
+            if parameter["name"] == "gain"
+        )
+
+        self.assertEqual(gain["range"], (-6, 75))
+        self.assertEqual(
+            gain["range_by_mode"],
+            {"mic": (0, 75), "line": (-6, 20), "hiz": (0, 65), "direct": (0, 20)},
+        )
+        self.assertEqual(gain["value_type"], "Int8")
+        self.assertEqual(gain["encoding"], "two's complement, dB")
+
+        zen = generator.load_profile(profiles / "zen_go_sc.json", profiles)
+        zen_gain = next(
+            parameter
+            for parameter in generator._build_params(zen)
+            if parameter["name"] == "gain"
+        )
+        self.assertIsNone(zen_gain["range"])
+        self.assertEqual(zen_gain["range_by_mode"]["mic"], (0, 65))
+        self.assertEqual(zen_gain["range_by_mode"]["line"], "narrow, ~around raw 0x13")
+        self.assertEqual(zen_gain["range_by_mode"]["hiz"], (0, 45))
+
     def test_raw_control_sections_are_not_dropped(self) -> None:
         profiles = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
 

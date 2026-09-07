@@ -105,6 +105,47 @@ fn controller_for_profile(entry: RuntimeEntry) -> Controller {
     .expect("profile controller")
 }
 
+#[test]
+fn orion_physical_gain_intent_validates_the_current_mode_range() {
+    let entry = canonical_orion_entry();
+    let mut controller = controller_for_profile(entry);
+    let address = controller.state.input_spaces[0].inputs[0].address;
+    controller.state.input_spaces[0].inputs[0].mode = Some(1);
+    controller.state.input_spaces[0].inputs[0].gain = Some(0);
+
+    controller
+        .apply_intent(Intent::SetInputGainAt { address, raw: -6 }, Rect::default())
+        .expect("line minimum must be accepted");
+    assert!(controller
+        .apply_intent(Intent::SetInputGainAt { address, raw: -7 }, Rect::default(),)
+        .is_err());
+    assert!(controller
+        .apply_intent(Intent::SetInputGainAt { address, raw: 21 }, Rect::default(),)
+        .is_err());
+
+    for (mode, minimum, maximum) in [(0, 0, 75), (2, 0, 65)] {
+        controller.state.input_spaces[0].inputs[0].mode = Some(mode);
+        controller
+            .apply_intent(
+                Intent::SetInputGainAt {
+                    address,
+                    raw: minimum,
+                },
+                Rect::default(),
+            )
+            .expect("mode minimum");
+        controller
+            .apply_intent(
+                Intent::SetInputGainAt {
+                    address,
+                    raw: maximum,
+                },
+                Rect::default(),
+            )
+            .expect("mode maximum");
+    }
+}
+
 fn unsupported_input_action() -> Action {
     Action::SetOutput {
         address: OutputAddress { id: 0 },

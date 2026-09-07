@@ -1927,10 +1927,10 @@
           },
           "id": 80,
           "internal_value": null,
-          "metadata": "{\"encoding\":\"two's complement, dB\",\"evidence\":\"capture2, gain sweeps per mode, ranges match UI drag limits (not a spec sheet -- worth cross-checking)\",\"id\":\"0x50\",\"per_mode_range\":{\"direct\":[0,20],\"hiz\":[0,65],\"line\":[-6,20],\"mic\":[0,75]},\"status\":\"confirmed\",\"type\":\"int8\"}",
+          "metadata": "{\"encoding\":\"two's complement, dB\",\"evidence\":\"capture2, gain sweeps per mode, ranges match UI drag limits; line-mode minimum -6 dB user-confirmed\",\"id\":\"0x50\",\"per_mode_range\":{\"direct\":[0,20],\"hiz\":[0,65],\"line\":[-6,20],\"mic\":[0,75]},\"runtime_range\":[-6,75],\"status\":\"confirmed\",\"type\":\"int8\"}",
           "name": "gain",
           "range": [
-            0,
+            -6,
             75
           ],
           "range_by_mode": [
@@ -3419,7 +3419,7 @@
       "provenance": {
         "generator_version": "1.4.2",
         "source_path": "profiles/orion_studio_sc.json",
-        "source_sha256": "0fac2e506953a370026dbecc70e320a05a6de10a54a765b4d26fce743786cdcf"
+        "source_sha256": "59953cc084f266ffb6b6aaed68a98b7b536d2ce3d1462f4e1b4c09836a8acde1"
       },
       "readback": {
         "category_counts": [

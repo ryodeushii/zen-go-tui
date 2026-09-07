@@ -3956,8 +3956,6 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
             _orion_runtime_parameter_defaults(name) if _is_orion(profile) else None
         )
         range_source = value.get("runtime_range", value.get("range"))
-        if range_source is None and name == "gain" and _is_orion(profile):
-            range_source = [0, 75]
         parameter_range = _range(range_source, f"params.{name}.runtime_range")
         scalar_domain_keys = {"direction", "unity"}
         scalar_domain_present = scalar_domain_keys.intersection(value)

@@ -639,39 +639,39 @@ impl AppState {
             .inputs
             .iter()
             .find(|input| input.space_id == address.space && input.index == address.index)?;
-        let capability = self
-            .runtime_profile
-            .as_ref()?
+        let profile = self.runtime_profile.as_ref()?;
+        let space = profile
             .address_spaces
             .iter()
-            .find(|space| space.space_id == input.space_id)?
-            .input_capabilities
-            .iter()
-            .find(|capability| {
-                capability.kind == antelope_protocol::RuntimeInputControlKind::Gain
-            })?;
-        let parameter = self
-            .runtime_profile
-            .as_ref()?
+            .find(|space| space.space_id == input.space_id)?;
+        let capability = space.input_capabilities.iter().find(|capability| {
+            capability.kind == antelope_protocol::RuntimeInputControlKind::Gain
+        })?;
+        let parameter = profile
             .params
             .iter()
             .find(|param| param.name == capability.parameter)?;
-        match mode {
-            Some(mode) => {
-                let mode_name = match mode {
-                    0 => "mic",
-                    1 => "line",
-                    2 => "hiz",
-                    _ => return None,
-                };
-                parameter
-                    .range_by_mode
-                    .iter()
-                    .find(|(name, _)| name == mode_name)
-                    .map(|(_, range)| *range)
-            }
-            None => parameter.range,
-        }
+        let Some(mode_capability) = space
+            .input_capabilities
+            .iter()
+            .find(|capability| capability.kind == antelope_protocol::RuntimeInputControlKind::Mode)
+        else {
+            return parameter.range;
+        };
+        let mode = mode?;
+        let mode_name = profile
+            .params
+            .iter()
+            .find(|param| param.name == mode_capability.parameter)?
+            .values
+            .iter()
+            .find(|(value, _)| *value == mode)
+            .map(|(_, name)| name)?;
+        parameter
+            .range_by_mode
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(mode_name))
+            .map(|(_, range)| *range)
     }
 
     pub fn routing_group(&self, destination: u16) -> Option<&DynamicRoutingGroup> {
@@ -3192,6 +3192,7 @@ mod tests {
         controller.state.device.dsp_cluster = [0x0a, 0x0a, 0x00, 0x00];
         controller.state.preamp.state =
             PreampState::from_cluster(controller.state.device.dsp_cluster);
+        controller.state.input_spaces[0].inputs[1].mode = Some(2);
 
         controller
             .send(
@@ -3221,6 +3222,7 @@ mod tests {
         controller.state.preamp.state =
             PreampState::from_cluster(controller.state.device.dsp_cluster);
         controller.state.preamp.state.input2.observed_meter = Some(0x30);
+        controller.state.input_spaces[0].inputs[1].mode = Some(2);
 
         controller
             .send(

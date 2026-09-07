@@ -560,6 +560,7 @@ mod tests {
     fn mouse_preamp_gain_action_sends_exact_raw_gain() {
         let transport = MockTransport::default();
         let mut controller = test_controller(Box::new(transport.clone()));
+        controller.state.input_spaces[0].inputs[1].mode = Some(0);
 
         controller
             .apply_intent(

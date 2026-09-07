@@ -87,10 +87,28 @@ impl CommandQueue {
 
     pub(crate) fn enqueue_with_id(&mut self, command: Action) -> Option<QueueEntryId> {
         if let Some(key) = coalesce_key_for_command(&command) {
-            for entry in &mut self.entries {
-                if coalesce_key_for_command(&entry.command) == Some(key) {
-                    entry.command = command;
-                    return Some(entry.id);
+            if let Some(index) = self
+                .entries
+                .iter()
+                .rposition(|entry| coalesce_key_for_command(&entry.command) == Some(key))
+            {
+                let input_dependency = match &command {
+                    Action::SetInput { address, .. } => {
+                        self.entries[index + 1..].iter().any(|entry| {
+                            matches!(
+                                &entry.command,
+                                Action::SetInput {
+                                    address: queued_address,
+                                    ..
+                                } if queued_address == address
+                            )
+                        })
+                    }
+                    _ => false,
+                };
+                if !input_dependency {
+                    self.entries[index].command = command;
+                    return Some(self.entries[index].id);
                 }
             }
         }
@@ -118,15 +136,37 @@ impl CommandQueue {
         &mut self,
         transport: &dyn Transport,
         driver: &dyn DeviceDriver,
-        mut on_outcome: F,
+        on_outcome: F,
     ) -> Result<usize>
     where
         F: FnMut(QueueEntryId, QueueEntryOutcome),
     {
+        self.flush_with_validation(transport, driver, |_| Ok(()), on_outcome)
+    }
+
+    pub(crate) fn flush_with_validation<V, F>(
+        &mut self,
+        transport: &dyn Transport,
+        driver: &dyn DeviceDriver,
+        mut validate: V,
+        mut on_outcome: F,
+    ) -> Result<usize>
+    where
+        V: FnMut(&Action) -> Result<()>,
+        F: FnMut(QueueEntryId, QueueEntryOutcome),
+    {
         let mut count = 0;
+        let mut first_validation_error = None;
         let mut entries = self.entries.drain(..);
         while let Some(entry) = entries.next() {
             let id = entry.id;
+            if let Err(error) = validate(&entry.command) {
+                on_outcome(id, QueueEntryOutcome::Unsent);
+                if first_validation_error.is_none() {
+                    first_validation_error = Some(error);
+                }
+                continue;
+            }
             let batch = match driver.encode(entry.command) {
                 Ok(batch) => batch,
                 Err(error) => {
@@ -185,7 +225,11 @@ impl CommandQueue {
             count += 1;
             on_outcome(id, QueueEntryOutcome::Sent);
         }
-        Ok(count)
+        if let Some(error) = first_validation_error {
+            Err(error)
+        } else {
+            Ok(count)
+        }
     }
 }
 
@@ -258,6 +302,75 @@ mod tests {
             });
         }
         assert_eq!(queue.len(), 4);
+    }
+
+    #[test]
+    fn input_commands_do_not_coalesce_across_same_address_dependencies() {
+        let mut queue = CommandQueue::new();
+        let address = InputAddress { space: 0, index: 0 };
+        for (control, value) in [
+            (InputControl::Mode, ControlValue::Enum(1)),
+            (InputControl::Parameter(0x5b), ControlValue::Int(10)),
+            (InputControl::Mode, ControlValue::Enum(0)),
+        ] {
+            assert!(queue.enqueue(Action::SetInput {
+                address,
+                control,
+                value,
+            }));
+        }
+        assert_eq!(queue.len(), 3);
+    }
+
+    #[test]
+    fn invalid_entry_is_unsent_once_while_valid_unrelated_entry_is_sent() {
+        let mut queue = CommandQueue::new();
+        let invalid = queue
+            .enqueue_with_id(Action::SetInput {
+                address: InputAddress { space: 0, index: 0 },
+                control: InputControl::Gain,
+                value: ControlValue::Int(70),
+            })
+            .expect("invalid entry id");
+        let valid = queue
+            .enqueue_with_id(Action::SetOutput {
+                address: OutputAddress { id: 0 },
+                control: OutputControl::Level,
+                value: ControlValue::Int(20),
+            })
+            .expect("valid entry id");
+        let transport = MockTransport::default();
+        let mut outcomes = Vec::new();
+
+        let error = queue
+            .flush_with_validation(
+                &transport,
+                &crate::device::builtin_zen_go_driver().expect("Zen Go driver"),
+                |action| {
+                    if matches!(
+                        action,
+                        Action::SetInput {
+                            control: InputControl::Gain,
+                            ..
+                        }
+                    ) {
+                        anyhow::bail!("invalid gain");
+                    }
+                    Ok(())
+                },
+                |id, outcome| outcomes.push((id, outcome)),
+            )
+            .expect_err("validation error must be returned after flush");
+
+        assert!(error.to_string().contains("invalid gain"));
+        assert_eq!(
+            outcomes,
+            vec![
+                (invalid, QueueEntryOutcome::Unsent),
+                (valid, QueueEntryOutcome::Sent)
+            ]
+        );
+        assert_eq!(transport.take_writes().len(), 1);
     }
 
     #[test]

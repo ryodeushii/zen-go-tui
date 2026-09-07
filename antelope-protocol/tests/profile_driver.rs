@@ -448,6 +448,54 @@ fn profile_driver_encodes_full_frames_and_checks_bounds() {
 }
 
 #[test]
+fn orion_physical_line_gain_negative_boundary_encodes_and_decodes_as_int8() {
+    let driver = profile_driver_from_fixture();
+    let frame = driver
+        .encode(Action::SetInput {
+            address: InputAddress { space: 0, index: 0 },
+            control: InputControl::Gain,
+            value: ControlValue::Int(-6),
+        })
+        .expect("Orion line minimum")
+        .frames
+        .remove(0);
+    let mut expected = vec![0; 320];
+    expected[0] = 0x70;
+    expected[4] = 0x13;
+    expected[16..19].copy_from_slice(&[0x50, 0, 0xfa]);
+    assert_eq!(frame, expected);
+
+    for value in [-7, 76] {
+        assert!(matches!(
+            driver.encode(Action::SetInput {
+                address: InputAddress { space: 0, index: 0 },
+                control: InputControl::Gain,
+                value: ControlValue::Int(value),
+            }),
+            Err(DriverError::InvalidAction(_))
+        ));
+    }
+
+    let mut snapshot = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    snapshot[49] = 0xfa;
+    snapshot[61] = 0x01;
+    let DeviceEvent::Snapshot { state, .. } = driver
+        .decode(&snapshot)
+        .expect("signed gain readback")
+        .expect("state event")
+    else {
+        panic!("snapshot")
+    };
+    let input = state
+        .inputs
+        .iter()
+        .find(|input| input.address == InputAddress { space: 0, index: 0 })
+        .expect("physical input 1");
+    assert_eq!(input.mode, Some(1));
+    assert_eq!(input.gain, Some(-6));
+}
+
+#[test]
 fn query_bounds_and_layout_are_profile_driven() {
     let driver = profile_driver_from_fixture();
     for index in 0..4 {

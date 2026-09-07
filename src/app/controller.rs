@@ -755,14 +755,94 @@ impl Controller {
         }
     }
 
+    fn input_gain_control(state: &AppState, address: InputAddress) -> Option<InputControl> {
+        state
+            .ui_profile
+            .input_capabilities(address)
+            .iter()
+            .find(|capability| capability.kind == antelope_protocol::RuntimeInputControlKind::Gain)
+            .and_then(|capability| capability.control)
+    }
+
+    fn input_mode_is_declared(state: &AppState, address: InputAddress, mode: i32) -> Option<bool> {
+        let profile = state.runtime_profile.as_ref()?;
+        let input = profile
+            .inputs
+            .iter()
+            .find(|input| input.space_id == address.space && input.index == address.index)?;
+        let space = profile
+            .address_spaces
+            .iter()
+            .find(|space| space.space_id == input.space_id)?;
+        let capability = space.input_capabilities.iter().find(|capability| {
+            capability.kind == antelope_protocol::RuntimeInputControlKind::Mode
+        })?;
+        let parameter = profile
+            .params
+            .iter()
+            .find(|param| param.name == capability.parameter)?;
+        Some(parameter.values.iter().any(|(value, _)| *value == mode))
+    }
+
+    fn validate_queued_input_gain(
+        state: &AppState,
+        effective_modes: &mut HashMap<InputAddress, Option<i32>>,
+        action: &Action,
+    ) -> Result<()> {
+        let Action::SetInput {
+            address,
+            control,
+            value,
+        } = action
+        else {
+            return Ok(());
+        };
+        if *control == InputControl::Mode {
+            if let ControlValue::Enum(mode) = value {
+                if Self::input_mode_is_declared(state, *address, *mode) == Some(false) {
+                    bail!("queued input mode {mode} is not declared for {address:?}");
+                }
+                effective_modes.insert(*address, Some(*mode));
+            }
+            return Ok(());
+        }
+        if Self::input_gain_control(state, *address) != Some(*control) {
+            return Ok(());
+        }
+        let ControlValue::Int(raw) = value else {
+            return Ok(());
+        };
+        let mode = *effective_modes.entry(*address).or_insert_with(|| {
+            state
+                .input_spaces
+                .iter()
+                .find(|space| space.space_id == address.space)
+                .and_then(|space| space.inputs.iter().find(|input| input.address == *address))
+                .and_then(|input| input.mode)
+        });
+        let (minimum, maximum) = state
+            .input_range(*address, mode)
+            .ok_or_else(|| anyhow::anyhow!("input gain range unavailable before queue flush"))?;
+        if !(minimum..=maximum).contains(raw) {
+            bail!(
+                "queued input gain {raw} outside effective mode range {minimum}..={maximum} before queue flush"
+            );
+        }
+        Ok(())
+    }
+
     /// Flushes all pending commands from the queue to the transport.
     pub fn flush_commands(&mut self) -> Result<()> {
         let mut queued_mutations = std::mem::take(&mut self.queued_mutations);
         let mut pending_mutation = self.pending_mutation.take();
         let mut outcomes = Vec::new();
-        let result = self.command_queue.flush_with(
+        let mut effective_input_modes = HashMap::new();
+        let result = self.command_queue.flush_with_validation(
             self.transport.as_ref(),
             self.driver.as_ref(),
+            |action| {
+                Self::validate_queued_input_gain(&self.state, &mut effective_input_modes, action)
+            },
             |id, outcome| outcomes.push((id, outcome)),
         );
         for (id, outcome) in outcomes {
@@ -2229,6 +2309,38 @@ impl Controller {
         Ok(())
     }
 
+    fn input_gain_range_for_control(
+        &self,
+        address: InputAddress,
+        control: InputControl,
+        mode: Option<i32>,
+    ) -> Result<Option<(i32, i32)>> {
+        if Self::input_gain_control(&self.state, address) != Some(control) {
+            return Ok(None);
+        }
+        self.state
+            .input_range(address, mode)
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("input gain range unavailable"))
+    }
+
+    fn validate_input_gain_value(
+        &self,
+        address: InputAddress,
+        control: InputControl,
+        mode: Option<i32>,
+        raw: i32,
+    ) -> Result<()> {
+        let Some((minimum, maximum)) = self.input_gain_range_for_control(address, control, mode)?
+        else {
+            return Ok(());
+        };
+        if !(minimum..=maximum).contains(&raw) {
+            bail!("input gain {raw} outside current mode range {minimum}..={maximum}");
+        }
+        Ok(())
+    }
+
     fn handle_adjust_input_gain_at(
         &mut self,
         address: InputAddress,
@@ -2257,7 +2369,8 @@ impl Controller {
         pending: Option<PendingMutation>,
     ) -> Result<()> {
         self.ensure_input_control(address, InputControl::Gain)?;
-        self.input_at_address(address)?;
+        let slot = self.input_at_address(address)?;
+        self.validate_input_gain_value(address, InputControl::Gain, slot.mode, raw)?;
         self.send(
             Action::SetInput {
                 address,
@@ -2277,8 +2390,23 @@ impl Controller {
     ) -> Result<()> {
         let control = InputControl::Parameter(parameter_id);
         self.ensure_input_control(address, control)?;
-        let current = self.input_at_address(address)?.gain.unwrap_or(0);
-        let value = if increase {
+        let slot = self.input_at_address(address)?;
+        let current = slot.gain.unwrap_or(0);
+        let value = if let Some((minimum, maximum)) =
+            self.input_gain_range_for_control(address, control, slot.mode)?
+        {
+            if increase {
+                current
+                    .clamp(minimum, maximum)
+                    .saturating_add(1)
+                    .min(maximum)
+            } else {
+                current
+                    .clamp(minimum, maximum)
+                    .saturating_sub(1)
+                    .max(minimum)
+            }
+        } else if increase {
             current.saturating_add(1)
         } else {
             current.saturating_sub(1)
@@ -2295,7 +2423,8 @@ impl Controller {
     ) -> Result<()> {
         let control = InputControl::Parameter(parameter_id);
         self.ensure_input_control(address, control)?;
-        self.input_at_address(address)?;
+        let slot = self.input_at_address(address)?;
+        self.validate_input_gain_value(address, control, slot.mode, value)?;
         self.send(
             Action::SetInput {
                 address,
@@ -2330,6 +2459,10 @@ impl Controller {
     ) -> Result<()> {
         self.ensure_input_control(address, InputControl::Mode)?;
         self.input_at_address(address)?;
+        if Self::input_mode_is_declared(&self.state, address, i32::from(mode.code())) == Some(false)
+        {
+            bail!("input mode {mode:?} is not declared for {address:?}");
+        }
         self.send(
             Action::SetInput {
                 address,
@@ -2420,19 +2553,7 @@ impl Controller {
         self.state.ui.focus = FocusArea::Preamp;
         let slot = self.input_at_ui(input)?;
         self.state.preamp.selected_input = usize::from(input);
-        let current = slot
-            .gain
-            .and_then(|gain| u8::try_from(gain).ok())
-            .unwrap_or(0);
-        let next = next_preamp_gain_raw(current, increase);
-        self.send(
-            Action::SetInput {
-                address: slot.address,
-                control: InputControl::Gain,
-                value: ControlValue::Int(i32::from(next)),
-            },
-            pending,
-        )
+        self.handle_adjust_input_gain_at(slot.address, increase, pending)
     }
 
     fn handle_set_preamp_gain(
@@ -2444,14 +2565,7 @@ impl Controller {
         self.state.ui.focus = FocusArea::Preamp;
         let slot = self.input_at_ui(input)?;
         self.state.preamp.selected_input = usize::from(input);
-        self.send(
-            Action::SetInput {
-                address: slot.address,
-                control: InputControl::Gain,
-                value: ControlValue::Int(i32::from(raw)),
-            },
-            pending,
-        )
+        self.handle_set_input_gain_at(slot.address, i32::from(raw), pending)
     }
 
     fn handle_open_preamp_mode_selector(&mut self, input: u8) {
@@ -3490,14 +3604,6 @@ fn step_fader(current: i32, increase: bool, semantics: antelope_protocol::FaderS
         .clamp(semantics.min, semantics.max)
 }
 
-fn next_preamp_gain_raw(current: u8, up: bool) -> u8 {
-    if up {
-        current.saturating_add(1).min(0x41)
-    } else {
-        current.saturating_sub(1)
-    }
-}
-
 #[cfg(test)]
 mod correction_tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -3565,7 +3671,11 @@ mod correction_tests {
         }
     }
 
-    fn first_input_pending(controller: &Controller, gain: i32) -> (InputAddress, PendingMutation) {
+    fn first_input_pending(
+        controller: &mut Controller,
+        gain: i32,
+    ) -> (InputAddress, PendingMutation) {
+        controller.state.input_spaces[0].inputs[0].mode = Some(0);
         let mut input = controller.state.input_spaces[0].inputs[0].clone();
         let address = input.address;
         input.gain = Some(gain);
@@ -3631,7 +3741,7 @@ mod correction_tests {
             Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
         )
         .expect("controller");
-        let (address, pending) = first_input_pending(&controller, 17);
+        let (address, pending) = first_input_pending(&mut controller, 17);
         let before = controller.state.input_spaces[0].inputs[0].gain;
         controller
             .send(
@@ -3671,7 +3781,7 @@ mod correction_tests {
             Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
         )
         .expect("controller");
-        let (address, pending) = first_input_pending(&controller, 17);
+        let (address, pending) = first_input_pending(&mut controller, 17);
         controller
             .send(
                 Action::SetInput {
@@ -3705,7 +3815,7 @@ mod correction_tests {
             Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
         )
         .expect("controller");
-        let (address, pending) = first_input_pending(&controller, 17);
+        let (address, pending) = first_input_pending(&mut controller, 17);
         controller
             .send(
                 Action::SetInput {
@@ -3769,7 +3879,7 @@ mod correction_tests {
             Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
         )
         .expect("controller");
-        let (address, pending) = first_input_pending(&controller, 17);
+        let (address, pending) = first_input_pending(&mut controller, 17);
         controller
             .send(
                 Action::SetInput {
@@ -3787,7 +3897,7 @@ mod correction_tests {
             Some(PendingMutation::Input(input)) if input.gain == Some(17)
         ));
 
-        let (address, pending) = first_input_pending(&controller, 23);
+        let (address, pending) = first_input_pending(&mut controller, 23);
         controller
             .send(
                 Action::SetInput {
@@ -3816,6 +3926,7 @@ mod correction_tests {
     #[derive(Clone, Default)]
     struct FailingTransport {
         reads: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>>,
+        writes: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
     }
 
     impl FailingTransport {
@@ -3825,10 +3936,18 @@ mod correction_tests {
                 .expect("failing transport reads")
                 .push_back(bytes);
         }
+
+        fn take_writes(&self) -> Vec<Vec<u8>> {
+            std::mem::take(&mut *self.writes.lock().expect("failing transport writes"))
+        }
     }
 
     impl Transport for FailingTransport {
-        fn write(&self, _data: &[u8]) -> anyhow::Result<()> {
+        fn write(&self, data: &[u8]) -> anyhow::Result<()> {
+            self.writes
+                .lock()
+                .expect("failing transport writes")
+                .push(data.to_vec());
             Err(anyhow::anyhow!("write failed"))
         }
 
@@ -3839,6 +3958,392 @@ mod correction_tests {
                 .expect("failing transport reads")
                 .pop_front())
         }
+    }
+
+    fn orion_controller(transport: MockTransport) -> Controller {
+        let entry = crate::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "orion_studio_3")
+            .expect("Orion profile")
+            .clone();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        Controller::new_for_entry(Box::new(transport), Box::new(driver), &entry)
+            .expect("Orion controller")
+    }
+
+    #[test]
+    fn mode_bearing_input_gain_requires_a_known_mode_and_its_range() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let address = controller.state.input_spaces[0].inputs[0].address;
+
+        for mode in [None, Some(99)] {
+            controller.state.input_spaces[0].inputs[0].mode = mode;
+            let error = controller
+                .apply_intent(Intent::SetInputGainAt { address, raw: 0 }, Rect::default())
+                .expect_err("unknown mode must reject gain");
+            assert!(error.to_string().contains("range unavailable"));
+            assert_eq!(controller.command_queue.len(), 0);
+            assert!(transport.take_writes().is_empty());
+        }
+
+        controller.state.input_spaces[0].inputs[0].mode = Some(3);
+        for raw in [0, 20] {
+            controller
+                .apply_intent(Intent::SetInputGainAt { address, raw }, Rect::default())
+                .expect("Direct gain endpoint");
+            controller.flush_commands().expect("flush Direct gain");
+            let writes = transport.take_writes();
+            assert_eq!(writes.len(), 1);
+            assert_eq!(writes[0][16..19], [0x50, 0, raw as u8]);
+        }
+        for raw in [-6, 21] {
+            let error = controller
+                .apply_intent(Intent::SetInputGainAt { address, raw }, Rect::default())
+                .expect_err("gain outside Direct range must fail");
+            assert!(error
+                .to_string()
+                .contains("outside current mode range 0..=20"));
+            assert_eq!(controller.command_queue.len(), 0);
+            assert!(transport.take_writes().is_empty());
+        }
+
+        controller.state.input_spaces[0].inputs[0].mode = Some(1);
+        controller
+            .apply_intent(Intent::SetInputGainAt { address, raw: -6 }, Rect::default())
+            .expect("Line minimum");
+        controller.flush_commands().expect("flush Line gain");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0][16..19], [0x50, 0, 0xfa]);
+    }
+
+    #[test]
+    fn unknown_zen_physical_mode_rejects_gain_before_queueing() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller");
+        let address = controller.state.input_spaces[0].inputs[0].address;
+
+        for mode in [None, Some(99)] {
+            controller.state.input_spaces[0].inputs[0].mode = mode;
+            let error = controller
+                .apply_intent(Intent::SetInputGainAt { address, raw: 0 }, Rect::default())
+                .expect_err("unknown Zen mode must reject gain");
+            assert!(error.to_string().contains("range unavailable"));
+            assert_eq!(controller.command_queue.len(), 0);
+            assert!(transport.take_writes().is_empty());
+        }
+    }
+
+    #[test]
+    fn queued_mode_changes_define_the_following_gain_range() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let address = controller.state.input_spaces[0].inputs[0].address;
+        controller.state.input_spaces[0].inputs[0].mode = Some(0);
+        controller
+            .apply_intent(
+                Intent::SetInputModeAt {
+                    address,
+                    mode: PreampMode::Line,
+                },
+                Rect::default(),
+            )
+            .expect("queue Line mode");
+        controller
+            .apply_intent(Intent::SetInputGainAt { address, raw: 70 }, Rect::default())
+            .expect("queue gain valid in the current Mic mode");
+
+        let error = controller
+            .flush_commands()
+            .expect_err("gain must be checked against preceding queued Line mode");
+        assert!(error.to_string().contains("effective mode range -6..=20"));
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0][16..19], [0x4f, 0, 1]);
+    }
+
+    #[test]
+    fn mode_gain_mode_sequence_preserves_wire_order() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let address = controller.state.input_spaces[0].inputs[0].address;
+        controller.state.input_spaces[0].inputs[0].mode = Some(0);
+        for intent in [
+            Intent::SetInputModeAt {
+                address,
+                mode: PreampMode::Line,
+            },
+            Intent::SetInputGainAt { address, raw: 10 },
+            Intent::SetInputModeAt {
+                address,
+                mode: PreampMode::Mic,
+            },
+        ] {
+            controller
+                .apply_intent(intent, Rect::default())
+                .expect("queue ordered input action");
+        }
+
+        controller
+            .flush_commands()
+            .expect("flush ordered input actions");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 3);
+        assert_eq!(writes[0][16..19], [0x4f, 0, 1]);
+        assert_eq!(writes[1][16..19], [0x50, 0, 10]);
+        assert_eq!(writes[2][16..19], [0x4f, 0, 0]);
+    }
+
+    #[test]
+    fn rejected_queued_mode_does_not_advance_following_gain_validation() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let address = controller.state.input_spaces[0].inputs[0].address;
+        controller.state.input_spaces[0].inputs[0].mode = Some(0);
+        controller
+            .command_queue
+            .enqueue_with_id(Action::SetInput {
+                address,
+                control: InputControl::Mode,
+                value: ControlValue::Enum(99),
+            })
+            .expect("queue raw undeclared mode");
+        controller
+            .command_queue
+            .enqueue_with_id(Action::SetInput {
+                address,
+                control: InputControl::Gain,
+                value: ControlValue::Int(70),
+            })
+            .expect("queue gain valid in authoritative Mic mode");
+
+        let error = controller
+            .flush_commands()
+            .expect_err("undeclared mode remains a flush error");
+        assert!(error.to_string().contains("mode 99 is not declared"));
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0][16..19], [0x50, 0, 70]);
+    }
+
+    #[test]
+    fn queued_input_gain_is_revalidated_if_mode_changes_before_flush() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let address = controller.state.input_spaces[0].inputs[0].address;
+        controller.state.input_spaces[0].inputs[0].mode = Some(0);
+        controller
+            .apply_intent(Intent::SetInputGainAt { address, raw: 70 }, Rect::default())
+            .expect("queue Mic gain");
+        assert_eq!(controller.command_queue.len(), 1);
+
+        controller.state.input_spaces[0].inputs[0].mode = Some(1);
+        let error = controller
+            .flush_commands()
+            .expect_err("Line mode must invalidate queued Mic gain");
+        assert!(error.to_string().contains("before queue flush"));
+        assert_eq!(controller.command_queue.len(), 0);
+        assert!(controller.pending_mutation.is_none());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn legacy_gain_intents_reject_unknown_mode_without_queueing() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        controller.state.input_spaces[0].inputs[0].mode = None;
+
+        for intent in [
+            Intent::SetPreampGain { input: 0, raw: 10 },
+            Intent::AdjustPreampGain {
+                input: 0,
+                increase: true,
+            },
+        ] {
+            let error = controller
+                .apply_intent(intent, Rect::default())
+                .expect_err("legacy gain must use address-aware mode guard");
+            assert!(error.to_string().contains("range unavailable"));
+            assert_eq!(controller.command_queue.len(), 0);
+        }
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn modeless_digital_input_gain_uses_its_scalar_range() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let adat = controller
+            .state
+            .input_spaces
+            .iter()
+            .find(|space| space.kind == "adat_inputs")
+            .expect("ADAT input bank");
+        let address = adat.inputs[0].address;
+        assert_eq!(adat.inputs[0].mode, None);
+        assert_eq!(controller.state.input_range(address, None), Some((-6, 12)));
+        let spdif = controller
+            .state
+            .input_spaces
+            .iter()
+            .find(|space| space.kind == "spdif_inputs")
+            .expect("S/PDIF input bank");
+        let spdif_address = spdif.inputs[0].address;
+        assert_eq!(spdif.inputs[0].mode, None);
+        assert_eq!(
+            controller.state.input_range(spdif_address, None),
+            Some((-6, 12))
+        );
+
+        controller
+            .apply_intent(
+                Intent::SetInputParameterAt {
+                    address,
+                    parameter_id: 0x5b,
+                    value: -6,
+                },
+                Rect::default(),
+            )
+            .expect("modeless ADAT gain");
+        controller.flush_commands().expect("flush ADAT gain");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0][16..19], [0x5b, 0, 0xfa]);
+
+        controller
+            .apply_intent(
+                Intent::SetInputParameterAt {
+                    address: spdif_address,
+                    parameter_id: 0x5c,
+                    value: 12,
+                },
+                Rect::default(),
+            )
+            .expect("modeless S/PDIF gain");
+        controller.flush_commands().expect("flush S/PDIF gain");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0][16..19], [0x5c, 0, 12]);
+
+        for (address, parameter_id, value) in [(address, 0x5b, 13), (spdif_address, 0x5c, -7)] {
+            let error = controller
+                .apply_intent(
+                    Intent::SetInputParameterAt {
+                        address,
+                        parameter_id,
+                        value,
+                    },
+                    Rect::default(),
+                )
+                .expect_err("digital gain outside declared range must reject");
+            assert!(error
+                .to_string()
+                .contains("outside current mode range -6..=12"));
+            assert_eq!(controller.command_queue.len(), 0);
+            assert!(transport.take_writes().is_empty());
+        }
+
+        for (address, parameter_id, value) in [(address, 0x5b, 13), (spdif_address, 0x5c, -7)] {
+            controller
+                .command_queue
+                .enqueue_with_id(Action::SetInput {
+                    address,
+                    control: InputControl::Parameter(parameter_id),
+                    value: ControlValue::Int(value),
+                })
+                .expect("queue raw digital gain");
+            let error = controller
+                .flush_commands()
+                .expect_err("flush must revalidate declared parameter gain");
+            assert!(error
+                .to_string()
+                .contains("outside effective mode range -6..=12"));
+            assert!(transport.take_writes().is_empty());
+        }
+    }
+
+    #[test]
+    fn invalid_gain_does_not_discard_valid_unrelated_output() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let input = controller.state.input_spaces[0].inputs[0].address;
+        controller.state.input_spaces[0].inputs[0].mode = Some(0);
+        controller
+            .apply_intent(
+                Intent::SetInputGainAt {
+                    address: input,
+                    raw: 70,
+                },
+                Rect::default(),
+            )
+            .expect("queue Mic gain");
+        controller.state.input_spaces[0].inputs[0].mode = Some(1);
+        let mut pending_output = controller.state.outputs()[0].clone();
+        pending_output.level = Some(20);
+        controller
+            .send(
+                Action::SetOutput {
+                    address: pending_output.address,
+                    control: OutputControl::Level,
+                    value: ControlValue::Int(20),
+                },
+                Some(PendingMutation::Output(pending_output)),
+            )
+            .expect("queue unrelated output");
+
+        let error = controller
+            .flush_commands()
+            .expect_err("invalid gain remains an honest flush error");
+        assert!(error.to_string().contains("before queue flush"));
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_ne!(writes[0][16], 0x50);
+        assert!(matches!(
+            controller.pending_mutation.as_ref(),
+            Some(PendingMutation::Output(output)) if output.level == Some(20)
+        ));
+        assert_eq!(controller.command_queue.len(), 0);
+    }
+
+    #[test]
+    fn failed_mode_write_prevents_following_gain_write() {
+        let transport = FailingTransport::default();
+        let entry = crate::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "orion_studio_3")
+            .expect("Orion profile")
+            .clone();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+                .expect("Orion controller");
+        let address = controller.state.input_spaces[0].inputs[0].address;
+        controller.state.input_spaces[0].inputs[0].mode = Some(0);
+        controller
+            .apply_intent(
+                Intent::SetInputModeAt {
+                    address,
+                    mode: PreampMode::Line,
+                },
+                Rect::default(),
+            )
+            .expect("queue mode");
+        controller
+            .apply_intent(Intent::SetInputGainAt { address, raw: 10 }, Rect::default())
+            .expect("queue following gain");
+
+        assert!(controller.flush_commands().is_err());
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0][16..19], [0x4f, 0, 1]);
+        assert!(controller.pending_mutation.is_none());
     }
 
     #[test]
@@ -3952,12 +4457,12 @@ mod correction_tests {
         )
         .expect("controller");
         controller.state.device.status.clock_source = Some(2);
-        let input = controller.state.input_spaces[0].inputs[0].address;
+        let output = controller.state.outputs()[0].address;
         controller
             .send(
-                Action::SetInput {
-                    address: input,
-                    control: InputControl::Gain,
+                Action::SetOutput {
+                    address: output,
+                    control: OutputControl::Level,
                     value: ControlValue::Int(17),
                 },
                 None,
@@ -4210,6 +4715,7 @@ mod correction_tests {
         input.index = 0;
         entry.profile.inputs.push(input);
         controller.state = AppState::from_entry(&entry);
+        controller.state.input_spaces[1].inputs[0].mode = Some(0);
         let mut master = controller.state.mixers()[0].strips[0].clone();
         master.strip = 0;
         master.name = "Master".into();
