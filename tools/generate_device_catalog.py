@@ -922,8 +922,10 @@ def orion_readiness_blockers(profile: NormalizedProfile) -> list[str]:
     if [
         (domain["protocol_space"], domain["kind"], domain["pair_count"])
         for domain in link_domains
-    ] != [(3, "mixer", 16)]:
-        blockers.append("runtime_topology.link_domains does not contain only confirmed mixer space 3")
+    ] != [(1, "spdif", 1), (3, "mixer", 16)]:
+        blockers.append(
+            "runtime_topology.link_domains does not contain only confirmed S/PDIF space 1 pair 0 and mixer space 3"
+        )
     routing = _build_routing_groups(profile)
     if len(routing) != 15 or [group["destination"] for group in routing] != list(range(15)):
         blockers.append("runtime_topology.routing_groups is not the finite 0..14 topology")
@@ -1298,6 +1300,7 @@ _RAW_INPUT_CAPABILITY_SPECS = (
     ("physical_inputs", "phase", "phase_invert", None),
     ("adat_inputs", "gain", "adat_gain", "adat"),
     ("spdif_inputs", "gain", "spdif_gain", "spdif"),
+    ("spdif_inputs", "link", "spdif_channel_link", "spdif"),
 )
 
 
@@ -1321,8 +1324,12 @@ def _derive_raw_input_capability_records(
             continue
         if evidence_token is not None:
             applies_to = re.sub(r"[^a-z0-9]", "", param_record["applies_to"].lower())
-            if evidence_token not in applies_to:
+            if kind != "link" and evidence_token not in applies_to:
                 continue
+        if kind == "link" and not any(
+            domain["kind"] == "spdif" for domain in _derived_link_domains(profile)
+        ):
+            continue
         records.append(
             {
                 "space": space,
@@ -1337,8 +1344,9 @@ def _derive_raw_input_capability_records(
         )
 
     # Combine fixed semantic records into one validated record per address
-    # space.  Link parameters are deliberately absent: raw link-space values
-    # do not distinguish physical from ADAT input links.
+    # space. Physical/ADAT links remain absent because their shared protocol
+    # space is ambiguous; S/PDIF is admitted only by its complete semantic
+    # declaration and distinct protocol space.
     combined: dict[str, dict[str, Any]] = {}
     for record in records:
         combined.setdefault(record["space"], {"space": record["space"], "controls": []})[
@@ -1431,6 +1439,27 @@ def _validate_input_capability_records(
                 }
             )
         result[space] = typed
+
+    has_spdif_link_capability = any(
+        capability["kind"] == "link"
+        and capability["parameter"] == "spdif_channel_link"
+        for capability in result.get("spdif_inputs", [])
+    )
+    if has_spdif_link_capability:
+        if _confirmed_spdif_link_domain(profile) is None:
+            raise ProfileError(
+                "S/PDIF link capability requires a matching confirmed domain and canonical SET_LINK frame"
+            )
+        emitted_domains = _build_link_domains(profile)
+        if not any(
+            domain["kind"] == "spdif"
+            and domain["protocol_space"] == 1
+            and domain["pair_count"] == 1
+            for domain in emitted_domains
+        ):
+            raise ProfileError(
+                "S/PDIF link capability requires a matching confirmed domain and canonical SET_LINK frame"
+            )
     return result
 
 
@@ -2367,13 +2396,150 @@ def _derived_routing_readback_source_domains(
     return domains
 
 
+def _compiled_set_link_contract_is_canonical(profile: NormalizedProfile) -> bool:
+    """Require the complete executable SET_LINK shape, with no extra operations."""
+
+    link = _raw_control_frame(profile, "link_command")
+    if link is None:
+        return False
+    try:
+        pair_max_index = _pair_max_index(profile, "link_command")
+        operations = _frame_operations(profile, "link_command", link)
+    except ProfileError:
+        return False
+    expected = [
+        {"op": "fixed_byte", "offset": 0, "value": 0x70},
+        {"op": "fixed_byte", "offset": 4, "value": 0x14},
+        {"op": "fixed_byte", "offset": 16, "value": 0xA2},
+        {
+            "op": "scalar",
+            "field": "space",
+            "offset": 17,
+            "width": 1,
+            "endian": "not_applicable",
+        },
+        {
+            "op": "pair_index",
+            "base": 18,
+            "stride": 1,
+            "pair_field": "pair_index",
+            "width": 1,
+            "max_index": pair_max_index,
+        },
+        {
+            "op": "scalar",
+            "field": "enabled",
+            "offset": 19,
+            "width": 1,
+            "endian": "not_applicable",
+        },
+    ]
+    return len(operations) == len(expected) and all(
+        operations.count(operation) == 1 for operation in expected
+    )
+
+
+def _confirmed_spdif_link_domain(
+    profile: NormalizedProfile,
+) -> dict[str, Any] | None:
+    """Return S/PDIF link support only for the exact typed SET_LINK contract."""
+
+    link = _raw_control_frame(profile, "link_command")
+    if link is None or not _compiled_set_link_contract_is_canonical(profile):
+        return None
+
+    for status_field in ("status", "runtime_status"):
+        if status_field not in link:
+            continue
+        status = link[status_field]
+        if not isinstance(status, str):
+            raise ProfileError(f"frame.link_command.{status_field} must be a string")
+        if _normalized_status(status) != "confirmed":
+            return None
+
+    if "space_values" not in link:
+        return None
+    raw_spaces = link["space_values"]
+    if not isinstance(raw_spaces, Mapping):
+        raise ProfileError("frame.link_command.space_values must be an object")
+    declared_spaces: set[int] = set()
+    for raw_space, meaning in raw_spaces.items():
+        space = _checked_u8(raw_space, "frame.link_command.space_values.space")
+        if space in declared_spaces:
+            raise ProfileError(
+                f"frame.link_command.space_values contains duplicate link space {space:#04x}"
+            )
+        declared_spaces.add(space)
+        if not isinstance(meaning, str) or not meaning.strip():
+            raise ProfileError(
+                f"frame.link_command.space_values.{space:#04x} must be a non-empty string"
+            )
+    if 1 not in declared_spaces:
+        return None
+
+    channel_count = _count(profile.spdif, ("count",), "spdif")
+    if "link_pairs" not in profile.spdif:
+        return None
+    link_pairs = profile.spdif["link_pairs"]
+    if not isinstance(link_pairs, Mapping):
+        raise ProfileError("spdif.link_pairs must be an object")
+    pair_count = None
+    if "count" in link_pairs:
+        pair_count = _checked_u16(link_pairs["count"], "spdif.link_pairs.count")
+    pair_indices: list[int] | None = None
+    if "confirmed_pair_indices" in link_pairs:
+        raw_pair_indices = link_pairs["confirmed_pair_indices"]
+        if not isinstance(raw_pair_indices, list):
+            raise ProfileError("spdif.link_pairs.confirmed_pair_indices must be an array")
+        pair_indices = [
+            _checked_u8(index, f"spdif.link_pairs.confirmed_pair_indices[{position}]")
+            for position, index in enumerate(raw_pair_indices)
+        ]
+
+    if "spdif_channel_link" not in profile.params:
+        return None
+    parameter = profile.params["spdif_channel_link"]
+    if not isinstance(parameter, Mapping):
+        raise ProfileError("params.spdif_channel_link must be an object")
+    parameter_status = parameter.get("status")
+    if "status" in parameter and not isinstance(parameter_status, str):
+        raise ProfileError("params.spdif_channel_link.status must be a string")
+    parameter_type = parameter.get("type")
+    if "type" in parameter and not isinstance(parameter_type, str):
+        raise ProfileError("params.spdif_channel_link.type must be a string")
+    if (
+        channel_count != 2
+        or pair_count != 1
+        or pair_indices != [0]
+        or _normalized_status(parameter_status or "") != "confirmed"
+        or parameter_type != "per-pair bool"
+    ):
+        return None
+    parameter_evidence = parameter.get("evidence")
+    if "evidence" in parameter and not isinstance(parameter_evidence, str):
+        raise ProfileError("params.spdif_channel_link.evidence must be a string")
+    if not parameter_evidence or not parameter_evidence.strip():
+        return None
+    return {
+        "protocol_space": 1,
+        "kind": "spdif",
+        "pair_count": 1,
+        "status": "confirmed",
+        "evidence": parameter_evidence,
+    }
+
+
 def _derived_link_domains(
     profile: NormalizedProfile,
 ) -> list[dict[str, Any]]:
-    """Derive only confirmed mixer link space; preserve other spaces as metadata."""
+    """Derive confirmed, finite semantic link spaces; omit ambiguous domains."""
 
     link = _raw_control_frame(profile, "link_command")
-    if link is None or "space_values" not in link:
+    if (
+        link is None
+        or "space_values" not in link
+        or not _compiled_set_link_contract_is_canonical(profile)
+    ):
         return []
     for field in ("status", "runtime_status", "notes", "evidence"):
         if field not in link:
@@ -2405,16 +2571,18 @@ def _derived_link_domains(
             )
         if space == 3:
             mixer_evidence = raw_meaning
-    if mixer_evidence is None:
-        return []
-    if not _evidence_is_confirmed(mixer_evidence):
-        return []
+    result: list[dict[str, Any]] = []
+    spdif = _confirmed_spdif_link_domain(profile)
+    if spdif is not None:
+        result.append(spdif)
+    if mixer_evidence is None or not _evidence_is_confirmed(mixer_evidence):
+        return result
     _mix_count, strip_count, _has_master, _frame_mixer, _inferred = _mixer_geometry_evidence(profile)
     if strip_count is None or strip_count < 2:
-        return []
+        return result
     if strip_count % 2:
         raise ProfileError("frame.link_command mixer geometry must contain complete pairs")
-    return [
+    result.append(
         {
             "protocol_space": 3,
             "kind": "mixer",
@@ -2422,7 +2590,8 @@ def _derived_link_domains(
             "status": "confirmed",
             "evidence": mixer_evidence,
         }
-    ]
+    )
+    return result
 
 
 def _derive_runtime_topology(profile: NormalizedProfile) -> Mapping[str, Any] | None:
@@ -2496,6 +2665,7 @@ def _build_link_domains(profile: NormalizedProfile) -> list[dict[str, Any]]:
     records = topology.get("link_domains", [])
     if not isinstance(records, list):
         raise ProfileError("runtime_topology.link_domains must be an array")
+    set_link_contract_valid = _compiled_set_link_contract_is_canonical(profile)
     result: list[dict[str, Any]] = []
     seen: dict[int, Any] = {}
     for index, record in enumerate(records):
@@ -2507,7 +2677,7 @@ def _build_link_domains(profile: NormalizedProfile) -> list[dict[str, Any]]:
         pair_count = _checked_u16(record.get("pair_count"), f"{context}.pair_count")
         status = str(record.get("status", ""))
         evidence = record.get("evidence")
-        if kind not in {"mixer", "physical", "adat"}:
+        if kind not in {"mixer", "physical", "adat", "spdif"}:
             raise ProfileError(f"{context}.kind is not a supported closed link-domain kind")
         if (
             protocol_space in seen
@@ -2529,6 +2699,14 @@ def _build_link_domains(profile: NormalizedProfile) -> list[dict[str, Any]]:
         seen[protocol_space] = kind
         if _is_orion(profile) and kind == "mixer" and protocol_space != 3:
             continue
+        if kind == "spdif" and (
+            protocol_space != 1
+            or pair_count != 1
+            or _confirmed_spdif_link_domain(profile) is None
+        ):
+            raise ProfileError(
+                f"{context}.kind spdif requires the confirmed semantic S/PDIF space 1 pair 0 declaration"
+            )
         if kind in {"physical", "adat"}:
             if _is_orion(profile):
                 continue
@@ -2542,7 +2720,7 @@ def _build_link_domains(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 "evidence": evidence,
             }
         )
-    return result
+    return result if set_link_contract_valid else []
 
 
 def _routing_source_domain_sets(
@@ -3896,9 +4074,11 @@ def _pair_max_index(profile: NormalizedProfile, frame_id: str) -> int:
         count = _count(section, ("count", "count_confirmed", "count_assumed_total"), section_name)
         if count:
             pair_counts.append(count // 2)
-    pair_counts.extend(
-        mixer["strip_count"] // 2 for mixer in _build_mixers(profile) if mixer["strip_count"]
+    _mix_count, strip_count, _has_master, _frame_mixer, _inferred = (
+        _mixer_geometry_evidence(profile)
     )
+    if strip_count:
+        pair_counts.append(strip_count // 2)
     if not pair_counts or max(pair_counts) == 0:
         raise ProfileError(f"frame.{frame_id}.pair_index has no proven finite pair domain")
     return max(pair_counts) - 1
@@ -4092,7 +4272,8 @@ def _frame_operations(
 
     def add(operation: dict[str, Any]) -> None:
         key = _json(operation)
-        if key not in seen:
+        # SET_LINK contract validation must observe duplicate executable source fields.
+        if frame_id == "link_command" or key not in seen:
             seen.add(key)
             operations.append(operation)
 
@@ -5131,7 +5312,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         for domain in link_domains:
             lines.append(
                 "    LinkDomainDefinition { "
-                f"protocol_space: {_rust_u8(domain['protocol_space'])}, kind: LinkDomainKind::Mixer, "
+                f"protocol_space: {_rust_u8(domain['protocol_space'])}, kind: LinkDomainKind::{domain['kind'].title()}, "
                 f"pair_count: {_rust_u16(domain['pair_count'])}, status: Status::{_status_variant(domain['status'])}, "
                 f"evidence: {_rust_string(domain['evidence'])} }},"
             )

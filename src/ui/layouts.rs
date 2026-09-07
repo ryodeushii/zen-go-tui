@@ -3,8 +3,8 @@ use ratatui::widgets::{Block, Borders};
 
 use crate::app::{AppState, RawMapScope, RawPacketTab, MIXER_STRIP_PAGE_SIZE};
 use antelope_protocol::{
-    meter_display_db, FaderDirection, FaderSemantics, InputControl, MixerAddress, MixerControl,
-    OutputControl, RuntimeInputControlKind,
+    meter_display_db, FaderDirection, FaderSemantics, InputAddress, InputControl, MixerAddress,
+    MixerControl, OutputControl, RuntimeInputControlKind,
 };
 
 use super::styles::chip_width;
@@ -256,7 +256,11 @@ fn dynamic_input_panel_height(width: u16, state: &AppState) -> u16 {
                     .unwrap_or(u16::MAX)
                     .saturating_mul(PREAMP_CARD_HEIGHT)
             } else {
-                u16::try_from(space.inputs.len()).unwrap_or(u16::MAX)
+                u16::try_from(space.inputs.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(u16::from(space.inputs.first().is_some_and(|input| {
+                        state.ui_profile.input_link_target(input.address).is_some()
+                    })))
             };
             content_height.saturating_add(1)
         })
@@ -1465,9 +1469,7 @@ pub(crate) fn dynamic_input_control_rects(
     let phase = declared(RuntimeInputControlKind::Phase)
         .then(|| take(2))
         .flatten();
-    let link = declared(RuntimeInputControlKind::Link)
-        .then(|| take(4))
-        .flatten();
+    let link = None;
     Some(DynamicInputControlRects {
         row,
         gain,
@@ -1476,6 +1478,50 @@ pub(crate) fn dynamic_input_control_rects(
         phase,
         link,
     })
+}
+
+pub(crate) fn dynamic_input_link_action_rects(
+    area: Rect,
+    state: &AppState,
+) -> Vec<(InputAddress, Rect, Rect)> {
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    state
+        .input_spaces
+        .iter()
+        .zip(dynamic_input_space_areas(inner, state))
+        .filter_map(|(space, space_area)| {
+            let input = space.inputs.first()?;
+            state
+                .ui_profile
+                .supports_input_link(input.address)
+                .then_some(())?;
+            let y = space_area
+                .y
+                .saturating_add(1)
+                .saturating_add(space.inputs.len() as u16);
+            if y >= space_area.y.saturating_add(space_area.height) {
+                return None;
+            }
+            let on_width = chip_width("ON").min(space_area.width);
+            let off_x = space_area.x.saturating_add(on_width).saturating_add(1);
+            let off_width = chip_width("OFF").min(
+                space_area
+                    .x
+                    .saturating_add(space_area.width)
+                    .saturating_sub(off_x),
+            );
+            Some((
+                input.address,
+                Rect::new(space_area.x, y, on_width, 1),
+                Rect::new(off_x, y, off_width, 1),
+            ))
+        })
+        .collect()
 }
 
 pub(crate) fn mixer_source_label(state: &AppState, address: MixerAddress) -> String {
@@ -1621,6 +1667,16 @@ pub(crate) fn dynamic_input_control_rects_for_test(
         .into_iter()
         .find(|(space, input, _)| *space == space_index && *input == input_index)?;
     dynamic_input_control_rects(row, state, space_index, input_index)
+}
+
+#[cfg(test)]
+pub(crate) fn dynamic_input_link_action_rects_for_test(
+    state: &AppState,
+) -> Vec<(InputAddress, Rect, Rect)> {
+    let area = Rect::new(0, 0, 140, 48);
+    let page = mixer_page_layout(root_chunks(area)[1]);
+    let main = mixer_main_layout_for_state(page[0], state);
+    dynamic_input_link_action_rects(main[0], state)
 }
 
 #[cfg(test)]

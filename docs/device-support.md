@@ -145,6 +145,7 @@ The normalized Orion profile preserves this profile-derived topology:
 - 6 output groups;
 - 4 mixer surfaces with 32 strips and a master strip each;
 - finite routing groups and source domains;
+- one confirmed S/PDIF input link domain in protocol space 1 with the single L/R pair;
 - one confirmed mixer link domain in protocol space 3 with 16 pairs;
 - an exact 113-request startup query order with finite readback bounds.
 
@@ -152,7 +153,9 @@ Orion is `Supported` with `RuntimeDriverKind::Profile`. The generator applies an
 
 Output mono is a typed, profile-owned control using `SET_PARAM 0x69` and state-report bus status bit `0x10`. It is exposed only for the four capture-backed buses: Monitor A (`0`), HP1 (`1`), HP2 (`2`), and Monitor B (`5`). Line (`3`) and Reamp (`4`) remain unavailable rather than inheriting the six-slot bus mask; Zen Go declares no output-mono control.
 
-Only the confirmed mixer link domain at protocol space 3 is exposed. Physical and ADAT link semantics remain non-actionable, so the UI exposes no controls for those links. The catalog does not add unconfirmed link actions.
+Only the confirmed S/PDIF link domain at protocol space 1 pair 0 and mixer link domain at protocol space 3 are exposed. Physical and ADAT link semantics remain non-actionable because they share ambiguous protocol space 0, and Zen Go declares no confirmed input-link domain.
+
+Orion provides no device-side S/PDIF link readback. The compact input bank therefore marks its title with `?` and offers separate idempotent `ON` / `OFF` link requests rather than an inferred toggle or confirmed-state indicator. S/PDIF gain writes are not software-mirrored from those requests; each gain edit preserves the existing single-channel behavior.
 
 A standalone Orion physical-meter command or per-channel HID physical-meter mapping is not supported by current evidence. The root runtime therefore leaves physical preamp meters unavailable; the retained 157..160 candidates are mixer-view evidence only, not standalone physical offsets. The bundled standalone CLI remains a separate follow-up.
 

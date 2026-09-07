@@ -358,6 +358,7 @@ impl RuntimeMixer {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeLinkDomainKind {
     Mixer,
+    Spdif,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1033,16 +1034,32 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
     }
     let mut link_spaces = HashSet::new();
     for (domain_index, domain) in profile.link_domains.iter().enumerate() {
+        let semantic_domain_valid = match domain.kind {
+            RuntimeLinkDomainKind::Mixer => true,
+            RuntimeLinkDomainKind::Spdif => {
+                domain.protocol_space == 1
+                    && domain.pair_count == 1
+                    && profile.address_spaces.iter().any(|space| {
+                        space.kind == "spdif_inputs"
+                            && space.count == Some(2)
+                            && space.input_capabilities.iter().any(|capability| {
+                                capability.kind == RuntimeInputControlKind::Link
+                                    && capability.parameter == "spdif_channel_link"
+                            })
+                    })
+            }
+        };
         if !link_spaces.insert(domain.protocol_space)
             || domain.pair_count == 0
             || domain.pair_count > 256
             || !is_confirmed(&domain.status)
             || domain.evidence.trim().is_empty()
+            || !semantic_domain_valid
         {
             return Err(ProfileLoadError::InvalidReportGeometry {
                 profile_id: profile_id.to_owned(),
                 field: format!("profiles[{entry_index}].link_domains[{domain_index}]"),
-                detail: "link domains require unique spaces, confirmed evidence, and finite pair counts within 1..=256".into(),
+                detail: "link domains require unique spaces, confirmed evidence, finite pair counts within 1..=256, and matching semantic capabilities".into(),
             });
         }
     }

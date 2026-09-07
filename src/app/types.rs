@@ -212,6 +212,10 @@ pub enum Intent {
     ToggleInputPhantomAt {
         address: InputAddress,
     },
+    SetInputPairLink {
+        address: InputAddress,
+        enabled: bool,
+    },
 
     // Selector popups
     OpenSampleRateSelector,
@@ -277,6 +281,7 @@ impl Intent {
                 | Self::SetInputModeAt { .. }
                 | Self::ToggleInputPhaseAt { .. }
                 | Self::ToggleInputPhantomAt { .. }
+                | Self::SetInputPairLink { .. }
                 | Self::PickSampleRate(_)
                 | Self::PickClockSource(_)
                 | Self::AdjustFocused(_)

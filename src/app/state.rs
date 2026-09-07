@@ -5,8 +5,8 @@ use antelope_protocol::{
     DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState, GlobalControl,
     InputAddress, InputControl, MixerAddress, MixerChannelState, MixerControl, OutputAddress,
     OutputControl, OutputMode, OutputState, OutputTarget, PreampState, RoutingSource,
-    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeProfile, RuntimeReadiness,
-    SampleRate, Surface,
+    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeLinkDomainKind,
+    RuntimeProfile, RuntimeReadiness, SampleRate, Surface,
 };
 
 use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
@@ -177,6 +177,12 @@ pub struct UiInputCapability {
     pub control: Option<InputControl>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiInputLinkTarget {
+    pub protocol_space: u8,
+    pub pair: u16,
+}
+
 /// Profile facts retained by UI. Capability sets are compiled once from canonical typed records;
 /// observed `None` values never imply that a control is unsupported.
 #[derive(Debug, Clone)]
@@ -189,6 +195,7 @@ pub struct UiProfileState {
     pub actionable: bool,
     input_controls: HashSet<(InputAddress, InputControl)>,
     input_capabilities: HashMap<InputAddress, Vec<UiInputCapability>>,
+    input_link_domains: HashMap<u16, (u8, u16)>,
     parameter_values: HashMap<String, HashMap<i32, String>>,
     clock_source_choices: Vec<ClockSourceChoice>,
     internal_clock_value: Option<i32>,
@@ -285,6 +292,19 @@ impl UiProfileState {
                 .collect();
             input_capabilities.insert(address, capabilities);
         }
+
+        let input_link_domains = profile
+            .link_domains
+            .iter()
+            .filter_map(|domain| match domain.kind {
+                RuntimeLinkDomainKind::Mixer => None,
+                RuntimeLinkDomainKind::Spdif => profile
+                    .address_spaces
+                    .iter()
+                    .find(|space| space.kind == "spdif_inputs")
+                    .map(|space| (space.space_id, (domain.protocol_space, domain.pair_count))),
+            })
+            .collect();
 
         let mut output_kinds = Vec::new();
         for (name, control) in [
@@ -392,6 +412,7 @@ impl UiProfileState {
             actionable,
             input_controls,
             input_capabilities,
+            input_link_domains,
             parameter_values,
             clock_source_choices,
             internal_clock_value,
@@ -415,6 +436,7 @@ impl UiProfileState {
             actionable: false,
             input_controls: HashSet::new(),
             input_capabilities: HashMap::new(),
+            input_link_domains: HashMap::new(),
             parameter_values: HashMap::new(),
             clock_source_choices: Vec::new(),
             internal_clock_value: None,
@@ -464,6 +486,26 @@ impl UiProfileState {
 
     pub fn supports_input(&self, address: InputAddress, control: InputControl) -> bool {
         self.actionable && self.declares_input(address, control)
+    }
+
+    pub fn input_link_target(&self, address: InputAddress) -> Option<UiInputLinkTarget> {
+        let (protocol_space, pair_count) = *self.input_link_domains.get(&address.space)?;
+        if !self
+            .input_capabilities(address)
+            .iter()
+            .any(|capability| capability.kind == RuntimeInputControlKind::Link)
+        {
+            return None;
+        }
+        let pair = address.index / 2;
+        (pair < pair_count).then_some(UiInputLinkTarget {
+            protocol_space,
+            pair,
+        })
+    }
+
+    pub fn supports_input_link(&self, address: InputAddress) -> bool {
+        self.actionable && self.input_link_target(address).is_some()
     }
 
     pub fn declares_output(&self, address: OutputAddress, control: OutputControl) -> bool {
@@ -575,6 +617,7 @@ impl Default for UiProfileState {
             actionable: true,
             input_controls,
             input_capabilities: HashMap::new(),
+            input_link_domains: HashMap::new(),
             parameter_values: HashMap::new(),
             clock_source_choices: (0..=2)
                 .map(|value| ClockSourceChoice {

@@ -1225,6 +1225,9 @@ impl Controller {
             Intent::ToggleInputPhantomAt { address } => {
                 self.handle_toggle_input_phantom_at(address, pending)?
             }
+            Intent::SetInputPairLink { address, enabled } => {
+                self.handle_set_input_pair_link(address, enabled)?
+            }
             Intent::AdjustFocused(increase) => self.handle_adjust_focused(increase, pending)?,
             Intent::ToggleFocusedMute => self.handle_toggle_focused_mute(pending)?,
             Intent::ToggleFocusedDim => self.handle_toggle_focused_dim(pending)?,
@@ -2131,6 +2134,31 @@ impl Controller {
             },
             pending,
         )
+    }
+
+    fn handle_set_input_pair_link(&mut self, address: InputAddress, enabled: bool) -> Result<()> {
+        self.input_at_address(address)?;
+        if !self.state.ui_profile.supports_input_link(address) {
+            bail!("input pair link is unsupported for {address:?}");
+        }
+        let target = self
+            .state
+            .ui_profile
+            .input_link_target(address)
+            .ok_or_else(|| anyhow::anyhow!("input pair link target is unavailable"))?;
+        self.send(
+            Action::SetLink {
+                surface: target.protocol_space,
+                pair: target.pair,
+                enabled,
+            },
+            None,
+        )?;
+        self.state.ui.last_message = format!(
+            "Requested S/PDIF link {}; device readback unavailable",
+            if enabled { "on" } else { "off" }
+        );
+        Ok(())
     }
 
     fn handle_select_preamp_input(&mut self, input: usize) {
@@ -3213,7 +3241,7 @@ mod correction_tests {
     use antelope_protocol::{
         CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition, DriverError,
         DynamicDeviceState, DynamicOutputState, InputAddress, MixerAddress, MixerControl,
-        OutputAddress, OutputControl, QueryRequest, RuntimeDriverKind,
+        OutputAddress, OutputControl, ProfileDriver, QueryRequest, RuntimeDriverKind,
     };
 
     use super::*;
@@ -3547,6 +3575,56 @@ mod correction_tests {
                 .expect("failing transport reads")
                 .pop_front())
         }
+    }
+
+    #[test]
+    fn failed_spdif_link_request_never_creates_confirmed_state() {
+        let entry = crate::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "orion_studio_3")
+            .expect("Orion profile")
+            .clone();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        let mut controller = Controller::new_for_entry(
+            Box::new(FailingTransport::default()),
+            Box::new(driver),
+            &entry,
+        )
+        .expect("Orion controller");
+        let spdif = controller
+            .state
+            .input_spaces
+            .iter()
+            .find(|space| space.kind == "spdif_inputs")
+            .expect("S/PDIF bank");
+        let address = spdif.inputs[0].address;
+        assert!(spdif.inputs.iter().all(|input| input.gain.is_none()));
+
+        controller
+            .apply_intent(
+                Intent::SetInputPairLink {
+                    address,
+                    enabled: true,
+                },
+                Rect::default(),
+            )
+            .expect("queue explicit link-on request");
+        assert!(controller.flush_commands().is_err());
+
+        let spdif = controller
+            .state
+            .input_spaces
+            .iter()
+            .find(|space| space.kind == "spdif_inputs")
+            .expect("S/PDIF bank");
+        assert!(spdif.inputs.iter().all(|input| input.gain.is_none()));
+        assert!(controller.pending_mutation.is_none());
+        assert!(controller
+            .state
+            .ui
+            .last_message
+            .contains("readback unavailable"));
     }
 
     #[test]

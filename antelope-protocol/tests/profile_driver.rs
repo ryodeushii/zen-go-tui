@@ -537,7 +537,7 @@ fn profile_derived_orion_geometry_is_complete() {
             .iter()
             .map(|domain| (domain.protocol_space, domain.pair_count))
             .collect::<Vec<_>>(),
-        vec![(3, 16)]
+        vec![(1, 1), (3, 16)]
     );
     assert_eq!(
         profile
@@ -2281,27 +2281,29 @@ fn partial_mixer_and_missing_atomic_send_are_rejected() {
 }
 
 #[test]
-fn typed_pair_index_resolution_uses_only_confirmed_link_domain() {
+fn typed_pair_index_resolution_uses_only_confirmed_link_domains() {
     let driver = profile_driver_from_fixture();
-    let frame = driver
-        .encode(Action::SetLink {
-            surface: 3,
-            pair: 15,
-            enabled: true,
-        })
-        .expect("confirmed mixer link domain")
-        .frames
-        .remove(0);
-    let mut expected = vec![0; 320];
-    expected[0] = 0x70;
-    expected[4] = 0x14;
-    expected[16] = 0xa2;
-    expected[17] = 3;
-    expected[18] = 15;
-    expected[19] = 1;
-    assert_eq!(frame, expected);
+    for (surface, pair, enabled) in [(1, 0, true), (1, 0, false), (3, 15, true)] {
+        let frame = driver
+            .encode(Action::SetLink {
+                surface,
+                pair,
+                enabled,
+            })
+            .expect("confirmed link domain")
+            .frames
+            .remove(0);
+        let mut expected = vec![0; 320];
+        expected[0] = 0x70;
+        expected[4] = 0x14;
+        expected[16] = 0xa2;
+        expected[17] = surface;
+        expected[18] = pair as u8;
+        expected[19] = u8::from(enabled);
+        assert_eq!(frame, expected);
+    }
 
-    for undeclared_space in [0, 1] {
+    for undeclared_space in [0, 2, 4] {
         let error = driver
             .encode(Action::SetLink {
                 surface: undeclared_space,
@@ -2311,13 +2313,161 @@ fn typed_pair_index_resolution_uses_only_confirmed_link_domain() {
             .expect_err("undeclared link space must reject before frame emission");
         assert!(error.to_string().contains("link domain"));
     }
-    assert!(driver
+    for (surface, pair) in [(1, 1), (3, 16)] {
+        assert!(driver
+            .encode(Action::SetLink {
+                surface,
+                pair,
+                enabled: true
+            })
+            .is_err());
+    }
+}
+
+#[test]
+fn constructor_rejects_noncanonical_set_link_frame_contract() {
+    for mutation in 0..18 {
+        let mut entry = fixture_entry();
+        let frame = entry
+            .profile
+            .frames
+            .iter_mut()
+            .find(|frame| frame.id == "link_command")
+            .expect("link frame");
+        match mutation {
+            0 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::FixedByte { offset: 0, value } = operation {
+                    *value = 0x71;
+                }
+            }),
+            1 => frame.operations.retain(
+                |operation| !matches!(operation, FrameOperation::FixedByte { offset: 0, .. }),
+            ),
+            2 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::FixedByte { offset: 4, value } = operation {
+                    *value = 0x15;
+                }
+            }),
+            3 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::FixedByte { offset: 4, .. } = operation {
+                    if let FrameOperation::FixedByte { offset, .. } = operation {
+                        *offset = 5;
+                    }
+                }
+            }),
+            4 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::FixedByte { offset: 16, value } = operation {
+                    *value = 0xa3;
+                }
+            }),
+            5 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::FixedByte { offset: 16, .. } = operation {
+                    if let FrameOperation::FixedByte { offset, .. } = operation {
+                        *offset = 15;
+                    }
+                }
+            }),
+            6 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::Scalar { field, offset, .. } = operation {
+                    if field == "space" {
+                        *offset = 20;
+                    }
+                }
+            }),
+            7 => frame.operations.retain(
+                |operation| !matches!(operation, FrameOperation::Scalar { field, .. } if field == "space"),
+            ),
+            8 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::PairIndex { base, .. } = operation {
+                    *base = 19;
+                }
+            }),
+            9 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::PairIndex { pair_field, .. } = operation {
+                    *pair_field = "pair".into();
+                }
+            }),
+            10 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::Scalar { field, offset, .. } = operation {
+                    if field == "enabled" {
+                        *offset = 20;
+                    }
+                }
+            }),
+            11 => frame.operations.retain(
+                |operation| !matches!(operation, FrameOperation::Scalar { field, .. } if field == "enabled"),
+            ),
+            12 => frame.operations.push(FrameOperation::FixedByte {
+                offset: 5,
+                value: 0xff,
+            }),
+            13 => frame.operations.push(FrameOperation::FixedByte {
+                offset: 0,
+                value: 0x70,
+            }),
+            14 => frame.operations.push(FrameOperation::FixedByte {
+                offset: 17,
+                value: 0xff,
+            }),
+            15 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::Scalar { field, width, .. } = operation {
+                    if field == "space" {
+                        *width = 2;
+                    }
+                }
+            }),
+            16 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::Scalar { field, endian, .. } = operation {
+                    if field == "enabled" {
+                        *endian = FrameEndian::Big;
+                    }
+                }
+            }),
+            17 => frame.operations.iter_mut().for_each(|operation| {
+                if let FrameOperation::PairIndex { stride, .. } = operation {
+                    *stride = 2;
+                }
+            }),
+            _ => unreachable!(),
+        }
+        let error = ProfileDriver::new(entry).expect_err("invalid SET_LINK contract");
+        assert!(
+            error.to_string().contains("link"),
+            "mutation {mutation}: {error}"
+        );
+    }
+}
+
+#[test]
+fn spdif_link_request_does_not_fabricate_state_or_software_mirror_gain() {
+    let driver = profile_driver_from_fixture();
+    driver
         .encode(Action::SetLink {
-            surface: 3,
-            pair: 16,
-            enabled: true
+            surface: 1,
+            pair: 0,
+            enabled: true,
         })
-        .is_err());
+        .expect("S/PDIF link request");
+
+    let batch = driver
+        .encode(Action::SetInput {
+            address: InputAddress { space: 2, index: 0 },
+            control: InputControl::Gain,
+            value: ControlValue::Int(7),
+        })
+        .expect("single S/PDIF gain write");
+    assert_eq!(
+        batch.frames.len(),
+        1,
+        "unknown link state must not mirror gain"
+    );
+    let mut expected = vec![0; 320];
+    expected[0] = 0x70;
+    expected[4] = 0x13;
+    expected[16] = 0x5c;
+    expected[17] = 0;
+    expected[18] = 7;
+    assert_eq!(batch.frames[0], expected);
 }
 
 #[test]
@@ -2388,9 +2538,19 @@ fn constructor_rejects_invalid_link_domains_before_io() {
     }
 
     let mut mismatched = fixture_entry();
-    mismatched.profile.link_domains[0].pair_count = 15;
+    mismatched.profile.link_domains[1].pair_count = 15;
     let error = ProfileDriver::new(mismatched).expect_err("semantic pair mapping mismatch");
     assert!(error.to_string().contains("pair mapping"));
+
+    let mut bad_spdif_scope = fixture_entry();
+    bad_spdif_scope.profile.link_domains[0].protocol_space = 2;
+    assert!(ProfileDriver::new(bad_spdif_scope).is_err());
+
+    let mut missing_spdif_capability = fixture_entry();
+    missing_spdif_capability.profile.address_spaces[2]
+        .input_capabilities
+        .retain(|capability| capability.kind != antelope_protocol::RuntimeInputControlKind::Link);
+    assert!(ProfileDriver::new(missing_spdif_capability).is_err());
 }
 
 #[test]

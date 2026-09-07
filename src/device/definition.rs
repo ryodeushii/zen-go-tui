@@ -226,6 +226,7 @@ pub struct MixerDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkDomainKind {
     Mixer,
+    Spdif,
 }
 
 /// One confirmed finite link protocol domain.

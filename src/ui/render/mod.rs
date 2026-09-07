@@ -483,8 +483,17 @@ fn draw_dynamic_input_banks(frame: &mut Frame<'_>, area: Rect, state: &AppState)
         .iter()
         .zip(dynamic_input_space_areas(inner, state))
     {
+        let title = if space
+            .inputs
+            .first()
+            .is_some_and(|input| state.ui_profile.input_link_target(input.address).is_some())
+        {
+            "S/PDIF inputs ?".to_owned()
+        } else {
+            space.name.clone()
+        };
         Paragraph::new(Line::from(Span::styled(
-            &space.name,
+            title,
             strong_style(Color::LightMagenta),
         )))
         .render(
@@ -505,6 +514,12 @@ fn draw_dynamic_input_banks(frame: &mut Frame<'_>, area: Rect, state: &AppState)
             controls,
         );
     }
+    for (_, enable, disable) in dynamic_input_link_action_rects(area, state) {
+        Paragraph::new(Line::from(chip("ON", Color::Black, Color::LightYellow)))
+            .render(enable, frame.buffer_mut());
+        Paragraph::new(Line::from(chip("OFF", Color::Black, Color::LightYellow)))
+            .render(disable, frame.buffer_mut());
+    }
 }
 
 pub(crate) fn dynamic_input_control_color(
@@ -512,6 +527,13 @@ pub(crate) fn dynamic_input_control_color(
     input: &antelope_protocol::DynamicInputState,
     kind: antelope_protocol::RuntimeInputControlKind,
 ) -> Color {
+    if kind == antelope_protocol::RuntimeInputControlKind::Link {
+        return if state.ui_profile.supports_input_link(input.address) {
+            Color::LightGreen
+        } else {
+            Color::DarkGray
+        };
+    }
     let control = state
         .ui_profile
         .input_capabilities(input.address)
@@ -657,8 +679,13 @@ fn render_dynamic_input_row(
         .render(rect, buffer);
     }
     if let Some(rect) = controls.link {
+        let label = if input.address.index % 2 == 0 {
+            "ON"
+        } else {
+            "OFF"
+        };
         Paragraph::new(Line::from(chip(
-            "LINK",
+            label,
             Color::Black,
             color(antelope_protocol::RuntimeInputControlKind::Link),
         )))

@@ -10,8 +10,8 @@ use crate::driver::{
     OutputControl, RoutingSource,
 };
 use crate::profile::{
-    FrameOperation, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeMeterTarget,
-    RuntimeParam, RuntimeProfile, RuntimeReadiness,
+    FrameOperation, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeInputControlKind,
+    RuntimeLinkDomainKind, RuntimeMeterTarget, RuntimeParam, RuntimeProfile, RuntimeReadiness,
 };
 use crate::profile_codec;
 use crate::types::PanState;
@@ -38,6 +38,61 @@ pub struct ProfileDriver {
 }
 
 impl ProfileDriver {
+    fn validate_link_frame_contract(frame: &RuntimeFrame) -> Result<(), DriverError> {
+        let mut seen = [false; 6];
+        for operation in &frame.operations {
+            let canonical_index = match operation {
+                FrameOperation::FixedByte {
+                    offset: 0,
+                    value: 0x70,
+                } => 0,
+                FrameOperation::FixedByte {
+                    offset: 4,
+                    value: 0x14,
+                } => 1,
+                FrameOperation::FixedByte {
+                    offset: 16,
+                    value: 0xa2,
+                } => 2,
+                FrameOperation::Scalar {
+                    field,
+                    offset: 17,
+                    width: 1,
+                    endian: crate::profile::FrameEndian::NotApplicable,
+                } if field == "space" => 3,
+                FrameOperation::PairIndex {
+                    base: 18,
+                    stride: 1,
+                    pair_field,
+                    width: 1,
+                    max_index: Some(_),
+                } if pair_field == "pair_index" => 4,
+                FrameOperation::Scalar {
+                    field,
+                    offset: 19,
+                    width: 1,
+                    endian: crate::profile::FrameEndian::NotApplicable,
+                } if field == "enabled" => 5,
+                _ => return Err(DriverError::InvalidAction(
+                    "link frame operations are not the canonical six-operation SET_LINK contract"
+                        .into(),
+                )),
+            };
+            if std::mem::replace(&mut seen[canonical_index], true) {
+                return Err(DriverError::InvalidAction(
+                    "link frame operations duplicate a canonical SET_LINK operation".into(),
+                ));
+            }
+        }
+        if !seen.into_iter().all(|present| present) {
+            return Err(DriverError::InvalidAction(
+                "link frame operations are not the complete canonical six-operation SET_LINK contract"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_declared_state_meter_layout(
         profile: &RuntimeProfile,
         frame: &RuntimeFrame,
@@ -514,11 +569,27 @@ impl ProfileDriver {
         let mut link_spaces = HashSet::new();
         if entry.profile.link_domains.is_empty()
             || entry.profile.link_domains.iter().any(|domain| {
+                let semantic_domain_valid = match domain.kind {
+                    RuntimeLinkDomainKind::Mixer => true,
+                    RuntimeLinkDomainKind::Spdif => {
+                        domain.protocol_space == 1
+                            && domain.pair_count == 1
+                            && entry.profile.address_spaces.iter().any(|space| {
+                                space.kind == "spdif_inputs"
+                                    && space.count == Some(2)
+                                    && space.input_capabilities.iter().any(|capability| {
+                                        capability.kind == RuntimeInputControlKind::Link
+                                            && capability.parameter == "spdif_channel_link"
+                                    })
+                            })
+                    }
+                };
                 !link_spaces.insert(domain.protocol_space)
                     || domain.pair_count == 0
                     || domain.pair_count > 256
                     || !profile_codec::is_confirmed(&domain.status)
                     || domain.evidence.trim().is_empty()
+                    || !semantic_domain_valid
             })
         {
             return Err(DriverError::InvalidAction(
@@ -860,6 +931,7 @@ impl ProfileDriver {
             ));
         }
         let link = self.frame("link_command")?;
+        Self::validate_link_frame_contract(link)?;
         Self::scalar_alias(link, "space", "surface")?;
         profile_codec::scalar_offset(link, "enabled")?;
         let pair_field = if link.operations.iter().any(|operation| {

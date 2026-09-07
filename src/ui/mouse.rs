@@ -166,6 +166,7 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
         Intent::ToggleInputPhantomAt { address } => state
             .ui_profile
             .supports_input(*address, InputControl::Phantom),
+        Intent::SetInputPairLink { address, .. } => state.ui_profile.supports_input_link(*address),
         Intent::PickSampleRate(_) => state.ui_profile.supports_global(GlobalControl::SampleRate),
         Intent::PickClockSource(_) => state.ui_profile.supports_global(GlobalControl::ClockSource),
         Intent::SelectSurface(_) => state.ui_profile.supports_global(GlobalControl::Surface),
@@ -1127,6 +1128,15 @@ fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
                     address: input.address,
                 });
             }
+            if controls
+                .link
+                .is_some_and(|rect| contains_point(rect, point))
+            {
+                return Some(Intent::SetInputPairLink {
+                    address: input.address,
+                    enabled: input.address.index % 2 == 0,
+                });
+            }
             return Some(Intent::SelectPreampInput(input_index));
         }
         if let Some(gain) = controls.gain {
@@ -1177,6 +1187,29 @@ fn dynamic_input_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
         {
             return Some(Intent::ToggleInputPhaseAt {
                 address: input.address,
+            });
+        }
+        if controls
+            .link
+            .is_some_and(|rect| contains_point(rect, point))
+        {
+            return Some(Intent::SetInputPairLink {
+                address: input.address,
+                enabled: input.address.index % 2 == 0,
+            });
+        }
+    }
+    for (address, enable, disable) in dynamic_input_link_action_rects(area, state) {
+        if contains_point(enable, point) {
+            return Some(Intent::SetInputPairLink {
+                address,
+                enabled: true,
+            });
+        }
+        if contains_point(disable, point) {
+            return Some(Intent::SetInputPairLink {
+                address,
+                enabled: false,
             });
         }
     }

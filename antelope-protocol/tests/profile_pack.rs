@@ -175,6 +175,28 @@ fn promoted_orion_fixture_constructs_profile_driver() {
 }
 
 #[test]
+fn promoted_orion_spdif_link_domain_requires_exact_scope_and_capability() {
+    let fixture = || {
+        load_profile_pack(include_bytes!("fixtures/orion/profile_driver_pack.json"))
+            .expect("promoted Orion fixture")
+    };
+
+    let mut bad_scope = fixture();
+    bad_scope.profiles[0].profile.link_domains[0].protocol_space = 2;
+    assert!(ProfilePack::validate(bad_scope).is_err());
+
+    let mut bad_pair = fixture();
+    bad_pair.profiles[0].profile.link_domains[0].pair_count = 2;
+    assert!(ProfilePack::validate(bad_pair).is_err());
+
+    let mut missing_capability = fixture();
+    missing_capability.profiles[0].profile.address_spaces[2]
+        .input_capabilities
+        .retain(|capability| capability.kind != RuntimeInputControlKind::Link);
+    assert!(ProfilePack::validate(missing_capability).is_err());
+}
+
+#[test]
 fn promoted_orion_fixture_matches_current_generated_runtime_fields() {
     let fixture = load_profile_pack(include_bytes!("fixtures/orion/profile_driver_pack.json"))
         .expect("promoted Orion fixture")

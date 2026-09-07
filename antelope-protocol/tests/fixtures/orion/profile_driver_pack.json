@@ -71,6 +71,12 @@
               "label": "GAIN",
               "parameter": "spdif_gain",
               "parameter_id": 92
+            },
+            {
+              "kind": "link",
+              "label": "LINK",
+              "parameter": "spdif_channel_link",
+              "parameter_id": null
             }
           ],
           "kind": "spdif_inputs",
@@ -1525,6 +1531,13 @@
         }
       ],
       "link_domains": [
+        {
+          "evidence": "capture spdif-gain-link (2026-08): SET_LINK space=0x01/pair=0x00 toggled on then off. While linked, every gain change was sent TWICE by the Launcher (one SET_PARAM(0x5c) per channel, ~1-3ms apart) and both state_report bytes (91 and 92) moved together -- identical behaviour to the preamp/ADAT link. The device does not propagate; a controller replicates it software-side.",
+          "kind": "spdif",
+          "pair_count": 1,
+          "protocol_space": 1,
+          "status": "confirmed"
+        },
         {
           "evidence": "virtual-mixer channel link (Mix 1-4 strips) -- CONFIRMED macos-mix1-send-pan-fader-mute-solo-link (2026-08): linking mix ch1+ch2 sent SET_LINK space=0x03 pair_index=0x00 enabled=0x01. Software-mirrored like the other link spaces -- while linked the Launcher re-sent BOTH strips' mix_command frames on every fader move.",
           "kind": "mixer",

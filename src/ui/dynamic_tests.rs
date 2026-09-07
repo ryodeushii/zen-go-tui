@@ -387,7 +387,10 @@ fn orion_input_spaces_use_only_canonical_typed_controls_and_expose_intents() {
             ],
         ),
         (1, vec![RuntimeInputControlKind::Gain]),
-        (2, vec![RuntimeInputControlKind::Gain]),
+        (
+            2,
+            vec![RuntimeInputControlKind::Gain, RuntimeInputControlKind::Link],
+        ),
     ];
     for (space_index, kinds) in expected {
         let input = &state.input_spaces[space_index].inputs[0];
@@ -422,7 +425,8 @@ fn orion_input_spaces_use_only_canonical_typed_controls_and_expose_intents() {
         let geometry = super::layouts::dynamic_input_control_rects_for_test(&state, space_index, 0)
             .expect("input control geometry");
         assert!(geometry.mode.is_none() && geometry.phantom.is_none() && geometry.phase.is_none());
-        assert!(geometry.gain.is_some() && geometry.link.is_none());
+        assert!(geometry.gain.is_some());
+        assert!(geometry.link.is_none());
     }
     assert!(available_intents(&state)
         .iter()
@@ -430,9 +434,9 @@ fn orion_input_spaces_use_only_canonical_typed_controls_and_expose_intents() {
 }
 
 #[test]
-fn orion_input_links_have_no_capability_rectangle_hit_area() {
+fn orion_input_link_actions_are_scoped_to_spdif_pair_zero_and_show_no_readback() {
     let state = orion_ui_state();
-    for space_index in 0..3 {
+    for space_index in [0, 1] {
         let input = &state.input_spaces[space_index].inputs[0];
         assert!(state
             .ui_profile
@@ -446,10 +450,47 @@ fn orion_input_links_have_no_capability_rectangle_hit_area() {
                 .is_none()
         );
     }
-    assert!(available_intents(&state).iter().any(|intent| matches!(
-        intent,
-        Intent::SetInputParameterAt { .. } | Intent::AdjustInputParameterAt { .. }
-    )));
+
+    let spdif = &state.input_spaces[2].inputs;
+    assert_eq!(
+        state.ui_profile.input_link_target(spdif[0].address),
+        Some(crate::app::UiInputLinkTarget {
+            protocol_space: 1,
+            pair: 0,
+        })
+    );
+    assert!(state.ui_profile.supports_input_link(spdif[0].address));
+    assert!((0..2).all(
+        |input_index| super::layouts::dynamic_input_control_rects_for_test(&state, 2, input_index,)
+            .unwrap()
+            .link
+            .is_none()
+    ));
+
+    let text = render_to_string(&state);
+    assert!(text.contains("S/PDIF inputs ?"));
+    assert!(text.contains("ON"));
+    assert!(text.contains("OFF"));
+
+    let area = Rect::new(0, 0, 140, 48);
+    let [(address, enable, disable)] =
+        super::layouts::dynamic_input_link_action_rects_for_test(&state)
+            .try_into()
+            .expect("one S/PDIF pair action row");
+    assert_eq!(address, spdif[0].address);
+    for (rect, enabled) in [(enable, true), (disable, false)] {
+        assert_eq!(
+            mouse_action(area, &state, rect.x, rect.y),
+            Some(Intent::SetInputPairLink { address, enabled })
+        );
+    }
+
+    let zen = zen_go_ui_state();
+    assert!(zen
+        .input_spaces
+        .iter()
+        .flat_map(|space| &space.inputs)
+        .all(|input| { !zen.ui_profile.supports_input_link(input.address) }));
 }
 
 #[test]

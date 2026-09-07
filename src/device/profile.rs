@@ -310,6 +310,7 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     protocol_space: domain.protocol_space,
                     kind: match domain.kind {
                         LinkDomainKind::Mixer => RuntimeLinkDomainKind::Mixer,
+                        LinkDomainKind::Spdif => RuntimeLinkDomainKind::Spdif,
                     },
                     pair_count: domain.pair_count,
                     status: status(domain.status).into(),

@@ -72,6 +72,7 @@ def profile_data(name: str, pid: str, *, status: str = "confirmed") -> dict[str,
                 "param_id_offset": 16,
                 "channel_offset": 17,
                 "value_offset": 18,
+                "value_values": [0, 1],
                 "status": "confirmed",
             },
             "state_report": {
@@ -102,9 +103,11 @@ def profile_data(name: str, pid: str, *, status: str = "confirmed") -> dict[str,
                 "magic": "0x70",
                 "opcode_offset": 4,
                 "opcode": "0x14",
+                "param_id_offset": 16,
+                "param_id": "0xa2",
+                "space_offset": 17,
                 "pair_index_offset": 18,
                 "enabled_offset": 19,
-                "allowed_values": [0, 1],
                 "status": "confirmed",
             },
         },
@@ -1489,10 +1492,10 @@ class GeneratorTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                (domain["protocol_space"], domain["pair_count"])
+                (domain["protocol_space"], domain["kind"], domain["pair_count"])
                 for domain in orion["link_domains"]
             ],
-            [(3, 16)],
+            [(1, "spdif", 1), (3, "mixer", 16)],
         )
         expected_startup = [(0x11, 0), (0x11, 1), (0x0B, 1), (0x0B, 2), (0x1B, 0)]
         expected_startup.extend((0x1A, index) for index in range(16))
@@ -1506,13 +1509,6 @@ class GeneratorTests(unittest.TestCase):
             [(query["query_id"], query["sub_id"]) for query in orion["startup_queries"]],
             expected_startup,
         )
-        self.assertFalse(
-            any(
-                capability["kind"] == "link"
-                for space in orion["address_spaces"]
-                for capability in space["input_capabilities"]
-            )
-        )
         def controls(recorded: dict[str, Any], space_id: str) -> list[str]:
             space = next(item for item in recorded["address_spaces"] if item["id"] == space_id)
             return [item["kind"] for item in space["input_capabilities"]]
@@ -1521,7 +1517,7 @@ class GeneratorTests(unittest.TestCase):
             controls(orion, "physical_inputs"), ["gain", "mode", "phantom", "phase"]
         )
         self.assertEqual(controls(orion, "adat_inputs"), ["gain"])
-        self.assertEqual(controls(orion, "spdif_inputs"), ["gain"])
+        self.assertEqual(controls(orion, "spdif_inputs"), ["gain", "link"])
 
         zen, zen_raw = record("zen_go_sc.json")
         self.assertNotIn("runtime_topology", zen_raw)
@@ -2447,22 +2443,23 @@ class GeneratorTests(unittest.TestCase):
             with self.assertRaises(generator.ProfileError):
                 generator.normalize_profile(invalid)
 
-    def test_canonical_orion_emits_no_input_links_and_only_confirmed_mixer_link_domain(self) -> None:
+    def test_canonical_orion_emits_only_confirmed_spdif_and_mixer_link_domains(self) -> None:
         canonical = generator.load_profile(
             REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json",
             REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles",
         )
         normalized = json.loads(generator.render_profile_pack([canonical]))["profiles"][0]
-        for space in normalized["address_spaces"]:
-            if space["id"] in {"physical_inputs", "adat_inputs", "spdif_inputs"}:
-                self.assertNotIn(
-                    "link",
-                    [capability["kind"] for capability in space["input_capabilities"]],
-                )
+        controls = {
+            space["id"]: [capability["kind"] for capability in space["input_capabilities"]]
+            for space in normalized["address_spaces"]
+        }
+        self.assertNotIn("link", controls["physical_inputs"])
+        self.assertNotIn("link", controls["adat_inputs"])
+        self.assertEqual(controls["spdif_inputs"], ["gain", "link"])
         self.assertEqual(
             [(domain["protocol_space"], domain["kind"], domain["pair_count"])
              for domain in normalized["link_domains"]],
-            [(3, "mixer", 16)],
+            [(1, "spdif", 1), (3, "mixer", 16)],
         )
         self.assertEqual(len(normalized["routing_groups"]), 15)
         self.assertTrue(all(group["source_domains"] for group in normalized["routing_groups"]))
@@ -2470,6 +2467,233 @@ class GeneratorTests(unittest.TestCase):
             all(domain["bank"] != 0x0c for domain in group["source_domains"])
             for group in normalized["routing_groups"]
         ))
+
+    def test_spdif_link_derivation_requires_exact_set_link_semantics(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
+        expected_frame = {
+            "magic_offset": 0,
+            "magic": 0x70,
+            "opcode_offset": 4,
+            "opcode": 0x14,
+            "param_id_offset": 16,
+            "param_id": 0xA2,
+            "space_offset": 17,
+            "pair_index_offset": 18,
+            "enabled_offset": 19,
+        }
+        mutations = []
+        for field, expected in expected_frame.items():
+            mutations.extend((
+                (f"missing {field}", lambda data, field=field: data["frame"]["link_command"].pop(field)),
+                (f"wrong {field}", lambda data, field=field, expected=expected: data["frame"]["link_command"].update({field: expected + 1})),
+            ))
+        mutations.extend((
+            ("wrong frame status", lambda data: data["frame"]["link_command"].update({"status": "unconfirmed"})),
+            ("missing parameter status", lambda data: data["params"]["spdif_channel_link"].pop("status")),
+            ("wrong parameter status", lambda data: data["params"]["spdif_channel_link"].update({"status": "unconfirmed"})),
+            ("missing parameter type", lambda data: data["params"]["spdif_channel_link"].pop("type")),
+            ("wrong parameter type", lambda data: data["params"]["spdif_channel_link"].update({"type": "bool"})),
+            ("missing space 1", lambda data: data["frame"]["link_command"]["space_values"].pop("1")),
+            ("wrong space 1", lambda data: data["frame"]["link_command"]["space_values"].update({"2": data["frame"]["link_command"]["space_values"].pop("1")})),
+            ("missing pair count", lambda data: data["spdif"]["link_pairs"].pop("count")),
+            ("wrong pair count", lambda data: data["spdif"]["link_pairs"].update({"count": 2})),
+            ("missing pair indices", lambda data: data["spdif"]["link_pairs"].pop("confirmed_pair_indices")),
+            ("wrong pair indices", lambda data: data["spdif"]["link_pairs"].update({"confirmed_pair_indices": [1]})),
+        ))
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                data = json.loads(path.read_text())
+                mutate(data)
+                profile = generator.normalize_profile(data, path=path)
+                self.assertNotIn(
+                    "link",
+                    [capability["kind"] for capability in generator._build_input_capabilities(profile).get("spdif_inputs", [])],
+                )
+                self.assertFalse(
+                    any(domain["kind"] == "spdif" for domain in generator._build_link_domains(profile))
+                )
+
+    def test_spdif_link_derivation_rejects_extra_compiled_operations(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
+        mutations = (
+            (
+                "additive fixed byte",
+                lambda data: data["frame"]["link_command"].update(
+                    {"poison_offset": 5, "poison": "0xff"}
+                ),
+            ),
+            (
+                "overlapping fixed byte",
+                lambda data: data["frame"]["link_command"].update(
+                    {"poison_offset": 17, "poison": "0xff"}
+                ),
+            ),
+            (
+                "duplicate fixed byte",
+                lambda data: data["frame"]["link_command"].update(
+                    {"duplicate_magic_offset": 0, "duplicate_magic": "0x70"}
+                ),
+            ),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                data = json.loads(path.read_text())
+                mutate(data)
+                profile = generator.normalize_profile(data, path=path)
+                self.assertNotIn(
+                    "link",
+                    [
+                        capability["kind"]
+                        for capability in generator._build_input_capabilities(profile).get(
+                            "spdif_inputs", []
+                        )
+                    ],
+                )
+                self.assertEqual(generator._build_link_domains(profile), [])
+
+    def test_spdif_link_derivation_allows_nonexecutable_metadata_addition(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
+        data = json.loads(path.read_text())
+        data["frame"]["link_command"]["review_metadata"] = {
+            "source": "review notes",
+            "detail": "documentation only",
+        }
+        profile = generator.normalize_profile(data, path=path)
+
+        self.assertIn(
+            "link",
+            [
+                capability["kind"]
+                for capability in generator._build_input_capabilities(profile)["spdif_inputs"]
+            ],
+        )
+        self.assertTrue(
+            any(
+                domain["kind"] == "spdif"
+                for domain in generator._build_link_domains(profile)
+            )
+        )
+
+    def test_explicit_spdif_capability_requires_matching_domain_and_frame(self) -> None:
+        def explicit_profile() -> dict[str, Any]:
+            data = profile_data("Explicit S/PDIF", "0xa123")
+            data["spdif"] = {
+                "count": 2,
+                "status": "confirmed",
+                "link_pairs": {"count": 1, "confirmed_pair_indices": [0]},
+            }
+            data["params"]["spdif_channel_link"] = {
+                "status": "confirmed",
+                "type": "per-pair bool",
+                "evidence": "synthetic confirmed link",
+                "frame": "link_command",
+            }
+            data["frame"]["link_command"].update(
+                {
+                    "param_id_offset": 16,
+                    "param_id": "0xa2",
+                    "space_offset": 17,
+                    "space_values": {"1": "S/PDIF"},
+                }
+            )
+            data["runtime_topology"]["input_spaces"] = [
+                {
+                    "space": "spdif_inputs",
+                    "controls": [
+                        {"kind": "link", "parameter": "spdif_channel_link"}
+                    ],
+                }
+            ]
+            data["runtime_topology"]["link_domains"].append(
+                {
+                    "protocol_space": 1,
+                    "kind": "spdif",
+                    "pair_count": 1,
+                    "status": "confirmed",
+                    "evidence": "synthetic confirmed link",
+                }
+            )
+            return data
+
+        valid = generator.normalize_profile(explicit_profile())
+        self.assertEqual(
+            [
+                capability["kind"]
+                for capability in generator._build_input_capabilities(valid)["spdif_inputs"]
+            ],
+            ["link"],
+        )
+        self.assertTrue(
+            any(
+                domain["kind"] == "spdif"
+                for domain in generator._build_link_domains(valid)
+            )
+        )
+
+        cases = (
+            (
+                "missing domain",
+                lambda data: data["runtime_topology"]["link_domains"].pop(),
+            ),
+            (
+                "malformed frame with mixer-only domains",
+                lambda data: (
+                    data["device"].update({"status": "unconfirmed"}),
+                    data["runtime_topology"]["link_domains"].pop(),
+                    data["frame"]["link_command"].update({"opcode": "0x15"}),
+                ),
+            ),
+            (
+                "malformed frame with S/PDIF domain",
+                lambda data: data["frame"]["link_command"].update(
+                    {"poison_offset": 5, "poison": "0xff"}
+                ),
+            ),
+        )
+        for name, mutate in cases:
+            with self.subTest(name=name):
+                data = explicit_profile()
+                mutate(data)
+                with self.assertRaisesRegex(
+                    generator.ProfileError, "S/PDIF link capability"
+                ):
+                    generator.normalize_profile(data)
+
+    def test_spdif_link_derivation_does_not_infer_semantics_from_free_text(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
+        data = json.loads(path.read_text())
+        data["frame"]["link_command"]["space_values"]["1"] = "opaque digital pair"
+        data["spdif"]["link_pairs"]["notes"] = "finite pair declaration"
+        profile = generator.normalize_profile(data, path=path)
+
+        self.assertIn(
+            "link",
+            [capability["kind"] for capability in generator._build_input_capabilities(profile)["spdif_inputs"]],
+        )
+        self.assertTrue(
+            any(domain["kind"] == "spdif" for domain in generator._build_link_domains(profile))
+        )
+
+    def test_spdif_link_derivation_rejects_malformed_present_declarations(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
+        mutations = (
+            ("frame value", lambda data: data["frame"]["link_command"].update({"opcode": []}), "frame.link_command.opcode"),
+            ("frame status", lambda data: data["frame"]["link_command"].update({"status": []}), "frame.link_command.status"),
+            ("space values", lambda data: data["frame"]["link_command"].update({"space_values": []}), "frame.link_command.space_values"),
+            ("space meaning", lambda data: data["frame"]["link_command"]["space_values"].update({"1": []}), "frame.link_command.space_values.0x01"),
+            ("link pairs", lambda data: data["spdif"].update({"link_pairs": []}), "spdif.link_pairs"),
+            ("pair count", lambda data: data["spdif"]["link_pairs"].update({"count": []}), "spdif.link_pairs.count"),
+            ("pair indices", lambda data: data["spdif"]["link_pairs"].update({"confirmed_pair_indices": "0"}), "spdif.link_pairs.confirmed_pair_indices"),
+            ("parameter", lambda data: data["params"].update({"spdif_channel_link": []}), "params.spdif_channel_link"),
+            ("parameter status", lambda data: data["params"]["spdif_channel_link"].update({"status": []}), "params.spdif_channel_link.status"),
+            ("parameter type", lambda data: data["params"]["spdif_channel_link"].update({"type": []}), "params.spdif_channel_link.type"),
+        )
+        for name, mutate, context in mutations:
+            with self.subTest(name=name):
+                data = json.loads(path.read_text())
+                mutate(data)
+                with self.assertRaisesRegex(generator.ProfileError, context.replace(".", r"\.")):
+                    generator.normalize_profile(data, path=path)
 
     def test_orion_normalization_preserves_capability_sections(self) -> None:
         data = profile_data("Antelope Orion Studio III", "0xa221")
