@@ -114,6 +114,21 @@ mod tests {
         strip.pan = Some(pan);
         strip.muted = Some(muted);
         strip.soloed = Some(soloed);
+        strip.linked = Some(false);
+    }
+
+    fn seed_linked_mixer_pair(controller: &mut Controller) {
+        let strips = &mut controller.state.mixer.surfaces[0].strips[..2];
+        for (strip, (fader, pan, muted, soloed)) in strips
+            .iter_mut()
+            .zip([(0x11, -10, false, true), (0x22, 10, true, false)])
+        {
+            strip.fader = Some(fader);
+            strip.pan = Some(pan);
+            strip.muted = Some(muted);
+            strip.soloed = Some(soloed);
+            strip.linked = Some(true);
+        }
     }
 
     fn test_key(code: AppKeyCode) -> AppKeyEvent {
@@ -625,6 +640,158 @@ mod tests {
         assert_eq!(
             &writes[0][0x10..0x16],
             &[0xd4, 0x04, 0x00, 0x01, 0x00, 0x12]
+        );
+    }
+
+    #[test]
+    fn linked_mouse_pan_set_writes_only_target_and_preserves_partner_strip() {
+        let transport = MockTransport::default();
+        let mut controller = test_controller(Box::new(transport.clone()));
+        seed_linked_mixer_pair(&mut controller);
+        let partner_before = controller.state.mixers()[0].strips[1].clone();
+
+        controller
+            .apply_intent(
+                ui::Intent::SetMixerPanAt {
+                    address: antelope_protocol::MixerAddress {
+                        surface: 0,
+                        strip: 1,
+                    },
+                    pan: -5,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("set linked mixer pan from mouse path");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x01, 0x11, 0x9b]
+        );
+        controller.confirm_pending_write();
+        assert_eq!(controller.state.mixers()[0].strips[0].pan, Some(-5));
+        assert_eq!(controller.state.mixers()[0].strips[1], partner_before);
+    }
+
+    #[test]
+    fn linked_keyboard_pan_adjust_writes_only_target_and_preserves_partner_strip() {
+        let transport = MockTransport::default();
+        let mut controller = test_controller(Box::new(transport.clone()));
+        seed_linked_mixer_pair(&mut controller);
+        let partner_before = controller.state.mixers()[0].strips[0].clone();
+
+        controller
+            .apply_intent(
+                ui::Intent::AdjustMixerPanAt {
+                    address: antelope_protocol::MixerAddress {
+                        surface: 0,
+                        strip: 2,
+                    },
+                    right: true,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("adjust linked mixer pan from keyboard path");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x02, 0x22, 0x6b]
+        );
+        controller.confirm_pending_write();
+        assert_eq!(controller.state.mixers()[0].strips[1].pan, Some(11));
+        assert_eq!(controller.state.mixers()[0].strips[0], partner_before);
+    }
+
+    #[test]
+    fn linked_pan_adjust_rejects_unknown_target_without_writing() {
+        let transport = MockTransport::default();
+        let mut controller = test_controller(Box::new(transport.clone()));
+        seed_linked_mixer_pair(&mut controller);
+        controller.state.mixers_mut()[0].strips[0].pan = None;
+
+        let error = controller
+            .apply_intent(
+                ui::Intent::AdjustMixerPanAt {
+                    address: antelope_protocol::MixerAddress {
+                        surface: 0,
+                        strip: 1,
+                    },
+                    right: true,
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect_err("unknown pan must not use a fabricated center value");
+
+        assert!(error.to_string().contains("pan value unavailable"));
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn linked_legacy_pan_set_uses_same_target_only_controller_behavior() {
+        let transport = MockTransport::default();
+        let mut controller = test_controller(Box::new(transport.clone()));
+        seed_linked_mixer_pair(&mut controller);
+        let partner_before = controller.state.mixers()[0].strips[1].clone();
+
+        controller
+            .apply_intent(
+                ui::Intent::SetMixerPan {
+                    index: 0,
+                    pan: PanState::from_raw(0x1c),
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("set linked mixer pan from legacy path");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            &writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x01, 0x11, 0x9c]
+        );
+        controller.confirm_pending_write();
+        assert_eq!(controller.state.mixers()[0].strips[0].pan, Some(-4));
+        assert_eq!(controller.state.mixers()[0].strips[1], partner_before);
+    }
+
+    #[test]
+    fn link_toggle_writes_only_link_state_and_preserves_distinct_pans() {
+        let transport = MockTransport::default();
+        let mut controller = test_controller(Box::new(transport.clone()));
+        seed_linked_mixer_pair(&mut controller);
+        let pans_before = [
+            controller.state.mixers()[0].strips[0].pan,
+            controller.state.mixers()[0].strips[1].pan,
+        ];
+
+        controller
+            .apply_intent(
+                ui::Intent::ToggleMixerLinkAt {
+                    address: antelope_protocol::MixerAddress {
+                        surface: 0,
+                        strip: 1,
+                    },
+                },
+                ratatui::layout::Rect::new(0, 0, 160, 50),
+            )
+            .expect("toggle linked mixer pair");
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(&writes[0][0x10..0x14], &[0xa2, 0x04, 0x00, 0x00]);
+        assert_eq!(&writes[1][0x10..0x14], &[0xa2, 0x03, 0x00, 0x00]);
+        assert!(writes
+            .iter()
+            .all(|write| write.get(0x10..0x12) != Some(&[0xd4, 0x04])));
+        assert_eq!(
+            [
+                controller.state.mixers()[0].strips[0].pan,
+                controller.state.mixers()[0].strips[1].pan,
+            ],
+            pans_before
         );
     }
 

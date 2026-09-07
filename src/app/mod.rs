@@ -3387,9 +3387,37 @@ mod tests {
                     .collect(),
             },
         };
+        let profile: DeviceProfile =
+            toml::from_str(&toml::to_string_pretty(&profile).expect("serialize profile fixture"))
+                .expect("deserialize profile fixture");
+
+        for (strip, pan) in controller.state.mixers_mut()[0]
+            .strips
+            .iter_mut()
+            .take(2)
+            .zip([-12, 12])
+        {
+            strip.fader = Some(0x20);
+            strip.pan = Some(pan);
+            strip.muted = Some(false);
+            strip.soloed = Some(false);
+            strip.linked = Some(true);
+        }
+        controller.state.mixers_mut()[0].strips[0].meter = Some(42);
+        controller.state.mixers_mut()[0].strips[0].parameters =
+            vec![(0x1234, ControlValue::Int(9))];
+        controller
+            .send_mixer_level_change(MixerSurface::Mix1, 1, 0x21)
+            .expect("seed pre-profile pending mixer readback");
+        assert!(controller.pending_mutation.is_some());
+        transport.take_writes();
 
         controller.apply_profile(&profile).expect("apply profile");
 
+        assert!(
+            !controller.confirm_pending_write(),
+            "pre-profile pending state must not replace restored pans"
+        );
         assert_eq!(controller.state.output.states[0].volume, 0x12);
         assert_eq!(controller.state.output.states[0].mode, OutputMode::Dim);
         assert_eq!(controller.state.output.states[1].mode, OutputMode::Mute);
@@ -3405,6 +3433,18 @@ mod tests {
             PanState::right()
         );
         assert_eq!(
+            controller.state.mixer.channels[MixerSurface::Mix1.index()][1].pan,
+            PanState::center()
+        );
+        assert_eq!(controller.state.mixers()[0].strips[0].pan, Some(30));
+        assert_eq!(controller.state.mixers()[0].strips[1].pan, Some(0));
+        assert_eq!(controller.state.mixers()[1].strips[0].pan, Some(-30));
+        assert_eq!(controller.state.mixers()[0].strips[0].meter, Some(42));
+        assert_eq!(
+            controller.state.mixers()[0].strips[0].parameters,
+            vec![(0x1234, ControlValue::Int(9))]
+        );
+        assert_eq!(
             controller.state.mixer.channels[MixerSurface::Mix1.index()][1].soloed,
             Some(true)
         );
@@ -3416,7 +3456,77 @@ mod tests {
             controller.state.mixer.channels[MixerSurface::Mix2.index()][0].pan,
             PanState::left()
         );
-        assert!(!transport.take_writes().is_empty());
+
+        let writes = transport.take_writes();
+        let mixer_writes = writes
+            .iter()
+            .filter(|write| write.get(0x10..0x12) == Some(&[0xd4, 0x04]))
+            .collect::<Vec<_>>();
+        assert_eq!(mixer_writes.len(), 32);
+        assert_eq!(
+            &mixer_writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x01, 0x00, 0x3e]
+        );
+        assert_eq!(
+            &mixer_writes[1][0x10..0x16],
+            &[0xd4, 0x04, 0x00, 0x02, 0x01, 0xe0]
+        );
+        for surface in 0..=1 {
+            let last_link = writes
+                .iter()
+                .enumerate()
+                .filter(|(_, write)| write.get(0x10..0x12) == Some(&[0xa2, 0x03]))
+                .filter(|(_, write)| usize::from(write[0x12] >> 4) == surface)
+                .map(|(index, _)| index)
+                .last()
+                .expect("profile link writes");
+            let first_mixer = writes
+                .iter()
+                .position(|write| {
+                    write.get(0x10..0x12) == Some(&[0xd4, 0x04])
+                        && usize::from(write[0x12]) == surface
+                })
+                .expect("profile mixer writes");
+            assert!(
+                last_link < first_mixer,
+                "strip pans must restore after links on surface {surface}"
+            );
+        }
+
+        controller
+            .send_mixer_level_change(MixerSurface::Mix1, 1, 0x2c)
+            .expect("change linked level after profile load");
+        controller.confirm_pending_write();
+        let level_writes = transport.take_writes();
+        assert_eq!(level_writes.len(), 2);
+        assert_eq!(
+            &level_writes[0][0x10..0x16],
+            &[0xd4, 0x04, 0, 1, 0x2c, 0x3e]
+        );
+        assert_eq!(
+            &level_writes[1][0x10..0x16],
+            &[0xd4, 0x04, 0, 2, 0x2c, 0xe0]
+        );
+
+        controller
+            .send_mixer_mute_change(MixerSurface::Mix1, 1, false)
+            .expect("change linked mute after profile load");
+        controller.confirm_pending_write();
+        let mute_writes = transport.take_writes();
+        assert_eq!(mute_writes.len(), 2);
+        assert_eq!(&mute_writes[0][0x10..0x16], &[0xd4, 0x04, 0, 1, 0x2c, 0x3e]);
+        assert_eq!(&mute_writes[1][0x10..0x16], &[0xd4, 0x04, 0, 2, 0x2c, 0xa0]);
+
+        controller
+            .send_mixer_solo_change(MixerSurface::Mix1, 1, false)
+            .expect("change linked solo after profile load");
+        controller.confirm_pending_write();
+        let solo_writes = transport.take_writes();
+        assert_eq!(solo_writes.len(), 2);
+        assert_eq!(&solo_writes[0][0x10..0x16], &[0xd4, 0x04, 0, 1, 0x2c, 0x3e]);
+        assert_eq!(&solo_writes[1][0x10..0x16], &[0xd4, 0x04, 0, 2, 0x2c, 0x20]);
+        assert_eq!(controller.state.mixers()[0].strips[0].pan, Some(30));
+        assert_eq!(controller.state.mixers()[0].strips[1].pan, Some(0));
     }
 
     #[test]

@@ -171,11 +171,24 @@ impl DeviceProfile {
             (MixerSurface::Mix2, &self.mixers.mix2),
         ] {
             for strip in strips {
-                if let Some(channel) =
-                    state.mixer.channels[mixer.index()].get_mut(strip.channel as usize - 1)
-                {
+                let strip_index = strip.channel as usize - 1;
+                if let Some(channel) = state.mixer.channels[mixer.index()].get_mut(strip_index) {
                     channel.level = Some(strip.level_raw);
                     channel.pan = PanState::from_raw(strip.pan_raw);
+                    channel.muted = Some(strip.muted);
+                    channel.soloed = Some(strip.soloed);
+                    channel.linked = Some(strip.linked);
+                }
+                if let Some(channel) = state
+                    .mixer
+                    .surfaces
+                    .get_mut(mixer.index())
+                    .and_then(|surface| surface.strips.get_mut(strip_index))
+                {
+                    channel.fader = Some(i32::from(strip.level_raw));
+                    channel.pan = Some(i32::from(
+                        PanState::from_raw(strip.pan_raw).display_percent(),
+                    ));
                     channel.muted = Some(strip.muted);
                     channel.soloed = Some(strip.soloed);
                     channel.linked = Some(strip.linked);
@@ -618,6 +631,7 @@ mod tests {
             MixerAssignmentProfile::Preamp(1)
         );
         assert_eq!(profile.mixers.mix1[0].pan_raw, PanState::right().raw());
+        assert_eq!(profile.mixers.mix1[1].pan_raw, PanState::center().raw());
         assert!(profile.mixers.mix1[1].soloed);
         assert!(profile.mixers.mix2[0].linked);
 
@@ -625,6 +639,8 @@ mod tests {
         let decoded: DeviceProfile = toml::from_str(&rendered).expect("deserialize profile");
 
         assert_eq!(decoded, profile);
+        assert_eq!(decoded.mixers.mix1[0].pan_raw, PanState::right().raw());
+        assert_eq!(decoded.mixers.mix1[1].pan_raw, PanState::center().raw());
     }
 
     #[test]

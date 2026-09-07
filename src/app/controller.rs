@@ -31,6 +31,12 @@ enum PollWritePolicy {
     ReceiveOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkedMixerBehavior {
+    MirrorPair,
+    TargetOnly,
+}
+
 struct QueuedMutation {
     id: QueueEntryId,
     pending: Option<PendingMutation>,
@@ -965,6 +971,33 @@ impl Controller {
     where
         F: Fn(&mut antelope_protocol::DynamicMixerStrip) + Copy,
     {
+        self.send_complete_mixer_change_with_link_behavior(
+            address,
+            LinkedMixerBehavior::MirrorPair,
+            mutate,
+        )
+    }
+
+    fn send_target_mixer_change<F>(&mut self, address: MixerAddress, mutate: F) -> Result<()>
+    where
+        F: Fn(&mut antelope_protocol::DynamicMixerStrip) + Copy,
+    {
+        self.send_complete_mixer_change_with_link_behavior(
+            address,
+            LinkedMixerBehavior::TargetOnly,
+            mutate,
+        )
+    }
+
+    fn send_complete_mixer_change_with_link_behavior<F>(
+        &mut self,
+        address: MixerAddress,
+        linked_behavior: LinkedMixerBehavior,
+        mutate: F,
+    ) -> Result<()>
+    where
+        F: Fn(&mut antelope_protocol::DynamicMixerStrip) + Copy,
+    {
         let surface = self
             .state
             .mixers()
@@ -984,15 +1017,19 @@ impl Controller {
                 .iter()
                 .position(|strip| strip.strip == address.strip)
                 .ok_or_else(|| anyhow::anyhow!("mixer address {address:?} unavailable"))?;
-            let indexes = if surface.strips[strip_index].linked == Some(true) {
-                let left = strip_index - (strip_index % 2);
-                vec![
-                    left,
-                    left.checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("linked mixer pair overflow"))?,
-                ]
-            } else {
-                vec![strip_index]
+            let indexes = match linked_behavior {
+                LinkedMixerBehavior::TargetOnly => vec![strip_index],
+                LinkedMixerBehavior::MirrorPair => match surface.strips[strip_index].linked {
+                    Some(true) => {
+                        let left = strip_index - (strip_index % 2);
+                        vec![
+                            left,
+                            left.checked_add(1)
+                                .ok_or_else(|| anyhow::anyhow!("linked mixer pair overflow"))?,
+                        ]
+                    }
+                    Some(false) | None => vec![strip_index],
+                },
             };
             indexes
                 .into_iter()
@@ -2772,13 +2809,18 @@ impl Controller {
             .state
             .mixer_range(address.surface, MixerControl::Pan)
             .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
-        let current = strip.pan.unwrap_or((min + max) / 2).clamp(min, max);
+        let current = strip
+            .pan
+            .ok_or_else(|| anyhow::anyhow!("mixer pan value unavailable"))?
+            .clamp(min, max);
         let next = if right {
             current.saturating_add(1).min(max)
         } else {
             current.saturating_sub(1).max(min)
         };
-        self.send_complete_mixer_change(address, |strip| strip.pan = Some(next))
+        self.send_target_mixer_change(address, |strip| {
+            strip.pan = Some(next);
+        })
     }
 
     fn handle_set_mixer_pan_at(&mut self, address: MixerAddress, pan: i32) -> Result<()> {
@@ -2787,7 +2829,9 @@ impl Controller {
             .state
             .mixer_range(address.surface, MixerControl::Pan)
             .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
-        self.send_complete_mixer_change(address, |strip| strip.pan = Some(pan.clamp(min, max)))
+        self.send_target_mixer_change(address, |strip| {
+            strip.pan = Some(pan.clamp(min, max));
+        })
     }
 
     fn handle_set_mixer_send_at(&mut self, address: MixerAddress, send: i32) -> Result<()> {
@@ -2895,13 +2939,18 @@ impl Controller {
             .state
             .mixer_range(address.surface, MixerControl::Pan)
             .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
-        let current = strip.pan.unwrap_or((min + max) / 2).clamp(min, max);
+        let current = strip
+            .pan
+            .ok_or_else(|| anyhow::anyhow!("mixer pan value unavailable"))?
+            .clamp(min, max);
         let next = if right {
             current.saturating_add(1).min(max)
         } else {
             current.saturating_sub(1).max(min)
         };
-        self.send_complete_mixer_change(address, |strip| strip.pan = Some(next))
+        self.send_target_mixer_change(address, |strip| {
+            strip.pan = Some(next);
+        })
     }
 
     fn handle_set_mixer_pan(
@@ -2918,7 +2967,9 @@ impl Controller {
             .mixer_range(address.surface, MixerControl::Pan)
             .ok_or_else(|| anyhow::anyhow!("mixer pan range unavailable"))?;
         let value = i32::from(pan.display_percent()).clamp(min, max);
-        self.send_complete_mixer_change(address, |strip| strip.pan = Some(value))
+        self.send_target_mixer_change(address, |strip| {
+            strip.pan = Some(value);
+        })
     }
 
     fn handle_toggle_mixer_mute(
