@@ -808,9 +808,74 @@ fn profile_derived_confirmed_parameter_families_match_complete_frames() {
             0x12,
             vec![0x0e, 73],
         ),
+        (
+            Action::SetGlobal {
+                control: GlobalControl::TalkbackButton,
+                value: ControlValue::Bool(true),
+            },
+            0x12,
+            vec![0x1f, 1],
+        ),
+        (
+            Action::SetGlobal {
+                control: GlobalControl::TalkbackButton,
+                value: ControlValue::Bool(false),
+            },
+            0x12,
+            vec![0x1f, 0],
+        ),
+        (
+            Action::SetGlobal {
+                control: GlobalControl::TalkbackSource,
+                value: ControlValue::Enum(12),
+            },
+            0x12,
+            vec![0x27, 12],
+        ),
+        (
+            Action::SetGlobal {
+                control: GlobalControl::TalkbackGain,
+                value: ControlValue::Int(96),
+            },
+            0x12,
+            vec![0x20, 96],
+        ),
     ] {
         assert_complete_parameter_frame(action, opcode, &payload);
     }
+}
+
+#[test]
+fn profile_driver_rejects_talkback_types_ranges_and_readback_only_residue() {
+    let driver = profile_driver_from_fixture();
+    for value in [-1, 13] {
+        assert!(driver
+            .encode(Action::SetGlobal {
+                control: GlobalControl::TalkbackSource,
+                value: ControlValue::Enum(value),
+            })
+            .is_err());
+    }
+    for value in [-1, 97] {
+        assert!(driver
+            .encode(Action::SetGlobal {
+                control: GlobalControl::TalkbackGain,
+                value: ControlValue::Int(value),
+            })
+            .is_err());
+    }
+    assert!(driver
+        .encode(Action::SetGlobal {
+            control: GlobalControl::TalkbackButton,
+            value: ControlValue::Int(1),
+        })
+        .is_err());
+    assert!(driver
+        .encode(Action::SetGlobal {
+            control: GlobalControl::TalkbackSourceResidue,
+            value: ControlValue::Enum(1),
+        })
+        .is_err());
 }
 
 #[test]
@@ -1194,6 +1259,18 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
                 control: GlobalControl::OutputTrim(OutputTrimAddress { target: 2 }),
                 value: ControlValue::Enum(0),
             },
+            antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::TalkbackButton,
+                value: ControlValue::Bool(false),
+            },
+            antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::TalkbackSourceResidue,
+                value: ControlValue::Enum(0),
+            },
+            antelope_protocol::DynamicGlobalState {
+                control: GlobalControl::TalkbackGain,
+                value: ControlValue::Int(0),
+            },
         ]
     );
     assert_eq!(state.mixers.len(), 4);
@@ -1201,6 +1278,42 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
         .mixers
         .iter()
         .all(|surface| surface.master.is_some() && surface.strips.len() == 32));
+}
+
+#[test]
+fn orion_talkback_readback_keeps_source_residue_partial_and_gain_owner_unknown() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    frame[73] = 0x7d; // button + destination/high-source residue; only low 2 bits are source truth.
+    frame[74] = 42;
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("snapshot")
+    };
+    assert!(state
+        .globals
+        .contains(&antelope_protocol::DynamicGlobalState {
+            control: GlobalControl::TalkbackButton,
+            value: ControlValue::Bool(true),
+        }));
+    assert!(state
+        .globals
+        .contains(&antelope_protocol::DynamicGlobalState {
+            control: GlobalControl::TalkbackSourceResidue,
+            value: ControlValue::Enum(1),
+        }));
+    assert!(!state
+        .globals
+        .iter()
+        .any(|global| { global.control == GlobalControl::TalkbackSource }));
+    assert!(state
+        .globals
+        .contains(&antelope_protocol::DynamicGlobalState {
+            control: GlobalControl::TalkbackGain,
+            value: ControlValue::Int(42),
+        }));
+
+    frame[74] = 97;
+    assert!(driver.decode(&frame).is_err());
 }
 
 #[test]
@@ -2818,6 +2931,97 @@ fn destination_specific_routing_domains_control_outbound_and_inbound_validation(
 }
 
 #[test]
+fn constructor_rejects_malformed_or_ambiguous_talkback_contracts_before_io() {
+    for mutation in 0..8 {
+        let mut entry = fixture_entry();
+        match mutation {
+            0 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "talkback_button")
+                    .unwrap()
+                    .id = Some(0x21)
+            }
+            1 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "talkback_source")
+                    .unwrap()
+                    .readback
+                    .truth = "complete".into()
+            }
+            2 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "talkback_source")
+                    .unwrap()
+                    .readback
+                    .modulus = None
+            }
+            3 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "talkback_source")
+                    .unwrap()
+                    .readback
+                    .fields[0] = ParamReadbackField::MaskedScalar {
+                    offset: 73,
+                    mask: 0xff,
+                    shift: 0,
+                }
+            }
+            4 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "talkback_gain")
+                    .unwrap()
+                    .range = Some((0, 97))
+            }
+            5 => {
+                entry
+                    .profile
+                    .params
+                    .iter_mut()
+                    .find(|parameter| parameter.name == "talkback_gain")
+                    .unwrap()
+                    .readback
+                    .fields[0] = ParamReadbackField::Scalar {
+                    offset: 75,
+                    width: 1,
+                }
+            }
+            6 => entry
+                .profile
+                .params
+                .retain(|parameter| parameter.name != "talkback_button"),
+            _ => entry.profile.params.push(
+                entry
+                    .profile
+                    .params
+                    .iter()
+                    .find(|parameter| parameter.name == "talkback_source")
+                    .unwrap()
+                    .clone(),
+            ),
+        }
+        assert!(
+            ProfileDriver::new(entry).is_err(),
+            "talkback mutation {mutation} must fail closed"
+        );
+    }
+}
+
+#[test]
 fn constructor_rejects_invalid_link_domains_before_io() {
     let mut missing = fixture_entry();
     missing.profile.link_domains.clear();
@@ -2924,6 +3128,19 @@ fn canonical_orion_computer_playback_write_bound_is_conservative_24_channels() {
         })
         .expect_err("Computer Playback 25 requires a future active-host capability");
     assert!(error.to_string().contains("outside 0..23"));
+}
+
+#[test]
+fn zen_go_exposes_no_talkback_writes() {
+    let driver = zen_go_driver();
+    for (control, value) in [
+        (GlobalControl::TalkbackButton, ControlValue::Bool(false)),
+        (GlobalControl::TalkbackSource, ControlValue::Enum(0)),
+        (GlobalControl::TalkbackGain, ControlValue::Int(0)),
+        (GlobalControl::TalkbackSourceResidue, ControlValue::Enum(0)),
+    ] {
+        assert!(driver.encode(Action::SetGlobal { control, value }).is_err());
+    }
 }
 
 #[test]

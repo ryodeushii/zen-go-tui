@@ -2066,7 +2066,7 @@ fn profile_settings_are_orion_owned_and_unknown_until_readback() {
     orion.popup.selector_popup = Some(SelectorPopupState {
         kind: SelectorPopupKind::Settings,
     });
-    let area = Rect::new(0, 0, 60, 12);
+    let area = Rect::new(0, 0, 120, 18);
     let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
     terminal.draw(|frame| render::draw(frame, &orion)).unwrap();
     let rendered = terminal
@@ -2079,6 +2079,40 @@ fn profile_settings_are_orion_owned_and_unknown_until_readback() {
     assert!(rendered.contains("Brightness: ?"));
     assert!(rendered.contains("Monitor A trim: ?"));
     assert!(rendered.contains("Line Out trim: ?"));
+
+    orion.popup.selected_index = 6;
+    terminal.draw(|frame| render::draw(frame, &orion)).unwrap();
+    let talkback = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(talkback.contains("TB hold-to-talk: unknown"));
+    assert!(talkback.contains("TB source: ? (partial; residue mod 4)"));
+    assert!(talkback.contains("TB gain: ? (active; owner unknown)"));
+
+    orion
+        .profile_settings
+        .insert(antelope_protocol::GlobalControl::TalkbackButton, 1);
+    orion
+        .profile_settings
+        .insert(antelope_protocol::GlobalControl::TalkbackSourceResidue, 3);
+    orion
+        .profile_settings
+        .insert(antelope_protocol::GlobalControl::TalkbackGain, 42);
+    terminal.draw(|frame| render::draw(frame, &orion)).unwrap();
+    let observed = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(observed.contains("TB hold-to-talk: active"));
+    assert!(observed.contains("TB source: residue 3 mod 4 (partial)"));
+    assert!(observed.contains("TB gain: raw 42 (active; owner unknown)"));
 
     let mut malformed = ProfileCatalog::builtin()
         .entries()
@@ -2093,9 +2127,13 @@ fn profile_settings_are_orion_owned_and_unknown_until_readback() {
         .find(|frame| frame.id == "command")
         .unwrap();
     command.operations.push(command.operations[0].clone());
-    assert!(!AppState::from_entry(&malformed)
+    let malformed_state = AppState::from_entry(&malformed);
+    assert!(!malformed_state
         .ui_profile
-        .supports_settings());
+        .supports_global(antelope_protocol::GlobalControl::Brightness));
+    assert!(malformed_state
+        .ui_profile
+        .supports_global(antelope_protocol::GlobalControl::TalkbackButton));
 
     let mut missing_structured_readback = ProfileCatalog::builtin()
         .entries()
@@ -2112,9 +2150,18 @@ fn profile_settings_are_orion_owned_and_unknown_until_readback() {
         .readback
         .fields
         .clear();
-    assert!(!AppState::from_entry(&missing_structured_readback)
+    let partial = AppState::from_entry(&missing_structured_readback);
+    assert!(!partial
         .ui_profile
-        .supports_settings());
+        .supports_global(antelope_protocol::GlobalControl::Brightness));
+    assert!(!partial
+        .ui_profile
+        .supports_global(antelope_protocol::GlobalControl::OutputTrim(
+            antelope_protocol::OutputTrimAddress { target: 0 }
+        )));
+    assert!(partial
+        .ui_profile
+        .supports_global(antelope_protocol::GlobalControl::TalkbackSource));
 }
 
 #[test]
@@ -2141,6 +2188,65 @@ fn brightness_selector_mouse_uses_scrolled_shared_viewport_for_all_101_values() 
     assert_eq!(
         mouse_action(area, &state, inner.x, inner.y + inner.height - 1),
         Some(Intent::PickBrightness(100))
+    );
+}
+
+#[test]
+fn talkback_hold_popup_reports_negotiated_keyboard_availability() {
+    let area = Rect::new(0, 0, 80, 24);
+    let mut state = orion_state();
+    state.popup.selector_popup = Some(SelectorPopupState {
+        kind: SelectorPopupKind::TalkbackButton,
+    });
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let unavailable = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(unavailable.contains("No key-up support; hold with mouse"));
+    assert!(unavailable.contains("Release now (disconnect may prevent)"));
+
+    state.ui.keyboard_release_events_enabled = true;
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let available = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(available.contains("Hold Enter; release on key-up/exit"));
+}
+
+#[test]
+fn talkback_gain_selector_mouse_uses_shared_viewport_for_all_97_values() {
+    let area = Rect::new(0, 0, 48, 8);
+    let mut state = orion_state();
+    state.popup.selector_popup = Some(SelectorPopupState {
+        kind: SelectorPopupKind::TalkbackGain,
+    });
+    state.popup.selected_index = 96;
+    let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+    terminal.draw(|frame| render::draw(frame, &state)).unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("raw 96"));
+
+    let popup = layouts::assignment_picker_area(area);
+    let inner = layouts::popup_list_inner_area(popup, "Talkback Active-Source Gain");
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y + inner.height - 1),
+        Some(Intent::PickTalkbackGain(96))
     );
 }
 

@@ -390,6 +390,11 @@ pub enum ParamReadbackFieldDefinition {
         mask: u8,
         shift: u8,
     },
+    MaskedScalar {
+        offset: u16,
+        mask: u8,
+        shift: u8,
+    },
 }
 
 /// A parameter frame or readback reference.
@@ -400,6 +405,8 @@ pub struct ParamReference {
     pub offsets: &'static [ParamOffsetDefinition],
     pub frame: &'static str,
     pub semantic: &'static str,
+    pub truth: &'static str,
+    pub modulus: Option<u8>,
     pub fields: &'static [ParamReadbackFieldDefinition],
 }
 

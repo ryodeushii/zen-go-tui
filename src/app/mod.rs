@@ -85,6 +85,20 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn global_bool_value(&self, control: GlobalControl) -> Option<bool> {
+        self.profile_settings
+            .get(&control)
+            .map(|value| *value != 0)
+            .or_else(|| {
+                self.globals.iter().find_map(|global| {
+                    (global.control == control).then_some(match global.value {
+                        ControlValue::Bool(value) => Some(value),
+                        _ => None,
+                    })?
+                })
+            })
+    }
+
     pub fn global_value(&self, control: GlobalControl) -> Option<i32> {
         if let Some(value) = self.profile_settings.get(&control) {
             return Some(*value);
@@ -208,9 +222,15 @@ impl AppState {
             .params
             .iter()
             .filter(|parameter| {
-                parameter.name != "screen_brightness"
-                    && (parameter.applies_to == "globals"
-                        || matches!(parameter.name.as_str(), "sample_rate" | "clock_source"))
+                !matches!(
+                    parameter.name.as_str(),
+                    "screen_brightness"
+                        | "output_trim"
+                        | "talkback_button"
+                        | "talkback_source"
+                        | "talkback_gain"
+                ) && (parameter.applies_to == "globals"
+                    || matches!(parameter.name.as_str(), "sample_rate" | "clock_source"))
             })
             .filter_map(|parameter| {
                 let control = match parameter.name.as_str() {
@@ -1248,11 +1268,15 @@ impl AppState {
         for global in state.globals {
             if matches!(
                 global.control,
-                GlobalControl::Brightness | GlobalControl::OutputTrim(_)
+                GlobalControl::Brightness
+                    | GlobalControl::OutputTrim(_)
+                    | GlobalControl::TalkbackButton
+                    | GlobalControl::TalkbackSourceResidue
+                    | GlobalControl::TalkbackGain
             ) {
                 let value = match global.value {
                     ControlValue::Int(value) | ControlValue::Enum(value) => value,
-                    ControlValue::Bool(_) => continue,
+                    ControlValue::Bool(value) => i32::from(value),
                 };
                 changed |= self.profile_settings.insert(global.control, value) != Some(value);
             } else if let Some(slot) = self
@@ -1305,18 +1329,26 @@ impl AppState {
     }
 
     fn state_setting_value_is_valid(&self, global: &DynamicGlobalState) -> bool {
-        let value = match global.value {
-            ControlValue::Int(value) | ControlValue::Enum(value) => value,
-            ControlValue::Bool(_) => return false,
-        };
-        match global.control {
-            GlobalControl::Brightness => {
+        match (global.control, global.value) {
+            (GlobalControl::Brightness, ControlValue::Int(value)) => {
                 self.ui_profile.supports_global(global.control) && (0..=100).contains(&value)
             }
-            GlobalControl::OutputTrim(address) => {
+            (GlobalControl::OutputTrim(address), ControlValue::Enum(value)) => {
                 self.ui_profile.supports_global(global.control)
                     && address.target <= 2
                     && (0..=6).contains(&value)
+            }
+            (GlobalControl::TalkbackButton, ControlValue::Bool(_)) => self
+                .ui_profile
+                .supports_global(GlobalControl::TalkbackButton),
+            (GlobalControl::TalkbackSourceResidue, ControlValue::Enum(value)) => {
+                self.ui_profile
+                    .supports_global(GlobalControl::TalkbackSource)
+                    && (0..=3).contains(&value)
+            }
+            (GlobalControl::TalkbackGain, ControlValue::Int(value)) => {
+                self.ui_profile.supports_global(GlobalControl::TalkbackGain)
+                    && (0..=96).contains(&value)
             }
             _ => false,
         }

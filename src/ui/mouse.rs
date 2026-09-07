@@ -173,6 +173,15 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
         Intent::PickOutputTrim { address, .. } => state
             .ui_profile
             .supports_global(GlobalControl::OutputTrim(*address)),
+        Intent::SetTalkbackButton(_) => state
+            .ui_profile
+            .supports_global(GlobalControl::TalkbackButton),
+        Intent::PickTalkbackSource(_) => state
+            .ui_profile
+            .supports_global(GlobalControl::TalkbackSource),
+        Intent::PickTalkbackGain(_) => state
+            .ui_profile
+            .supports_global(GlobalControl::TalkbackGain),
         Intent::SelectSurface(_) => state.ui_profile.supports_global(GlobalControl::Surface),
         Intent::AdjustFocused(_) | Intent::ToggleFocusedMute | Intent::ToggleFocusedDim => {
             state.ui_profile.actionable
@@ -766,6 +775,9 @@ fn selector_popup_mouse_action(
         SelectorPopupKind::OutputTrim { target: 1 } => "Output Trim 1",
         SelectorPopupKind::OutputTrim { target: 2 } => "Output Trim 2",
         SelectorPopupKind::OutputTrim { .. } => "Output Trim",
+        SelectorPopupKind::TalkbackButton => "Talkback Hold-to-Talk",
+        SelectorPopupKind::TalkbackSource => "Talkback Source",
+        SelectorPopupKind::TalkbackGain => "Talkback Active-Source Gain",
     };
     let inner = popup_list_inner_area(popup_area, title);
     if point.1 < inner.y {
@@ -778,6 +790,9 @@ fn selector_popup_mouse_action(
         SelectorPopupKind::Settings => state.ui_profile.setting_rows().len(),
         SelectorPopupKind::Brightness => 101,
         SelectorPopupKind::OutputTrim { .. } => state.ui_profile.output_trim_value_labels().len(),
+        SelectorPopupKind::TalkbackButton => 2,
+        SelectorPopupKind::TalkbackSource => state.ui_profile.talkback_source_choices().len(),
+        SelectorPopupKind::TalkbackGain => 97,
     };
     let viewport = popup_list_viewport(popup_area, title, item_count, state.popup.selected_index);
     let index = viewport
@@ -809,6 +824,9 @@ fn selector_popup_mouse_action(
                     GlobalControl::OutputTrim(address) => {
                         Some(Intent::OpenOutputTrimSelector(*address))
                     }
+                    GlobalControl::TalkbackButton => Some(Intent::OpenTalkbackButton),
+                    GlobalControl::TalkbackSource => Some(Intent::OpenTalkbackSourceSelector),
+                    GlobalControl::TalkbackGain => Some(Intent::OpenTalkbackGainSelector),
                     _ => None,
                 })
         }
@@ -823,6 +841,19 @@ fn selector_popup_mouse_action(
                 address: OutputTrimAddress { target },
                 value: *value,
             }),
+        SelectorPopupKind::TalkbackButton => match index {
+            0 => Some(Intent::SetTalkbackButton(true)),
+            1 => Some(Intent::SetTalkbackButton(false)),
+            _ => None,
+        },
+        SelectorPopupKind::TalkbackSource => state
+            .ui_profile
+            .talkback_source_choices()
+            .get(index)
+            .map(|(value, _)| Intent::PickTalkbackSource(*value)),
+        SelectorPopupKind::TalkbackGain => {
+            (index <= 96).then_some(Intent::PickTalkbackGain(index as i32))
+        }
     }
 }
 

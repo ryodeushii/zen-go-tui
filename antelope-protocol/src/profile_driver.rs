@@ -305,6 +305,123 @@ impl ProfileDriver {
         Ok(())
     }
 
+    fn validate_talkback_contract(
+        profile: &RuntimeProfile,
+        frame_index: &HashMap<String, usize>,
+    ) -> Result<(), DriverError> {
+        let parameters = |name: &str| {
+            profile
+                .params
+                .iter()
+                .filter(|parameter| {
+                    parameter.name == name && profile_codec::is_confirmed(&parameter.status)
+                })
+                .collect::<Vec<_>>()
+        };
+        let button = parameters("talkback_button");
+        let source = parameters("talkback_source");
+        let gain = parameters("talkback_gain");
+        if button.is_empty() && source.is_empty() && gain.is_empty() {
+            return Ok(());
+        }
+        if button.len() != 1 || source.len() != 1 || gain.len() != 1 {
+            return Err(DriverError::InvalidAction(
+                "talkback declarations must be complete and unambiguous".into(),
+            ));
+        }
+        let button = button[0];
+        let source = source[0];
+        let gain = gain[0];
+        if button.id != Some(0x1f)
+            || button.applies_to != "globals"
+            || button.value_type != "bool"
+            || button.range.is_some()
+            || button.readback.frame != "state_report"
+            || button.readback.semantic != "talkback_button"
+            || button.readback.truth != "complete"
+            || button.readback.modulus.is_some()
+            || button.readback.fields
+                != [ParamReadbackField::MaskedScalar {
+                    offset: 73,
+                    mask: 0x40,
+                    shift: 6,
+                }]
+        {
+            return Err(DriverError::InvalidAction(
+                "talkback_button declaration is not the confirmed hold-to-talk contract".into(),
+            ));
+        }
+        if source.id != Some(0x27)
+            || source.applies_to != "globals"
+            || source.value_type != "enum"
+            || source.range != Some((0, 12))
+            || source.values.len() != 13
+            || !source
+                .values
+                .iter()
+                .enumerate()
+                .all(|(index, (value, label))| *value == index as i32 && !label.trim().is_empty())
+            || source.readback.frame != "state_report"
+            || source.readback.semantic != "talkback_source_residue"
+            || source.readback.truth != "partial"
+            || source.readback.modulus != Some(4)
+            || source.readback.fields
+                != [ParamReadbackField::MaskedScalar {
+                    offset: 73,
+                    mask: 0x03,
+                    shift: 0,
+                }]
+        {
+            return Err(DriverError::InvalidAction(
+                "talkback_source declaration is not the bounded modulo-4 contract".into(),
+            ));
+        }
+        if gain.id != Some(0x20)
+            || gain.applies_to != "globals"
+            || gain.value_type != "int"
+            || gain.range != Some((0, 96))
+            || gain.readback.frame != "state_report"
+            || gain.readback.semantic != "talkback_selected_source_gain"
+            || gain.readback.truth != "complete"
+            || gain.readback.modulus.is_some()
+            || gain.readback.fields
+                != [ParamReadbackField::Scalar {
+                    offset: 74,
+                    width: 1,
+                }]
+        {
+            return Err(DriverError::InvalidAction(
+                "talkback_gain declaration is not the bounded active-source contract".into(),
+            ));
+        }
+        let global = frame_index
+            .get("global_command")
+            .and_then(|index| profile.frames.get(*index))
+            .ok_or_else(|| {
+                DriverError::InvalidAction("talkback global command frame is missing".into())
+            })?;
+        Self::validate_setting_command_frame(global, 0x12, false)
+    }
+
+    /// Whether a runtime profile carries the complete canonical bounded talkback contract.
+    pub fn supports_complete_talkback_contract(profile: &RuntimeProfile) -> bool {
+        if !profile.params.iter().any(|parameter| {
+            matches!(
+                parameter.name.as_str(),
+                "talkback_button" | "talkback_source" | "talkback_gain"
+            ) && profile_codec::is_confirmed(&parameter.status)
+        }) {
+            return false;
+        }
+        let mut frame_index = HashMap::new();
+        for (index, frame) in profile.frames.iter().enumerate() {
+            if frame_index.insert(frame.id.clone(), index).is_some() {
+                return false;
+            }
+        }
+        Self::validate_talkback_contract(profile, &frame_index).is_ok()
+    }
+
     /// Whether a runtime profile carries the complete canonical bounded settings contract.
     pub fn supports_complete_settings_contract(profile: &RuntimeProfile) -> bool {
         if !profile.params.iter().any(|parameter| {
@@ -482,6 +599,7 @@ impl ProfileDriver {
             }
         }
         Self::validate_settings_contract(&entry.profile, &frame_index)?;
+        Self::validate_talkback_contract(&entry.profile, &frame_index)?;
         let confirmed_meter_decoder_count = entry
             .profile
             .decoders
@@ -2169,6 +2287,35 @@ impl ProfileDriver {
                 });
             }
         }
+        if Self::supports_complete_talkback_contract(&self.profile) {
+            let status = *bytes.get(73).ok_or_else(|| {
+                DriverError::InvalidAction("talkback status readback is truncated".into())
+            })?;
+            let gain = *bytes.get(74).ok_or_else(|| {
+                DriverError::InvalidAction("talkback gain readback is truncated".into())
+            })?;
+            if gain > 96 {
+                return Err(DriverError::InvalidAction(
+                    "talkback active-source gain is outside 0..96".into(),
+                ));
+            }
+            state.globals.extend([
+                DynamicGlobalState {
+                    control: GlobalControl::TalkbackButton,
+                    value: ControlValue::Bool(status & 0x40 != 0),
+                },
+                DynamicGlobalState {
+                    // This is deliberately a different control from TalkbackSource:
+                    // the report proves only source modulo 4, never one of 13 sources.
+                    control: GlobalControl::TalkbackSourceResidue,
+                    value: ControlValue::Enum(i32::from(status & 0x03)),
+                },
+                DynamicGlobalState {
+                    control: GlobalControl::TalkbackGain,
+                    value: ControlValue::Int(i32::from(gain)),
+                },
+            ]);
+        }
         Ok(state)
     }
 
@@ -2553,6 +2700,35 @@ impl DeviceDriver for ProfileDriver {
                     GlobalControl::ClockSource => "clock_source",
                     GlobalControl::Surface => "surface",
                     GlobalControl::Brightness => "screen_brightness",
+                    GlobalControl::TalkbackButton => {
+                        if !matches!(value, ControlValue::Bool(_)) {
+                            return Err(DriverError::InvalidAction(
+                                "talkback button requires explicit pressed/released bool".into(),
+                            ));
+                        }
+                        "talkback_button"
+                    }
+                    GlobalControl::TalkbackSource => {
+                        if !matches!(value, ControlValue::Enum(_)) {
+                            return Err(DriverError::InvalidAction(
+                                "talkback source requires an enum index".into(),
+                            ));
+                        }
+                        "talkback_source"
+                    }
+                    GlobalControl::TalkbackGain => {
+                        if !matches!(value, ControlValue::Int(_)) {
+                            return Err(DriverError::InvalidAction(
+                                "talkback gain requires a raw integer".into(),
+                            ));
+                        }
+                        "talkback_gain"
+                    }
+                    GlobalControl::TalkbackSourceResidue => {
+                        return Err(DriverError::UnsupportedAction(
+                            "talkback source residue is readback-only".into(),
+                        ))
+                    }
                     GlobalControl::OutputTrim(_) => {
                         return Err(DriverError::InvalidAction(
                             "output trim requires Action::SetOutputTrim".into(),

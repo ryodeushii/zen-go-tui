@@ -221,6 +221,7 @@ impl UiProfileState {
                 .any(|param| param.name == name && param.status.eq_ignore_ascii_case("confirmed"))
         };
         let settings_valid = ProfileDriver::supports_complete_settings_contract(profile);
+        let talkback_valid = ProfileDriver::supports_complete_talkback_contract(profile);
         let parameter_values = profile
             .params
             .iter()
@@ -403,6 +404,13 @@ impl UiProfileState {
                 global_controls.insert(GlobalControl::OutputTrim(OutputTrimAddress { target }));
             }
         }
+        if talkback_valid {
+            global_controls.extend([
+                GlobalControl::TalkbackButton,
+                GlobalControl::TalkbackSource,
+                GlobalControl::TalkbackGain,
+            ]);
+        }
         let routing_destinations = profile
             .routing_groups
             .iter()
@@ -568,6 +576,9 @@ impl UiProfileState {
             || (0..=2).any(|target| {
                 self.supports_global(GlobalControl::OutputTrim(OutputTrimAddress { target }))
             })
+            || self.supports_global(GlobalControl::TalkbackButton)
+            || self.supports_global(GlobalControl::TalkbackSource)
+            || self.supports_global(GlobalControl::TalkbackGain)
     }
 
     pub fn setting_rows(&self) -> Vec<GlobalControl> {
@@ -581,11 +592,34 @@ impl UiProfileState {
             let control = GlobalControl::OutputTrim(OutputTrimAddress { target });
             self.supports_global(control).then_some(control)
         }));
+        rows.extend(
+            [
+                GlobalControl::TalkbackButton,
+                GlobalControl::TalkbackSource,
+                GlobalControl::TalkbackGain,
+            ]
+            .into_iter()
+            .filter(|control| self.supports_global(*control)),
+        );
         rows
     }
 
     pub fn output_trim_target_label(&self, target: u8) -> Option<&str> {
         self.output_trim_targets.get(&target).map(String::as_str)
+    }
+
+    pub fn talkback_source_choices(&self) -> Vec<(i32, String)> {
+        self.parameter_values
+            .get("talkback_source")
+            .map(|values| {
+                let mut values = values
+                    .iter()
+                    .map(|(value, label)| (*value, label.clone()))
+                    .collect::<Vec<_>>();
+                values.sort_by_key(|(value, _)| *value);
+                values
+            })
+            .unwrap_or_default()
     }
 
     pub fn output_trim_value_labels(&self) -> Vec<(i32, String)> {
@@ -712,6 +746,8 @@ pub struct UiState {
     pub focus: FocusArea,
     pub last_message: String,
     pub settings: AppSettings,
+    /// True only when terminal negotiation successfully enabled key release events.
+    pub keyboard_release_events_enabled: bool,
     pub quit_requested: bool,
 }
 
@@ -729,6 +765,8 @@ pub struct PopupState {
     pub routing_source_picker: Option<RoutingSourcePickerState>,
     pub selector_popup: Option<SelectorPopupState>,
     pub selector_parent_index: Option<usize>,
+    /// True only after this UI successfully sent a talkback press and before release.
+    pub talkback_button_held: bool,
     pub profile_names: Vec<String>,
     pub profile_editor: Option<ProfileEditorState>,
     pub selected_index: usize,
@@ -871,6 +909,7 @@ impl Default for UiState {
                 "Press ? for help. Device state is authoritative where decoding is confirmed."
                     .to_string(),
             settings: AppSettings::default(),
+            keyboard_release_events_enabled: false,
             quit_requested: false,
         }
     }

@@ -1,5 +1,5 @@
 {
-  "generator_version": "1.4.1",
+  "generator_version": "1.4.2",
   "profiles": [
     {
       "address_spaces": [
@@ -2598,19 +2598,30 @@
           },
           "id": 31,
           "internal_value": null,
-          "metadata": "{\"evidence\":\"capture talkback-bttn (2026-08): each press set offset-73 bit 6, each release cleared it. Sent doubled by the Launcher (two identical frames ~30-80ms apart), same double-send habit seen elsewhere -- one is enough.\",\"frame\":\"global_command (opcode 0x12) -- value 1=press/hold, 0=release, at offset 17\",\"id\":\"0x1f\",\"readback\":\"state_report.talkback_block, offset 73 bit 6 (0x40)\",\"status\":\"confirmed\",\"type\":\"bool\"}",
+          "metadata": "{\"evidence\":\"capture talkback-bttn (2026-08): each press set offset-73 bit 6, each release cleared it. Sent doubled by the Launcher (two identical frames ~30-80ms apart), same double-send habit seen elsewhere -- one is enough.\",\"frame\":\"global_command (opcode 0x12) -- value 1=press/hold, 0=release, at offset 17\",\"id\":\"0x1f\",\"readback\":\"state_report.talkback_block, offset 73 bit 6 (0x40)\",\"runtime_readback\":{\"fields\":[{\"kind\":\"masked_scalar\",\"mask\":\"0x40\",\"offset\":73,\"shift\":6}],\"frame\":\"state_report\",\"semantic\":\"talkback_button\",\"truth\":\"complete\"},\"status\":\"confirmed\",\"type\":\"bool\"}",
           "name": "talkback_button",
           "range": null,
           "range_by_mode": [],
           "readback": {
+            "fields": [
+              {
+                "kind": "masked_scalar",
+                "mask": 64,
+                "offset": 73,
+                "shift": 6
+              }
+            ],
             "formula": "",
+            "frame": "state_report",
             "offsets": [
               [
-                "offset_0",
+                "field_0",
                 73
               ]
             ],
-            "text": "state_report.talkback_block, offset 73 bit 6 (0x40)"
+            "semantic": "talkback_button",
+            "text": "state_report.talkback_block, offset 73 bit 6 (0x40)",
+            "truth": "complete"
           },
           "status": "confirmed",
           "unity": null,
@@ -2632,7 +2643,7 @@
           },
           "id": 39,
           "internal_value": null,
-          "metadata": "{\"evidence\":\"captures talkback-select (2026-08, stepped through all 13 sources -- offset 73 low 2 bits matched source&3 every time) and talkback-gain-int-ch1-2-12 (each re-select changed the talkback gain readback to that source's own value). SOURCE MAP USER-CONFIRMED (2026-08): index 0 = INT internal mic, indices 1-12 = preamps 1-12.\",\"frame\":\"global_command (opcode 0x12) -- source index at offset 17\",\"id\":\"0x27\",\"range\":[0,12],\"readback\":\"state_report.talkback_block offset 73 bits 0-1 give ONLY source_index & 0x03 -- the high bits are not exposed anywhere found. Track the full value client-side.\",\"source_map\":\"13 sources, index 0-12: 0 = INT (the interface's built-in talkback microphone, the one behind the unit's physical talkback button); 1-12 = the 12 preamps / physical hybrid input channels 1-12 (1:1, source index == channel number).\",\"status\":\"confirmed\",\"type\":\"enum\"}",
+          "metadata": "{\"evidence\":\"captures talkback-select (2026-08, stepped through all 13 sources -- offset 73 low 2 bits matched source&3 every time) and talkback-gain-int-ch1-2-12 (each re-select changed the talkback gain readback to that source's own value). SOURCE MAP USER-CONFIRMED (2026-08): index 0 = INT internal mic, indices 1-12 = preamps 1-12.\",\"frame\":\"global_command (opcode 0x12) -- source index at offset 17\",\"id\":\"0x27\",\"range\":[0,12],\"readback\":\"state_report.talkback_block offset 73 bits 0-1 give ONLY source_index & 0x03 -- the high bits are not exposed anywhere found. Track the full value client-side.\",\"runtime_readback\":{\"fields\":[{\"kind\":\"masked_scalar\",\"mask\":\"0x03\",\"offset\":73,\"shift\":0}],\"frame\":\"state_report\",\"modulus\":4,\"semantic\":\"talkback_source_residue\",\"truth\":\"partial\"},\"source_map\":\"13 sources, index 0-12: 0 = INT (the interface's built-in talkback microphone, the one behind the unit's physical talkback button); 1-12 = the 12 preamps / physical hybrid input channels 1-12 (1:1, source index == channel number).\",\"status\":\"confirmed\",\"type\":\"enum\"}",
           "name": "talkback_source",
           "range": [
             0,
@@ -2640,14 +2651,26 @@
           ],
           "range_by_mode": [],
           "readback": {
+            "fields": [
+              {
+                "kind": "masked_scalar",
+                "mask": 3,
+                "offset": 73,
+                "shift": 0
+              }
+            ],
             "formula": "",
+            "frame": "state_report",
+            "modulus": 4,
             "offsets": [
               [
-                "offset_0",
+                "field_0",
                 73
               ]
             ],
-            "text": "state_report.talkback_block offset 73 bits 0-1 give ONLY source_index & 0x03 -- the high bits are not exposed anywhere found. Track the full value client-side."
+            "semantic": "talkback_source_residue",
+            "text": "state_report.talkback_block offset 73 bits 0-1 give ONLY source_index & 0x03 -- the high bits are not exposed anywhere found. Track the full value client-side.",
+            "truth": "partial"
           },
           "status": "confirmed",
           "unity": null,
@@ -2659,51 +2682,51 @@
             ],
             [
               1,
-              "input_1"
+              "Preamp 1"
             ],
             [
               2,
-              "input_2"
+              "Preamp 2"
             ],
             [
               3,
-              "input_3"
+              "Preamp 3"
             ],
             [
               4,
-              "input_4"
+              "Preamp 4"
             ],
             [
               5,
-              "input_5"
+              "Preamp 5"
             ],
             [
               6,
-              "input_6"
+              "Preamp 6"
             ],
             [
               7,
-              "input_7"
+              "Preamp 7"
             ],
             [
               8,
-              "input_8"
+              "Preamp 8"
             ],
             [
               9,
-              "input_9"
+              "Preamp 9"
             ],
             [
               10,
-              "input_10"
+              "Preamp 10"
             ],
             [
               11,
-              "input_11"
+              "Preamp 11"
             ],
             [
               12,
-              "input_12"
+              "Preamp 12"
             ]
           ]
         },
@@ -2722,7 +2745,7 @@
           },
           "id": 32,
           "internal_value": null,
-          "metadata": "{\"encoding\":\"same raw 0-96 scale as bus_level (0 = -inf, 96/0x60 = 0dB/unity); curve shape between the ends not independently verified\",\"evidence\":\"capture talkback-gain-int-ch1-2-12 (2026-08): 106 gain frames swept 0-96 for 4 sources (internal, ch1, ch2, ch12); offset 74 tracked the commanded value across the whole range, and switching source reset offset 74 to the newly-selected source's stored gain.\",\"frame\":\"global_command (opcode 0x12) -- gain value 0-96 at offset 17\",\"id\":\"0x20\",\"per\":\"talkback source -- set talkback_source first, then this sets that source's talkback-send gain\",\"range\":[0,96],\"readback\":\"state_report.talkback_block, offset 74 -- shows the selected source's gain, 1:1 with the commanded value\",\"status\":\"confirmed\",\"type\":\"int\"}",
+          "metadata": "{\"encoding\":\"same raw 0-96 scale as bus_level (0 = -inf, 96/0x60 = 0dB/unity); curve shape between the ends not independently verified\",\"evidence\":\"capture talkback-gain-int-ch1-2-12 (2026-08): 106 gain frames swept 0-96 for 4 sources (internal, ch1, ch2, ch12); offset 74 tracked the commanded value across the whole range, and switching source reset offset 74 to the newly-selected source's stored gain.\",\"frame\":\"global_command (opcode 0x12) -- gain value 0-96 at offset 17\",\"id\":\"0x20\",\"per\":\"talkback source -- set talkback_source first, then this sets that source's talkback-send gain\",\"range\":[0,96],\"readback\":\"state_report.talkback_block, offset 74 -- shows the selected source's gain, 1:1 with the commanded value\",\"runtime_readback\":{\"fields\":[{\"kind\":\"scalar\",\"offset\":74,\"width\":1}],\"frame\":\"state_report\",\"semantic\":\"talkback_selected_source_gain\",\"truth\":\"complete\"},\"status\":\"confirmed\",\"type\":\"int\"}",
           "name": "talkback_gain",
           "range": [
             0,
@@ -2730,14 +2753,24 @@
           ],
           "range_by_mode": [],
           "readback": {
+            "fields": [
+              {
+                "kind": "scalar",
+                "offset": 74,
+                "width": 1
+              }
+            ],
             "formula": "",
+            "frame": "state_report",
             "offsets": [
               [
-                "offset_0",
+                "field_0",
                 74
               ]
             ],
-            "text": "state_report.talkback_block, offset 74 -- shows the selected source's gain, 1:1 with the commanded value"
+            "semantic": "talkback_selected_source_gain",
+            "text": "state_report.talkback_block, offset 74 -- shows the selected source's gain, 1:1 with the commanded value",
+            "truth": "complete"
           },
           "status": "confirmed",
           "unity": null,
@@ -3349,9 +3382,9 @@
         }
       ],
       "provenance": {
-        "generator_version": "1.4.1",
+        "generator_version": "1.4.2",
         "source_path": "profiles/orion_studio_sc.json",
-        "source_sha256": "72071072f4a3d5736317760db9391a20951819da6ba3cafba286dfaa6650d5f2"
+        "source_sha256": "0e9c6c84c76eedfb967e42740413576b43acbe3e75b3122104f0c67718996d48"
       },
       "readback": {
         "category_counts": [

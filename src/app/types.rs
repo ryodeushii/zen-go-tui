@@ -224,6 +224,9 @@ pub enum Intent {
     OpenSettingsSelector,
     OpenBrightnessSelector,
     OpenOutputTrimSelector(OutputTrimAddress),
+    OpenTalkbackButton,
+    OpenTalkbackSourceSelector,
+    OpenTalkbackGainSelector,
     PickSampleRate(SampleRate),
     PickClockSource(i32),
     PickBrightness(i32),
@@ -231,6 +234,9 @@ pub enum Intent {
         address: OutputTrimAddress,
         value: i32,
     },
+    SetTalkbackButton(bool),
+    PickTalkbackSource(i32),
+    PickTalkbackGain(i32),
 
     // Keyboard-only (context-resolved in handle_key_press)
     AdjustFocused(bool),
@@ -295,6 +301,9 @@ impl Intent {
                 | Self::PickClockSource(_)
                 | Self::PickBrightness(_)
                 | Self::PickOutputTrim { .. }
+                | Self::SetTalkbackButton(_)
+                | Self::PickTalkbackSource(_)
+                | Self::PickTalkbackGain(_)
                 | Self::AdjustFocused(_)
                 | Self::ToggleFocusedMute
                 | Self::ToggleFocusedDim

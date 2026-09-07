@@ -576,6 +576,8 @@ fn convert_reference(reference: super::ParamReference) -> ParamReference {
             .collect(),
         frame: reference.frame.into(),
         semantic: reference.semantic.into(),
+        truth: reference.truth.into(),
+        modulus: reference.modulus,
         fields: reference
             .fields
             .iter()
@@ -593,6 +595,15 @@ fn convert_reference(reference: super::ParamReference) -> ParamReference {
                     shift,
                 } => ParamReadbackField::BitField {
                     target: *target,
+                    offset: *offset,
+                    mask: *mask,
+                    shift: *shift,
+                },
+                super::ParamReadbackFieldDefinition::MaskedScalar {
+                    offset,
+                    mask,
+                    shift,
+                } => ParamReadbackField::MaskedScalar {
                     offset: *offset,
                     mask: *mask,
                     shift: *shift,

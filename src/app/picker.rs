@@ -23,6 +23,9 @@ pub enum SelectorPopupKind {
     Settings,
     Brightness,
     OutputTrim { target: u8 },
+    TalkbackButton,
+    TalkbackSource,
+    TalkbackGain,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -466,8 +466,14 @@ impl Controller {
             }
         }
         let batch = self.driver.encode(action.clone())?;
-        let queueable = !matches!(action, Action::SetRoutingGroup { .. })
-            && batch.frames.len() == 1
+        let queueable = !matches!(
+            action,
+            Action::SetRoutingGroup { .. }
+                | Action::SetGlobal {
+                    control: GlobalControl::TalkbackButton,
+                    ..
+                }
+        ) && batch.frames.len() == 1
             && batch.refresh_requests.is_empty();
         if queueable {
             let id = self
@@ -1118,6 +1124,9 @@ impl Controller {
             Intent::OpenOutputTrimSelector(address) => {
                 self.handle_open_output_trim_selector(address)
             }
+            Intent::OpenTalkbackButton => self.handle_open_talkback_button(),
+            Intent::OpenTalkbackSourceSelector => self.handle_open_talkback_source_selector(),
+            Intent::OpenTalkbackGainSelector => self.handle_open_talkback_gain_selector(),
             Intent::SelectRawPacketTab(tab) => self.handle_select_raw_packet_tab(tab),
             Intent::SelectRawMapScope(scope) => self.handle_select_raw_map_scope(scope),
             Intent::CycleRawMapScope { forward } => self.handle_cycle_raw_map_scope(forward),
@@ -1183,7 +1192,7 @@ impl Controller {
                 self.handle_pick_routing_source_at(address, source, pending)?
             }
             Intent::CloseAssignmentPicker => self.handle_close_assignment_picker(),
-            Intent::CloseSelectorPopup => self.handle_close_selector_popup(),
+            Intent::CloseSelectorPopup => self.handle_close_selector_popup()?,
             Intent::SelectPreampInput(input) => self.handle_select_preamp_input(input),
             Intent::AdjustPreampGain { input, increase } => {
                 self.handle_adjust_preamp_gain(input, increase, pending)?
@@ -1199,6 +1208,9 @@ impl Controller {
             Intent::PickOutputTrim { address, value } => {
                 self.handle_pick_output_trim(address, value)?
             }
+            Intent::SetTalkbackButton(pressed) => self.handle_set_talkback_button(pressed)?,
+            Intent::PickTalkbackSource(source) => self.handle_pick_talkback_source(source)?,
+            Intent::PickTalkbackGain(gain) => self.handle_pick_talkback_gain(gain)?,
             Intent::PickPreampMode { input, mode } => {
                 self.handle_pick_preamp_mode(input, mode, pending)?
             }
@@ -1697,6 +1709,57 @@ impl Controller {
         });
     }
 
+    fn handle_open_talkback_button(&mut self) {
+        if !self
+            .state
+            .ui_profile
+            .supports_global(GlobalControl::TalkbackButton)
+        {
+            return;
+        }
+        self.state.popup.selector_parent_index = Some(self.state.popup.selected_index);
+        self.state.popup.selected_index = 0;
+        self.state.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::TalkbackButton,
+        });
+    }
+
+    fn handle_open_talkback_source_selector(&mut self) {
+        if !self
+            .state
+            .ui_profile
+            .supports_global(GlobalControl::TalkbackSource)
+        {
+            return;
+        }
+        self.state.popup.selector_parent_index = Some(self.state.popup.selected_index);
+        // Passive state contains only source modulo 4, never a safe full selection.
+        self.state.popup.selected_index = 0;
+        self.state.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::TalkbackSource,
+        });
+    }
+
+    fn handle_open_talkback_gain_selector(&mut self) {
+        if !self
+            .state
+            .ui_profile
+            .supports_global(GlobalControl::TalkbackGain)
+        {
+            return;
+        }
+        self.state.popup.selector_parent_index = Some(self.state.popup.selected_index);
+        self.state.popup.selected_index = self
+            .state
+            .global_value(GlobalControl::TalkbackGain)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value <= 96)
+            .unwrap_or(0);
+        self.state.popup.selector_popup = Some(SelectorPopupState {
+            kind: SelectorPopupKind::TalkbackGain,
+        });
+    }
+
     fn return_to_settings_selector(&mut self) {
         self.state.popup.selected_index =
             self.state.popup.selector_parent_index.take().unwrap_or(0);
@@ -1735,6 +1798,80 @@ impl Controller {
             return Ok(());
         }
         self.send(Action::SetOutputTrim { address, value }, None)?;
+        self.return_to_settings_selector();
+        Ok(())
+    }
+
+    fn handle_set_talkback_button(&mut self, pressed: bool) -> Result<()> {
+        if !self
+            .state
+            .ui_profile
+            .supports_global(GlobalControl::TalkbackButton)
+            || (pressed && self.state.popup.talkback_button_held)
+        {
+            return Ok(());
+        }
+        let action = Action::SetGlobal {
+            control: GlobalControl::TalkbackButton,
+            value: ControlValue::Bool(pressed),
+        };
+        if pressed {
+            self.send(action, None)?;
+        } else {
+            // Release must not wait behind or coalesce with a bounded settings queue.
+            // Press is always written immediately, so no queued press can be reordered here.
+            let batch = self.driver.encode(action)?;
+            self.write_batch(batch)?;
+        }
+        self.state.popup.talkback_button_held = pressed;
+        Ok(())
+    }
+
+    /// Best-effort release for modal exit/focus loss/quit. A physical disconnect can still
+    /// prevent delivery, so callers must not present this as a guaranteed hardware release.
+    pub fn release_talkback_if_held(&mut self) -> Result<()> {
+        if self.state.popup.talkback_button_held {
+            self.handle_set_talkback_button(false)?;
+        }
+        Ok(())
+    }
+
+    fn handle_pick_talkback_source(&mut self, source: i32) -> Result<()> {
+        if !(0..=12).contains(&source)
+            || !self
+                .state
+                .ui_profile
+                .supports_global(GlobalControl::TalkbackSource)
+        {
+            return Ok(());
+        }
+        self.send(
+            Action::SetGlobal {
+                control: GlobalControl::TalkbackSource,
+                value: ControlValue::Enum(source),
+            },
+            None,
+        )?;
+        self.return_to_settings_selector();
+        Ok(())
+    }
+
+    fn handle_pick_talkback_gain(&mut self, gain: i32) -> Result<()> {
+        if !(0..=96).contains(&gain)
+            || !self
+                .state
+                .ui_profile
+                .supports_global(GlobalControl::TalkbackGain)
+        {
+            return Ok(());
+        }
+        self.send(
+            Action::SetGlobal {
+                control: GlobalControl::TalkbackGain,
+                value: ControlValue::Int(gain),
+            },
+            None,
+        )?;
         self.return_to_settings_selector();
         Ok(())
     }
@@ -3197,6 +3334,11 @@ impl Controller {
                 SelectorPopupKind::OutputTrim { .. } => {
                     self.state.ui_profile.output_trim_value_labels().len()
                 }
+                SelectorPopupKind::TalkbackButton => 2,
+                SelectorPopupKind::TalkbackSource => {
+                    self.state.ui_profile.talkback_source_choices().len()
+                }
+                SelectorPopupKind::TalkbackGain => 97,
             }
         } else {
             0
@@ -3278,20 +3420,26 @@ impl Controller {
         Ok(())
     }
 
-    fn handle_close_selector_popup(&mut self) {
+    fn handle_close_selector_popup(&mut self) -> Result<()> {
+        self.release_talkback_if_held()?;
         if self.state.popup.selector_popup.is_some_and(|popup| {
             matches!(
                 popup.kind,
-                SelectorPopupKind::Brightness | SelectorPopupKind::OutputTrim { .. }
+                SelectorPopupKind::Brightness
+                    | SelectorPopupKind::OutputTrim { .. }
+                    | SelectorPopupKind::TalkbackButton
+                    | SelectorPopupKind::TalkbackSource
+                    | SelectorPopupKind::TalkbackGain
             )
         }) {
             self.return_to_settings_selector();
-            return;
+            return Ok(());
         }
         self.state.popup.selector_popup = None;
         self.state.popup.selector_parent_index = None;
         self.state.popup.selected_index = 0;
         self.state.ui.last_message = "Closed selector".to_string();
+        Ok(())
     }
 
     fn handle_refresh_queried_state(&mut self) -> Result<()> {

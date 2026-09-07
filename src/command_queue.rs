@@ -30,6 +30,10 @@ fn coalesce_key_for_command(command: &Action) -> Option<CoalesceKey> {
             surface: *surface,
             pair: *pair,
         }),
+        Action::SetGlobal {
+            control: GlobalControl::TalkbackButton,
+            ..
+        } => None,
         Action::SetGlobal { control, .. } => Some(CoalesceKey::Global(*control)),
         Action::SetOutputTrim { address, .. } => {
             Some(CoalesceKey::Global(GlobalControl::OutputTrim(*address)))
@@ -254,6 +258,18 @@ mod tests {
             });
         }
         assert_eq!(queue.len(), 4);
+    }
+
+    #[test]
+    fn talkback_press_and_release_never_coalesce() {
+        let mut queue = CommandQueue::new();
+        for pressed in [true, false] {
+            assert!(queue.enqueue(Action::SetGlobal {
+                control: GlobalControl::TalkbackButton,
+                value: ControlValue::Bool(pressed),
+            }));
+        }
+        assert_eq!(queue.len(), 2);
     }
 
     #[test]

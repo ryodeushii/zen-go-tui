@@ -938,6 +938,91 @@ class GeneratorTests(unittest.TestCase):
             ["Monitor A", "Monitor B", "Line Out"],
         )
 
+    def test_orion_talkback_runtime_shape_is_bounded_and_truthful(self) -> None:
+        profile = normalized_orion()
+        params = {item["name"]: item for item in profile["params"]}
+
+        button = params["talkback_button"]
+        self.assertEqual((button["id"], button["applies_to"], button["range"]),
+                         (0x1F, "globals", None))
+        self.assertEqual(button["readback"]["semantic"], "talkback_button")
+        self.assertEqual(button["readback"]["truth"], "complete")
+        self.assertEqual(button["readback"]["fields"], [
+            {"kind": "masked_scalar", "offset": 73, "mask": 0x40, "shift": 6},
+        ])
+
+        source = params["talkback_source"]
+        self.assertEqual((source["id"], source["applies_to"], source["range"]),
+                         (0x27, "globals", (0, 12)))
+        self.assertEqual(source["values"], [[0, "INT"]] + [
+            [index, f"Preamp {index}"] for index in range(1, 13)
+        ])
+        self.assertEqual(source["readback"]["semantic"], "talkback_source_residue")
+        self.assertEqual(source["readback"]["truth"], "partial")
+        self.assertEqual(source["readback"]["modulus"], 4)
+        self.assertEqual(source["readback"]["fields"], [
+            {"kind": "masked_scalar", "offset": 73, "mask": 0x03, "shift": 0},
+        ])
+
+        gain = params["talkback_gain"]
+        self.assertEqual((gain["id"], gain["applies_to"], gain["range"]),
+                         (0x20, "globals", (0, 96)))
+        self.assertEqual(gain["readback"]["semantic"], "talkback_selected_source_gain")
+        self.assertEqual(gain["readback"]["truth"], "complete")
+        self.assertEqual(gain["readback"]["fields"], [
+            {"kind": "scalar", "offset": 74, "width": 1},
+        ])
+
+    def test_orion_talkback_structured_contract_fails_closed(self) -> None:
+        mutations = {
+            "missing structured button": lambda data: data["params"]["talkback_button"].pop(
+                "runtime_readback"
+            ),
+            "toggle semantic": lambda data: data["params"]["talkback_button"][
+                "runtime_readback"
+            ].update({"semantic": "talkback_toggle"}),
+            "wrong button mask": lambda data: data["params"]["talkback_button"][
+                "runtime_readback"
+            ]["fields"][0].update({"mask": "0x80"}),
+            "source falsely complete": lambda data: data["params"]["talkback_source"][
+                "runtime_readback"
+            ].update({"truth": "complete"}),
+            "source missing modulus": lambda data: data["params"]["talkback_source"][
+                "runtime_readback"
+            ].pop("modulus"),
+            "source full-byte invention": lambda data: data["params"]["talkback_source"][
+                "runtime_readback"
+            ]["fields"][0].update({"mask": "0xff"}),
+            "gain wrong offset": lambda data: data["params"]["talkback_gain"][
+                "runtime_readback"
+            ]["fields"][0].update({"offset": 75}),
+            "gain unbounded": lambda data: data["params"]["talkback_gain"].pop("range"),
+            "wrong source id": lambda data: data["params"]["talkback_source"].update(
+                {"id": "0x28"}
+            ),
+            "ambiguous global frame": lambda data: data["frame"]["global_command"].update({
+                "runtime_operations": [
+                    {"op": "fixed_byte", "offset": 0, "value": 0x70},
+                    {"op": "fixed_byte", "offset": 4, "value": 0x12},
+                    {"op": "scalar", "field": "param_id", "offset": 16},
+                    {"op": "scalar", "field": "value", "offset": 17},
+                    {"op": "fixed_byte", "offset": 5, "value": 0},
+                ]
+            }),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+                mutate(data)
+                record = generator._normalized_profile_record(
+                    generator.normalize_profile(data, path=ORION_PROFILE)
+                )
+                params = {item["name"]: item for item in record["params"]}
+                for parameter in ("talkback_button", "talkback_source", "talkback_gain"):
+                    self.assertIsNone(params[parameter]["id"])
+                    self.assertEqual(params[parameter]["readback"].get("fields", []), [])
+                self.assertIsNone(params["talkback_dest_assign"]["id"])
+
     def test_orion_settings_prose_is_provenance_not_capability_proof(self) -> None:
         data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
         data["params"]["screen_brightness"]["readback"] = "unrelated prose"

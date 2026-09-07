@@ -102,6 +102,12 @@ pub enum GlobalControl {
     Surface,
     Brightness,
     OutputTrim(OutputTrimAddress),
+    TalkbackButton,
+    TalkbackSource,
+    /// Passive modulo-4 residue; never a confirmed selected source index.
+    TalkbackSourceResidue,
+    /// Gain of whichever talkback source is active; source ownership may be unknown.
+    TalkbackGain,
     Parameter(u16),
 }
 

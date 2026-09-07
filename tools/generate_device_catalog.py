@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-GENERATOR_VERSION = "1.4.1"
+GENERATOR_VERSION = "1.4.2"
 PROFILE_PACK_SCHEMA_VERSION = 1
 SNAPSHOT_PAYLOAD_OFFSET = 0x10
 EXCLUDED_PROFILE_NAMES = frozenset({"mic_models.json"})
@@ -3457,16 +3457,36 @@ def _parameter_reference(value: Any, context: str) -> dict[str, Any]:
 def _settings_readback_reference(
     name: str, value: Any, provenance: Any, context: str
 ) -> dict[str, Any]:
-    """Normalize the two canonical Orion setting readbacks without reading prose."""
+    """Normalize bounded Orion setting readbacks without reading prose."""
 
-    if not isinstance(value, Mapping) or set(value) != {"frame", "semantic", "fields"}:
-        raise ProfileError(
-            f"{context} must contain exactly frame, semantic, and fields"
-        )
     expected_semantic = {
         "screen_brightness": "brightness",
         "output_trim": "output_trim",
+        "talkback_button": "talkback_button",
+        "talkback_source": "talkback_source_residue",
+        "talkback_gain": "talkback_selected_source_gain",
     }[name]
+    expected_truth = {
+        "talkback_button": "complete",
+        "talkback_source": "partial",
+        "talkback_gain": "complete",
+    }.get(name, "")
+    expected_keys = {"frame", "semantic", "fields"}
+    if expected_truth:
+        expected_keys.add("truth")
+    if name == "talkback_source":
+        expected_keys.add("modulus")
+    if not isinstance(value, Mapping) or set(value) != expected_keys:
+        raise ProfileError(
+            f"{context} must contain exactly {', '.join(sorted(expected_keys))}"
+        )
+    if expected_truth and value.get("truth") != expected_truth:
+        raise ProfileError(f"{context}.truth must be {expected_truth}")
+    modulus = None
+    if name == "talkback_source":
+        modulus = _checked_u8(value.get("modulus"), f"{context}.modulus")
+        if modulus != 4:
+            raise ProfileError(f"{context}.modulus must be 4")
     if value.get("frame") != "state_report" or value.get("semantic") != expected_semantic:
         raise ProfileError(
             f"{context} must reference state_report semantic {expected_semantic}"
@@ -3502,6 +3522,17 @@ def _settings_readback_reference(
                 "mask": _checked_u8(raw.get("mask"), f"{field_context}.mask"),
                 "shift": _checked_u8(raw.get("shift"), f"{field_context}.shift"),
             })
+        elif kind == "masked_scalar":
+            if set(raw) != {"kind", "offset", "mask", "shift"}:
+                raise ProfileError(
+                    f"{field_context} masked_scalar must contain exactly kind, offset, mask, and shift"
+                )
+            fields.append({
+                "kind": "masked_scalar",
+                "offset": _checked_u16(raw.get("offset"), f"{field_context}.offset"),
+                "mask": _checked_u8(raw.get("mask"), f"{field_context}.mask"),
+                "shift": _checked_u8(raw.get("shift"), f"{field_context}.shift"),
+            })
         else:
             raise ProfileError(f"{field_context}.kind is invalid")
     if provenance is None:
@@ -3518,6 +3549,8 @@ def _settings_readback_reference(
         "frame": "state_report",
         "semantic": expected_semantic,
         "fields": fields,
+        **({"truth": expected_truth} if expected_truth else {}),
+        **({"modulus": modulus} if modulus is not None else {}),
     }
 
 
@@ -3801,8 +3834,111 @@ def _validated_orion_settings_semantics(profile: NormalizedProfile) -> bool:
     return True
 
 
+def _require_orion_talkback_semantics(profile: NormalizedProfile) -> None:
+    """Validate the bounded talkback command and truthful readback declarations."""
+
+    if not _is_orion(profile):
+        return
+    expected = {
+        "talkback_button": (0x1F, "Bool", None),
+        "talkback_source": (0x27, "Enum", (0, 12)),
+        "talkback_gain": (0x20, "Int", (0, 96)),
+    }
+    parameters: dict[str, Mapping[str, Any]] = {}
+    for name, (parameter_id, value_type, value_range) in expected.items():
+        parameter = profile.params.get(name)
+        if not isinstance(parameter, Mapping):
+            raise ProfileError(f"params.{name} must be an object")
+        if _status_variant(str(parameter.get("status", ""))) != "Confirmed":
+            raise ProfileError(f"params.{name}.status must be confirmed")
+        if _checked_u16(parameter.get("id"), f"params.{name}.id") != parameter_id:
+            raise ProfileError(f"params.{name}.id must be {parameter_id:#x}")
+        if _param_type(parameter.get("runtime_type", parameter.get("type"))) != value_type:
+            raise ProfileError(f"params.{name}.type must be {value_type.lower()}")
+        if _range(parameter.get("range"), f"params.{name}.range") != value_range:
+            raise ProfileError(f"params.{name}.range is not the bounded talkback range")
+        if not str(parameter.get("evidence", "")).strip():
+            raise ProfileError(f"params.{name}.evidence must be non-empty")
+        parameters[name] = parameter
+
+    readbacks = {
+        name: _settings_readback_reference(
+            name,
+            parameter.get("runtime_readback"),
+            parameter.get("readback"),
+            f"params.{name}.runtime_readback",
+        )
+        for name, parameter in parameters.items()
+    }
+    if readbacks["talkback_button"]["fields"] != [
+        {"kind": "masked_scalar", "offset": 73, "mask": 0x40, "shift": 6}
+    ]:
+        raise ProfileError("talkback_button readback must be offset 73 bit 6")
+    if readbacks["talkback_source"]["fields"] != [
+        {"kind": "masked_scalar", "offset": 73, "mask": 0x03, "shift": 0}
+    ]:
+        raise ProfileError("talkback_source readback must be the modulo-4 residue only")
+    if readbacks["talkback_gain"]["fields"] != [
+        {"kind": "scalar", "offset": 74, "width": 1}
+    ]:
+        raise ProfileError("talkback_gain readback must be the selected-source byte at offset 74")
+
+    frame = profile.frame.get("global_command")
+    if not isinstance(frame, Mapping):
+        raise ProfileError("frame.global_command is required by Orion talkback")
+    for field, value in {
+        "magic_offset": 0,
+        "magic": 0x70,
+        "opcode_offset": 4,
+        "opcode": 0x12,
+        "param_id_offset": 16,
+        "value_offset": 17,
+    }.items():
+        if parse_int(frame.get(field), f"frame.global_command.{field}") != value:
+            raise ProfileError(f"frame.global_command.{field} is invalid for Orion talkback")
+    expected_operations = [
+        {"op": "fixed_byte", "offset": 0, "value": 0x70},
+        {"op": "fixed_byte", "offset": 4, "value": 0x12},
+        {"op": "scalar", "field": "param_id", "offset": 16, "width": 1,
+         "endian": "not_applicable"},
+        {"op": "scalar", "field": "value", "offset": 17, "width": 1,
+         "endian": "not_applicable"},
+    ]
+    operations = _frame_operations(profile, "global_command", frame)
+    if len(operations) != len(expected_operations) or any(
+        operations.count(operation) != 1 for operation in expected_operations
+    ):
+        raise ProfileError("frame.global_command is not the complete Orion talkback contract")
+
+    state = profile.frame.get("state_report")
+    block = state.get("talkback_block") if isinstance(state, Mapping) else None
+    bits = block.get("status_bits") if isinstance(block, Mapping) else None
+    if not isinstance(bits, Mapping):
+        raise ProfileError("frame.state_report.talkback_block is required")
+    if parse_int(block.get("status_byte_offset"), "talkback.status_byte_offset") != 73 \
+            or parse_int(block.get("gain_byte_offset"), "talkback.gain_byte_offset") != 74:
+        raise ProfileError("talkback state offsets must be exactly 73 and 74")
+    for name, mask, shift in [("source_low", 0x03, 0), ("button", 0x40, 6)]:
+        field = bits.get(name)
+        if not isinstance(field, Mapping) \
+                or parse_int(field.get("mask"), f"talkback.{name}.mask") != mask \
+                or parse_int(field.get("shift"), f"talkback.{name}.shift") != shift:
+            raise ProfileError(f"talkback {name} readback geometry is invalid")
+
+
+def _validated_orion_talkback_semantics(profile: NormalizedProfile) -> bool:
+    if not _is_orion(profile):
+        return False
+    try:
+        _require_orion_talkback_semantics(profile)
+    except (ProfileError, KeyError, TypeError):
+        return False
+    return True
+
+
 def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
     settings_valid = _validated_orion_settings_semantics(profile)
+    talkback_valid = _validated_orion_talkback_semantics(profile)
     result: list[dict[str, Any]] = []
     runtime_profile = profile.raw.get("runtime_profile", {})
     compile_confirmed_only = isinstance(runtime_profile, Mapping) and runtime_profile.get(
@@ -3917,7 +4053,7 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 enum_values = {str(index): f"raw_{index}" for index in range(7)}
             else:
                 enum_values = {"0": "INT"} | {
-                    str(index): f"input_{index}" for index in range(1, 13)
+                    str(index): f"Preamp {index}" for index in range(1, 13)
                 }
         if isinstance(enum_values, Mapping):
             for raw_key, raw_value in enum_values.items():
@@ -3964,6 +4100,19 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 if settings_valid
                 else _parameter_reference(value.get("readback"), f"params.{name}.readback")
             )
+        elif _is_orion(profile) and name in {
+            "talkback_button", "talkback_source", "talkback_gain"
+        }:
+            readback_reference = (
+                _settings_readback_reference(
+                    name,
+                    value.get("runtime_readback"),
+                    value.get("readback"),
+                    f"params.{name}.runtime_readback",
+                )
+                if talkback_valid
+                else _parameter_reference(value.get("readback"), f"params.{name}.readback")
+            )
         else:
             readback_reference = _parameter_reference(
                 readback_value, f"params.{name}.readback"
@@ -3981,6 +4130,9 @@ def _build_params(profile: NormalizedProfile) -> list[dict[str, Any]]:
                         _status_variant(status) == "Confirmed"
                         and not _orion_source_only_parameter(name)
                         and (name not in {"screen_brightness", "output_trim"} or settings_valid)
+                        and (name not in {
+                            "talkback_button", "talkback_source", "talkback_gain"
+                        } or talkback_valid)
                     ))
                     else None
                 ),
@@ -5212,6 +5364,10 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
                         "frame": param["readback_reference"]["frame"],
                         "semantic": param["readback_reference"]["semantic"],
                         "fields": [dict(field) for field in param["readback_reference"]["fields"]],
+                        **({"truth": param["readback_reference"]["truth"]}
+                           if param["readback_reference"].get("truth") else {}),
+                        **({"modulus": param["readback_reference"]["modulus"]}
+                           if param["readback_reference"].get("modulus") is not None else {}),
                     } if param["readback_reference"].get("fields") else {}),
                 },
                 "metadata": param["metadata"],
@@ -5499,6 +5655,11 @@ def _render_parameter_reference(
                     f"BitField {{ target: {field['target']}u8, offset: {field['offset']}u16, "
                     f"mask: {field['mask']}u8, shift: {field['shift']}u8 }}"
                 )
+            elif field["kind"] == "masked_scalar":
+                rendered = (
+                    f"MaskedScalar {{ offset: {field['offset']}u16, mask: {field['mask']}u8, "
+                    f"shift: {field['shift']}u8 }}"
+                )
             else:
                 raise ProfileError(f"unsupported parameter readback field {field['kind']!r}")
             lines.append(f"    ParamReadbackFieldDefinition::{rendered},")
@@ -5506,11 +5667,19 @@ def _render_parameter_reference(
         fields_name = f"{helper}_FIELDS"
     else:
         fields_name = "&[]"
+    modulus = (
+        f"Some({reference['modulus']}u8)"
+        if reference.get("modulus") is not None
+        else "None"
+    )
     lines.append(
         f"static {helper}: ParamReference = ParamReference {{ text: "
         f"{_rust_string(reference['text'])}, formula: {_rust_string(reference.get('formula', ''))}, "
         f"offsets: {offsets_name}, frame: {_rust_string(reference.get('frame', ''))}, "
-        f"semantic: {_rust_string(reference.get('semantic', ''))}, fields: {fields_name} }};"
+        f"semantic: {_rust_string(reference.get('semantic', ''))}, "
+        f"truth: {_rust_string(reference.get('truth', ''))}, "
+        f"modulus: {modulus}, "
+        f"fields: {fields_name} }};"
     )
     return helper
 

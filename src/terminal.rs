@@ -1,7 +1,15 @@
-use std::io::stdout;
+use std::io::{self, stdout};
 use std::sync::OnceLock;
 
 use anyhow::Result;
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use crossterm::ExecutableCommand;
 use ratatui::style::{Color, Modifier, Style};
 use terminput::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -91,6 +99,165 @@ pub enum AppInputEvent {
 }
 
 static TERM_PROFILE: OnceLock<TermProfile> = OnceLock::new();
+
+/// Terminal operations used by [`TerminalSession`], separated for setup/cleanup tests.
+pub trait TerminalControl {
+    fn enable_raw_mode(&mut self) -> io::Result<()>;
+    fn disable_raw_mode(&mut self) -> io::Result<()>;
+    fn enter_alternate_screen(&mut self) -> io::Result<()>;
+    fn leave_alternate_screen(&mut self) -> io::Result<()>;
+    fn enable_mouse_capture(&mut self) -> io::Result<()>;
+    fn disable_mouse_capture(&mut self) -> io::Result<()>;
+    fn supports_keyboard_enhancement(&mut self) -> io::Result<bool>;
+    fn push_keyboard_enhancement_flags(&mut self) -> io::Result<()>;
+    fn pop_keyboard_enhancement_flags(&mut self) -> io::Result<()>;
+}
+
+#[derive(Debug, Default)]
+pub struct CrosstermTerminalControl;
+
+impl TerminalControl for CrosstermTerminalControl {
+    fn enable_raw_mode(&mut self) -> io::Result<()> {
+        enable_raw_mode()
+    }
+
+    fn disable_raw_mode(&mut self) -> io::Result<()> {
+        disable_raw_mode()
+    }
+
+    fn enter_alternate_screen(&mut self) -> io::Result<()> {
+        stdout().execute(EnterAlternateScreen).map(|_| ())
+    }
+
+    fn leave_alternate_screen(&mut self) -> io::Result<()> {
+        stdout().execute(LeaveAlternateScreen).map(|_| ())
+    }
+
+    fn enable_mouse_capture(&mut self) -> io::Result<()> {
+        stdout().execute(EnableMouseCapture).map(|_| ())
+    }
+
+    fn disable_mouse_capture(&mut self) -> io::Result<()> {
+        stdout().execute(DisableMouseCapture).map(|_| ())
+    }
+
+    fn supports_keyboard_enhancement(&mut self) -> io::Result<bool> {
+        // Crossterm 0.29 performs the protocol query with a 2-second poll timeout.
+        crossterm::terminal::supports_keyboard_enhancement()
+    }
+
+    fn push_keyboard_enhancement_flags(&mut self) -> io::Result<()> {
+        stdout()
+            .execute(PushKeyboardEnhancementFlags(keyboard_enhancement_flags()))
+            .map(|_| ())
+    }
+
+    fn pop_keyboard_enhancement_flags(&mut self) -> io::Result<()> {
+        stdout().execute(PopKeyboardEnhancementFlags).map(|_| ())
+    }
+}
+
+fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+}
+
+/// Owns terminal modes and restores every mode that setup may have changed.
+pub struct TerminalSession<C: TerminalControl> {
+    control: C,
+    raw_mode: bool,
+    alternate_screen: bool,
+    mouse_capture: bool,
+    keyboard_flags_pushed: bool,
+    keyboard_release_events_enabled: bool,
+}
+
+impl<C: TerminalControl> TerminalSession<C> {
+    pub fn setup(control: C) -> io::Result<Self> {
+        let mut session = Self {
+            control,
+            raw_mode: false,
+            alternate_screen: false,
+            mouse_capture: false,
+            keyboard_flags_pushed: false,
+            keyboard_release_events_enabled: false,
+        };
+
+        if let Err(error) = session.setup_inner() {
+            let _ = session.cleanup();
+            return Err(error);
+        }
+        Ok(session)
+    }
+
+    fn setup_inner(&mut self) -> io::Result<()> {
+        // Mark each mode before its enabling write so a partial write is still unwound.
+        self.raw_mode = true;
+        self.control.enable_raw_mode()?;
+
+        // Enhancement is optional: unsupported terminals and bounded query errors keep the
+        // application usable, but keyboard hold-to-talk remains disabled.
+        if matches!(self.control.supports_keyboard_enhancement(), Ok(true)) {
+            // A failed write can be partial, so always attempt the matching pop.
+            self.keyboard_flags_pushed = true;
+            if self.control.push_keyboard_enhancement_flags().is_ok() {
+                self.keyboard_release_events_enabled = true;
+            } else if self.control.pop_keyboard_enhancement_flags().is_ok() {
+                self.keyboard_flags_pushed = false;
+            }
+        }
+
+        self.alternate_screen = true;
+        self.control.enter_alternate_screen()?;
+        self.mouse_capture = true;
+        self.control.enable_mouse_capture()?;
+        Ok(())
+    }
+
+    pub fn keyboard_release_events_enabled(&self) -> bool {
+        self.keyboard_release_events_enabled
+    }
+
+    pub fn cleanup(&mut self) -> io::Result<()> {
+        let mut first_error = None;
+        if self.keyboard_flags_pushed {
+            self.keyboard_flags_pushed = false;
+            record_cleanup_result(
+                &mut first_error,
+                self.control.pop_keyboard_enhancement_flags(),
+            );
+        }
+        self.keyboard_release_events_enabled = false;
+        if self.mouse_capture {
+            self.mouse_capture = false;
+            record_cleanup_result(&mut first_error, self.control.disable_mouse_capture());
+        }
+        if self.alternate_screen {
+            self.alternate_screen = false;
+            record_cleanup_result(&mut first_error, self.control.leave_alternate_screen());
+        }
+        if self.raw_mode {
+            self.raw_mode = false;
+            record_cleanup_result(&mut first_error, self.control.disable_raw_mode());
+        }
+        first_error.map_or(Ok(()), Err)
+    }
+}
+
+impl<C: TerminalControl> Drop for TerminalSession<C> {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+
+fn record_cleanup_result(first_error: &mut Option<io::Error>, result: io::Result<()>) {
+    if let Err(error) = result {
+        if first_error.is_none() {
+            *first_error = Some(error);
+        }
+    }
+}
 
 pub fn detect_profile() -> TermProfile {
     *TERM_PROFILE.get_or_init(|| TermProfile::detect(&stdout(), DetectorSettings::default()))
@@ -364,11 +531,178 @@ const ANSI16_PALETTE: [(u8, u8, u8); 16] = [
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use crossterm::event::{Event as CrosstermEvent, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::Color;
     use termprofile::TermProfile;
 
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum TerminalOperation {
+        EnableRaw,
+        DisableRaw,
+        EnterAlternate,
+        LeaveAlternate,
+        EnableMouse,
+        DisableMouse,
+        QueryKeyboard,
+        PushKeyboard,
+        PopKeyboard,
+    }
+
+    #[derive(Clone)]
+    struct MockTerminalControl {
+        operations: Arc<Mutex<Vec<TerminalOperation>>>,
+        query_result: Result<bool, io::ErrorKind>,
+        fail_operation: Option<TerminalOperation>,
+    }
+
+    impl MockTerminalControl {
+        fn new(query_result: Result<bool, io::ErrorKind>) -> Self {
+            Self {
+                operations: Arc::new(Mutex::new(Vec::new())),
+                query_result,
+                fail_operation: None,
+            }
+        }
+
+        fn fail_on(mut self, operation: TerminalOperation) -> Self {
+            self.fail_operation = Some(operation);
+            self
+        }
+
+        fn run(&self, operation: TerminalOperation) -> io::Result<()> {
+            self.operations.lock().unwrap().push(operation);
+            if self.fail_operation == Some(operation) {
+                Err(io::Error::other("mock terminal failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl TerminalControl for MockTerminalControl {
+        fn enable_raw_mode(&mut self) -> io::Result<()> {
+            self.run(TerminalOperation::EnableRaw)
+        }
+
+        fn disable_raw_mode(&mut self) -> io::Result<()> {
+            self.run(TerminalOperation::DisableRaw)
+        }
+
+        fn enter_alternate_screen(&mut self) -> io::Result<()> {
+            self.run(TerminalOperation::EnterAlternate)
+        }
+
+        fn leave_alternate_screen(&mut self) -> io::Result<()> {
+            self.run(TerminalOperation::LeaveAlternate)
+        }
+
+        fn enable_mouse_capture(&mut self) -> io::Result<()> {
+            self.run(TerminalOperation::EnableMouse)
+        }
+
+        fn disable_mouse_capture(&mut self) -> io::Result<()> {
+            self.run(TerminalOperation::DisableMouse)
+        }
+
+        fn supports_keyboard_enhancement(&mut self) -> io::Result<bool> {
+            self.run(TerminalOperation::QueryKeyboard)?;
+            self.query_result
+                .map_err(|kind| io::Error::new(kind, "mock query failure"))
+        }
+
+        fn push_keyboard_enhancement_flags(&mut self) -> io::Result<()> {
+            self.run(TerminalOperation::PushKeyboard)
+        }
+
+        fn pop_keyboard_enhancement_flags(&mut self) -> io::Result<()> {
+            self.run(TerminalOperation::PopKeyboard)
+        }
+    }
+
+    #[test]
+    fn keyboard_setup_requests_release_events_for_plain_text_and_control_keys() {
+        assert_eq!(
+            keyboard_enhancement_flags(),
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        );
+    }
+
+    #[test]
+    fn terminal_setup_enables_release_events_only_after_supported_push_and_restores_modes() {
+        let control = MockTerminalControl::new(Ok(true));
+        let operations = control.operations.clone();
+        let mut session = TerminalSession::setup(control).expect("terminal setup");
+        assert!(session.keyboard_release_events_enabled());
+        session.cleanup().expect("terminal cleanup");
+        assert_eq!(
+            *operations.lock().unwrap(),
+            vec![
+                TerminalOperation::EnableRaw,
+                TerminalOperation::QueryKeyboard,
+                TerminalOperation::PushKeyboard,
+                TerminalOperation::EnterAlternate,
+                TerminalOperation::EnableMouse,
+                TerminalOperation::PopKeyboard,
+                TerminalOperation::DisableMouse,
+                TerminalOperation::LeaveAlternate,
+                TerminalOperation::DisableRaw,
+            ]
+        );
+    }
+
+    #[test]
+    fn unsupported_or_failed_keyboard_query_keeps_terminal_available_without_push() {
+        for query_result in [Ok(false), Err(io::ErrorKind::TimedOut)] {
+            let control = MockTerminalControl::new(query_result);
+            let operations = control.operations.clone();
+            let mut session = TerminalSession::setup(control).expect("fallback setup");
+            assert!(!session.keyboard_release_events_enabled());
+            session.cleanup().expect("fallback cleanup");
+            let operations = operations.lock().unwrap();
+            assert!(!operations.contains(&TerminalOperation::PushKeyboard));
+            assert!(!operations.contains(&TerminalOperation::PopKeyboard));
+            assert!(operations.contains(&TerminalOperation::EnableMouse));
+        }
+    }
+
+    #[test]
+    fn failed_keyboard_push_is_popped_and_does_not_disable_the_application() {
+        let control = MockTerminalControl::new(Ok(true)).fail_on(TerminalOperation::PushKeyboard);
+        let operations = control.operations.clone();
+        let mut session = TerminalSession::setup(control).expect("fallback setup");
+        assert!(!session.keyboard_release_events_enabled());
+        session.cleanup().expect("fallback cleanup");
+        let operations = operations.lock().unwrap();
+        assert!(operations.contains(&TerminalOperation::PopKeyboard));
+        assert!(operations.contains(&TerminalOperation::EnableMouse));
+    }
+
+    #[test]
+    fn setup_failure_after_keyboard_push_pops_flags_and_restores_prior_modes() {
+        let control = MockTerminalControl::new(Ok(true)).fail_on(TerminalOperation::EnableMouse);
+        let operations = control.operations.clone();
+        assert!(TerminalSession::setup(control).is_err());
+        assert_eq!(
+            *operations.lock().unwrap(),
+            vec![
+                TerminalOperation::EnableRaw,
+                TerminalOperation::QueryKeyboard,
+                TerminalOperation::PushKeyboard,
+                TerminalOperation::EnterAlternate,
+                TerminalOperation::EnableMouse,
+                TerminalOperation::PopKeyboard,
+                TerminalOperation::DisableMouse,
+                TerminalOperation::LeaveAlternate,
+                TerminalOperation::DisableRaw,
+            ]
+        );
+    }
 
     #[test]
     fn theme_adapts_ratatui_truecolor_to_detected_profile() {

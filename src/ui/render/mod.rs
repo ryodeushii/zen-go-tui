@@ -1032,6 +1032,34 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                                     .unwrap_or_else(|| format!("raw {value}"))
                             )
                         ),
+                        GlobalControl::TalkbackButton => format!(
+                            "TB hold-to-talk: {}",
+                            state
+                                .global_bool_value(control)
+                                .map_or("unknown", |active| {
+                                    if active {
+                                        "active"
+                                    } else {
+                                        "released"
+                                    }
+                                })
+                        ),
+                        GlobalControl::TalkbackSource => format!(
+                            "TB source: {}",
+                            state
+                                .global_value(GlobalControl::TalkbackSourceResidue)
+                                .map_or_else(
+                                    || "? (partial; residue mod 4)".into(),
+                                    |residue| format!("residue {residue} mod 4 (partial)")
+                                )
+                        ),
+                        GlobalControl::TalkbackGain => format!(
+                            "TB gain: {}",
+                            state.global_value(control).map_or_else(
+                                || "? (active; owner unknown)".into(),
+                                |gain| format!("raw {gain} (active; owner unknown)")
+                            )
+                        ),
                         _ => "Unavailable setting".into(),
                     };
                     ListItem::new(label)
@@ -1056,6 +1084,32 @@ fn draw_selector_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                 .output_trim_value_labels()
                 .into_iter()
                 .map(|(_, label)| ListItem::new(label))
+                .collect::<Vec<_>>(),
+        ),
+        SelectorPopupKind::TalkbackButton => (
+            "Talkback Hold-to-Talk",
+            vec![
+                ListItem::new(if state.ui.keyboard_release_events_enabled {
+                    "Hold Enter; release on key-up/exit"
+                } else {
+                    "No key-up support; hold with mouse"
+                }),
+                ListItem::new("Release now (disconnect may prevent)"),
+            ],
+        ),
+        SelectorPopupKind::TalkbackSource => (
+            "Talkback Source",
+            state
+                .ui_profile
+                .talkback_source_choices()
+                .into_iter()
+                .map(|(_, label)| ListItem::new(label))
+                .collect::<Vec<_>>(),
+        ),
+        SelectorPopupKind::TalkbackGain => (
+            "Talkback Active-Source Gain",
+            (0..=96)
+                .map(|gain| ListItem::new(format!("raw {gain}")))
                 .collect::<Vec<_>>(),
         ),
     };

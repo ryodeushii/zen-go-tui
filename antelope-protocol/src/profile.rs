@@ -484,6 +484,8 @@ mod runtime_param_tests {
                 offsets: Vec::new(),
                 frame: String::new(),
                 semantic: String::new(),
+                truth: String::new(),
+                modulus: None,
                 fields: Vec::new(),
             },
             readback: ParamReference {
@@ -492,6 +494,8 @@ mod runtime_param_tests {
                 offsets: Vec::new(),
                 frame: String::new(),
                 semantic: String::new(),
+                truth: String::new(),
+                modulus: None,
                 fields: Vec::new(),
             },
             metadata: String::new(),
@@ -600,6 +604,11 @@ pub enum ParamReadbackField {
         mask: u8,
         shift: u8,
     },
+    MaskedScalar {
+        offset: u16,
+        mask: u8,
+        shift: u8,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,6 +620,10 @@ pub struct ParamReference {
     pub frame: String,
     #[serde(default)]
     pub semantic: String,
+    #[serde(default)]
+    pub truth: String,
+    #[serde(default)]
+    pub modulus: Option<u8>,
     #[serde(default)]
     pub fields: Vec<ParamReadbackField>,
 }
@@ -1410,7 +1423,11 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                     }
                 }
                 if reference.fields.is_empty() {
-                    if !reference.frame.is_empty() || !reference.semantic.is_empty() {
+                    if !reference.frame.is_empty()
+                        || !reference.semantic.is_empty()
+                        || !reference.truth.is_empty()
+                        || reference.modulus.is_some()
+                    {
                         return Err(ProfileLoadError::InvalidReportGeometry {
                             profile_id: profile_id.to_owned(),
                             field: format!(
@@ -1455,6 +1472,16 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                             } => {
                                 targets.insert(*target)
                                     && *offset < report_size
+                                    && *mask != 0
+                                    && *shift < 8
+                                    && (*mask & ((1u8 << *shift) - 1)) == 0
+                            }
+                            ParamReadbackField::MaskedScalar {
+                                offset,
+                                mask,
+                                shift,
+                            } => {
+                                *offset < report_size
                                     && *mask != 0
                                     && *shift < 8
                                     && (*mask & ((1u8 << *shift) - 1)) == 0

@@ -1,11 +1,6 @@
 use std::io;
 
 use anyhow::Result;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -21,6 +16,7 @@ use zen_go_tui::device::{DeviceCandidate, DevicePickerState, RuntimeDeviceState}
 use zen_go_tui::settings;
 use zen_go_tui::terminal::{
     AppKeyCode, AppKeyEvent, AppKeyEventKind, AppMouseButton, AppMouseEvent, AppMouseEventKind,
+    CrosstermTerminalControl, TerminalSession,
 };
 use zen_go_tui::transport::is_device_error;
 use zen_go_tui::ui;
@@ -30,11 +26,9 @@ use crate::profile_ops::{append_profile_editor_text, load_selected_profile};
 use crate::timing::{device_poll_interval, should_draw_frame};
 
 pub fn run_app(mut devices: RuntimeDeviceState) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    stdout.execute(EnterAlternateScreen)?;
-    stdout.execute(EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut terminal_session = TerminalSession::setup(CrosstermTerminalControl)?;
+    let keyboard_release_events_enabled = terminal_session.keyboard_release_events_enabled();
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
     let input_rx = spawn_input_reader();
@@ -54,6 +48,8 @@ pub fn run_app(mut devices: RuntimeDeviceState) -> Result<()> {
                 if let Ok(saved) = settings::load_settings() {
                     controller.state.ui.settings = saved;
                 }
+                controller.state.ui.keyboard_release_events_enabled =
+                    keyboard_release_events_enabled;
                 controller.bootstrap()?;
                 let result = app_loop_with_devices(
                     &mut terminal,
@@ -88,10 +84,8 @@ pub fn run_app(mut devices: RuntimeDeviceState) -> Result<()> {
         }
     })();
 
-    disable_raw_mode()?;
     terminal.show_cursor()?;
-    io::stdout().execute(DisableMouseCapture)?;
-    io::stdout().execute(LeaveAlternateScreen)?;
+    terminal_session.cleanup()?;
     result
 }
 
@@ -431,13 +425,34 @@ fn handle_routing_source_picker(
 
 fn handle_selector_popup(
     controller: &mut Controller,
-    key_code: AppKeyCode,
-    ctrl: bool,
+    key: AppKeyEvent,
     area: ratatui::layout::Rect,
 ) -> Result<KeyAction> {
+    let key_code = key.code;
+    let ctrl = key.modifiers.ctrl;
+    let talkback_button = controller
+        .state
+        .popup
+        .selector_popup
+        .is_some_and(|popup| popup.kind == SelectorPopupKind::TalkbackButton);
+    if key.kind == AppKeyEventKind::Release {
+        if talkback_button && matches!(key_code, AppKeyCode::Enter | AppKeyCode::Char(' ')) {
+            controller.apply_intent(Intent::SetTalkbackButton(false), area)?;
+        }
+        return Ok(KeyAction::Continue);
+    }
+    if key.kind != AppKeyEventKind::Press {
+        return Ok(KeyAction::Continue);
+    }
     let result = match key_code {
-        AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
-        AppKeyCode::Char('c') if ctrl => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('q') => {
+            controller.release_talkback_if_held()?;
+            return Ok(KeyAction::Quit);
+        }
+        AppKeyCode::Char('c') if ctrl => {
+            controller.release_talkback_if_held()?;
+            return Ok(KeyAction::Quit);
+        }
         AppKeyCode::Up => controller.apply_intent(Intent::MovePopupSelection(false), area),
         AppKeyCode::Down => controller.apply_intent(Intent::MovePopupSelection(true), area),
         AppKeyCode::Enter => activate_popup_selection(controller),
@@ -468,7 +483,7 @@ pub fn handle_key_press(
     }
 
     if controller.state.popup.selector_popup.is_some() {
-        return handle_selector_popup(controller, key_code, ctrl, area);
+        return handle_selector_popup(controller, key, area);
     }
 
     if ctrl {
@@ -1101,7 +1116,13 @@ fn app_loop_inner(
             for event in input_events {
                 match event {
                     zen_go_tui::terminal::AppInputEvent::Key(key) => {
-                        if key.kind != AppKeyEventKind::Press {
+                        if key.kind != AppKeyEventKind::Press
+                            && controller
+                                .state
+                                .popup
+                                .selector_popup
+                                .is_none_or(|popup| popup.kind != SelectorPopupKind::TalkbackButton)
+                        {
                             continue;
                         }
 
@@ -1128,6 +1149,7 @@ fn app_loop_inner(
                                 active_candidate,
                                 key.code,
                             ) {
+                                controller.release_talkback_if_held()?;
                                 needs_redraw = true;
                                 continue;
                             }
@@ -1192,6 +1214,7 @@ fn app_loop_inner(
                                 area,
                                 mouse,
                             ) {
+                                controller.release_talkback_if_held()?;
                                 needs_redraw = true;
                                 continue;
                             }
@@ -1215,9 +1238,17 @@ fn app_loop_inner(
                         handle_profile_editor_paste(controller, selector_open, &text);
                         needs_redraw = true;
                     }
+                    zen_go_tui::terminal::AppInputEvent::FocusLost => {
+                        if let Err(error) = controller.release_talkback_if_held() {
+                            if is_device_error(&error) {
+                                return Ok(AppLoopExit::Disconnected);
+                            }
+                            return Err(error);
+                        }
+                        needs_redraw = true;
+                    }
                     zen_go_tui::terminal::AppInputEvent::Resize { .. }
-                    | zen_go_tui::terminal::AppInputEvent::FocusGained
-                    | zen_go_tui::terminal::AppInputEvent::FocusLost => needs_redraw = true,
+                    | zen_go_tui::terminal::AppInputEvent::FocusGained => needs_redraw = true,
                 }
             }
         }
@@ -1426,6 +1457,15 @@ pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
                     antelope_protocol::GlobalControl::OutputTrim(address) => {
                         Some(ui::Intent::OpenOutputTrimSelector(*address))
                     }
+                    antelope_protocol::GlobalControl::TalkbackButton => {
+                        Some(ui::Intent::OpenTalkbackButton)
+                    }
+                    antelope_protocol::GlobalControl::TalkbackSource => {
+                        Some(ui::Intent::OpenTalkbackSourceSelector)
+                    }
+                    antelope_protocol::GlobalControl::TalkbackGain => {
+                        Some(ui::Intent::OpenTalkbackGainSelector)
+                    }
                     _ => None,
                 }),
             SelectorPopupKind::Brightness => (controller.state.popup.selected_index <= 100)
@@ -1441,6 +1481,23 @@ pub fn activate_popup_selection(controller: &mut Controller) -> Result<()> {
                     address: antelope_protocol::OutputTrimAddress { target },
                     value: *value,
                 }),
+            SelectorPopupKind::TalkbackButton => match controller.state.popup.selected_index {
+                0 if controller.state.ui.keyboard_release_events_enabled => {
+                    Some(ui::Intent::SetTalkbackButton(true))
+                }
+                1 => Some(ui::Intent::SetTalkbackButton(false)),
+                _ => None,
+            },
+            SelectorPopupKind::TalkbackSource => controller
+                .state
+                .ui_profile
+                .talkback_source_choices()
+                .get(controller.state.popup.selected_index)
+                .map(|(source, _)| ui::Intent::PickTalkbackSource(*source)),
+            SelectorPopupKind::TalkbackGain => (controller.state.popup.selected_index <= 96)
+                .then_some(ui::Intent::PickTalkbackGain(
+                    controller.state.popup.selected_index as i32,
+                )),
         };
 
         if let Some(action) = action {
@@ -1462,6 +1519,9 @@ pub fn handle_mouse_event(
             {
                 controller.apply_intent(action, area)?;
             }
+        }
+        AppMouseEventKind::Up(AppMouseButton::Left) => {
+            controller.release_talkback_if_held()?;
         }
         AppMouseEventKind::Drag(AppMouseButton::Left) => {
             if let Some(action) =
@@ -1848,6 +1908,7 @@ mod tests {
         raw[24] = 0x60;
         raw[25] = 0x98;
         raw[26] = 75;
+        raw[73] = 3;
         transport.push_read(raw);
 
         assert!(controller
@@ -1875,6 +1936,231 @@ mod tests {
                 .global_value(GlobalControl::OutputTrim(OutputTrimAddress { target: 2 })),
             Some(4)
         );
+        assert_eq!(
+            controller
+                .state
+                .global_bool_value(GlobalControl::TalkbackButton),
+            Some(false)
+        );
+        assert_eq!(
+            controller
+                .state
+                .global_value(GlobalControl::TalkbackSourceResidue),
+            Some(3)
+        );
+        assert_eq!(
+            controller.state.global_value(GlobalControl::TalkbackSource),
+            None
+        );
+        controller.state.popup.selected_index = 9;
+        controller
+            .apply_intent(
+                Intent::OpenTalkbackSourceSelector,
+                ratatui::layout::Rect::default(),
+            )
+            .expect("open partial source selector");
+        assert_eq!(
+            controller.state.popup.selected_index, 0,
+            "modulo residue must never become one of the 13 selected source indices"
+        );
+        assert_eq!(
+            controller.state.global_value(GlobalControl::TalkbackGain),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn talkback_source_and_gain_write_only_within_confirmed_bounds() {
+        let transport = MockTransport::default();
+        let mut controller = orion_settings_controller(Box::new(transport.clone()));
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        controller
+            .apply_intent(Intent::PickTalkbackSource(12), area)
+            .expect("queue source");
+        controller
+            .apply_intent(Intent::PickTalkbackGain(96), area)
+            .expect("queue gain");
+        controller.flush_commands().expect("talkback writes");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(&writes[0][16..18], &[0x27, 12]);
+        assert_eq!(&writes[1][16..18], &[0x20, 96]);
+        assert!(writes
+            .iter()
+            .all(|frame| { frame.len() == 320 && frame[0] == 0x70 && frame[4] == 0x12 }));
+        for intent in [Intent::PickTalkbackSource(13), Intent::PickTalkbackGain(97)] {
+            controller.apply_intent(intent, area).expect("reject bound");
+        }
+        controller.flush_commands().expect("nothing outside bounds");
+        assert!(transport.take_writes().is_empty());
+        assert_eq!(
+            controller.state.global_value(GlobalControl::TalkbackSource),
+            None
+        );
+        assert_eq!(
+            controller.state.global_value(GlobalControl::TalkbackGain),
+            None
+        );
+    }
+
+    #[test]
+    fn zen_go_talkback_intents_produce_no_writes() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller");
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        for intent in [
+            Intent::SetTalkbackButton(false),
+            Intent::PickTalkbackSource(0),
+            Intent::PickTalkbackGain(0),
+        ] {
+            controller
+                .apply_intent(intent, area)
+                .expect("ignored intent");
+        }
+        controller.flush_commands().expect("empty queue");
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn talkback_button_is_hold_to_talk_and_best_effort_releases_on_key_up_cancel_and_quit() {
+        let transport = MockTransport::default();
+        let mut controller = orion_settings_controller(Box::new(transport.clone()));
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        controller
+            .apply_intent(Intent::OpenSettingsSelector, area)
+            .expect("open settings");
+        controller.state.popup.selected_index = 4;
+        activate_popup_selection(&mut controller).expect("open talkback button");
+        assert_eq!(
+            controller.state.popup.selector_popup,
+            Some(SelectorPopupState {
+                kind: SelectorPopupKind::TalkbackButton
+            })
+        );
+
+        handle_key_press(&mut controller, key(AppKeyCode::Enter), area)
+            .expect("unsupported keyboard hold is ignored");
+        assert!(!controller.state.popup.talkback_button_held);
+        assert!(transport.take_writes().is_empty());
+
+        controller.state.ui.keyboard_release_events_enabled = true;
+        handle_key_press(&mut controller, key(AppKeyCode::Enter), area).expect("press");
+        assert!(controller.state.popup.talkback_button_held);
+        handle_key_press(
+            &mut controller,
+            AppKeyEvent {
+                code: AppKeyCode::Enter,
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Release,
+            },
+            area,
+        )
+        .expect("key-up release");
+        assert!(!controller.state.popup.talkback_button_held);
+
+        handle_key_press(&mut controller, key(AppKeyCode::Enter), area).expect("press again");
+        handle_key_press(&mut controller, key(AppKeyCode::Esc), area).expect("cancel release");
+        assert!(!controller.state.popup.talkback_button_held);
+        assert_eq!(
+            controller.state.popup.selector_popup,
+            Some(SelectorPopupState {
+                kind: SelectorPopupKind::Settings
+            })
+        );
+
+        controller.state.popup.selected_index = 4;
+        activate_popup_selection(&mut controller).expect("reopen talkback button");
+        handle_key_press(&mut controller, key(AppKeyCode::Enter), area).expect("press for quit");
+        assert_eq!(
+            handle_key_press(&mut controller, key(AppKeyCode::Char('q')), area)
+                .expect("quit release"),
+            KeyAction::Quit
+        );
+        assert!(!controller.state.popup.talkback_button_held);
+
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 6);
+        assert_eq!(
+            writes.iter().map(|frame| frame[17]).collect::<Vec<_>>(),
+            vec![1, 0, 1, 0, 1, 0]
+        );
+        assert!(writes.iter().all(|frame| {
+            frame.len() == 320 && frame[0] == 0x70 && frame[4] == 0x12 && frame[16] == 0x1f
+        }));
+    }
+
+    #[test]
+    fn talkback_mouse_hold_remains_available_without_keyboard_release_events() {
+        let transport = MockTransport::default();
+        let mut controller = orion_settings_controller(Box::new(transport.clone()));
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        controller
+            .apply_intent(Intent::OpenTalkbackButton, area)
+            .expect("open talkback button");
+        assert!(!controller.state.ui.keyboard_release_events_enabled);
+
+        handle_mouse_event(
+            area,
+            &mut controller,
+            AppMouseEvent {
+                kind: AppMouseEventKind::Down(AppMouseButton::Left),
+                column: 20,
+                row: 2,
+                modifiers: AppModifiers::default(),
+            },
+        )
+        .expect("mouse press");
+        assert!(controller.state.popup.talkback_button_held);
+        handle_mouse_event(
+            area,
+            &mut controller,
+            AppMouseEvent {
+                kind: AppMouseEventKind::Up(AppMouseButton::Left),
+                column: 20,
+                row: 2,
+                modifiers: AppModifiers::default(),
+            },
+        )
+        .expect("mouse release");
+        assert!(!controller.state.popup.talkback_button_held);
+        assert_eq!(
+            transport
+                .take_writes()
+                .iter()
+                .map(|frame| frame[17])
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
+    }
+
+    #[test]
+    fn explicit_talkback_release_does_not_depend_on_observed_button_state() {
+        let transport = MockTransport::default();
+        let mut controller = orion_settings_controller(Box::new(transport.clone()));
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        controller
+            .apply_intent(Intent::PickTalkbackSource(1), area)
+            .expect("queue unrelated setting");
+        controller
+            .apply_intent(Intent::OpenTalkbackButton, area)
+            .expect("open button without readback");
+        controller.state.popup.selected_index = 1;
+        activate_popup_selection(&mut controller).expect("explicit release");
+        let writes = transport.take_writes();
+        assert_eq!(
+            writes.len(),
+            1,
+            "release bypasses the bounded settings queue"
+        );
+        assert_eq!(&writes[0][16..18], &[0x1f, 0]);
+        controller.flush_commands().expect("later source write");
+        let writes = transport.take_writes();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(&writes[0][16..18], &[0x27, 1]);
     }
 
     #[test]
