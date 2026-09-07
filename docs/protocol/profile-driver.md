@@ -39,6 +39,8 @@ Routing commands are complete ordered assignment tables. Callers must use `SetRo
 
 Orion Studio III is `Supported` with `RuntimeDriverKind::Profile`. Its normalized profile uses a source-backed non-numbered framing assumption (`transport.uses_numbered_reports: false`); descriptor and hardware validation of that assumption remains pending. Confirmed controls are enabled independently of metering. The profile retains observed full-report `0x73` offsets 157..160 as one provisional mono `mix_master` lane per current Mix 1..4 label, with low confidence in fixed ownership and no physical/stereo inference. Physical preamp meters remain unavailable. The separate `0x75` free-running meter requires byte 1 `0x1f`; byte 1 `0x00` readback responses are excluded, and @32 is aggregate rather than a per-channel array. See [the bounded Orion meter evidence](orion-meter-evidence.md).
 
+The typed Orion output-mono path encodes `SET_PARAM 0x69` with boolean `0/1` and decodes state-report bus status bit `0x10`. Its generated target constraint is exactly buses `0`, `1`, `2`, and `5` (Monitor A, HP1, HP2, Monitor B); Line `3`, Reamp `4`, and every Zen Go output remain non-actionable.
+
 Only mixer link space 3 is described as actionable in the profile. Physical and ADAT links remain non-actionable, while confirmed output, input, mixer, and routing controls use the generic profile driver.
 
 Profile-driver fixtures validate codec, bounds, and framing mechanics only. They do not constitute physical Orion validation.

@@ -135,6 +135,7 @@ impl AppState {
                 level: None,
                 muted: None,
                 dimmed: None,
+                mono: None,
                 parameters: Vec::new(),
             })
             .collect();
@@ -1574,6 +1575,7 @@ impl AppState {
         for (current, value) in [
             (&mut target.muted, incoming.muted),
             (&mut target.dimmed, incoming.dimmed),
+            (&mut target.mono, incoming.mono),
         ] {
             if let Some(value) = value {
                 if *current != Some(value) {

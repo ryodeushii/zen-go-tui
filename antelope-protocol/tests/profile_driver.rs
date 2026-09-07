@@ -130,6 +130,12 @@ fn non_orion_fixture_entry() -> RuntimeEntry {
     entry.id = "synthetic_other_profile".into();
     entry.profile.identity.vid = 0x1234;
     entry.profile.identity.pid = 0x5678;
+    // This synthetic profile changes bus parameters to generic output scope,
+    // so it cannot retain Orion's strictly bus-scoped MONO capability.
+    entry
+        .profile
+        .constraints
+        .retain(|constraint| constraint.name != "output_mono_targets");
     for parameter in &mut entry.profile.params {
         let applies_to = match parameter.name.as_str() {
             name if name.starts_with("bus_") => "outputs",
@@ -614,7 +620,7 @@ fn required_orion_actions() -> Vec<Action> {
         },
         Action::SetOutput {
             address: OutputAddress { id: 2 },
-            control: OutputControl::Parameter(0x69),
+            control: OutputControl::Mono,
             value: ControlValue::Bool(true),
         },
         Action::SetGlobal {
@@ -776,7 +782,7 @@ fn profile_derived_confirmed_parameter_families_match_complete_frames() {
         (
             Action::SetOutput {
                 address: OutputAddress { id: 2 },
-                control: OutputControl::Parameter(0x69),
+                control: OutputControl::Mono,
                 value: ControlValue::Bool(true),
             },
             0x13,
@@ -932,6 +938,115 @@ fn malformed_known_reports_fail_instead_of_being_ignored() {
 }
 
 #[test]
+fn runtime_rejects_output_mono_declaration_with_wrong_parameter_id() {
+    let mut entry = canonical_orion_entry();
+    entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|parameter| parameter.name == "bus_mono")
+        .expect("bus_mono parameter")
+        .id = Some(0x68);
+
+    assert!(matches!(
+        ProfileDriver::new(entry),
+        Err(DriverError::InvalidAction(message)) if message.contains("output mono")
+    ));
+}
+
+#[test]
+fn runtime_rejects_output_mono_declaration_with_non_bus_scope() {
+    let mut entry = canonical_orion_entry();
+    entry
+        .profile
+        .params
+        .iter_mut()
+        .find(|parameter| parameter.name == "bus_mono")
+        .expect("bus_mono parameter")
+        .applies_to = "outputs".into();
+
+    assert!(matches!(
+        ProfileDriver::new(entry),
+        Err(DriverError::InvalidAction(message)) if message.contains("output mono")
+    ));
+}
+
+#[test]
+fn canonical_orion_output_mono_encodes_param_69_only_for_captured_targets() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    for bus in [0, 1, 2, 5] {
+        for enabled in [false, true] {
+            let frame = driver
+                .encode(Action::SetOutput {
+                    address: OutputAddress { id: bus },
+                    control: OutputControl::Mono,
+                    value: ControlValue::Bool(enabled),
+                })
+                .expect("captured mono target")
+                .frames
+                .remove(0);
+            let mut expected = vec![0; 320];
+            expected[0] = 0x70;
+            expected[4] = 0x13;
+            expected[16] = 0x69;
+            expected[17] = bus as u8;
+            expected[18] = u8::from(enabled);
+            assert_eq!(frame, expected);
+        }
+    }
+
+    for bus in [3, 4] {
+        assert!(matches!(
+            driver.encode(Action::SetOutput {
+                address: OutputAddress { id: bus },
+                control: OutputControl::Mono,
+                value: ControlValue::Bool(true),
+            }),
+            Err(DriverError::UnsupportedAction(_))
+        ));
+    }
+    assert!(matches!(
+        driver.encode(Action::SetOutput {
+            address: OutputAddress { id: 0 },
+            control: OutputControl::Parameter(0x69),
+            value: ControlValue::Bool(true),
+        }),
+        Err(DriverError::InvalidAction(_))
+    ));
+}
+
+#[test]
+fn canonical_orion_snapshot_decodes_mono_bit_only_for_captured_targets() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    for bus in [0usize, 2, 3] {
+        frame[29 + 3 * bus] |= 0x10;
+    }
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("snapshot")
+    };
+
+    assert_eq!(
+        state
+            .outputs
+            .iter()
+            .map(|output| (output.address.id, output.mono))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, Some(true)),
+            (1, Some(false)),
+            (2, Some(true)),
+            (3, None),
+            (4, None),
+            (5, Some(false)),
+        ]
+    );
+    assert_eq!(state.outputs[1].level, Some(20), "sibling state changed");
+    assert_eq!(state.outputs[1].muted, None, "sibling state changed");
+    assert_eq!(state.outputs[1].dimmed, None, "sibling state changed");
+}
+
+#[test]
 fn dynamic_mixer_state_keeps_master_outside_input_strip_vector() {
     let surface = decode_orion_mixer_record();
     assert_eq!(surface.surface, 0);
@@ -998,15 +1113,23 @@ fn profile_derived_state_report_decodes_every_confirmed_address_and_value() {
         state
             .outputs
             .iter()
-            .map(|output| (output.address.id, output.level, output.muted, output.dimmed,))
+            .map(|output| {
+                (
+                    output.address.id,
+                    output.level,
+                    output.muted,
+                    output.dimmed,
+                    output.mono,
+                )
+            })
             .collect::<Vec<_>>(),
         vec![
-            (0, Some(10), None, None),
-            (1, Some(20), None, None),
-            (2, Some(30), None, None),
-            (3, Some(40), None, None),
-            (4, Some(50), None, None),
-            (5, Some(60), None, None),
+            (0, Some(10), None, None, Some(false)),
+            (1, Some(20), None, None, Some(false)),
+            (2, Some(30), None, None, Some(false)),
+            (3, Some(40), None, None, None),
+            (4, Some(50), None, None, None),
+            (5, Some(60), None, None, Some(false)),
         ]
     );
     assert_eq!(
@@ -1481,6 +1604,14 @@ fn zen_go_normalized_actions_preserve_representative_bytes() {
         })
         .expect("output");
     assert_eq!(&output.frames[0][0x10..0x13], &[0x47, 0x00, 0x12]);
+    assert!(matches!(
+        driver.encode(Action::SetOutput {
+            address: OutputAddress { id: 0 },
+            control: OutputControl::Mono,
+            value: ControlValue::Bool(true),
+        }),
+        Err(DriverError::UnsupportedAction(_))
+    ));
 
     let preamp = driver
         .encode(Action::SetInput {
@@ -1898,6 +2029,10 @@ fn constructor_rejects_bit_field_mask_below_shift_before_encode() {
 #[test]
 fn shifted_semantic_offsets_and_big_endian_width_are_profile_driven() {
     let mut entry = fixture_entry();
+    entry
+        .profile
+        .constraints
+        .retain(|constraint| constraint.name != "output_mono_targets");
     let frame = entry
         .profile
         .frames
@@ -1942,6 +2077,10 @@ fn shifted_semantic_offsets_and_big_endian_width_are_profile_driven() {
     assert_eq!(&frame[16..19], &[0, 0, 0]);
 
     let mut entry = fixture_entry();
+    entry
+        .profile
+        .constraints
+        .retain(|constraint| constraint.name != "output_mono_targets");
     let frame = entry
         .profile
         .frames

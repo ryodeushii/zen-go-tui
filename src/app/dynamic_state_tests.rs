@@ -671,6 +671,7 @@ fn dynamic_state_unknown_patches_never_create_profile_topology() {
             level: None,
             muted: None,
             dimmed: None,
+            mono: None,
             parameters: vec![],
         }]),
         DynamicStatePatch::Mixer(DynamicMixerSurface {
@@ -805,6 +806,118 @@ fn dynamic_state_missing_optional_control_does_not_write() {
         .expect_err("missing optional control must fail");
     assert!(error.to_string().contains("unsupported"));
     assert!(transport.take_writes().is_empty());
+}
+
+#[test]
+fn output_mono_visibility_is_profile_and_target_owned() {
+    let orion = AppState::from_entry(&canonical_orion_entry());
+    assert_eq!(
+        orion
+            .outputs()
+            .iter()
+            .map(|output| orion
+                .ui_profile
+                .declares_output(output.address, OutputControl::Mono))
+            .collect::<Vec<_>>(),
+        vec![true, true, true, false, false, true]
+    );
+
+    let zen = AppState::from_profile(&zen_go_profile());
+    assert!(zen.outputs().iter().all(|output| !zen
+        .ui_profile
+        .declares_output(output.address, OutputControl::Mono)));
+}
+
+fn set_known_mono_state(controller: &mut Controller, selected: usize, mono: bool) {
+    let mut outputs = controller.state.outputs().to_vec();
+    for output in &mut outputs {
+        output.level = Some(0);
+        if matches!(output.address.id, 0 | 1 | 2 | 5) {
+            output.mono = Some(false);
+        }
+    }
+    outputs[selected].mono = Some(mono);
+    assert!(controller
+        .state
+        .apply_dynamic_patch(DynamicStatePatch::Outputs(outputs)));
+}
+
+#[test]
+fn output_mono_toggle_waits_for_delivery_confirmation_and_preserves_siblings() {
+    let entry = canonical_orion_entry();
+    let transport = MockTransport::default();
+    let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+    let mut controller =
+        Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+            .expect("controller");
+    set_known_mono_state(&mut controller, 0, false);
+    let siblings = controller.state.outputs()[1..].to_vec();
+
+    controller
+        .apply_intent(Intent::ToggleOutputMono(0), Rect::default())
+        .expect("queue mono");
+    assert_eq!(controller.state.outputs()[0].mono, Some(false));
+    assert!(controller.pending_mutation.is_none());
+    controller.flush_commands().expect("deliver mono");
+    assert_eq!(controller.state.outputs()[0].mono, Some(false));
+    assert_eq!(transport.take_writes().len(), 1);
+    let mut snapshot = vec![0; 320];
+    snapshot[0] = 0x73;
+    snapshot[29] = 0x10;
+    transport.push_read(snapshot);
+    controller
+        .poll_device_without_writes(Duration::ZERO)
+        .expect("reconcile mono readback");
+    assert!(controller.pending_mutation.is_none());
+    assert_eq!(controller.state.outputs()[0].mono, Some(true));
+    assert_eq!(&controller.state.outputs()[1..], siblings.as_slice());
+}
+
+#[derive(Default)]
+struct MonoFailingTransport;
+
+impl Transport for MonoFailingTransport {
+    fn write(&self, _data: &[u8]) -> anyhow::Result<()> {
+        anyhow::bail!("synthetic mono write failure")
+    }
+
+    fn read(&self, _timeout: Duration) -> anyhow::Result<Option<Vec<u8>>> {
+        Ok(None)
+    }
+}
+
+#[test]
+fn failed_output_mono_write_never_displays_requested_state() {
+    let entry = canonical_orion_entry();
+    let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+    let mut controller =
+        Controller::new_for_entry(Box::new(MonoFailingTransport), Box::new(driver), &entry)
+            .expect("controller");
+    set_known_mono_state(&mut controller, 1, false);
+
+    controller
+        .apply_intent(Intent::ToggleOutputMono(1), Rect::default())
+        .expect("queue mono");
+    assert!(controller.flush_commands().is_err());
+    assert_eq!(controller.state.outputs()[1].mono, Some(false));
+    assert!(controller.pending_mutation.is_none());
+}
+
+#[test]
+fn unknown_output_mono_state_does_not_guess_a_toggle_value() {
+    let entry = canonical_orion_entry();
+    let transport = MockTransport::default();
+    let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+    let mut controller =
+        Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+            .expect("controller");
+
+    controller
+        .apply_intent(Intent::ToggleOutputMono(0), Rect::default())
+        .expect("unknown mono is ignored");
+    controller.flush_commands().expect("no queued write");
+    assert!(transport.take_writes().is_empty());
+    assert_eq!(controller.state.outputs()[0].mono, None);
 }
 
 #[test]

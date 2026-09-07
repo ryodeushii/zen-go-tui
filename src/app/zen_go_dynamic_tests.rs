@@ -131,6 +131,7 @@ fn invalid_patch_address_is_rejected_without_mutation() {
         level: Some(1),
         muted: None,
         dimmed: None,
+        mono: None,
         parameters: Vec::new(),
     };
     assert!(!state.apply_dynamic_patch(DynamicStatePatch::Outputs(vec![invalid])));

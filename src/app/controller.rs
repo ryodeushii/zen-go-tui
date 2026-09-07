@@ -604,6 +604,10 @@ impl Controller {
                             output.muted = Some(false);
                         }
                     }
+                    // Mono remains device-authoritative. The queued mutation is
+                    // promoted only after a successful transport write and a
+                    // subsequent device event; failed delivery never lights it.
+                    (OutputControl::Mono, ControlValue::Bool(_)) => return,
                     (OutputControl::Parameter(parameter), value) => {
                         if let Some((_, current)) =
                             output.parameters.iter_mut().find(|(id, _)| id == parameter)
@@ -1122,6 +1126,7 @@ impl Controller {
             }
             Intent::ToggleOutputDim(index) => self.handle_output_toggle_dim(index, pending)?,
             Intent::ToggleOutputMute(index) => self.handle_output_toggle_mute(index, pending)?,
+            Intent::ToggleOutputMono(index) => self.handle_output_toggle_mono(index, pending)?,
             Intent::SelectQueryReplyEntry(index) => self.handle_select_query_reply_entry(index),
             Intent::ScrollQueryReplyList { increase } => {
                 self.handle_scroll_query_reply_list(increase)
@@ -1543,6 +1548,37 @@ impl Controller {
                 address: output.address,
                 control: OutputControl::Mute,
                 value: ControlValue::Bool(enabled),
+            },
+            pending,
+        )?;
+        Ok(())
+    }
+
+    fn handle_output_toggle_mono(
+        &mut self,
+        index: usize,
+        pending: Option<PendingMutation>,
+    ) -> Result<()> {
+        let Some(output) = self.state.outputs().get(index).cloned() else {
+            return Ok(());
+        };
+        if !self
+            .state
+            .ui_profile
+            .supports_output(output.address, OutputControl::Mono)
+        {
+            return Ok(());
+        }
+        let Some(current) = output.mono else {
+            return Ok(());
+        };
+        self.state.ui.focus = FocusArea::Outputs;
+        self.state.output.selected = index;
+        self.send(
+            Action::SetOutput {
+                address: output.address,
+                control: OutputControl::Mono,
+                value: ControlValue::Bool(!current),
             },
             pending,
         )?;

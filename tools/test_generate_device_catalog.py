@@ -889,6 +889,109 @@ class GeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(generator.ProfileError, "runtime_internal_value"):
             generator._build_params(generator.normalize_profile(data, path=ORION_PROFILE))
 
+    def test_orion_mono_runtime_shape_preserves_source_targets_and_bit(self) -> None:
+        source = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        declaration = source["constraints"]["output_mono_targets"]
+        self.assertEqual(declaration["values"], [0, 1, 2, 5])
+        self.assertEqual(declaration["status"], "confirmed")
+        self.assertTrue(declaration["evidence"].strip())
+
+        profile = normalized_orion()
+        constraints = {item["name"]: item for item in profile["constraints"]}
+        self.assertEqual(constraints["output_mono_targets"]["values"], [0, 1, 2, 5])
+        self.assertEqual(constraints["output_mono_targets"]["status"], "confirmed")
+        self.assertIn("evidence", constraints["output_mono_targets"]["metadata"])
+
+        state = next(frame for frame in profile["frames"] if frame["id"] == "state_report")
+        mono = [
+            operation
+            for operation in state["operations"]
+            if operation.get("field") == "output_mono"
+        ]
+        self.assertEqual(
+            mono,
+            [{"op": "bit_field", "field": "output_mono", "offset": 29, "mask": 0x10, "shift": 4}],
+        )
+
+    def test_orion_missing_mono_declaration_exposes_no_capability(self) -> None:
+        data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        data["constraints"].pop("output_mono_targets", None)
+        data["frame"]["state_report"]["runtime_operations"] = [
+            {
+                "op": "bit_field",
+                "field": "output_mono",
+                "offset": 29,
+                "mask": 0x10,
+                "shift": 4,
+            }
+        ]
+
+        profile = generator._normalized_profile_record(
+            generator.normalize_profile(data, path=ORION_PROFILE)
+        )
+        self.assertNotIn(
+            "output_mono_targets",
+            {constraint["name"] for constraint in profile["constraints"]},
+        )
+        state = next(frame for frame in profile["frames"] if frame["id"] == "state_report")
+        self.assertFalse(
+            any(operation.get("field") == "output_mono" for operation in state["operations"])
+        )
+
+    def test_orion_malformed_mono_semantics_fail_closed(self) -> None:
+        mutations = {
+            "unconfirmed declaration": lambda data: data["constraints"][
+                "output_mono_targets"
+            ].update({"status": "unconfirmed"}),
+            "wrong declaration type": lambda data: data["constraints"].update(
+                {"output_mono_targets": [0, 1, 2, 5]}
+            ),
+            "missing bus_mono": lambda data: data["params"].pop("bus_mono"),
+            "unconfirmed bus_mono": lambda data: data["params"]["bus_mono"].update(
+                {"status": "unconfirmed"}
+            ),
+            "wrong bus_mono id": lambda data: data["params"]["bus_mono"].update(
+                {"id": "0x68"}
+            ),
+            "wrong bus_mono type": lambda data: data["params"]["bus_mono"].update(
+                {"type": "int"}
+            ),
+            "duplicate target": lambda data: data["constraints"][
+                "output_mono_targets"
+            ].update({"values": [0, 1, 1, 5]}),
+            "out of range target": lambda data: data["constraints"][
+                "output_mono_targets"
+            ].update({"values": [0, 1, 2, 6]}),
+            "missing evidence": lambda data: data["constraints"][
+                "output_mono_targets"
+            ].update({"evidence": ""}),
+            "bad mono status offset": lambda data: data["frame"]["state_report"][
+                "bus_block"
+            ].update({"status_byte_offset": 2}),
+            "bad mono bus stride": lambda data: data["frame"]["state_report"][
+                "bus_block"
+            ].update({"bytes_per_bus": 2}),
+            "bad mono mask": lambda data: data["frame"]["state_report"]["bus_block"][
+                "status_bits"
+            ]["mono"].update({"mask": "0x08"}),
+            "bad mono shift": lambda data: data["frame"]["state_report"]["bus_block"][
+                "status_bits"
+            ]["mono"].update({"shift": 3}),
+            "bad command geometry": lambda data: data["frame"]["command"].update(
+                {"value_offset": 19}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+                mutate(data)
+                with self.assertRaisesRegex(
+                    generator.ProfileError, "output_mono_targets|bus_mono"
+                ):
+                    generator._normalized_profile_record(
+                        generator.normalize_profile(data, path=ORION_PROFILE)
+                    )
+
     def test_orion_actionable_params_have_complete_runtime_shape(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         profile = generator.load_profile(path, REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles")

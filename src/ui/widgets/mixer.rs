@@ -112,22 +112,36 @@ pub(crate) fn render_dynamic_output_card_widget(
         }
         let dim = output.dimmed == Some(true);
         let mute = output.muted == Some(true);
-        let buttons = output_control_rects(controls.row);
-        if controls.dim.is_some() {
+        let mono = output.mono == Some(true);
+        if let Some(rect) = controls.dim {
             Paragraph::new(Line::from(chip(
                 "DIM",
                 Color::Black,
                 if dim { Color::Yellow } else { Color::Gray },
             )))
-            .render(buttons[2], buffer);
+            .render(rect, buffer);
         }
-        if controls.mute.is_some() {
+        if let Some(rect) = controls.mute {
             Paragraph::new(Line::from(chip(
                 "MUTE",
                 Color::Black,
                 if mute { Color::LightRed } else { Color::Gray },
             )))
-            .render(buttons[3], buffer);
+            .render(rect, buffer);
+        }
+        if let Some(rect) = controls.mono {
+            Paragraph::new(Line::from(chip(
+                "MONO",
+                Color::Black,
+                if mono {
+                    Color::LightCyan
+                } else if output.mono.is_some() {
+                    Color::Gray
+                } else {
+                    Color::DarkGray
+                },
+            )))
+            .render(rect, buffer);
         }
         return;
     }
@@ -191,6 +205,23 @@ pub(crate) fn render_dynamic_output_card_widget(
             if enabled && output.muted == Some(true) {
                 Color::LightRed
             } else if enabled {
+                Color::Gray
+            } else {
+                Color::DarkGray
+            },
+        )))
+        .render(rect, buffer);
+    }
+    if let Some(rect) = controls.mono {
+        let enabled = state
+            .ui_profile
+            .supports_output(output.address, antelope_protocol::OutputControl::Mono);
+        Paragraph::new(Line::from(chip(
+            "MONO",
+            Color::Black,
+            if enabled && output.mono == Some(true) {
+                Color::LightCyan
+            } else if enabled && output.mono.is_some() {
                 Color::Gray
             } else {
                 Color::DarkGray

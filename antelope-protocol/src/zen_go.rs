@@ -423,6 +423,7 @@ impl ZenGoDriver {
                     level: output.map(|value| i32::from(value.volume)),
                     muted,
                     dimmed,
+                    mono: None,
                     parameters: Vec::new(),
                 }
             })
@@ -686,6 +687,11 @@ impl DeviceDriver for ZenGoDriver {
                         target,
                         enabled: Self::bool_value(value, "output dim")?,
                     },
+                    OutputControl::Mono => {
+                        return Err(DriverError::UnsupportedAction(
+                            "Zen Go output mono is not capture-backed".into(),
+                        ))
+                    }
                     OutputControl::Parameter(_) => {
                         return Err(DriverError::UnsupportedAction(
                             "Zen Go output parameter".into(),

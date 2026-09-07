@@ -1190,6 +1190,7 @@ pub(crate) struct DynamicOutputControlRects {
     pub level: Option<Rect>,
     pub dim: Option<Rect>,
     pub mute: Option<Rect>,
+    pub mono: Option<Rect>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1241,6 +1242,9 @@ pub(crate) fn dynamic_output_control_rects(
     let output = state.outputs().get(index)?;
     if row.height >= output_card_height() {
         let buttons = output_control_rects(row);
+        let visible = |rect: Rect| {
+            (rect.x.saturating_add(rect.width) <= row.x.saturating_add(row.width)).then_some(rect)
+        };
         return Some(DynamicOutputControlRects {
             row,
             level: (state
@@ -1251,11 +1255,29 @@ pub(crate) fn dynamic_output_control_rects(
             dim: state
                 .ui_profile
                 .declares_output(output.address, OutputControl::Dim)
-                .then_some(buttons[2]),
+                .then(|| visible(buttons[2]))
+                .flatten(),
             mute: state
                 .ui_profile
                 .declares_output(output.address, OutputControl::Mute)
-                .then_some(buttons[3]),
+                .then(|| visible(buttons[3]))
+                .flatten(),
+            mono: state
+                .ui_profile
+                .declares_output(output.address, OutputControl::Mono)
+                .then(|| {
+                    visible(buttons[4]).or_else(|| {
+                        (row.height >= output_card_height() && row.width >= chip_width("MONO"))
+                            .then_some(Rect::new(
+                                row.x
+                                    .saturating_add(row.width.saturating_sub(chip_width("MONO"))),
+                                row.y,
+                                chip_width("MONO"),
+                                1,
+                            ))
+                    })
+                })
+                .flatten(),
         });
     }
     let mut x = row.x.saturating_add(row.width.min(20));
@@ -1277,6 +1299,11 @@ pub(crate) fn dynamic_output_control_rects(
         .declares_output(output.address, OutputControl::Dim)
         .then(|| take(5))
         .flatten();
+    let mono = state
+        .ui_profile
+        .declares_output(output.address, OutputControl::Mono)
+        .then(|| take(6))
+        .flatten();
     let mute = state
         .ui_profile
         .declares_output(output.address, OutputControl::Mute)
@@ -1287,6 +1314,7 @@ pub(crate) fn dynamic_output_control_rects(
         level,
         dim,
         mute,
+        mono,
     })
 }
 
@@ -1694,6 +1722,7 @@ pub(crate) fn output_control_rects(area: Rect) -> Vec<Rect> {
             ADJUST_UP_BUTTON_LABEL,
             "DIM",
             "MUTE",
+            "MONO",
         ],
     )
 }

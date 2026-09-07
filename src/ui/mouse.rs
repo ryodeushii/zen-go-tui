@@ -63,6 +63,12 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
                 .ui_profile
                 .supports_output(output.address, OutputControl::Dim)
         }),
+        Intent::ToggleOutputMono(index) => state.outputs().get(*index).is_some_and(|output| {
+            state
+                .ui_profile
+                .supports_output(output.address, OutputControl::Mono)
+                && output.mono.is_some()
+        }),
         Intent::AdjustMixerLevel { .. } | Intent::SetMixerLevel { .. } => {
             active_surface_supports(state, MixerControl::Fader)
         }
@@ -1287,6 +1293,12 @@ fn output_list_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> 
             .is_some_and(|rect| contains_point(rect, point))
         {
             return Some(Intent::ToggleOutputMute(index));
+        }
+        if controls
+            .mono
+            .is_some_and(|rect| contains_point(rect, point))
+        {
+            return Some(Intent::ToggleOutputMono(index));
         }
         if contains_point(row, point) {
             return Some(Intent::SelectOutput(index));

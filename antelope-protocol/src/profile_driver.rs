@@ -573,6 +573,7 @@ impl ProfileDriver {
             canonical_orion_identity,
         };
         driver.validate_capabilities()?;
+        driver.validate_output_mono_capability()?;
         let zero_report = vec![0; report_size];
         driver.decode_state(&zero_report)?;
         if matches!(driver.meter_source, MeterSource::MeterReport) {
@@ -703,6 +704,87 @@ impl ProfileDriver {
                     parameter.name
                 )));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_output_mono_capability(&self) -> Result<(), DriverError> {
+        let declarations: Vec<_> = self
+            .profile
+            .constraints
+            .iter()
+            .filter(|constraint| constraint.name == "output_mono_targets")
+            .collect();
+        if declarations.is_empty() {
+            return Ok(());
+        }
+        if declarations.len() != 1 || !profile_codec::is_confirmed(&declarations[0].status) {
+            return Err(DriverError::InvalidAction(
+                "output mono targets require one confirmed declaration".into(),
+            ));
+        }
+        let targets = &declarations[0].values;
+        let unique: HashSet<_> = targets.iter().copied().collect();
+        if targets.is_empty()
+            || unique.len() != targets.len()
+            || targets.iter().any(|target| {
+                u16::try_from(*target).map_or(true, |id| {
+                    !self.profile.outputs.iter().any(|output| output.id == id)
+                })
+            })
+        {
+            return Err(DriverError::InvalidAction(
+                "output mono targets must be unique existing output buses".into(),
+            ));
+        }
+
+        let parameter = self.parameter("outputs", "bus_mono")?;
+        if parameter.id != Some(0x69)
+            || parameter.value_type != "bool"
+            || parameter.applies_to != "buses"
+        {
+            return Err(DriverError::InvalidAction(
+                "output mono requires confirmed bool bus_mono parameter 0x69".into(),
+            ));
+        }
+        let command = self.frame("command")?;
+        let parameter_field = Self::scalar_alias(command, "param_id", "parameter")?;
+        let target_field = Self::scalar_alias(command, "channel", "target")?;
+        if profile_codec::fixed_byte(command, 0) != Some(0x70)
+            || profile_codec::fixed_byte(command, 4) != Some(0x13)
+            || profile_codec::scalar_offset(command, parameter_field)? != 16
+            || profile_codec::scalar_offset(command, target_field)? != 17
+            || profile_codec::scalar_offset(command, "value")? != 18
+        {
+            return Err(DriverError::InvalidAction(
+                "output mono command geometry does not match SET_PARAM".into(),
+            ));
+        }
+
+        let state = self.frame("state_report")?;
+        let (base, stride, width, max) = self.indexed_layout(state, "output_bus")?;
+        if (base, stride, width) != (28, 3, 3) || usize::from(max) + 1 != self.profile.outputs.len()
+        {
+            return Err(DriverError::InvalidAction(
+                "output mono bus geometry must be base 28 with three-byte buses".into(),
+            ));
+        }
+        let mut bits = state
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                FrameOperation::BitField {
+                    field,
+                    offset,
+                    mask,
+                    shift,
+                } if field == "output_mono" => Some((*offset, *mask, *shift)),
+                _ => None,
+            });
+        if bits.next() != Some((29, 0x10, 4)) || bits.next().is_some() {
+            return Err(DriverError::InvalidAction(
+                "output mono status geometry must be offset 29 mask 0x10 shift 4".into(),
+            ));
         }
         Ok(())
     }
@@ -1350,6 +1432,7 @@ impl ProfileDriver {
                     level: None,
                     muted: None,
                     dimmed: None,
+                    mono: None,
                     parameters: Vec::new(),
                 })
                 .collect(),
@@ -1489,6 +1572,35 @@ impl ProfileDriver {
                 )))
             }
         };
+        Ok(i32::from((byte & mask) >> shift))
+    }
+
+    fn state_output_bit_value(
+        frame: &RuntimeFrame,
+        field: &str,
+        status_offset: usize,
+        byte: u8,
+    ) -> Result<i32, DriverError> {
+        let mut matches = frame
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                FrameOperation::BitField {
+                    field: candidate,
+                    offset,
+                    mask,
+                    shift,
+                } if candidate == field => Some((usize::from(*offset), *mask, *shift)),
+                _ => None,
+            });
+        let (declared_offset, mask, shift) = matches.next().ok_or_else(|| {
+            DriverError::InvalidAction(format!("missing state bit mapping {field}"))
+        })?;
+        if matches.next().is_some() || declared_offset != status_offset {
+            return Err(DriverError::InvalidAction(format!(
+                "state bit mapping {field} does not uniquely match output status offset"
+            )));
+        }
         Ok(i32::from((byte & mask) >> shift))
     }
 
@@ -1680,6 +1792,8 @@ impl ProfileDriver {
         }
         let mute_targets = self.constraint_values("state_output_mute_targets");
         let dim_targets = self.constraint_values("state_output_dim_targets");
+        let mono_targets = self.constraint_values("output_mono_targets");
+        let mono_status_offset = base + 1;
         for output in &mut state.outputs {
             let start = base + stride * usize::from(output.address.id);
             let record = bytes.get(start..start + width).ok_or_else(|| {
@@ -1699,6 +1813,12 @@ impl ProfileDriver {
             }
             if dim_targets.is_some_and(|targets| targets.contains(&i32::from(output.address.id))) {
                 output.dimmed = Some(Self::state_bit_value(frame, "output_dim", status)? != 0);
+            }
+            if mono_targets.is_some_and(|targets| targets.contains(&i32::from(output.address.id))) {
+                output.mono = Some(
+                    Self::state_output_bit_value(frame, "output_mono", mono_status_offset, status)?
+                        != 0,
+                );
             }
         }
         state.globals = vec![DynamicGlobalState {
@@ -2000,13 +2120,35 @@ impl DeviceDriver for ProfileDriver {
                     OutputControl::Level => "bus_level",
                     OutputControl::Mute => "bus_mute",
                     OutputControl::Dim => "bus_dim",
+                    OutputControl::Mono => {
+                        let targets =
+                            self.constraint_values("output_mono_targets")
+                                .ok_or_else(|| {
+                                    DriverError::UnsupportedAction(
+                                        "profile does not declare output mono targets".into(),
+                                    )
+                                })?;
+                        if !targets.contains(&i32::from(address.id)) {
+                            return Err(DriverError::UnsupportedAction(format!(
+                                "output {} does not declare mono",
+                                address.id
+                            )));
+                        }
+                        "bus_mono"
+                    }
                     OutputControl::Parameter(id) => {
+                        let parameter = self.parameter_by_id_for(id, "outputs")?;
+                        if parameter.name == "bus_mono" {
+                            return Err(DriverError::InvalidAction(
+                                "bus_mono requires typed OutputControl::Mono".into(),
+                            ));
+                        }
                         return self.encode_parameter(
                             "command",
-                            self.parameter_by_id_for(id, "outputs")?,
+                            parameter,
                             Some(address.id),
                             value,
-                        )
+                        );
                     }
                 };
                 self.encode_parameter(

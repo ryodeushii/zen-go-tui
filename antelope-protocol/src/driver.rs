@@ -75,6 +75,7 @@ pub enum OutputControl {
     Level,
     Mute,
     Dim,
+    Mono,
     Parameter(u16),
 }
 
@@ -121,6 +122,7 @@ pub struct DynamicOutputState {
     pub level: Option<i32>,
     pub muted: Option<bool>,
     pub dimmed: Option<bool>,
+    pub mono: Option<bool>,
     pub parameters: Vec<(u16, ControlValue)>,
 }
 

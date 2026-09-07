@@ -3615,6 +3615,23 @@ def _flatten_constraints(
                     metadata=value,
                 )
             ]
+        if "values" in value:
+            raw_values = value["values"]
+            if not isinstance(raw_values, list):
+                raise ProfileError(f"constraints.{name}.values must be an array")
+            values = [
+                _checked_i32(item, f"constraints.{name}.values[{index}]")
+                for index, item in enumerate(raw_values)
+            ]
+            return [
+                _empty_constraint(
+                    name,
+                    status=str(value.get("status", "confirmed")),
+                    values=values,
+                    text=str(value.get("note", value.get("notes", ""))),
+                    metadata=value,
+                )
+            ]
         nested: list[dict[str, Any]] = []
         for child_name, child_value in value.items():
             if str(child_name).startswith("_"):
@@ -3662,7 +3679,90 @@ def _flatten_constraints(
     return [_empty_constraint(name, status="unknown", text=str(value), metadata=value)]
 
 
+def _validated_output_mono_semantics(
+    profile: NormalizedProfile,
+) -> dict[str, int] | None:
+    """Validate the complete write/readback contract for declared mono targets."""
+
+    name = "output_mono_targets"
+    if name not in profile.constraints:
+        return None
+    declaration = profile.constraints[name]
+    if not isinstance(declaration, Mapping):
+        raise ProfileError(f"constraints.{name} must be an object")
+    if declaration.get("parameter") != "bus_mono":
+        raise ProfileError(f"constraints.{name}.parameter must be bus_mono")
+    if _status_variant(str(declaration.get("status", ""))) != "Confirmed":
+        raise ProfileError(f"constraints.{name}.status must be confirmed")
+    evidence = declaration.get("evidence")
+    if not isinstance(evidence, str) or not evidence.strip():
+        raise ProfileError(f"constraints.{name}.evidence must be non-empty")
+    raw_targets = declaration.get("values")
+    if not isinstance(raw_targets, list) or not raw_targets:
+        raise ProfileError(f"constraints.{name}.values must be a non-empty array")
+    targets = [
+        _checked_u16(target, f"constraints.{name}.values[{index}]")
+        for index, target in enumerate(raw_targets)
+    ]
+    if len(set(targets)) != len(targets):
+        raise ProfileError(f"constraints.{name}.values must be unique")
+    output_ids = {output["id"] for output in _build_outputs(profile)}
+    if any(target not in output_ids for target in targets):
+        raise ProfileError(f"constraints.{name}.values must name existing output buses")
+
+    parameter = profile.params.get("bus_mono")
+    if not isinstance(parameter, Mapping):
+        raise ProfileError(f"constraints.{name} requires params.bus_mono")
+    if _status_variant(str(parameter.get("status", ""))) != "Confirmed":
+        raise ProfileError(f"constraints.{name} requires confirmed params.bus_mono")
+    if _param_type(parameter.get("runtime_type", parameter.get("type"))) != "Bool":
+        raise ProfileError(f"constraints.{name} requires bool params.bus_mono")
+    if parameter.get("applies_to") != "buses":
+        raise ProfileError(f"constraints.{name} requires bus-scoped params.bus_mono")
+    if _checked_u16(parameter.get("id"), "params.bus_mono.id") != 0x69:
+        raise ProfileError(f"constraints.{name} requires params.bus_mono id 0x69")
+
+    command = profile.frame.get("command")
+    if not isinstance(command, Mapping):
+        raise ProfileError(f"constraints.{name} requires frame.command")
+    command_geometry = {
+        "magic_offset": 0,
+        "magic": 0x70,
+        "opcode_offset": 4,
+        "opcode": 0x13,
+        "param_id_offset": 16,
+        "channel_offset": 17,
+        "value_offset": 18,
+    }
+    for field, expected in command_geometry.items():
+        if parse_int(command.get(field), f"frame.command.{field}") != expected:
+            raise ProfileError(
+                f"constraints.{name} requires frame.command.{field}={expected:#x}"
+            )
+
+    state = profile.frame.get("state_report")
+    bus_block = state.get("bus_block") if isinstance(state, Mapping) else None
+    status_bits = bus_block.get("status_bits") if isinstance(bus_block, Mapping) else None
+    mono = status_bits.get("mono") if isinstance(status_bits, Mapping) else None
+    if not isinstance(mono, Mapping):
+        raise ProfileError(f"constraints.{name} requires bus_mono status geometry")
+    geometry = {
+        "base_offset": (bus_block, 28),
+        "bytes_per_bus": (bus_block, 3),
+        "status_byte_offset": (bus_block, 1),
+        "mask": (mono, 0x10),
+        "shift": (mono, 4),
+    }
+    for field, (source, expected) in geometry.items():
+        if parse_int(source.get(field), f"frame.state_report.bus_block.{field}") != expected:
+            raise ProfileError(
+                f"constraints.{name} requires bus_mono status geometry {field}={expected:#x}"
+            )
+    return {"offset": 29, "mask": 0x10, "shift": 4}
+
+
 def _build_constraints(profile: NormalizedProfile) -> list[dict[str, Any]]:
+    _validated_output_mono_semantics(profile)
     result: list[dict[str, Any]] = []
     for name, value in profile.constraints.items():
         if name.startswith("_"):
@@ -3893,6 +3993,9 @@ def _frame_operations(
 ) -> list[dict[str, Any]]:
     """Compile allowlisted canonical frame geometry into finite-domain operations."""
 
+    mono_semantics = (
+        _validated_output_mono_semantics(profile) if frame_id == "state_report" else None
+    )
     explicit = frame.get("runtime_operations")
     if explicit is not None:
         if not isinstance(explicit, list):
@@ -3974,9 +4077,14 @@ def _frame_operations(
                 operation = {"op": kind, "formula": formula}
             else:
                 raise ProfileError(f"{context}.op {kind!r} is unsupported")
-            operations.append(operation)
+            if operation.get("field") != "output_mono":
+                operations.append(operation)
         if frame_id == "state_report":
             operations.extend(_candidate_preamp_meter_operations(profile))
+        if mono_semantics is not None:
+            operations.append(
+                {"op": "bit_field", "field": "output_mono", **mono_semantics}
+            )
         return _retain_meter_report_operations(profile, frame_id, operations)
 
     operations: list[dict[str, Any]] = []
@@ -4132,6 +4240,11 @@ def _frame_operations(
     if frame_id == "state_report":
         operations.extend(_candidate_preamp_meter_operations(profile))
     operations = _disambiguate_orion_inferred_semantics(profile, frame_id, operations)
+    operations = [
+        operation for operation in operations if operation.get("field") != "output_mono"
+    ]
+    if mono_semantics is not None:
+        operations.append({"op": "bit_field", "field": "output_mono", **mono_semantics})
     return _retain_meter_report_operations(profile, frame_id, operations)
 
 

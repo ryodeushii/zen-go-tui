@@ -296,7 +296,7 @@ impl UiProfileState {
                 output_kinds.push(control);
             }
         }
-        let output_controls = profile
+        let mut output_controls: HashSet<_> = profile
             .outputs
             .iter()
             .flat_map(|output| {
@@ -306,6 +306,20 @@ impl UiProfileState {
                     .map(move |control| (OutputAddress { id: output.id }, control))
             })
             .collect();
+        if confirmed("bus_mono") {
+            if let Some(targets) = profile.constraints.iter().find(|constraint| {
+                constraint.name == "output_mono_targets"
+                    && constraint.status.eq_ignore_ascii_case("confirmed")
+            }) {
+                for target in &targets.values {
+                    if let Ok(id) = u16::try_from(*target) {
+                        if profile.outputs.iter().any(|output| output.id == id) {
+                            output_controls.insert((OutputAddress { id }, OutputControl::Mono));
+                        }
+                    }
+                }
+            }
+        }
 
         let mut mixer_kinds = Vec::new();
         for (name, control) in [
@@ -706,6 +720,7 @@ impl Default for OutputData {
                     level: Some(0),
                     muted: Some(false),
                     dimmed: Some(false),
+                    mono: None,
                     parameters: Vec::new(),
                 },
                 DynamicOutputState {
@@ -714,6 +729,7 @@ impl Default for OutputData {
                     level: Some(0),
                     muted: Some(false),
                     dimmed: Some(false),
+                    mono: None,
                     parameters: Vec::new(),
                 },
                 DynamicOutputState {
@@ -722,6 +738,7 @@ impl Default for OutputData {
                     level: Some(0),
                     muted: Some(false),
                     dimmed: Some(false),
+                    mono: None,
                     parameters: Vec::new(),
                 },
             ],

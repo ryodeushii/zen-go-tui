@@ -210,6 +210,20 @@
           ]
         },
         {
+          "metadata": "{\"evidence\":\"Captures mona/monb/hp1/hp2 (2026-08): Mono was toggled on then off in isolation on bus IDs 0, 5, 1, and 2 respectively; every SET_PARAM(0x69, bus_id, bool) matched state_report offset 29 + 3*bus_id bit 0x10. No Mono write/readback evidence exists for Line bus 3 or Reamp bus 4.\",\"parameter\":\"bus_mono\",\"status\":\"confirmed\",\"values\":[0,1,2,5]}",
+          "name": "output_mono_targets",
+          "range": null,
+          "scalar": null,
+          "status": "confirmed",
+          "text": "",
+          "values": [
+            0,
+            1,
+            2,
+            5
+          ]
+        },
+        {
           "metadata": "[0,1,2,3]",
           "name": "input_mode_allowed_values",
           "range": null,
@@ -1015,6 +1029,13 @@
               "offset": 74,
               "op": "scalar",
               "width": 1
+            },
+            {
+              "field": "output_mono",
+              "mask": 16,
+              "offset": 29,
+              "op": "bit_field",
+              "shift": 4
             }
           ],
           "report_size": 320,
@@ -3239,7 +3260,7 @@
       "provenance": {
         "generator_version": "1.4.0",
         "source_path": "profiles/orion_studio_sc.json",
-        "source_sha256": "571a7e08e465b6796db408987da3e7c45d25af313e0e264beb73a868480ea260"
+        "source_sha256": "b91486118a4bee72cac1da7b6b186414899fa7d6c427014920431ae6c62724af"
       },
       "readback": {
         "category_counts": [

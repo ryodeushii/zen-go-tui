@@ -95,6 +95,7 @@ pub enum Intent {
     },
     ToggleOutputMute(usize),
     ToggleOutputDim(usize),
+    ToggleOutputMono(usize),
 
     // Mixer controls
     AdjustMixerLevel {
@@ -244,6 +245,7 @@ impl Intent {
                 | Self::SetOutputLevel { .. }
                 | Self::ToggleOutputMute(_)
                 | Self::ToggleOutputDim(_)
+                | Self::ToggleOutputMono(_)
                 | Self::AdjustMixerLevel { .. }
                 | Self::SetMixerLevel { .. }
                 | Self::AdjustMixerPan { .. }
@@ -316,6 +318,11 @@ impl Intent {
                 if !state.uses_zen_go_output_safety() && output.dimmed == Some(true) {
                     output.muted = Some(false);
                 }
+                Some(PendingMutation::Output(output))
+            }
+            Intent::ToggleOutputMono(index) => {
+                let mut output = state.outputs().get(*index)?.clone();
+                output.mono = Some(!output.mono?);
                 Some(PendingMutation::Output(output))
             }
             Intent::SetMixerLevel { index, level } => {

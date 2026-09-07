@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use antelope_protocol::{
-    DynamicMeterState, DynamicRoutingGroup, InputAddress, InputControl, MixerAddress,
-    MixerAssignment, MixerControl, OutputControl, RoutingSource, RuntimeDriverKind, RuntimeEntry,
-    RuntimeInputControlKind, RuntimeMeterTarget, RuntimeReadiness,
+    DeviceEvent, DynamicMeterState, DynamicRoutingGroup, DynamicStatePatch, InputAddress,
+    InputControl, MixerAddress, MixerAssignment, MixerControl, OutputControl, RoutingSource,
+    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeMeterTarget, RuntimeReadiness,
 };
 use ratatui::{
     backend::TestBackend,
@@ -632,6 +632,85 @@ fn dynamic_output_capability_geometry_matches_renderer_and_mouse() {
     let geometry = super::layouts::dynamic_output_control_rects_for_test(&no_dim, 0)
         .expect("first output geometry");
     assert!(geometry.dim.is_none());
+}
+
+fn observe_output_patch(state: &mut AppState, outputs: Vec<antelope_protocol::DynamicOutputState>) {
+    assert!(state.observe_event(DeviceEvent::QueryReply {
+        query_id: 0,
+        sub_id: 0,
+        body: Vec::new(),
+        patch: Some(DynamicStatePatch::Outputs(outputs)),
+        raw: Vec::new(),
+    }));
+}
+
+#[test]
+fn orion_output_mono_chip_geometry_render_and_mouse_share_exact_targets() {
+    let mut state = orion_ui_state();
+    let mut outputs = state.outputs().to_vec();
+    for output in &mut outputs {
+        if matches!(output.address.id, 0 | 1 | 2 | 5) {
+            output.mono = Some(output.address.id == 0);
+        }
+    }
+    observe_output_patch(&mut state, outputs);
+
+    let area = Rect::new(0, 0, 140, 48);
+    let panel = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1])[1];
+    let inner = super::layouts::inner_area(panel);
+    let cards = super::layouts::dynamic_output_card_areas(inner, state.outputs().len());
+    for (index, card) in cards.into_iter().enumerate() {
+        let geometry = super::layouts::dynamic_output_control_rects(card, &state, index)
+            .expect("output geometry");
+        if matches!(state.outputs()[index].address.id, 0 | 1 | 2 | 5) {
+            let mono = geometry.mono.unwrap_or_else(|| {
+                panic!(
+                    "declared mono chip for output {} in card {:?}",
+                    state.outputs()[index].address.id,
+                    card
+                )
+            });
+            assert_eq!(
+                mouse_action(area, &state, mono.x, mono.y),
+                Some(Intent::ToggleOutputMono(index))
+            );
+        } else {
+            assert!(geometry.mono.is_none());
+        }
+    }
+
+    let text = render_to_string(&state);
+    assert!(text.contains("MONO"));
+
+    state.popup.options_open = true;
+    assert!(!available_intents(&state)
+        .iter()
+        .any(|intent| matches!(intent, Intent::ToggleOutputMono(_))));
+}
+
+#[test]
+fn narrow_output_cards_clip_mono_geometry_consistently() {
+    let mut state = orion_ui_state();
+    let mut outputs = state.outputs().to_vec();
+    outputs[0].mono = Some(false);
+    observe_output_patch(&mut state, outputs);
+    let area = Rect::new(0, 0, 36, 20);
+    let panel = super::layouts::mixer_page_layout(super::layouts::root_chunks(area)[1])[1];
+    let inner = super::layouts::inner_area(panel);
+    let card = super::layouts::dynamic_output_card_areas(inner, state.outputs().len())[0];
+    let geometry = super::layouts::dynamic_output_control_rects(card, &state, 0).unwrap();
+    assert!(geometry.mono.is_none());
+
+    let mut terminal = test_terminal(area.width, area.height);
+    draw_page(&mut terminal, &state);
+    assert!(!(0..area.height).any(|y| {
+        (0..area.width).any(|x| {
+            matches!(
+                mouse_action(area, &state, x, y),
+                Some(Intent::ToggleOutputMono(0))
+            )
+        })
+    }));
 }
 
 #[test]
@@ -1263,7 +1342,8 @@ fn visible_mouse_hardware_intents_resolve_to_profile_bounds() {
             Intent::AdjustOutputLevel { index, .. }
             | Intent::SetOutputLevel { index, .. }
             | Intent::ToggleOutputMute(index)
-            | Intent::ToggleOutputDim(index) => assert!(index < state.outputs().len()),
+            | Intent::ToggleOutputDim(index)
+            | Intent::ToggleOutputMono(index) => assert!(index < state.outputs().len()),
             Intent::AdjustMixerLevel { index, .. }
             | Intent::SetMixerLevel { index, .. }
             | Intent::AdjustMixerPan { index, .. }
