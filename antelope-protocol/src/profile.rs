@@ -1170,7 +1170,6 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
         let mut readback_banks = HashSet::new();
         for (domain_index, domain) in group.readback_source_domains.iter().enumerate() {
             if !readback_banks.insert(domain.bank)
-                || domain.bank == 0x0c
                 || banks.contains(&domain.bank)
                 || domain.indices.is_empty()
                 || domain.indices.len() > 256

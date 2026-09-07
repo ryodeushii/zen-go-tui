@@ -2228,6 +2228,27 @@ def _derived_routing_records(
     return groups, confirmed
 
 
+def _validated_routing_source_semantic(
+    semantic: Mapping[str, Any], bank: int, index_count: int
+) -> tuple[str, str, int]:
+    kind = semantic.get("kind")
+    name = semantic.get("name")
+    display_index_base = semantic.get("display_index_base")
+    if (
+        kind not in {"numbered", "stereo", "mute"}
+        or not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(display_index_base, int)
+        or not 0 <= display_index_base <= 0xFFFF
+        or (kind == "stereo" and index_count != 2)
+        or (kind == "mute" and (index_count != 1 or display_index_base != 0))
+    ):
+        raise ProfileError(
+            f"frame.routing_command.source_semantics.{bank:#04x} has invalid kind/name/display geometry"
+        )
+    return kind, name, display_index_base
+
+
 def _derived_routing_source_domains(
     profile: NormalizedProfile, route: Mapping[str, Any], confirmed: bool
 ) -> list[dict[str, Any]]:
@@ -2306,21 +2327,9 @@ def _derived_routing_source_domains(
                 "name": f"Source bank {bank:#04x}",
                 "display_index_base": 1,
             }
-        kind = semantic.get("kind")
-        name = semantic.get("name")
-        display_index_base = semantic.get("display_index_base")
-        if (
-            kind not in {"numbered", "stereo", "mute"}
-            or not isinstance(name, str)
-            or not name.strip()
-            or not isinstance(display_index_base, int)
-            or not 0 <= display_index_base <= 0xFFFF
-            or (kind == "stereo" and count != 2)
-            or (kind == "mute" and (count != 1 or display_index_base != 0))
-        ):
-            raise ProfileError(
-                f"frame.routing_command.source_semantics.{bank:#04x} has invalid kind/name/display geometry"
-            )
+        kind, name, display_index_base = _validated_routing_source_semantic(
+            semantic, bank, count
+        )
         evidence_text = evidence.lower()
         # Oscillator has a finite-looking note but no confirmation.  It is a
         # pseudo-source, so keep it metadata-only until raw evidence confirms it.
@@ -2368,6 +2377,25 @@ def _derived_routing_readback_source_domains(
         for domain_set in writable_domains
         for domain in domain_set["banks"]
     }
+    raw_source_banks = route.get("source_banks", {})
+    raw_source_semantics = route.get("source_semantics", {})
+    source_banks = (
+        {
+            _checked_u8(bank, "frame.routing_command.source_banks.bank")
+            for bank in raw_source_banks
+        }
+        if isinstance(raw_source_banks, Mapping)
+        else set()
+    )
+    source_semantics = (
+        {
+            _checked_u8(bank, "frame.routing_command.source_semantics.bank"): semantic
+            for bank, semantic in raw_source_semantics.items()
+        }
+        if isinstance(raw_source_semantics, Mapping)
+        else {}
+    )
+    readback_records: list[tuple[int, list[int], str, str]] = []
     seen_banks: set[int] = set()
     for raw_bank, raw_evidence in raw_banks.items():
         bank = _checked_u8(
@@ -2381,10 +2409,28 @@ def _derived_routing_readback_source_domains(
         seen_banks.add(bank)
         context = f"frame.routing_command.readback_source_banks.{bank:#04x}"
         indices, status, evidence = _readback_indices_from_raw(raw_evidence, context)
+        readback_records.append((bank, indices, status, evidence))
+
+    # Readback evidence may bound only a source already identified by both the
+    # protocol catalog and valid applicable semantics; an observation cannot
+    # name a new bank or make malformed source metadata authoritative.
+    identified_banks: set[int] = set()
+    for bank, indices, _, _ in readback_records:
+        semantic = source_semantics.get(bank)
+        if bank in source_banks and isinstance(semantic, Mapping):
+            _validated_routing_source_semantic(semantic, bank, len(indices))
+            identified_banks.add(bank)
+
+    for bank, indices, status, evidence in readback_records:
         # Once a source has separate, finite write evidence, its writable domain
         # also validates inbound values. Preserve this observation in raw profile
         # provenance rather than duplicating an overlapping readback-only domain.
-        if _is_orion(profile) and bank == 0x02 and confirmed and bank not in writable_banks:
+        if (
+            _is_orion(profile)
+            and bank in identified_banks
+            and confirmed
+            and bank not in writable_banks
+        ):
             domains.append(
                 {
                     "bank": bank,
@@ -2835,7 +2881,6 @@ def _routing_readback_source_domains(
         evidence = raw_domain.get("evidence")
         if (
             bank in seen_banks
-            or bank == 0x0C
             or not isinstance(status, str)
             or _normalized_status(status) != "observed"
             or not isinstance(evidence, str)

@@ -3159,7 +3159,7 @@ fn constructor_rejects_invalid_destination_source_domains_before_io() {
 
 #[test]
 fn constructor_rejects_invalid_observed_readback_domains_before_io() {
-    for mutate in 0..7 {
+    for mutate in 0..6 {
         let mut entry = observed_readback_fixture_entry();
         let domain = &mut entry.profile.routing_groups[0].readback_source_domains[0];
         match mutate {
@@ -3167,9 +3167,8 @@ fn constructor_rejects_invalid_observed_readback_domains_before_io() {
             1 => domain.indices = vec![0, 0],
             2 => domain.indices = vec![1, 0],
             3 => domain.bank = 0,
-            4 => domain.bank = 0x0c,
-            5 => domain.status = "confirmed".into(),
-            6 => domain.evidence.clear(),
+            4 => domain.status = "confirmed".into(),
+            5 => domain.evidence.clear(),
             _ => unreachable!(),
         }
         assert!(
@@ -3201,6 +3200,84 @@ fn canonical_orion_computer_playback_write_bound_is_conservative_24_channels() {
         })
         .expect_err("Computer Playback 25 requires a future active-host capability");
     assert!(error.to_string().contains("outside 0..23"));
+}
+
+#[test]
+fn canonical_orion_accepts_only_observed_oscillator_routing_readback_indices() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut routing = vec![0; 320];
+    routing[0] = 0x75;
+    routing[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+    routing[8] = 0x03;
+    routing[12] = 6;
+    routing[16] = 6;
+    for channel in 0..32 {
+        routing[17 + channel * 2] = 0x0b;
+    }
+    routing[19] = 0x0c;
+
+    for oscillator_index in [0, 1] {
+        routing[20] = oscillator_index;
+        let DeviceEvent::QueryReply {
+            patch: Some(DynamicStatePatch::Routing(group)),
+            ..
+        } = driver
+            .decode(&routing)
+            .expect("observed oscillator routing readback")
+            .expect("routing event")
+        else {
+            panic!("routing patch")
+        };
+        assert_eq!(group.destination, 6);
+        assert_eq!(group.sources.len(), 32);
+        assert_eq!(
+            group.sources[1],
+            RoutingSource {
+                bank: 0x0c,
+                index: u16::from(oscillator_index),
+            }
+        );
+        assert!(group
+            .sources
+            .iter()
+            .enumerate()
+            .all(|(channel, source)| channel == 1
+                || *source
+                    == RoutingSource {
+                        bank: 0x0b,
+                        index: 0
+                    }));
+    }
+
+    routing[20] = 2;
+    let out_of_range = driver
+        .decode(&routing)
+        .expect_err("unobserved oscillator index must reject");
+    assert!(out_of_range
+        .to_string()
+        .contains("not in the profile readback domain"));
+
+    routing[19] = 0x0d;
+    routing[20] = 0;
+    let unknown_bank = driver
+        .decode(&routing)
+        .expect_err("unknown source bank must reject");
+    assert!(unknown_bank.to_string().contains("source bank 13"));
+
+    let outbound = driver
+        .encode(Action::SetRoutingGroup {
+            destination: 6,
+            changed_channel: None,
+            sources: vec![
+                RoutingSource {
+                    bank: 0x0c,
+                    index: 0
+                };
+                32
+            ],
+        })
+        .expect_err("readback-only oscillator domain must not authorize writes");
+    assert!(outbound.to_string().contains("source bank 12"));
 }
 
 #[test]
@@ -3402,11 +3479,11 @@ fn observed_readback_domains_accept_complete_host_dependent_bank_without_authori
         .contains("not in the profile readback domain"));
 
     let mut unknown = routing;
-    unknown[17] = 0x0c;
+    unknown[17] = 0x0d;
     let unknown_error = driver
         .decode(&unknown)
-        .expect_err("unknown bank 0x0c must reject");
-    assert!(unknown_error.to_string().contains("source bank 12"));
+        .expect_err("unknown bank 0x0d must reject");
+    assert!(unknown_error.to_string().contains("source bank 13"));
 }
 
 #[test]

@@ -198,6 +198,45 @@ fn orion_selected_mixer_assignment_uses_profile_destinations_and_requires_snapsh
 }
 
 #[test]
+fn orion_poll_accepts_observed_oscillator_route_without_writes() {
+    let entry = canonical_orion_entry();
+    let transport = MockTransport::default();
+    let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+    let mut controller =
+        Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+            .expect("Orion controller");
+    let mut routing = vec![0; 320];
+    routing[0] = 0x75;
+    routing[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
+    routing[8] = 0x03;
+    routing[12] = 6;
+    routing[16] = 6;
+    for channel in 0..32 {
+        routing[17 + channel * 2] = 0x0b;
+    }
+    routing[19..21].copy_from_slice(&[0x0c, 0x01]);
+    transport.push_read(routing);
+
+    assert!(controller
+        .poll_device_without_writes(Duration::ZERO)
+        .expect("oscillator routing readback must not terminate polling"));
+    let group = controller
+        .state
+        .routing_group(6)
+        .expect("routing state is populated");
+    assert_eq!(group.sources.len(), 32);
+    assert_eq!(
+        group.sources[1],
+        RoutingSource {
+            bank: 0x0c,
+            index: 1
+        }
+    );
+    assert_eq!(controller.state.routing.len(), 1);
+    assert!(transport.take_writes().is_empty());
+}
+
+#[test]
 fn orion_selected_all_four_mix_writes_preserve_routing_siblings() {
     for (surface, destination, replacement) in [
         (0, 10, RoutingSource { bank: 2, index: 0 }),

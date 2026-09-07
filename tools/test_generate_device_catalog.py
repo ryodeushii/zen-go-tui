@@ -1967,13 +1967,19 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(computer_playback["index_count"], 24)
         self.assertIn("active-host channel-capability signal", computer_playback["evidence"])
 
-    def test_orion_readback_observation_is_reclassified_under_writable_domain(self) -> None:
+    def test_orion_readback_observations_preserve_write_boundaries(self) -> None:
         profiles_dir = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles"
         profile = generator.load_profile(ORION_PROFILE, profiles_dir)
         normalized = generator._normalized_profile_record(profile)
         groups = normalized["routing_groups"]
 
-        self.assertTrue(all(not group["readback_source_domains"] for group in groups))
+        for group in groups:
+            domains = group["readback_source_domains"]
+            self.assertEqual(len(domains), 1)
+            self.assertEqual(domains[0]["bank"], 0x0C)
+            self.assertEqual(domains[0]["indices"], [0, 1])
+            self.assertEqual(domains[0]["status"], "observed")
+            self.assertIn("2026-09-07 ADAT Out and Mix 2/3/4", domains[0]["evidence"])
         computer_playback = next(
             domain for domain in groups[1]["source_domains"] if domain["bank"] == 2
         )
@@ -2006,28 +2012,90 @@ class GeneratorTests(unittest.TestCase):
                 with self.assertRaisesRegex(generator.ProfileError, "readback_source_banks"):
                     generator.normalize_profile(data)
 
-    def test_observed_readback_does_not_promote_unknown_bank(self) -> None:
-        data = profile_data("Antelope Orion Studio III", "0xa221")
-        data.pop("runtime_topology")
+    def test_orion_readback_identification_requires_valid_source_semantics(self) -> None:
+        valid_semantic = {
+            "kind": "numbered",
+            "name": "Oscillator",
+            "display_index_base": 1,
+        }
+        mutations = {
+            "missing semantic fields": (
+                {},
+                r"source_semantics\.0x0c has invalid kind/name/display geometry",
+            ),
+            "invalid kind": (
+                {**valid_semantic, "kind": "unknown"},
+                r"source_semantics\.0x0c has invalid kind/name/display geometry",
+            ),
+            "empty name": (
+                {**valid_semantic, "name": " "},
+                r"source_semantics\.0x0c has invalid kind/name/display geometry",
+            ),
+            "invalid display base": (
+                {**valid_semantic, "display_index_base": -1},
+                r"source_semantics\.0x0c\.display_index_base must fit",
+            ),
+            "inapplicable mute geometry": (
+                {
+                    "kind": "mute",
+                    "name": "Oscillator",
+                    "display_index_base": 0,
+                },
+                r"source_semantics\.0x0c has invalid kind/name/display geometry",
+            ),
+        }
+        for name, (semantic, error_pattern) in mutations.items():
+            with self.subTest(name=name):
+                data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+                routing = data["frame"]["routing_command"]
+                routing["source_banks"]["0x0c"] = "oscillator source; finite range unconfirmed"
+                routing["source_semantics"]["0x0c"] = semantic
+                with self.assertRaisesRegex(generator.ProfileError, error_pattern):
+                    generator.normalize_profile(data, path=ORION_PROFILE)
+
+    def test_orion_valid_oscillator_readback_only_semantics_pass(self) -> None:
+        data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
         routing = data["frame"]["routing_command"]
-        routing.update(
-            {
-                "status": "confirmed",
-                "addressable_destinations": {"0": "mixer"},
-                "destination_channels": {"0": 16},
-                "source_banks": {
-                    "0x00": {"index_count": 2, "evidence": "idx 0-1 confirmed"}
-                },
-                "readback_source_banks": {
-                    "0x0c": {
-                        "indices": [0, 1],
-                        "status": "observed",
-                        "evidence": "unidentified source observation",
-                    }
-                },
-            }
+        routing["source_banks"]["0x0c"] = "oscillator source; finite range unconfirmed"
+        routing["readback_source_banks"] = {
+            "0x0c": routing["readback_source_banks"]["0x0c"]
+        }
+
+        profile = generator.normalize_profile(data, path=ORION_PROFILE)
+        self.assertEqual(
+            generator._derived_routing_readback_source_domains(profile, routing, True),
+            [
+                {
+                    "bank": 0x0C,
+                    "indices": [0, 1],
+                    "status": "observed",
+                    "evidence": routing["readback_source_banks"]["0x0c"]["evidence"],
+                }
+            ],
         )
-        profile = generator.normalize_profile(data)
+        self.assertNotIn(
+            0x0C,
+            {
+                bank["bank"]
+                for domain in generator._derived_routing_source_domains(
+                    profile, routing, True
+                )
+                for bank in domain["banks"]
+            },
+        )
+
+    def test_observed_readback_does_not_promote_unknown_bank(self) -> None:
+        data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        routing = data["frame"]["routing_command"]
+        routing["readback_source_banks"] = {
+            "0x0d": {
+                "indices": [0, 1],
+                "status": "observed",
+                "evidence": "unidentified source observation",
+            }
+        }
+
+        profile = generator.normalize_profile(data, path=ORION_PROFILE)
         self.assertEqual(
             generator._derived_routing_readback_source_domains(profile, routing, True), []
         )
