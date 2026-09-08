@@ -203,9 +203,16 @@ cargo run -- --mock
 
 | Key | Action |
 |-----|--------|
-| `b` | Capture baseline |
-| `x` | Clear baseline |
-| `←` / `→` | Cycle packets or scroll query replies |
+| `t` | Toggle legacy packet tabs / bounded ALL TRAFFIC |
+| `b` / `x` | Capture / clear a legacy packet baseline |
+| `←` / `→` | Cycle legacy packets or scroll query replies |
+| `d` / `e` | In ALL TRAFFIC, cycle ANY/RX/TX / toggle errors-only |
+| `f` / `F` | Cycle numeric family forward / back, including ANY |
+| `g` / `G` | Cycle numeric discriminator forward / back, including ANY |
+| `c` / `C` | Cycle available query category forward / back, including ANY |
+| `Space` | Freeze or resume the traffic display head and selection |
+| `↑` / `↓` | Select traffic metadata row (and freeze) |
+| `Home` / `End` | Oldest / newest matching retained event in the current boundary |
 
 ### Profiles popup
 
@@ -229,7 +236,7 @@ cargo run -- --mock
 | `a` | Toggle auto-save |
 | `Esc` | Close |
 
-On the raw packet view page, `b` captures a baseline and `x` clears it.
+The RAW page also has mouse controls for mode, filters, freeze, and retained traffic rows. ALL TRAFFIC is application HID transport completion order, not physical USB bus chronology; failed writes remain delivery uncertain, timeouts are counter-only, and zero retained matches does not prove wire absence.
 
 ## Protocol documentation
 

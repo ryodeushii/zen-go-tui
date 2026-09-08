@@ -12,8 +12,8 @@ use antelope_protocol::{
 };
 use zen_go_tui::app::{
     is_auraverb_write_unavailable, is_surround_write_unavailable, AuraVerbControlFocus, Controller,
-    FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind, SelectorPopupState,
-    SurroundControlFocus, UiPage,
+    FocusArea, Intent, PeakHoldDuration, RawViewMode, RefreshRate, SelectorPopupKind,
+    SelectorPopupState, SurroundControlFocus, UiPage,
 };
 use zen_go_tui::device::{DeviceCandidate, DevicePickerState, RuntimeDeviceState};
 use zen_go_tui::settings;
@@ -21,6 +21,7 @@ use zen_go_tui::terminal::{
     AppKeyCode, AppKeyEvent, AppKeyEventKind, AppMouseButton, AppMouseEvent, AppMouseEventKind,
     CrosstermTerminalControl, TerminalSession,
 };
+use zen_go_tui::traffic::{TrafficDirection, TrafficSelectionMove};
 use zen_go_tui::transport::is_device_error;
 use zen_go_tui::ui;
 
@@ -676,10 +677,69 @@ fn handle_raw_view(
         AppKeyCode::Char('d') if ctrl => {
             controller.apply_intent(Intent::ToggleRawView, area)?;
         }
-        AppKeyCode::Char('[') => {
+        AppKeyCode::Char('t') => {
+            controller.apply_intent(Intent::ToggleRawTrafficMode, area)?;
+        }
+        AppKeyCode::Char('d') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            let direction = match controller.state.raw_view.traffic_filter.direction {
+                None => Some(TrafficDirection::Rx),
+                Some(TrafficDirection::Rx) => Some(TrafficDirection::Tx),
+                Some(TrafficDirection::Tx) => None,
+            };
+            controller.apply_intent(Intent::SelectTrafficDirection(direction), area)?;
+        }
+        AppKeyCode::Char('e') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(Intent::ToggleTrafficErrors, area)?;
+        }
+        AppKeyCode::Char('f') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(Intent::CycleTrafficFamily { forward: true }, area)?;
+        }
+        AppKeyCode::Char('F') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(Intent::CycleTrafficFamily { forward: false }, area)?;
+        }
+        AppKeyCode::Char('g') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(Intent::CycleTrafficDiscriminator { forward: true }, area)?;
+        }
+        AppKeyCode::Char('G') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(Intent::CycleTrafficDiscriminator { forward: false }, area)?;
+        }
+        AppKeyCode::Char('c') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(Intent::CycleTrafficCategory { forward: true }, area)?;
+        }
+        AppKeyCode::Char('C') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(Intent::CycleTrafficCategory { forward: false }, area)?;
+        }
+        AppKeyCode::Char(' ') if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(Intent::ToggleTrafficFreeze, area)?;
+        }
+        AppKeyCode::Up if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(
+                Intent::MoveTrafficSelection(TrafficSelectionMove::Previous),
+                area,
+            )?;
+        }
+        AppKeyCode::Down if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(
+                Intent::MoveTrafficSelection(TrafficSelectionMove::Next),
+                area,
+            )?;
+        }
+        AppKeyCode::Home if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(
+                Intent::MoveTrafficSelection(TrafficSelectionMove::Oldest),
+                area,
+            )?;
+        }
+        AppKeyCode::End if controller.state.raw_view.mode == RawViewMode::AllTraffic => {
+            controller.apply_intent(
+                Intent::MoveTrafficSelection(TrafficSelectionMove::Newest),
+                area,
+            )?;
+        }
+        AppKeyCode::Char('[') if controller.state.raw_view.mode == RawViewMode::Legacy => {
             controller.apply_intent(Intent::CycleRawMapScope { forward: false }, area)?;
         }
-        AppKeyCode::Char(']') => {
+        AppKeyCode::Char(']') if controller.state.raw_view.mode == RawViewMode::Legacy => {
             controller.apply_intent(Intent::CycleRawMapScope { forward: true }, area)?;
         }
         AppKeyCode::PageUp => controller.apply_intent(
@@ -696,22 +756,26 @@ fn handle_raw_view(
             },
             area,
         )?,
-        AppKeyCode::Left => {
+        AppKeyCode::Left if controller.state.raw_view.mode == RawViewMode::Legacy => {
             if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
                 controller.apply_intent(Intent::ScrollQueryReplyList { increase: false }, area)?;
             } else {
                 controller.state.cycle_raw_packet(false);
             }
         }
-        AppKeyCode::Right => {
+        AppKeyCode::Right if controller.state.raw_view.mode == RawViewMode::Legacy => {
             if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
                 controller.apply_intent(Intent::ScrollQueryReplyList { increase: true }, area)?;
             } else {
                 controller.state.cycle_raw_packet(true);
             }
         }
-        AppKeyCode::Char('b') => controller.apply_intent(Intent::CaptureRawBaseline, area)?,
-        AppKeyCode::Char('x') => controller.apply_intent(Intent::ClearRawBaseline, area)?,
+        AppKeyCode::Char('b') if controller.state.raw_view.mode == RawViewMode::Legacy => {
+            controller.apply_intent(Intent::CaptureRawBaseline, area)?
+        }
+        AppKeyCode::Char('x') if controller.state.raw_view.mode == RawViewMode::Legacy => {
+            controller.apply_intent(Intent::ClearRawBaseline, area)?
+        }
         _ => {}
     }
     Ok(KeyAction::Continue)
@@ -2612,6 +2676,55 @@ mod tests {
         );
         assert!(transport.take_writes().is_empty());
         let _ = area;
+    }
+
+    #[test]
+    fn all_traffic_keyboard_filters_freeze_and_mode_switch_are_read_only() {
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let (mut controller, transport) = authoritative_surround_controller();
+        controller
+            .apply_intent(Intent::ToggleRawView, area)
+            .expect("open RAW");
+
+        for code in [
+            AppKeyCode::Char('t'),
+            AppKeyCode::Char('d'),
+            AppKeyCode::Char('e'),
+            AppKeyCode::Char('f'),
+            AppKeyCode::Char('F'),
+            AppKeyCode::Char('g'),
+            AppKeyCode::Char('G'),
+            AppKeyCode::Char('c'),
+            AppKeyCode::Char('C'),
+            AppKeyCode::Char(' '),
+            AppKeyCode::Home,
+            AppKeyCode::End,
+            AppKeyCode::Up,
+            AppKeyCode::Down,
+        ] {
+            assert_eq!(
+                handle_key_press(&mut controller, key(code), area).expect("traffic key"),
+                KeyAction::Continue
+            );
+        }
+
+        assert_eq!(controller.state.raw_view.mode, RawViewMode::AllTraffic);
+        assert!(controller.state.raw_view.traffic_filter.errors_only);
+        assert_eq!(
+            controller.state.raw_view.traffic_filter.direction,
+            Some(TrafficDirection::Rx)
+        );
+        assert!(controller.state.raw_view.traffic_frozen);
+        assert!(transport.take_writes().is_empty());
+
+        handle_key_press(&mut controller, key(AppKeyCode::Char('t')), area)
+            .expect("return to legacy");
+        assert_eq!(controller.state.raw_view.mode, RawViewMode::Legacy);
+        let baseline_before = controller.state.raw_view.baseline_raw_73.clone();
+        handle_key_press(&mut controller, key(AppKeyCode::Char('b')), area)
+            .expect("legacy baseline remains active");
+        assert_eq!(controller.state.raw_view.baseline_raw_73, baseline_before);
+        assert!(transport.take_writes().is_empty());
     }
 
     #[test]

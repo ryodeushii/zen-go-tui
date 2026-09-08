@@ -106,13 +106,149 @@ pub struct TrafficJournalStats {
     pub counters: TrafficCounters,
     pub retained_events: usize,
     pub retained_payload_bytes: usize,
+    pub newest_sequence: Option<TrafficSequence>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrafficFilter {
+    pub direction: Option<TrafficDirection>,
+    pub errors_only: bool,
+    pub family: Option<u8>,
+    pub discriminator: Option<u8>,
+    pub query_category: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficQueryHead {
+    Live,
+    Through(TrafficSequence),
+    Empty,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficSelectionMove {
+    Previous,
+    Next,
+    Oldest,
+    Newest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficDecodeSummary {
+    Pending,
+    Accepted(DecodedEventKind),
+    Ignored,
+    Rejected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TrafficMetadataRow {
+    pub sequence: TrafficSequence,
+    pub completed_after: Duration,
+    pub direction: TrafficDirection,
+    pub outcome: TrafficOutcome,
+    pub reported_len: usize,
+    pub retained_len: usize,
+    pub payload_truncated: bool,
+    pub classifier: TrafficClassifier,
+    pub decode: Option<TrafficDecodeSummary>,
+    pub has_error_text: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilteredTrafficView {
+    pub rows: Vec<TrafficMetadataRow>,
+    pub matching_retained: usize,
+    pub family_values: Vec<u8>,
+    pub discriminator_values: Vec<u8>,
+    pub query_category_values: Vec<u8>,
+}
+
+fn present_numeric_values(present: &[bool; 256]) -> Vec<u8> {
+    present
+        .iter()
+        .enumerate()
+        .filter_map(|(value, present)| present.then_some(value as u8))
+        .collect()
+}
+
+impl TrafficQueryHead {
+    fn includes(self, sequence: TrafficSequence) -> bool {
+        match self {
+            Self::Live => true,
+            Self::Through(head) => sequence <= head,
+            Self::Empty => false,
+        }
+    }
+}
+
+impl TrafficFilter {
+    pub fn matches(self, event: &TrafficEvent) -> bool {
+        if self
+            .direction
+            .is_some_and(|direction| event.direction != direction)
+        {
+            return false;
+        }
+        if self.errors_only
+            && event.outcome != TrafficOutcome::ReadFailed
+            && event.outcome != TrafficOutcome::WriteFailedDeliveryUncertain
+            && !matches!(event.decode_status, Some(DecodeStatus::Rejected { .. }))
+        {
+            return false;
+        }
+        if self
+            .family
+            .is_some_and(|family| event.classifier.byte_0 != Some(family))
+        {
+            return false;
+        }
+        if self
+            .discriminator
+            .is_some_and(|value| event.classifier.byte_1 != Some(value))
+        {
+            return false;
+        }
+        if self
+            .query_category
+            .is_some_and(|value| event.classifier.query_category_at_8 != Some(value))
+        {
+            return false;
+        }
+        true
+    }
+}
+
+impl From<&TrafficEvent> for TrafficMetadataRow {
+    fn from(event: &TrafficEvent) -> Self {
+        let decode = event.decode_status.as_ref().map(|status| match status {
+            DecodeStatus::Pending => TrafficDecodeSummary::Pending,
+            DecodeStatus::Accepted(kind) => TrafficDecodeSummary::Accepted(*kind),
+            DecodeStatus::Ignored => TrafficDecodeSummary::Ignored,
+            DecodeStatus::Rejected { .. } => TrafficDecodeSummary::Rejected,
+        });
+        Self {
+            sequence: event.sequence,
+            completed_after: event.completed_after,
+            direction: event.direction,
+            outcome: event.outcome,
+            reported_len: event.reported_len,
+            retained_len: event.retained_bytes.len(),
+            payload_truncated: event.payload_truncated,
+            classifier: event.classifier,
+            decode,
+            has_error_text: event.error.is_some()
+                || matches!(event.decode_status, Some(DecodeStatus::Rejected { .. })),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TrafficJournal {
     inner: Arc<Mutex<TrafficJournalInner>>,
 }
 
+#[derive(Debug)]
 struct TrafficJournalInner {
     started_at: Instant,
     next_sequence: u64,
@@ -142,6 +278,118 @@ impl TrafficJournal {
             counters: inner.counters,
             retained_events: inner.events.len(),
             retained_payload_bytes: inner.retained_payload_bytes,
+            newest_sequence: inner.events.back().map(|event| event.sequence),
+        }
+    }
+
+    /// Scan the complete bounded ring and clone metadata for only the visible rows.
+    ///
+    /// Numeric groups come directly from available classifier bytes inside the selected head;
+    /// they deliberately do not encode a list of known device families.
+    pub fn filtered_view(
+        &self,
+        filter: TrafficFilter,
+        head: TrafficQueryHead,
+        selected: Option<TrafficSequence>,
+        max_rows: usize,
+    ) -> FilteredTrafficView {
+        let max_rows = max_rows.min(TRAFFIC_WINDOW_EVENT_LIMIT);
+        let inner = self.lock();
+        let mut matching_retained = 0usize;
+        let mut selected_ordinal = None;
+        let mut family_values = [false; 256];
+        let mut discriminator_values = [false; 256];
+        let mut query_category_values = [false; 256];
+
+        for event in inner
+            .events
+            .iter()
+            .filter(|event| head.includes(event.sequence))
+        {
+            if let Some(value) = event.classifier.byte_0 {
+                family_values[usize::from(value)] = true;
+            }
+            if let Some(value) = event.classifier.byte_1 {
+                discriminator_values[usize::from(value)] = true;
+            }
+            if let Some(value) = event.classifier.query_category_at_8 {
+                query_category_values[usize::from(value)] = true;
+            }
+            if filter.matches(event) {
+                if selected == Some(event.sequence) {
+                    selected_ordinal = Some(matching_retained);
+                }
+                matching_retained = matching_retained.saturating_add(1);
+            }
+        }
+
+        let target_ordinal =
+            selected_ordinal.unwrap_or_else(|| matching_retained.saturating_sub(1));
+        let mut start = target_ordinal.saturating_sub(max_rows / 2);
+        start = start.min(matching_retained.saturating_sub(max_rows));
+        let rows = if max_rows == 0 || matching_retained == 0 {
+            Vec::new()
+        } else {
+            inner
+                .events
+                .iter()
+                .filter(|event| head.includes(event.sequence) && filter.matches(event))
+                .skip(start)
+                .take(max_rows)
+                .map(TrafficMetadataRow::from)
+                .collect()
+        };
+
+        FilteredTrafficView {
+            rows,
+            matching_retained,
+            family_values: present_numeric_values(&family_values),
+            discriminator_values: present_numeric_values(&discriminator_values),
+            query_category_values: present_numeric_values(&query_category_values),
+        }
+    }
+
+    pub fn matching_sequence(
+        &self,
+        filter: TrafficFilter,
+        head: TrafficQueryHead,
+        selected: Option<TrafficSequence>,
+        movement: TrafficSelectionMove,
+    ) -> Option<TrafficSequence> {
+        let inner = self.lock();
+        let matches =
+            |event: &&TrafficEvent| head.includes(event.sequence) && filter.matches(event);
+        match movement {
+            TrafficSelectionMove::Oldest => inner
+                .events
+                .iter()
+                .find(matches)
+                .map(|event| event.sequence),
+            TrafficSelectionMove::Newest => inner
+                .events
+                .iter()
+                .rev()
+                .find(matches)
+                .map(|event| event.sequence),
+            TrafficSelectionMove::Previous => {
+                let selected = selected?;
+                inner
+                    .events
+                    .iter()
+                    .rev()
+                    .filter(matches)
+                    .find(|event| event.sequence < selected)
+                    .map(|event| event.sequence)
+            }
+            TrafficSelectionMove::Next => {
+                let selected = selected?;
+                inner
+                    .events
+                    .iter()
+                    .filter(matches)
+                    .find(|event| event.sequence > selected)
+                    .map(|event| event.sequence)
+            }
         }
     }
 
@@ -188,6 +436,21 @@ impl TrafficJournal {
             .events
             .iter()
             .find(|event| event.sequence == sequence)
+            .cloned()
+    }
+
+    pub fn selected_event(
+        &self,
+        sequence: TrafficSequence,
+        filter: TrafficFilter,
+        head: TrafficQueryHead,
+    ) -> Option<TrafficEvent> {
+        self.lock()
+            .events
+            .iter()
+            .find(|event| {
+                event.sequence == sequence && head.includes(event.sequence) && filter.matches(event)
+            })
             .cloned()
     }
 
@@ -679,6 +942,108 @@ mod tests {
         assert_eq!(counters.rx_returned, u64::MAX);
         assert_eq!(counters.read_timeouts, u64::MAX);
         assert_eq!(counters.payload_truncations, u64::MAX);
+    }
+
+    #[test]
+    fn raw_traffic_filtered_view_scans_older_matches_and_clones_only_visible_metadata() {
+        let journal = TrafficJournal::default();
+        for sequence in 0..600 {
+            let bytes = if sequence == 0 {
+                [0x99, 0xab]
+            } else if sequence % 2 == 0 {
+                [0x73, sequence as u8]
+            } else {
+                [0x75, 0x1f]
+            };
+            journal.record_read_returned(&bytes);
+        }
+        let filter = TrafficFilter {
+            family: Some(0x99),
+            ..TrafficFilter::default()
+        };
+
+        let payload_handle = journal.event(TrafficSequence(1)).expect("retained payload");
+        let strong_count_before = Arc::strong_count(&payload_handle.retained_bytes);
+        let view = journal.filtered_view(filter, TrafficQueryHead::Live, None, 4);
+
+        assert_eq!(
+            Arc::strong_count(&payload_handle.retained_bytes),
+            strong_count_before
+        );
+        let selected = journal
+            .selected_event(TrafficSequence(1), filter, TrafficQueryHead::Live)
+            .expect("selected payload");
+        assert_eq!(
+            Arc::strong_count(&payload_handle.retained_bytes),
+            strong_count_before + 1
+        );
+        drop(selected);
+        assert_eq!(view.matching_retained, 1);
+        assert_eq!(view.rows.len(), 1);
+        assert_eq!(view.rows[0].sequence, TrafficSequence(1));
+        assert!(view.family_values.contains(&0x73));
+        assert!(view.family_values.contains(&0x75));
+        assert!(view.family_values.contains(&0x99));
+        assert!(view.discriminator_values.contains(&0x1f));
+        assert!(std::mem::size_of::<TrafficMetadataRow>() <= 64);
+    }
+
+    #[test]
+    fn raw_traffic_errors_filter_includes_transport_and_decode_failures() {
+        let journal = TrafficJournal::default();
+        let successful = journal.record_read_returned(&[0x73]);
+        journal.mark_decode(
+            successful,
+            DecodeStatus::Accepted(DecodedEventKind::Snapshot),
+        );
+        journal.record_read_error(&anyhow!("read"));
+        let rejected = journal.record_read_returned(&[0x99]);
+        journal.mark_decode_rejected(rejected, &"decoder");
+        journal.record_write(&[0x70], &Err(anyhow!("write")));
+
+        let view = journal.filtered_view(
+            TrafficFilter {
+                errors_only: true,
+                ..TrafficFilter::default()
+            },
+            TrafficQueryHead::Live,
+            None,
+            10,
+        );
+
+        assert_eq!(view.matching_retained, 3);
+        assert_eq!(
+            view.rows.iter().map(|row| row.sequence).collect::<Vec<_>>(),
+            vec![TrafficSequence(2), TrafficSequence(3), TrafficSequence(4)]
+        );
+    }
+
+    #[test]
+    fn raw_traffic_empty_frozen_head_stays_empty_and_bounded_head_excludes_arrivals() {
+        let journal = TrafficJournal::default();
+        assert_eq!(
+            journal
+                .filtered_view(TrafficFilter::default(), TrafficQueryHead::Empty, None, 10)
+                .matching_retained,
+            0
+        );
+        journal.record_read_returned(&[0x73]);
+        assert_eq!(
+            journal
+                .filtered_view(TrafficFilter::default(), TrafficQueryHead::Empty, None, 10)
+                .matching_retained,
+            0
+        );
+        let head = journal.stats().newest_sequence.expect("head");
+        journal.record_read_returned(&[0x75, 0x1f]);
+        let view = journal.filtered_view(
+            TrafficFilter::default(),
+            TrafficQueryHead::Through(head),
+            None,
+            10,
+        );
+        assert_eq!(view.matching_retained, 1);
+        assert_eq!(view.rows[0].classifier.byte_0, Some(0x73));
     }
 
     #[test]

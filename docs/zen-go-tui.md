@@ -181,7 +181,8 @@ Speaker and bank navigation is read-only: arrows and the mouse wheel emit no HID
 The TUI includes a raw-data page for live protocol inspection.
 
 - press `Ctrl+D` to open or close the raw page
-- use packet tabs for `0x74`, `0x73`, `0x83`, `0x75`, and `0x81`
+- press `t` or select **ALL TRAFFIC** to switch between the transport journal and the five legacy packet tabs
+- use packet tabs for `0x74`, `0x73`, `0x83`, `0x75`, and `0x81`; selecting one returns to legacy mode without changing its existing baseline/highlighting behavior
 - use semantic subtabs for scopes supported by the selected packet
 - press `[` or `]` to move between semantic scopes
 - press `PageUp` or `PageDown` to scroll the field map and byte dump
@@ -191,21 +192,41 @@ The TUI includes a raw-data page for live protocol inspection.
 - the legend defines coverage as `USED green | READBACK blue | OBSERVED amber | PARSER cyan | UNMAPPED red | PADDING gray`
 - `UNMAPPED` keeps offsets visible and highlights bytes without a grounded decoder
 - mixed mixer bytes use correlation-group labels
-- press `b` on the raw page to capture a baseline
-- press `x` to clear the baseline
+- press `b` on a legacy packet tab to capture a baseline
+- press `x` on a legacy packet tab to clear the baseline
 - bytes that changed relative to the baseline are highlighted, which is useful when isolating mixer-strip-related changes in late `0x73`
 
 This is especially useful while continuing reverse-engineering of late `0x73` mixer state and auxiliary traffic.
 
-The controller also maintains a backend-only traffic journal for a future Raw view. It observes each
-application `Transport` read result and attempted write exactly once, outside `ThreadedTransport`.
-Its sequence and elapsed time describe application transport completion order, not physical USB bus
-chronology. RX length and retained bytes are what the selected transport returned after HID report
-normalization; reports rejected before that boundary and other USB interfaces are not captured.
-Read timeouts increment a counter without adding events, and failed writes are labeled delivery
-uncertain. The journal retains at most 1,024 events and 1 MiB of payload, at most 4,096 payload bytes
-and 256 UTF-8 bytes of error text per event, and returns at most 256 events per window query. Oldest
-events are evicted to enforce both limits. The existing latest-packet Raw tabs remain unchanged.
+**ALL TRAFFIC** reads the controller's application-HID traffic journal. `d` cycles direction through
+`ANY`, `RX`, and `TX`; `e` toggles errors-only; `f`/`F`, `g`/`G`, and `c`/`C` cycle forward/backward
+through `ANY` and the numeric family, discriminator, and available query-category groups currently
+retained inside the display boundary. These groups are byte classifiers, not guessed protocol or
+endpoint identities: unknown numeric values remain selectable, `75/00` and `75/1f` remain separate,
+and live endpoint metadata such as capture-only endpoint `0x81` is not available. The filter row is
+also clickable. Zero matching retained events is not evidence that traffic was absent on the wire.
+
+`Space` freezes or resumes the display. Freeze fixes the display head and selection while recording
+continues, including when the journal was empty at freeze time. The view reports arrivals and
+evictions since freeze; an evicted selected sequence is reported explicitly. `Up`/`Down` selects and
+freezes, while `Home`/`End` selects the oldest/newest matching retained event inside the current
+frozen or live boundary. Filter changes preserve a matching selection or identify when they move it.
+`PageUp`/`PageDown` and the detail-pane mouse wheel scroll the selected generic payload dump. Raw
+traffic never applies a legacy tab's semantic map to a different family or command.
+
+The journal observes each application `Transport` read result and attempted write exactly once,
+outside `ThreadedTransport`. Sequence and elapsed time describe application transport completion
+order, not physical USB bus chronology. RX length and retained bytes are what the selected transport
+returned after HID report normalization; reports rejected before that boundary and other USB
+interfaces are not captured. Selected details show actual read/write outcome, decoder
+accepted/ignored/rejected state, truncation, and bounded error text. Read timeouts increment a
+lifetime counter without adding ring events, and failed writes are labeled **delivery uncertain**.
+Lifetime outcome/eviction counters are distinct from retained and currently matching counts. The
+journal retains at most 1,024 events and 1 MiB of payload, at most 4,096 payload bytes and 256 UTF-8
+bytes of error text per event, and clones only visible metadata plus the selected payload handle for
+rendering. Oldest events are evicted to enforce both limits. A replacement controller/session binds a
+new journal and resets traffic filters/cursors; a reconnect handled inside the same transport session
+continues the existing journal.
 
 ## Confirmed Zen Go protocol support exposed in the app
 

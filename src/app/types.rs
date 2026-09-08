@@ -7,6 +7,7 @@ use antelope_protocol::{
 };
 
 use crate::app::AppState;
+use crate::traffic::{TrafficDirection, TrafficSelectionMove, TrafficSequence};
 
 #[cfg(test)]
 use antelope_protocol::{MixerSurface, OutputMode, OutputTarget};
@@ -20,7 +21,22 @@ pub enum Intent {
     SelectUiPage(UiPage),
     ToggleRawView,
     ToggleHotkeysPopup,
+    ToggleRawTrafficMode,
     SelectRawPacketTab(RawPacketTab),
+    SelectTrafficDirection(Option<TrafficDirection>),
+    ToggleTrafficErrors,
+    CycleTrafficFamily {
+        forward: bool,
+    },
+    CycleTrafficDiscriminator {
+        forward: bool,
+    },
+    CycleTrafficCategory {
+        forward: bool,
+    },
+    ToggleTrafficFreeze,
+    MoveTrafficSelection(TrafficSelectionMove),
+    SelectTrafficSequence(TrafficSequence),
     SelectRawMapScope(RawMapScope),
     CycleRawMapScope {
         forward: bool,
@@ -622,6 +638,13 @@ pub enum FocusArea {
     Outputs,
     Mixer,
     Preamp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RawViewMode {
+    #[default]
+    Legacy,
+    AllTraffic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

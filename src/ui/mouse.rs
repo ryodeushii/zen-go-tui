@@ -2,9 +2,11 @@ use ratatui::layout::Rect;
 
 use crate::app::{
     AppState, AssignmentPickerState, AuraVerbControlFocus, Intent, RawMapScope, RawPacketTab,
-    SelectorPopupKind, SelectorPopupState, SurroundControlFocus, UiPage, QUERY_REPLY_VISIBLE_COUNT,
+    RawViewMode, SelectorPopupKind, SelectorPopupState, SurroundControlFocus, UiPage,
+    QUERY_REPLY_VISIBLE_COUNT,
 };
 use crate::device::DevicePickerState;
+use crate::traffic::TrafficDirection;
 #[cfg(test)]
 use antelope_protocol::{DynamicMeterState, RuntimeMeterTarget};
 use antelope_protocol::{
@@ -874,7 +876,7 @@ fn profile_editor_mouse_action(area: Rect, point: (u16, u16)) -> Option<Intent> 
 fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
     let layout = raw_page_layout(area);
     let header = raw_header_layout(layout[0]);
-    if contains_point(raw_back_button_hit_area(header[1]), point) {
+    if raw_back_button_hit_area(header[1]).is_some_and(|area| contains_point(area, point)) {
         return Some(Intent::ToggleRawView);
     }
     if contains_point(layout[1], point) {
@@ -889,8 +891,52 @@ fn raw_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<I
             return Some(Intent::SelectRawPacketTab(RawPacketTab::Query75));
         } else if contains_point(tabs[4], point) {
             return Some(Intent::SelectRawPacketTab(RawPacketTab::DeviceNotification));
+        } else if raw_all_traffic_hit_area(layout[1])
+            .is_some_and(|area| contains_point(area, point))
+        {
+            return Some(Intent::ToggleRawTrafficMode);
         }
     }
+
+    if state.raw_view.mode == RawViewMode::AllTraffic {
+        for (control, control_area) in raw_traffic_filter_hit_areas(
+            layout[2],
+            state.raw_view.traffic_filter,
+            state.raw_view.traffic_frozen,
+        ) {
+            if !contains_point(control_area, point) {
+                continue;
+            }
+            return Some(match control {
+                RawTrafficFilterControl::AnyDirection => Intent::SelectTrafficDirection(None),
+                RawTrafficFilterControl::Rx => {
+                    Intent::SelectTrafficDirection(Some(TrafficDirection::Rx))
+                }
+                RawTrafficFilterControl::Tx => {
+                    Intent::SelectTrafficDirection(Some(TrafficDirection::Tx))
+                }
+                RawTrafficFilterControl::Errors => Intent::ToggleTrafficErrors,
+                RawTrafficFilterControl::Family => Intent::CycleTrafficFamily { forward: true },
+                RawTrafficFilterControl::Discriminator => {
+                    Intent::CycleTrafficDiscriminator { forward: true }
+                }
+                RawTrafficFilterControl::Category => Intent::CycleTrafficCategory { forward: true },
+                RawTrafficFilterControl::Freeze => Intent::ToggleTrafficFreeze,
+            });
+        }
+        let content = raw_traffic_content_layout(layout[3]);
+        let inner = section_block("Bounded metadata list", true).inner(content.list);
+        if !contains_point(inner, point) {
+            return None;
+        }
+        let view = state.raw_view.traffic_view(usize::from(inner.height));
+        let row = usize::from(point.1.saturating_sub(inner.y));
+        return view
+            .rows
+            .get(row)
+            .map(|event| Intent::SelectTrafficSequence(event.sequence));
+    }
+
     let scopes = raw_scope_hit_areas(layout[2], state.raw_view.selected_tab);
     for (scope, scope_area) in RawMapScope::options_for(state.raw_view.selected_tab)
         .iter()
@@ -963,6 +1009,13 @@ pub(crate) fn raw_dump_wheel_action(
 ) -> Option<Intent> {
     if !state.popup.raw_view_open {
         return None;
+    }
+    if state.raw_view.mode == RawViewMode::AllTraffic {
+        let content = raw_traffic_content_layout(raw_page_layout(area)[3]);
+        return contains_point(content.detail, point).then_some(Intent::ScrollRawDump {
+            increase,
+            page: false,
+        });
     }
     let content = raw_content_layout(
         raw_page_layout(area)[3],

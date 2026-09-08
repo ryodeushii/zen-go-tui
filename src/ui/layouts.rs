@@ -5,6 +5,7 @@ use crate::app::{
     AppState, AuraVerbControlFocus, RawMapScope, RawPacketTab, SurroundControlFocus, UiPage,
     MIXER_STRIP_PAGE_SIZE,
 };
+use crate::traffic::TrafficFilter;
 use antelope_protocol::{
     meter_display_db, FaderDirection, FaderSemantics, InputAddress, InputControl, MixerAddress,
     MixerControl, OutputControl, RuntimeInputControlKind,
@@ -989,11 +990,12 @@ pub(crate) fn raw_back_button_chip_width() -> u16 {
     chip_width("Back To Main")
 }
 
-pub(crate) fn raw_back_button_hit_area(header_right: Rect) -> Rect {
+pub(crate) fn raw_back_button_hit_area(header_right: Rect) -> Option<Rect> {
     let text = "Back To Main";
-    let w = text.chars().count() as u16;
+    let width = (text.chars().count() as u16).min(header_right.width.saturating_sub(2));
     // Block has 1-cell borders on all sides; text is left-aligned in inner area.
-    Rect::new(header_right.x + 1, header_right.y + 1, w, 1)
+    (header_right.height >= 3 && width > 0)
+        .then(|| Rect::new(header_right.x + 1, header_right.y + 1, width, 1))
 }
 
 pub(crate) fn raw_tab_hit_areas(area: Rect) -> Vec<Rect> {
@@ -1002,6 +1004,80 @@ pub(crate) fn raw_tab_hit_areas(area: Rect) -> Vec<Rect> {
         inner_area(area).y,
         &["0x74", "0x73", "0x83", "0x75", "0x81"],
     )
+}
+
+pub(crate) fn raw_all_traffic_hit_area(area: Rect) -> Option<Rect> {
+    let inner = inner_area(area);
+    let legacy = raw_tab_hit_areas(area);
+    let x = legacy
+        .last()
+        .map(|rect| rect.x.saturating_add(rect.width).saturating_add(1))
+        .unwrap_or(inner.x);
+    let rect = Rect::new(x, inner.y, chip_width("ALL TRAFFIC"), 1);
+    (rect.x.saturating_add(rect.width) <= inner.x.saturating_add(inner.width)).then_some(rect)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawTrafficFilterControl {
+    AnyDirection,
+    Rx,
+    Tx,
+    Errors,
+    Family,
+    Discriminator,
+    Category,
+    Freeze,
+}
+
+pub(crate) fn raw_traffic_filter_labels(filter: TrafficFilter, frozen: bool) -> [String; 8] {
+    let numeric = |label: &str, value: Option<u8>| match value {
+        Some(value) => format!("{label}:{value:02x}"),
+        None => format!("{label}:ANY"),
+    };
+    [
+        "ANY".into(),
+        "RX".into(),
+        "TX".into(),
+        if filter.errors_only {
+            "ERRORS:ON"
+        } else {
+            "ERRORS:OFF"
+        }
+        .into(),
+        numeric("F", filter.family),
+        numeric("D", filter.discriminator),
+        numeric("C", filter.query_category),
+        if frozen { "UNFREEZE" } else { "FREEZE" }.into(),
+    ]
+}
+
+pub(crate) fn raw_traffic_filter_hit_areas(
+    area: Rect,
+    filter: TrafficFilter,
+    frozen: bool,
+) -> Vec<(RawTrafficFilterControl, Rect)> {
+    let inner = inner_area(area);
+    if inner.width == 0 || inner.height == 0 {
+        return Vec::new();
+    }
+
+    let labels = raw_traffic_filter_labels(filter, frozen);
+    let label_refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
+    let controls = [
+        RawTrafficFilterControl::AnyDirection,
+        RawTrafficFilterControl::Rx,
+        RawTrafficFilterControl::Tx,
+        RawTrafficFilterControl::Errors,
+        RawTrafficFilterControl::Family,
+        RawTrafficFilterControl::Discriminator,
+        RawTrafficFilterControl::Category,
+        RawTrafficFilterControl::Freeze,
+    ];
+    controls
+        .into_iter()
+        .zip(inline_chip_rects(inner.x, inner.y, &label_refs))
+        .filter(|(_, rect)| rect.x < area.x.saturating_add(area.width))
+        .collect()
 }
 
 pub(crate) fn raw_page_layout(area: Rect) -> Vec<Rect> {
@@ -1025,6 +1101,36 @@ pub(crate) fn raw_scope_hit_areas(area: Rect, tab: RawPacketTab) -> Vec<Rect> {
         .collect::<Vec<_>>();
     let inner = inner_area(area);
     inline_chip_rects(inner.x, inner.y, &labels)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RawTrafficContentLayout {
+    pub list: Rect,
+    pub detail: Rect,
+}
+
+pub(crate) fn raw_traffic_content_layout(area: Rect) -> RawTrafficContentLayout {
+    if area.width >= 120 {
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
+            .split(area);
+        RawTrafficContentLayout {
+            list: panes[0],
+            detail: panes[1],
+        }
+    } else {
+        let list_height = area.height.saturating_sub(1).min(6);
+        RawTrafficContentLayout {
+            list: Rect::new(area.x, area.y, area.width, list_height),
+            detail: Rect::new(
+                area.x,
+                area.y.saturating_add(list_height),
+                area.width,
+                area.height.saturating_sub(list_height),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

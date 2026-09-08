@@ -10,8 +10,8 @@ use ratatui::Terminal;
 
 use crate::app::{
     AppState, AssignmentPickerState, Controller, FocusArea, Intent, ProfileEditorMode,
-    ProfileEditorState, RawMapScope, RawPacketTab, RoutingSourcePickerState, SelectorPopupKind,
-    SelectorPopupState,
+    ProfileEditorState, RawMapScope, RawPacketTab, RawViewMode, RoutingSourcePickerState,
+    SelectorPopupKind, SelectorPopupState,
 };
 use antelope_protocol::{
     DynamicMeterState, MixerAddress, MixerAssignment, MixerChannelState, MixerLinkTarget,
@@ -22,6 +22,10 @@ use antelope_protocol::{
 };
 
 use crate::device::ProfileCatalog;
+use crate::traffic::{
+    DecodeStatus, TrafficDirection, TrafficSelectionMove, TrafficSequence,
+    TRAFFIC_EVENT_COUNT_LIMIT, TRAFFIC_EVENT_PAYLOAD_BYTES_LIMIT,
+};
 use crate::transport::MockTransport;
 
 use super::*;
@@ -1515,6 +1519,270 @@ fn mouse_action_selects_raw_packet_tab_when_raw_view_is_open() {
     assert_eq!(
         mouse_action(area, &state, point.0, point.1),
         Some(Intent::SelectRawPacketTab(RawPacketTab::Query75))
+    );
+}
+
+#[test]
+fn all_traffic_chip_preserves_legacy_hit_rects_and_mouse_switches_modes() {
+    let area = Rect::new(0, 0, 120, 50);
+    let tabs_row = layouts::raw_page_layout(area)[1];
+    let legacy_before = layouts::raw_tab_hit_areas(tabs_row);
+    let all = layouts::raw_all_traffic_hit_area(tabs_row).expect("ALL TRAFFIC fits");
+    let legacy_after = layouts::raw_tab_hit_areas(tabs_row);
+    assert_eq!(legacy_before, legacy_after);
+    assert!(all.x > legacy_after.last().expect("legacy tab").x);
+
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    assert_eq!(
+        mouse_action(area, &state, all.x + 1, all.y),
+        Some(Intent::ToggleRawTrafficMode)
+    );
+    state.raw_view.select_all_traffic();
+    let legacy = legacy_after[0];
+    assert_eq!(
+        mouse_action(area, &state, legacy.x + 1, legacy.y),
+        Some(Intent::SelectRawPacketTab(RawPacketTab::Query74))
+    );
+}
+
+#[test]
+fn traffic_freeze_empty_selection_eviction_and_filter_reselection_are_explicit() {
+    let mut state = AppState::default();
+    let journal = state.raw_view.traffic_journal().clone();
+
+    state.raw_view.toggle_traffic_freeze();
+    journal.record_read_returned(&[0x73]);
+    assert_eq!(state.raw_view.traffic_view(10).matching_retained, 0);
+    assert_eq!(state.raw_view.frozen_traffic_changes(), (1, 0));
+    state.raw_view.toggle_traffic_freeze();
+    assert_eq!(
+        state.raw_view.traffic_selected_sequence,
+        Some(TrafficSequence(1))
+    );
+
+    state.raw_view.toggle_traffic_freeze();
+    state.raw_view.cycle_traffic_family(true);
+    assert_eq!(state.raw_view.traffic_filter.family, Some(0x73));
+    assert_eq!(
+        state.raw_view.traffic_selected_sequence,
+        Some(TrafficSequence(1))
+    );
+    for _ in 0..TRAFFIC_EVENT_COUNT_LIMIT {
+        journal.record_read_returned(&[0x75, 0x1f]);
+    }
+    assert!(journal.event(TrafficSequence(1)).is_none());
+    assert_eq!(
+        state.raw_view.traffic_selected_sequence,
+        Some(TrafficSequence(1))
+    );
+    assert!(state
+        .raw_view
+        .traffic_journal()
+        .selected_event(
+            TrafficSequence(1),
+            state.raw_view.traffic_filter,
+            state.raw_view.traffic_head(),
+        )
+        .is_none());
+    assert!(state.raw_view.frozen_traffic_changes().1 > 0);
+    state.popup.raw_view_open = true;
+    state.raw_view.mode = RawViewMode::AllTraffic;
+    let mut terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
+    terminal
+        .draw(|frame| render::draw(frame, &state))
+        .expect("evicted selection");
+    let rendered = render_buffer(Rect::new(0, 0, 140, 40), |_, target| {
+        *target = terminal.backend().buffer().clone();
+    });
+    assert!(rendered.contains("SELECTED EVENT #1 EVICTED"));
+
+    state.raw_view.cycle_traffic_family(true);
+    assert_eq!(state.raw_view.traffic_filter.family, None);
+    assert!(state
+        .raw_view
+        .traffic_notice
+        .as_deref()
+        .is_some_and(
+            |notice| notice.contains("No retained events") || notice.contains("Filter moved")
+        ));
+}
+
+#[test]
+fn traffic_selection_navigation_freezes_and_home_end_stay_in_filter_boundary() {
+    let mut state = AppState::default();
+    let journal = state.raw_view.traffic_journal().clone();
+    journal.record_read_returned(&[0x73]);
+    journal.record_write(&[0x70], &Ok(()));
+    journal.record_read_returned(&[0x75, 0x1f]);
+    state
+        .raw_view
+        .select_traffic_direction(Some(TrafficDirection::Rx));
+
+    state
+        .raw_view
+        .move_traffic_selection(TrafficSelectionMove::Oldest);
+    assert!(state.raw_view.traffic_frozen);
+    assert_eq!(
+        state.raw_view.traffic_selected_sequence,
+        Some(TrafficSequence(1))
+    );
+    state
+        .raw_view
+        .move_traffic_selection(TrafficSelectionMove::Newest);
+    assert_eq!(
+        state.raw_view.traffic_selected_sequence,
+        Some(TrafficSequence(3))
+    );
+    journal.record_read_returned(&[0x99]);
+    assert_eq!(state.raw_view.traffic_view(10).matching_retained, 2);
+}
+
+#[test]
+fn all_traffic_renders_outcomes_unknown_groups_and_generic_oversize_dump_at_target_sizes() {
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    state.raw_view.mode = RawViewMode::AllTraffic;
+    let journal = state.raw_view.traffic_journal().clone();
+    let accepted = journal.record_read_returned(&[0x73; 320]);
+    journal.mark_decode(accepted, DecodeStatus::Ignored);
+    let rejected = journal.record_read_returned(&[0x99, 0xab]);
+    journal.mark_decode_rejected(rejected, &"malformed unknown frame");
+    journal.record_write(
+        &[0x70, 0, 0, 0, 0x1d],
+        &Err(anyhow::anyhow!("write failed")),
+    );
+    journal.record_read_returned(&vec![0x5a; TRAFFIC_EVENT_PAYLOAD_BYTES_LIMIT + 1]);
+    state.raw_view.toggle_traffic_freeze();
+
+    for (width, height) in [(140, 40), (80, 24), (32, 12)] {
+        state.raw_view.raw_dump_scroll = if width == 80 { 8 } else { 0 };
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| render::draw(frame, &state))
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.area.width, width);
+        assert_eq!(buffer.area.height, height);
+        if width >= 80 {
+            let rendered = render_buffer(Rect::new(0, 0, width, height), |_, target| {
+                *target = buffer.clone();
+            });
+            assert!(rendered.contains("ALL TRAFFIC"));
+            assert!(
+                rendered.contains("TRUNCATED"),
+                "missing truncation at {width}x{height}:\n{rendered}"
+            );
+            if width == 140 {
+                assert!(rendered.contains("not physical USB bus chronology"));
+            }
+            assert!(!rendered.contains("endpoint 0x81"));
+        }
+    }
+
+    state.raw_view.raw_dump_scroll = 0;
+    state.raw_view.select_traffic_sequence(TrafficSequence(2));
+    let mut rejected_terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
+    rejected_terminal
+        .draw(|frame| render::draw(frame, &state))
+        .expect("rejected detail");
+    let rejected = render_buffer(Rect::new(0, 0, 140, 40), |_, target| {
+        *target = rejected_terminal.backend().buffer().clone();
+    });
+    assert!(rejected.contains("Decoder: rejected: malformed unknown frame"));
+
+    state.raw_view.select_traffic_sequence(TrafficSequence(3));
+    let mut failed_tx_terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
+    failed_tx_terminal
+        .draw(|frame| render::draw(frame, &state))
+        .expect("failed TX detail");
+    let failed_tx = render_buffer(Rect::new(0, 0, 140, 40), |_, target| {
+        *target = failed_tx_terminal.backend().buffer().clone();
+    });
+    assert!(failed_tx.contains("WRITE FAILED · DELIVERY UNCERTAIN"));
+    assert!(failed_tx.contains("Transport error: write failed"));
+}
+
+#[test]
+fn traffic_filter_mouse_controls_and_list_rows_share_render_geometry() {
+    let area = Rect::new(0, 0, 140, 40);
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    state.raw_view.select_all_traffic();
+    let journal = state.raw_view.traffic_journal().clone();
+    journal.record_read_returned(&[0x73]);
+    journal.record_write(&[0x70], &Ok(()));
+    let layout = layouts::raw_page_layout(area);
+    let controls = layouts::raw_traffic_filter_hit_areas(
+        layout[2],
+        state.raw_view.traffic_filter,
+        state.raw_view.traffic_frozen,
+    );
+    let rx = controls
+        .iter()
+        .find(|(control, _)| *control == layouts::RawTrafficFilterControl::Rx)
+        .expect("RX control")
+        .1;
+    assert_eq!(
+        mouse_action(area, &state, rx.x + 1, rx.y),
+        Some(Intent::SelectTrafficDirection(Some(TrafficDirection::Rx)))
+    );
+
+    let content = layouts::raw_traffic_content_layout(layout[3]);
+    let inner = styles::section_block("Bounded metadata list", true).inner(content.list);
+    assert_eq!(
+        mouse_action(area, &state, inner.x, inner.y),
+        Some(Intent::SelectTrafficSequence(TrafficSequence(1)))
+    );
+}
+
+#[test]
+fn collapsed_all_traffic_controls_do_not_intercept_visible_metadata_rows() {
+    let compact_area = Rect::new(0, 0, 32, 12);
+    let mut state = AppState::default();
+    state.popup.raw_view_open = true;
+    state.raw_view.select_all_traffic();
+    state
+        .raw_view
+        .traffic_journal()
+        .record_read_returned(&[0x73]);
+
+    let compact_layout = layouts::raw_page_layout(compact_area);
+    assert_eq!(compact_layout[0].height, 0);
+    assert_eq!(compact_layout[2].height, 0);
+    let compact_header = layouts::raw_header_layout(compact_layout[0]);
+    let former_filter_point = {
+        let inner = layouts::inner_area(compact_layout[2]);
+        (inner.x, inner.y)
+    };
+    let former_back_point = (compact_header[1].x + 1, compact_header[1].y + 1);
+    let content = layouts::raw_traffic_content_layout(compact_layout[3]);
+    let list_inner = styles::section_block("Bounded metadata list", true).inner(content.list);
+
+    for point in [former_filter_point, former_back_point] {
+        assert!(point.0 >= list_inner.x && point.0 < list_inner.x + list_inner.width);
+        assert!(point.1 >= list_inner.y && point.1 < list_inner.y + list_inner.height);
+        assert_eq!(
+            mouse_action(compact_area, &state, point.0, point.1),
+            Some(Intent::SelectTrafficSequence(TrafficSequence(1)))
+        );
+    }
+
+    let target_area = Rect::new(0, 0, 80, 24);
+    let target_layout = layouts::raw_page_layout(target_area);
+    let controls = layouts::raw_traffic_filter_hit_areas(
+        target_layout[2],
+        state.raw_view.traffic_filter,
+        state.raw_view.traffic_frozen,
+    );
+    let rx = controls
+        .iter()
+        .find(|(control, _)| *control == layouts::RawTrafficFilterControl::Rx)
+        .expect("RX control remains clickable at 80x24")
+        .1;
+    assert_eq!(
+        mouse_action(target_area, &state, rx.x + 1, rx.y),
+        Some(Intent::SelectTrafficDirection(Some(TrafficDirection::Rx)))
     );
 }
 

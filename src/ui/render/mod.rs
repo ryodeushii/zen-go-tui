@@ -7,10 +7,15 @@ use ratatui::Frame;
 
 use crate::app::{
     AppState, AuraVerbControlFocus, AuraVerbFreshness, FocusArea, ProfileEditorMode, RawMapScope,
-    RawPacketTab, RefreshRate, SelectorPopupKind, SurroundControlFocus, SurroundFreshness, UiPage,
+    RawPacketTab, RawViewMode, RefreshRate, SelectorPopupKind, SurroundControlFocus,
+    SurroundFreshness, UiPage,
 };
 use crate::device::DevicePickerState;
 use crate::terminal;
+use crate::traffic::{
+    DecodeStatus, DecodedEventKind, TrafficDecodeSummary, TrafficDirection, TrafficEvent,
+    TrafficMetadataRow, TrafficOutcome,
+};
 use antelope_protocol::{
     GlobalControl, MixerAssignment, PreampMode, RuntimeDriverKind, SampleRate,
 };
@@ -1806,14 +1811,317 @@ fn raw_footer_lines(width: u16, map_scroll: u16, dump_scroll: u16) -> Vec<Line<'
     ]
 }
 
+fn traffic_decode_label(decode: Option<TrafficDecodeSummary>) -> &'static str {
+    match decode {
+        Some(TrafficDecodeSummary::Pending) => "PENDING",
+        Some(TrafficDecodeSummary::Accepted(DecodedEventKind::Snapshot)) => "ACCEPT SNAPSHOT",
+        Some(TrafficDecodeSummary::Accepted(DecodedEventKind::QueryReply)) => "ACCEPT QUERY",
+        Some(TrafficDecodeSummary::Accepted(DecodedEventKind::Meter)) => "ACCEPT METER",
+        Some(TrafficDecodeSummary::Accepted(DecodedEventKind::Auxiliary)) => "ACCEPT AUX",
+        Some(TrafficDecodeSummary::Accepted(DecodedEventKind::Notification)) => "ACCEPT NOTICE",
+        Some(TrafficDecodeSummary::Ignored) => "IGNORED",
+        Some(TrafficDecodeSummary::Rejected) => "REJECTED",
+        None => "--",
+    }
+}
+
+fn traffic_outcome_label(outcome: TrafficOutcome) -> &'static str {
+    match outcome {
+        TrafficOutcome::ReadReturned => "READ RETURNED",
+        TrafficOutcome::ReadFailed => "READ ERROR",
+        TrafficOutcome::WriteSucceeded => "WRITE OK",
+        TrafficOutcome::WriteFailedDeliveryUncertain => "WRITE FAILED · DELIVERY UNCERTAIN",
+    }
+}
+
+fn traffic_row_line(row: &TrafficMetadataRow) -> Line<'static> {
+    let direction = match row.direction {
+        TrafficDirection::Rx => "RX",
+        TrafficDirection::Tx => "TX",
+    };
+    let family = row
+        .classifier
+        .byte_0
+        .map_or_else(|| "--".into(), |value| format!("{value:02x}"));
+    let discriminator = row
+        .classifier
+        .byte_1
+        .map_or_else(|| "--".into(), |value| format!("{value:02x}"));
+    let status = if row.outcome == TrafficOutcome::WriteFailedDeliveryUncertain {
+        "UNCERTAIN"
+    } else if row.outcome == TrafficOutcome::ReadFailed {
+        "ERROR"
+    } else {
+        traffic_decode_label(row.decode)
+    };
+    Line::from(format!(
+        "#{:06} +{:>6}ms {direction} {family}/{discriminator} {:>4}/{:<4} {status}",
+        row.sequence.0,
+        row.completed_after.as_millis(),
+        row.retained_len,
+        row.reported_len,
+    ))
+}
+
+fn traffic_detail_text(event: &TrafficEvent) -> Text<'static> {
+    let classifier = event.classifier;
+    let numeric =
+        |value: Option<u8>| value.map_or_else(|| "--".into(), |value| format!("{value:02x}"));
+    let decode = match event.decode_status.as_ref() {
+        Some(DecodeStatus::Pending) => "pending".to_string(),
+        Some(DecodeStatus::Accepted(kind)) => format!("accepted {kind:?}"),
+        Some(DecodeStatus::Ignored) => "ignored by decoder (no reason inferred)".to_string(),
+        Some(DecodeStatus::Rejected { error, truncated }) => format!(
+            "rejected: {error}{}",
+            if *truncated { " [error clipped]" } else { "" }
+        ),
+        None => "not applicable".to_string(),
+    };
+    let mut lines = vec![
+        Line::from(format!(
+            "Sequence #{} · completed +{}ms · {}",
+            event.sequence.0,
+            event.completed_after.as_millis(),
+            match event.direction {
+                TrafficDirection::Rx => "RX",
+                TrafficDirection::Tx => "TX",
+            }
+        )),
+        Line::from(format!("Outcome: {}", traffic_outcome_label(event.outcome))),
+        Line::from(format!(
+            "Payload: reported {} · retained {}{}",
+            event.reported_len,
+            event.retained_bytes.len(),
+            if event.payload_truncated {
+                " · TRUNCATED"
+            } else {
+                ""
+            }
+        )),
+        Line::from(format!("Decoder: {decode}")),
+        Line::from(format!(
+            "Numeric classifier: family {} · discriminator {}",
+            numeric(classifier.byte_0),
+            numeric(classifier.byte_1),
+        )),
+        Line::from(format!(
+            "Available fields: opcode@4 {} · category@8 {} · index@12 {}",
+            numeric(classifier.command_opcode_at_4),
+            numeric(classifier.query_category_at_8),
+            numeric(classifier.query_index_at_12),
+        )),
+    ];
+    if let Some(error) = &event.error {
+        lines.push(Line::from(format!(
+            "Transport error: {error}{}",
+            if event.error_truncated {
+                " [clipped]"
+            } else {
+                ""
+            }
+        )));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "Selected payload dump (generic; no legacy family map):",
+    ));
+    if event.retained_bytes.is_empty() {
+        lines.push(Line::from("<no retained payload>"));
+    } else {
+        for (row, bytes) in event.retained_bytes.chunks(16).enumerate() {
+            let hex = bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let ascii = bytes
+                .iter()
+                .map(|byte| {
+                    if byte.is_ascii_graphic() {
+                        char::from(*byte)
+                    } else {
+                        '.'
+                    }
+                })
+                .collect::<String>();
+            lines.push(Line::from(format!(
+                "{:04x}  {hex:<47}  |{ascii}|",
+                row * 16
+            )));
+        }
+    }
+    Text::from(lines)
+}
+
+fn draw_raw_traffic_page(frame: &mut Frame<'_>, layout: &[Rect], state: &AppState) {
+    let filter = state.raw_view.traffic_filter;
+    let labels = raw_traffic_filter_labels(filter, state.raw_view.traffic_frozen);
+    let selected_filters = [
+        filter.direction.is_none(),
+        filter.direction == Some(TrafficDirection::Rx),
+        filter.direction == Some(TrafficDirection::Tx),
+        filter.errors_only,
+        filter.family.is_some(),
+        filter.discriminator.is_some(),
+        filter.query_category.is_some(),
+        state.raw_view.traffic_frozen,
+    ];
+    let spans = labels
+        .iter()
+        .zip(selected_filters)
+        .enumerate()
+        .flat_map(|(index, (label, selected))| {
+            let mut spans = Vec::with_capacity(2);
+            if index > 0 {
+                spans.push(Span::raw(" "));
+            }
+            spans.push(tab_chip(
+                label,
+                selected,
+                if index == 3 {
+                    Color::LightRed
+                } else {
+                    Color::LightCyan
+                },
+            ));
+            spans
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(Line::from(spans))
+            .block(section_block(
+                "Traffic Filters · click or use d/e/f/F/g/G/c/C",
+                true,
+            ))
+            .wrap(Wrap { trim: false }),
+        layout[2],
+    );
+
+    let content = raw_traffic_content_layout(layout[3]);
+    let list_block = section_block("Bounded metadata list", true);
+    let list_inner = list_block.inner(content.list);
+    let view = state.raw_view.traffic_view(usize::from(list_inner.height));
+    let display_sequence = state.raw_view.traffic_display_sequence(&view);
+    let items = view
+        .rows
+        .iter()
+        .map(|row| ListItem::new(traffic_row_line(row)))
+        .collect::<Vec<_>>();
+    let mut list_state = ListState::default();
+    list_state.select(
+        display_sequence
+            .and_then(|sequence| view.rows.iter().position(|row| row.sequence == sequence)),
+    );
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(list_block)
+            .highlight_style(strong_style(Color::LightCyan))
+            .highlight_symbol("▶ "),
+        content.list,
+        &mut list_state,
+    );
+
+    let stats = state.raw_view.traffic_journal().stats();
+    let counters = stats.counters;
+    let observed = counters
+        .rx_returned
+        .saturating_add(counters.rx_errors)
+        .saturating_add(counters.tx_succeeded)
+        .saturating_add(counters.tx_failed_delivery_uncertain);
+    let evicted = counters
+        .evicted_by_count
+        .saturating_add(counters.evicted_by_bytes);
+    let (arrived_frozen, evicted_frozen) = state.raw_view.frozen_traffic_changes();
+    let mut lines = vec![
+        Line::from("Application HID completion order; not physical USB bus chronology."),
+        Line::from(format!("Lifetime observed {observed} transport events")),
+        Line::from(format!(
+            "RX: {} returned · {} errors · {} timeouts (counter only)",
+            counters.rx_returned, counters.rx_errors, counters.read_timeouts,
+        )),
+        Line::from(format!(
+            "TX: {} succeeded · {} failed, delivery uncertain",
+            counters.tx_succeeded, counters.tx_failed_delivery_uncertain,
+        )),
+        Line::from(format!(
+            "Retained {} events / {} bytes · matching {}",
+            stats.retained_events, stats.retained_payload_bytes, view.matching_retained,
+        )),
+        Line::from(format!(
+            "Lifetime evicted {evicted} · payload clips {}",
+            counters.payload_truncations,
+        )),
+    ];
+    if state.raw_view.traffic_frozen {
+        lines.push(Line::from(format!(
+            "FROZEN: {arrived_frozen} events arrived / {evicted_frozen} evicted since freeze"
+        )));
+    }
+    if let Some(notice) = &state.raw_view.traffic_notice {
+        lines.push(Line::from(notice.clone()));
+    }
+    lines.push(Line::from(""));
+
+    let selected = display_sequence.and_then(|sequence| {
+        state.raw_view.traffic_journal().selected_event(
+            sequence,
+            state.raw_view.traffic_filter,
+            state.raw_view.traffic_head(),
+        )
+    });
+    if let Some(event) = selected {
+        lines.extend(traffic_detail_text(&event).lines);
+    } else if let Some(sequence) = display_sequence {
+        lines.push(Line::from(format!(
+            "SELECTED EVENT #{} EVICTED; selection was not silently replaced.",
+            sequence.0
+        )));
+    } else {
+        lines.push(Line::from(
+            "No retained events match this bounded view. This is not evidence of wire absence.",
+        ));
+    }
+    let detail_text = Text::from(lines);
+    let detail_block = section_block("Selected traffic", true);
+    let detail_inner = detail_block.inner(content.detail);
+    let detail_scroll = raw_scroll_offset(
+        state.raw_view.raw_dump_scroll,
+        &detail_text,
+        detail_inner,
+        false,
+    );
+    frame.render_widget(
+        Paragraph::new(detail_text)
+            .block(detail_block)
+            .scroll((detail_scroll, 0)),
+        content.detail,
+    );
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from("t mode · d direction · e errors · f/F family · g/G discriminator · c/C category · Space freeze"),
+            Line::from("↑/↓ select+freeze · Home/End oldest/newest matching retained in boundary · PgUp/PgDn dump"),
+        ]),
+        layout[4],
+    );
+}
+
 fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let layout = raw_page_layout(area);
 
     let header = raw_header_layout(layout[0]);
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from("Live Raw State View"),
-            Line::from("One packet type at a time. `b` capture baseline, `x` clear."),
+            Line::from(if state.raw_view.mode == RawViewMode::AllTraffic {
+                "ALL TRAFFIC · application HID boundary"
+            } else {
+                "Live Raw State View"
+            }),
+            Line::from(if state.raw_view.mode == RawViewMode::AllTraffic {
+                "Completion order, not USB bus chronology. `t` returns to legacy packets."
+            } else {
+                "One packet type at a time. `t` opens traffic; `b` baseline, `x` clear."
+            }),
         ])
         .block(section_block("Raw", true))
         .wrap(Wrap { trim: true }),
@@ -1827,7 +2135,7 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     );
 
     let selected = state.raw_view.selected_tab;
-    let tabs = Line::from(vec![
+    let mut tab_spans = vec![
         tab_chip(
             "0x74",
             selected == RawPacketTab::Query74,
@@ -1849,13 +2157,31 @@ fn draw_raw_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             selected == RawPacketTab::DeviceNotification,
             Color::LightMagenta,
         ),
-    ]);
+    ];
+    if raw_all_traffic_hit_area(layout[1]).is_some() {
+        tab_spans.push(Span::raw(" "));
+        tab_spans.push(tab_chip(
+            "ALL TRAFFIC",
+            state.raw_view.mode == RawViewMode::AllTraffic,
+            Color::LightRed,
+        ));
+    }
+    let packet_tabs_title = if raw_all_traffic_hit_area(layout[1]).is_some() {
+        "Packet Tabs"
+    } else {
+        "Packet Tabs · t ALL TRAFFIC"
+    };
     frame.render_widget(
-        Paragraph::new(tabs)
-            .block(section_block("Packet Tabs", true))
+        Paragraph::new(Line::from(tab_spans))
+            .block(section_block(packet_tabs_title, true))
             .wrap(Wrap { trim: false }),
         layout[1],
     );
+
+    if state.raw_view.mode == RawViewMode::AllTraffic {
+        draw_raw_traffic_page(frame, &layout, state);
+        return;
+    }
 
     let scopes = RawMapScope::options_for(selected);
     let scope_line = scopes

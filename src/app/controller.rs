@@ -143,11 +143,13 @@ impl Controller {
             // Unknown drivers remain available for protocol-fixture tests; runtime sessions must
             // use `new_for_entry` so selected profile topology cannot be replaced by this state.
             let traffic_journal = TrafficJournal::default();
+            let mut state = AppState::default();
+            state.raw_view.bind_traffic_journal(traffic_journal.clone());
             return Ok(Self {
                 transport: ObservedTransport::new(transport, traffic_journal.clone()),
                 traffic_journal,
                 driver,
-                state: AppState::default(),
+                state,
                 pending_mutation: None,
                 command_queue: CommandQueue::new(),
                 queued_mutations: Vec::new(),
@@ -178,11 +180,13 @@ impl Controller {
             );
         }
         let traffic_journal = TrafficJournal::default();
+        let mut state = AppState::from_entry(entry);
+        state.raw_view.bind_traffic_journal(traffic_journal.clone());
         Ok(Self {
             transport: ObservedTransport::new(transport, traffic_journal.clone()),
             traffic_journal,
             driver,
-            state: AppState::from_entry(entry),
+            state,
             pending_mutation: None,
             command_queue: CommandQueue::new(),
             queued_mutations: Vec::new(),
@@ -1278,6 +1282,7 @@ impl Controller {
             }
             Intent::SelectUiPage(page) => self.handle_select_ui_page(page),
             Intent::ToggleRawView => self.state.toggle_raw_view(),
+            Intent::ToggleRawTrafficMode => self.state.raw_view.toggle_traffic_mode(),
             Intent::ToggleHotkeysPopup => self.state.toggle_hotkeys_popup(),
             Intent::OpenProfilesPopup => self.handle_open_profiles_popup(),
             Intent::CloseProfilesPopup => self.handle_close_profiles_popup(),
@@ -1327,6 +1332,26 @@ impl Controller {
             Intent::OpenTalkbackSourceSelector => self.handle_open_talkback_source_selector(),
             Intent::OpenTalkbackGainSelector => self.handle_open_talkback_gain_selector(),
             Intent::SelectRawPacketTab(tab) => self.handle_select_raw_packet_tab(tab),
+            Intent::SelectTrafficDirection(direction) => {
+                self.state.raw_view.select_traffic_direction(direction)
+            }
+            Intent::ToggleTrafficErrors => self.state.raw_view.toggle_traffic_errors(),
+            Intent::CycleTrafficFamily { forward } => {
+                self.state.raw_view.cycle_traffic_family(forward)
+            }
+            Intent::CycleTrafficDiscriminator { forward } => {
+                self.state.raw_view.cycle_traffic_discriminator(forward)
+            }
+            Intent::CycleTrafficCategory { forward } => {
+                self.state.raw_view.cycle_traffic_category(forward)
+            }
+            Intent::ToggleTrafficFreeze => self.state.raw_view.toggle_traffic_freeze(),
+            Intent::MoveTrafficSelection(movement) => {
+                self.state.raw_view.move_traffic_selection(movement)
+            }
+            Intent::SelectTrafficSequence(sequence) => {
+                self.state.raw_view.select_traffic_sequence(sequence)
+            }
             Intent::SelectRawMapScope(scope) => self.handle_select_raw_map_scope(scope),
             Intent::CycleRawMapScope { forward } => self.handle_cycle_raw_map_scope(forward),
             Intent::ScrollRawDump { increase, page } => self.handle_scroll_raw_dump(increase, page),
@@ -2345,7 +2370,7 @@ impl Controller {
     }
 
     fn handle_select_raw_packet_tab(&mut self, tab: RawPacketTab) {
-        self.state.raw_view.select_tab(tab);
+        self.state.raw_view.select_legacy_tab(tab);
     }
 
     fn handle_select_raw_map_scope(&mut self, scope: RawMapScope) {
@@ -4473,7 +4498,25 @@ mod correction_tests {
             .expect("replacement timeout");
 
         assert_eq!(first_journal.stats().retained_events, 1);
+        assert_eq!(
+            first
+                .state
+                .raw_view
+                .traffic_journal()
+                .stats()
+                .retained_events,
+            1
+        );
         assert_eq!(replacement.traffic_journal().stats().retained_events, 0);
+        assert_eq!(
+            replacement
+                .state
+                .raw_view
+                .traffic_journal()
+                .stats()
+                .retained_events,
+            0
+        );
         assert_eq!(
             replacement.traffic_journal().stats().counters.read_timeouts,
             1

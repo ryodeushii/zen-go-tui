@@ -11,12 +11,16 @@ use antelope_protocol::{
 };
 
 use super::types::{
-    AuraVerbControlFocus, FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate,
-    SurroundControlFocus, UiPage,
+    AuraVerbControlFocus, FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RawViewMode,
+    RefreshRate, SurroundControlFocus, UiPage,
 };
 use super::{
     AssignmentPickerState, ProfileEditorState, QueryReplyLogEntry, RoutingEditorState,
     RoutingSourcePickerState, SelectorPopupState,
+};
+use crate::traffic::{
+    FilteredTrafficView, TrafficCounters, TrafficDirection, TrafficFilter, TrafficJournal,
+    TrafficQueryHead, TrafficSelectionMove, TrafficSequence,
 };
 
 /// Device connection and status tracking.
@@ -859,10 +863,19 @@ pub struct PopupState {
 /// Raw packet debug view state — buffers, baselines, query logs.
 #[derive(Debug, Clone)]
 pub struct RawViewState {
+    pub mode: RawViewMode,
     pub selected_tab: RawPacketTab,
     pub raw_map_scope: RawMapScope,
     pub raw_dump_scroll: usize,
     pub raw_map_scroll: usize,
+    pub traffic_filter: TrafficFilter,
+    pub traffic_selected_sequence: Option<TrafficSequence>,
+    pub traffic_frozen: bool,
+    pub traffic_frozen_head: Option<TrafficSequence>,
+    pub traffic_observed_at_freeze: u64,
+    pub traffic_evictions_at_freeze: u64,
+    pub traffic_notice: Option<String>,
+    traffic_journal: TrafficJournal,
     pub latest_raw_73: Option<Vec<u8>>,
     pub latest_raw_83: Option<Vec<u8>>,
     pub latest_raw_74: Option<Vec<u8>>,
@@ -1010,10 +1023,19 @@ impl Default for UiState {
 impl Default for RawViewState {
     fn default() -> Self {
         Self {
+            mode: RawViewMode::Legacy,
             selected_tab: RawPacketTab::State73,
             raw_map_scope: RawMapScope::All,
             raw_dump_scroll: 0,
             raw_map_scroll: 0,
+            traffic_filter: TrafficFilter::default(),
+            traffic_selected_sequence: None,
+            traffic_frozen: false,
+            traffic_frozen_head: None,
+            traffic_observed_at_freeze: 0,
+            traffic_evictions_at_freeze: 0,
+            traffic_notice: None,
+            traffic_journal: TrafficJournal::default(),
             latest_raw_73: None,
             latest_raw_83: None,
             latest_raw_74: None,
@@ -1034,7 +1056,244 @@ impl Default for RawViewState {
     }
 }
 
+fn lifetime_observed(counters: TrafficCounters) -> u64 {
+    counters
+        .rx_returned
+        .saturating_add(counters.rx_errors)
+        .saturating_add(counters.tx_succeeded)
+        .saturating_add(counters.tx_failed_delivery_uncertain)
+}
+
+fn lifetime_evictions(counters: TrafficCounters) -> u64 {
+    counters
+        .evicted_by_count
+        .saturating_add(counters.evicted_by_bytes)
+}
+
+fn cycle_optional_numeric(current: Option<u8>, available: &[u8], forward: bool) -> Option<u8> {
+    let mut values = available.to_vec();
+    if let Some(current) = current {
+        match values.binary_search(&current) {
+            Ok(_) => {}
+            Err(index) => values.insert(index, current),
+        }
+    }
+    let position = current
+        .and_then(|current| {
+            values
+                .iter()
+                .position(|value| *value == current)
+                .map(|index| index + 1)
+        })
+        .unwrap_or(0);
+    let option_count = values.len() + 1;
+    let next = if forward {
+        (position + 1) % option_count
+    } else {
+        position.checked_sub(1).unwrap_or(option_count - 1)
+    };
+    next.checked_sub(1).map(|index| values[index])
+}
+
 impl RawViewState {
+    pub(crate) fn bind_traffic_journal(&mut self, journal: TrafficJournal) {
+        self.traffic_journal = journal;
+        self.mode = RawViewMode::Legacy;
+        self.traffic_filter = TrafficFilter::default();
+        self.traffic_selected_sequence = None;
+        self.traffic_frozen = false;
+        self.traffic_frozen_head = None;
+        self.traffic_observed_at_freeze = 0;
+        self.traffic_evictions_at_freeze = 0;
+        self.traffic_notice = None;
+        self.reset_raw_view_scroll();
+    }
+
+    pub fn traffic_journal(&self) -> &TrafficJournal {
+        &self.traffic_journal
+    }
+
+    pub fn traffic_head(&self) -> TrafficQueryHead {
+        if !self.traffic_frozen {
+            TrafficQueryHead::Live
+        } else if let Some(sequence) = self.traffic_frozen_head {
+            TrafficQueryHead::Through(sequence)
+        } else {
+            TrafficQueryHead::Empty
+        }
+    }
+
+    pub fn traffic_view(&self, max_rows: usize) -> FilteredTrafficView {
+        self.traffic_journal.filtered_view(
+            self.traffic_filter,
+            self.traffic_head(),
+            self.traffic_selected_sequence,
+            max_rows,
+        )
+    }
+
+    pub fn traffic_display_sequence(&self, view: &FilteredTrafficView) -> Option<TrafficSequence> {
+        if self.traffic_frozen {
+            self.traffic_selected_sequence
+        } else {
+            view.rows.last().map(|row| row.sequence)
+        }
+    }
+
+    pub fn select_legacy_tab(&mut self, tab: RawPacketTab) {
+        self.mode = RawViewMode::Legacy;
+        self.select_tab(tab);
+    }
+
+    pub fn toggle_traffic_mode(&mut self) {
+        self.mode = match self.mode {
+            RawViewMode::Legacy => RawViewMode::AllTraffic,
+            RawViewMode::AllTraffic => RawViewMode::Legacy,
+        };
+        self.reset_raw_view_scroll();
+    }
+
+    pub fn select_all_traffic(&mut self) {
+        self.mode = RawViewMode::AllTraffic;
+        self.reset_raw_view_scroll();
+    }
+
+    pub fn select_traffic_direction(&mut self, direction: Option<TrafficDirection>) {
+        self.change_traffic_filter(|filter| filter.direction = direction);
+    }
+
+    pub fn toggle_traffic_errors(&mut self) {
+        self.change_traffic_filter(|filter| filter.errors_only = !filter.errors_only);
+    }
+
+    pub fn cycle_traffic_family(&mut self, forward: bool) {
+        let values = self.traffic_view(0).family_values;
+        let next = cycle_optional_numeric(self.traffic_filter.family, &values, forward);
+        self.change_traffic_filter(|filter| filter.family = next);
+    }
+
+    pub fn cycle_traffic_discriminator(&mut self, forward: bool) {
+        let values = self.traffic_view(0).discriminator_values;
+        let next = cycle_optional_numeric(self.traffic_filter.discriminator, &values, forward);
+        self.change_traffic_filter(|filter| filter.discriminator = next);
+    }
+
+    pub fn cycle_traffic_category(&mut self, forward: bool) {
+        let values = self.traffic_view(0).query_category_values;
+        let next = cycle_optional_numeric(self.traffic_filter.query_category, &values, forward);
+        self.change_traffic_filter(|filter| filter.query_category = next);
+    }
+
+    pub fn toggle_traffic_freeze(&mut self) {
+        if self.traffic_frozen {
+            self.traffic_frozen = false;
+            self.traffic_frozen_head = None;
+            self.traffic_selected_sequence = self.traffic_journal.matching_sequence(
+                self.traffic_filter,
+                TrafficQueryHead::Live,
+                None,
+                TrafficSelectionMove::Newest,
+            );
+            self.traffic_notice = Some("Live resumed at newest matching retained event".into());
+        } else {
+            let stats = self.traffic_journal.stats();
+            self.traffic_frozen = true;
+            self.traffic_frozen_head = stats.newest_sequence;
+            self.traffic_observed_at_freeze = lifetime_observed(stats.counters);
+            self.traffic_evictions_at_freeze = lifetime_evictions(stats.counters);
+            self.traffic_selected_sequence = self.traffic_journal.matching_sequence(
+                self.traffic_filter,
+                self.traffic_head(),
+                self.traffic_selected_sequence,
+                TrafficSelectionMove::Newest,
+            );
+            self.traffic_notice =
+                Some("Display head and selection frozen; journal continues".into());
+        }
+        self.reset_raw_view_scroll();
+    }
+
+    pub fn move_traffic_selection(&mut self, movement: TrafficSelectionMove) {
+        if !self.traffic_frozen {
+            self.toggle_traffic_freeze();
+        }
+        let selected = self.traffic_selected_sequence;
+        if let Some(sequence) = self.traffic_journal.matching_sequence(
+            self.traffic_filter,
+            self.traffic_head(),
+            selected,
+            movement,
+        ) {
+            self.traffic_selected_sequence = Some(sequence);
+            self.traffic_notice = None;
+            self.reset_raw_view_scroll();
+        }
+    }
+
+    pub fn select_traffic_sequence(&mut self, sequence: TrafficSequence) {
+        if !self.traffic_frozen {
+            self.toggle_traffic_freeze();
+        }
+        if self
+            .traffic_journal
+            .selected_event(sequence, self.traffic_filter, self.traffic_head())
+            .is_some()
+        {
+            self.traffic_selected_sequence = Some(sequence);
+            self.traffic_notice = None;
+            self.reset_raw_view_scroll();
+        }
+    }
+
+    pub fn frozen_traffic_changes(&self) -> (u64, u64) {
+        if !self.traffic_frozen {
+            return (0, 0);
+        }
+        let counters = self.traffic_journal.stats().counters;
+        (
+            lifetime_observed(counters).saturating_sub(self.traffic_observed_at_freeze),
+            lifetime_evictions(counters).saturating_sub(self.traffic_evictions_at_freeze),
+        )
+    }
+
+    fn change_traffic_filter(&mut self, change: impl FnOnce(&mut TrafficFilter)) {
+        let previous = if self.traffic_frozen {
+            self.traffic_selected_sequence
+        } else {
+            self.traffic_journal.matching_sequence(
+                self.traffic_filter,
+                TrafficQueryHead::Live,
+                None,
+                TrafficSelectionMove::Newest,
+            )
+        };
+        change(&mut self.traffic_filter);
+        let head = self.traffic_head();
+        let keep = previous.filter(|sequence| {
+            self.traffic_journal
+                .selected_event(*sequence, self.traffic_filter, head)
+                .is_some()
+        });
+        self.traffic_selected_sequence = keep.or_else(|| {
+            self.traffic_journal.matching_sequence(
+                self.traffic_filter,
+                head,
+                None,
+                TrafficSelectionMove::Newest,
+            )
+        });
+        self.traffic_notice = if keep.is_some() {
+            None
+        } else if previous.is_some() && self.traffic_selected_sequence.is_some() {
+            Some("Filter moved selection to newest matching retained event".into())
+        } else if self.traffic_selected_sequence.is_none() {
+            Some("No retained events match; this is not evidence of wire absence".into())
+        } else {
+            None
+        };
+        self.reset_raw_view_scroll();
+    }
+
     pub fn reset_raw_view_scroll(&mut self) {
         self.raw_dump_scroll = 0;
         self.raw_map_scroll = 0;
