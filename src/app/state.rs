@@ -10,7 +10,10 @@ use antelope_protocol::{
     SurroundGlobalState,
 };
 
-use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
+use super::types::{
+    FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate, SurroundControlFocus,
+    UiPage,
+};
 use super::{
     AssignmentPickerState, ProfileEditorState, QueryReplyLogEntry, RoutingEditorState,
     RoutingSourcePickerState, SelectorPopupState,
@@ -772,6 +775,10 @@ impl Default for UiProfileState {
 #[derive(Debug, Clone)]
 pub struct UiState {
     pub focus: FocusArea,
+    pub page: UiPage,
+    pub surround_focus: SurroundControlFocus,
+    /// Set only for a pointer press that began on an enabled Surround track.
+    pub surround_drag: Option<SurroundControlFocus>,
     pub last_message: String,
     pub settings: AppSettings,
     /// True only when terminal negotiation successfully enabled key release events.
@@ -933,6 +940,9 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             focus: FocusArea::Outputs,
+            page: UiPage::Mixer,
+            surround_focus: SurroundControlFocus::Level,
+            surround_drag: None,
             last_message:
                 "Press ? for help. Device state is authoritative where decoding is confirmed."
                     .to_string(),

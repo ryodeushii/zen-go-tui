@@ -22,7 +22,7 @@ mod profile_editor;
 pub use profile_editor::*;
 
 mod controller;
-pub use controller::Controller;
+pub use controller::{is_surround_write_unavailable, Controller};
 
 #[cfg(test)]
 mod dynamic_state_tests;
@@ -356,6 +356,55 @@ impl AppState {
 
     pub fn outputs(&self) -> &[DynamicOutputState] {
         &self.output.dynamic
+    }
+
+    pub fn surround_page_available(&self) -> bool {
+        self.surround_global.is_some()
+    }
+
+    pub fn active_ui_page(&self) -> UiPage {
+        if self.ui.page == UiPage::Surround && !self.surround_page_available() {
+            UiPage::Mixer
+        } else {
+            self.ui.page
+        }
+    }
+
+    pub fn normalize_ui_page(&mut self) {
+        if self.ui.page == UiPage::Surround && !self.surround_page_available() {
+            self.ui.page = UiPage::Mixer;
+            self.ui.surround_drag = None;
+        }
+    }
+
+    pub fn surround_control_ranges(&self) -> Option<((u16, u16), (u8, u8))> {
+        let contract = self.runtime_profile.as_ref()?.surround_global.as_ref()?;
+        let delay_min = u8::try_from(contract.delay_range.0).ok()?;
+        let delay_max = u8::try_from(contract.delay_range.1).ok()?;
+        Some((contract.level_range, (delay_min, delay_max)))
+    }
+
+    pub fn displayed_surround_state(&self) -> Option<&antelope_protocol::SurroundGlobalState> {
+        let cache = self.surround_global.as_ref()?;
+        match cache.freshness {
+            SurroundFreshness::PendingReadback => cache.pending_expected.as_ref(),
+            SurroundFreshness::Authoritative
+            | SurroundFreshness::AwaitingReadback
+            | SurroundFreshness::Stale => cache.state.as_ref(),
+        }
+    }
+
+    pub fn surround_controls_enabled(&self) -> bool {
+        self.ui_profile.actionable
+            && self.device.connection.connected
+            && self.surround_global.as_ref().is_some_and(|cache| {
+                matches!(
+                    cache.freshness,
+                    SurroundFreshness::Authoritative | SurroundFreshness::PendingReadback
+                ) && self
+                    .displayed_surround_state()
+                    .is_some_and(|state| state.writable)
+            })
     }
 
     pub fn mixers(&self) -> &[DynamicMixerSurface] {
@@ -2087,6 +2136,7 @@ impl AppState {
             }
             DynamicStatePatch::Routing(group) => self.merge_routing_group(group),
             DynamicStatePatch::SurroundGlobal(state) => {
+                self.ui.surround_drag = None;
                 let Some(cache) = self.surround_global.as_mut() else {
                     return false;
                 };
@@ -2442,6 +2492,7 @@ impl AppState {
     pub fn mark_disconnected(&mut self) {
         self.device.connection.connected = false;
         self.device.connection.last_frame_type = Some("disconnected");
+        self.ui.surround_drag = None;
         if let Some(cache) = self.surround_global.as_mut() {
             cache.freshness = SurroundFreshness::Stale;
         }

@@ -17,6 +17,7 @@ pub enum Intent {
     Quit,
 
     // View navigation
+    SelectUiPage(UiPage),
     ToggleRawView,
     ToggleHotkeysPopup,
     SelectRawPacketTab(RawPacketTab),
@@ -249,6 +250,9 @@ pub enum Intent {
     ToggleRoutingPopup,
     RefreshQueriedState,
     CycleFocus,
+    CycleSurroundFocus {
+        forward: bool,
+    },
     MovePopupSelection(bool),
     ProfileEditorChar(String),
     ProfileEditorBackspace,
@@ -536,6 +540,18 @@ where
         .clone();
     mutate(&mut slot);
     Some(PendingMutation::Input(slot))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiPage {
+    Mixer,
+    Surround,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurroundControlFocus {
+    Level,
+    Delay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

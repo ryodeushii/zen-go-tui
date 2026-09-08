@@ -1,5 +1,7 @@
 use std::{
     collections::HashMap,
+    error::Error as StdError,
+    fmt,
     time::{Duration, Instant},
 };
 
@@ -24,11 +26,33 @@ use super::picker::{
 use super::profile_editor::{ProfileEditorMode, ProfileEditorState};
 use super::types::{
     FocusArea, Intent, PeakHoldDuration, PendingMutation, RawMapScope, RawPacketTab, RefreshRate,
+    SurroundControlFocus, UiPage,
 };
 use super::AppState;
 
 pub(crate) const MAX_FRAMES_PER_POLL: usize = 32;
 const SURROUND_READBACK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A Surround write was rejected because this session no longer has writable readback state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SurroundWriteUnavailable;
+
+impl fmt::Display for SurroundWriteUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Surround global write requires authoritative or pending captured 2.0 state"
+        )
+    }
+}
+
+impl StdError for SurroundWriteUnavailable {}
+
+pub fn is_surround_write_unavailable(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<SurroundWriteUnavailable>().is_some())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PollWritePolicy {
@@ -1198,11 +1222,19 @@ impl Controller {
     }
 
     pub fn apply_intent(&mut self, intent: Intent, area: Rect) -> Result<()> {
+        self.state.normalize_ui_page();
         let pending = intent.pending_mutation(&self.state);
+        if !matches!(
+            intent,
+            Intent::SetSurroundGlobalLevel(_) | Intent::SetSurroundGlobalDelay(_)
+        ) {
+            self.state.ui.surround_drag = None;
+        }
         match intent {
             Intent::Quit => {
                 self.state.ui.quit_requested = true;
             }
+            Intent::SelectUiPage(page) => self.handle_select_ui_page(page),
             Intent::ToggleRawView => self.state.toggle_raw_view(),
             Intent::ToggleHotkeysPopup => self.state.toggle_hotkeys_popup(),
             Intent::OpenProfilesPopup => self.handle_open_profiles_popup(),
@@ -1386,6 +1418,7 @@ impl Controller {
             Intent::ToggleRoutingPopup => self.handle_toggle_routing_popup(),
             Intent::RefreshQueriedState => self.handle_refresh_queried_state()?,
             Intent::CycleFocus => self.handle_cycle_focus(),
+            Intent::CycleSurroundFocus { forward } => self.handle_cycle_surround_focus(forward),
             Intent::MovePopupSelection(down) => self.handle_move_popup_selection(down),
             Intent::ProfileEditorChar(ch) => self.handle_profile_editor_char(ch),
             Intent::ProfileEditorBackspace => self.handle_profile_editor_backspace(),
@@ -1416,11 +1449,7 @@ impl Controller {
                 })
                 .filter(|state| state.writable)
                 .map(|state| state.template.clone())
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                    "Surround global write requires authoritative or pending captured 2.0 state"
-                )
-                })?;
+                .ok_or(SurroundWriteUnavailable)?;
         let expected = self
             .driver
             .expected_surround_global_state(&template, control, value)?;
@@ -1523,6 +1552,7 @@ impl Controller {
             return false;
         }
         cache.freshness = super::SurroundFreshness::Stale;
+        self.state.ui.surround_drag = None;
         true
     }
 
@@ -3569,8 +3599,30 @@ impl Controller {
         Ok(())
     }
 
+    fn handle_select_ui_page(&mut self, page: UiPage) {
+        self.state.ui.page = if page == UiPage::Surround && !self.state.surround_page_available() {
+            self.state.ui.last_message =
+                "Surround is unavailable for the active device profile".to_string();
+            UiPage::Mixer
+        } else {
+            self.state.ui.last_message = match page {
+                UiPage::Mixer => "Mixer page selected".to_string(),
+                UiPage::Surround => "Surround page selected".to_string(),
+            };
+            page
+        };
+    }
+
     fn handle_cycle_focus(&mut self) {
         self.state.cycle_focus();
+    }
+
+    fn handle_cycle_surround_focus(&mut self, _forward: bool) {
+        // With two controls, forward and reverse traversal both select the other control.
+        self.state.ui.surround_focus = match self.state.ui.surround_focus {
+            SurroundControlFocus::Level => SurroundControlFocus::Delay,
+            SurroundControlFocus::Delay => SurroundControlFocus::Level,
+        };
     }
 
     fn handle_move_popup_selection(&mut self, down: bool) {
@@ -4242,9 +4294,11 @@ mod correction_tests {
         transport.take_writes();
 
         controller.surround_readback_deadline = Some(Instant::now() - Duration::from_millis(1));
-        assert!(controller
+        let error = controller
             .apply_intent(Intent::SetSurroundGlobalDelay(45), Rect::default())
-            .is_err());
+            .expect_err("expired pending state must reject the write");
+        assert!(is_surround_write_unavailable(&error));
+        assert!(!crate::transport::is_device_error(&error));
         assert!(transport.take_writes().is_empty());
         assert!(controller.surround_readback_deadline.is_none());
         let cache = controller.state.surround_global.as_ref().unwrap();

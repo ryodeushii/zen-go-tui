@@ -9,8 +9,8 @@ use antelope_protocol::{
     SampleRate,
 };
 use zen_go_tui::app::{
-    Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind,
-    SelectorPopupState,
+    is_surround_write_unavailable, Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate,
+    SelectorPopupKind, SelectorPopupState, SurroundControlFocus, UiPage,
 };
 use zen_go_tui::device::{DeviceCandidate, DevicePickerState, RuntimeDeviceState};
 use zen_go_tui::settings;
@@ -261,6 +261,28 @@ pub fn refresh_after_reconnect_if_needed(
     }
 }
 
+const SURROUND_INTERACTION_UNAVAILABLE_MESSAGE: &str =
+    "Surround controls are read-only until a fresh device session provides authoritative readback";
+
+fn apply_interaction_intent(
+    controller: &mut Controller,
+    intent: Intent,
+    area: ratatui::layout::Rect,
+) -> Result<()> {
+    match controller.apply_intent(intent, area) {
+        Err(error) if is_surround_write_unavailable(&error) => {
+            controller.state.ui.surround_drag = None;
+            controller.state.ui.last_message = SURROUND_INTERACTION_UNAVAILABLE_MESSAGE.to_string();
+            Ok(())
+        }
+        Err(error) => {
+            controller.state.ui.surround_drag = None;
+            Err(error)
+        }
+        Ok(()) => Ok(()),
+    }
+}
+
 fn cycle_peak_hold_duration(
     controller: &mut Controller,
     area: ratatui::layout::Rect,
@@ -470,6 +492,220 @@ fn handle_selector_popup(
     }
 }
 
+fn handle_assignment_picker(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    ctrl: bool,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    let result = match key_code {
+        AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('c') if ctrl => return Ok(KeyAction::Quit),
+        AppKeyCode::Up => controller.apply_intent(Intent::MovePopupSelection(false), area),
+        AppKeyCode::Down => controller.apply_intent(Intent::MovePopupSelection(true), area),
+        AppKeyCode::Enter => activate_popup_selection(controller),
+        AppKeyCode::Esc => controller.apply_intent(Intent::CloseAssignmentPicker, area),
+        _ => Ok(()),
+    };
+
+    match result {
+        Ok(()) => Ok(KeyAction::Continue),
+        Err(error) if is_device_error(&error) => {
+            handle_runtime_error(controller, error)?;
+            Ok(KeyAction::ReconnectPending)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn open_selected_assignment_picker(
+    controller: &mut Controller,
+    area: ratatui::layout::Rect,
+) -> Result<()> {
+    if controller.state.ui.focus != FocusArea::Mixer {
+        return Ok(());
+    }
+    let Some(address) = controller
+        .state
+        .active_mixer_surface()
+        .and_then(|index| controller.state.mixers().get(index))
+        .and_then(|surface| {
+            surface
+                .strips
+                .get(controller.state.mixer.selected_channel)
+                .map(|strip| MixerAddress {
+                    surface: surface.surface,
+                    strip: strip.strip,
+                })
+        })
+    else {
+        return Ok(());
+    };
+    if controller
+        .state
+        .ui_profile
+        .supports_assignment(address.surface, address.strip)
+    {
+        controller.apply_intent(Intent::OpenAssignmentPickerAt { address }, area)
+    } else {
+        controller.state.ui.last_message =
+            "Routing assignment is unsupported for the selected strip.".into();
+        Ok(())
+    }
+}
+
+fn handle_routing_popup(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    ctrl: bool,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    let result = match key_code {
+        AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('c') if ctrl => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('r') => controller.apply_intent(Intent::ToggleRoutingPopup, area),
+        AppKeyCode::Char('a') => open_selected_assignment_picker(controller, area),
+        AppKeyCode::Esc => controller.apply_intent(Intent::CloseRoutingPopup, area),
+        AppKeyCode::Up | AppKeyCode::Down if controller.state.popup.routing_editor.is_some() => {
+            let editor = controller
+                .state
+                .popup
+                .routing_editor
+                .expect("guarded above");
+            let index = controller
+                .state
+                .routing_capabilities
+                .iter()
+                .position(|group| group.destination == editor.destination)
+                .unwrap_or(0);
+            let index = if key_code == AppKeyCode::Up {
+                index.saturating_sub(1)
+            } else {
+                index.saturating_add(1).min(
+                    controller
+                        .state
+                        .routing_capabilities
+                        .len()
+                        .saturating_sub(1),
+                )
+            };
+            let destination = controller.state.routing_capabilities[index].destination;
+            controller.apply_intent(Intent::SelectRoutingDestination { destination }, area)
+        }
+        AppKeyCode::Left | AppKeyCode::Right if controller.state.popup.routing_editor.is_some() => {
+            let editor = controller
+                .state
+                .popup
+                .routing_editor
+                .expect("guarded above");
+            let channel = if key_code == AppKeyCode::Left {
+                editor.channel.saturating_sub(1)
+            } else {
+                let last = controller
+                    .state
+                    .routing_capabilities
+                    .iter()
+                    .find(|group| group.destination == editor.destination)
+                    .map_or(0, |group| group.channel_count.saturating_sub(1));
+                editor.channel.saturating_add(1).min(last)
+            };
+            controller.apply_intent(
+                Intent::SelectRoutingChannel {
+                    destination: editor.destination,
+                    channel,
+                },
+                area,
+            )
+        }
+        AppKeyCode::Enter if controller.state.popup.routing_editor.is_some() => {
+            let editor = controller
+                .state
+                .popup
+                .routing_editor
+                .expect("guarded above");
+            if controller
+                .state
+                .general_routing_channel_available(editor.destination, editor.channel)
+            {
+                controller.apply_intent(
+                    Intent::OpenRoutingSourcePicker {
+                        destination: editor.destination,
+                        channel: editor.channel,
+                    },
+                    area,
+                )
+            } else {
+                controller.state.ui.last_message =
+                    "Routing source is unavailable until complete readback arrives".to_string();
+                Ok(())
+            }
+        }
+        _ => Ok(()),
+    };
+
+    match result {
+        Ok(()) => Ok(KeyAction::Continue),
+        Err(error) if is_device_error(&error) => {
+            handle_runtime_error(controller, error)?;
+            Ok(KeyAction::ReconnectPending)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn handle_raw_view(
+    controller: &mut Controller,
+    key_code: AppKeyCode,
+    ctrl: bool,
+    area: ratatui::layout::Rect,
+) -> Result<KeyAction> {
+    match key_code {
+        AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('c') if ctrl => return Ok(KeyAction::Quit),
+        AppKeyCode::Char('d') if ctrl => {
+            controller.apply_intent(Intent::ToggleRawView, area)?;
+        }
+        AppKeyCode::Char('[') => {
+            controller.apply_intent(Intent::CycleRawMapScope { forward: false }, area)?;
+        }
+        AppKeyCode::Char(']') => {
+            controller.apply_intent(Intent::CycleRawMapScope { forward: true }, area)?;
+        }
+        AppKeyCode::PageUp => controller.apply_intent(
+            Intent::ScrollRawDump {
+                increase: false,
+                page: true,
+            },
+            area,
+        )?,
+        AppKeyCode::PageDown => controller.apply_intent(
+            Intent::ScrollRawDump {
+                increase: true,
+                page: true,
+            },
+            area,
+        )?,
+        AppKeyCode::Left => {
+            if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
+                controller.apply_intent(Intent::ScrollQueryReplyList { increase: false }, area)?;
+            } else {
+                controller.state.cycle_raw_packet(false);
+            }
+        }
+        AppKeyCode::Right => {
+            if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
+                controller.apply_intent(Intent::ScrollQueryReplyList { increase: true }, area)?;
+            } else {
+                controller.state.cycle_raw_packet(true);
+            }
+        }
+        AppKeyCode::Char('b') => controller.apply_intent(Intent::CaptureRawBaseline, area)?,
+        AppKeyCode::Char('x') => controller.apply_intent(Intent::ClearRawBaseline, area)?,
+        _ => {}
+    }
+    Ok(KeyAction::Continue)
+}
+
 pub fn handle_key_press(
     controller: &mut Controller,
     key: AppKeyEvent,
@@ -486,9 +722,24 @@ pub fn handle_key_press(
         return handle_selector_popup(controller, key, area);
     }
 
+    if ctrl && key_code == AppKeyCode::Char('c') {
+        return Ok(KeyAction::Quit);
+    }
+
+    if controller.state.popup.assignment_picker.is_some() {
+        return handle_assignment_picker(controller, key_code, ctrl, area);
+    }
+
+    if controller.state.popup.routing_open {
+        return handle_routing_popup(controller, key_code, ctrl, area);
+    }
+
+    if controller.state.popup.raw_view_open {
+        return handle_raw_view(controller, key_code, ctrl, area);
+    }
+
     if ctrl {
         match key_code {
-            AppKeyCode::Char('c') => return Ok(KeyAction::Quit),
             AppKeyCode::Char('d') => {
                 controller.apply_intent(Intent::ToggleRawView, area)?;
                 return Ok(KeyAction::Continue);
@@ -526,6 +777,17 @@ pub fn handle_key_press(
 
     let result = match key_code {
         AppKeyCode::Char('q') => return Ok(KeyAction::Quit),
+        AppKeyCode::F(1) if page_navigation_available(&controller.state) => {
+            controller.apply_intent(Intent::SelectUiPage(UiPage::Mixer), area)?;
+            Ok(())
+        }
+        AppKeyCode::F(3)
+            if page_navigation_available(&controller.state)
+                && controller.state.surround_page_available() =>
+        {
+            controller.apply_intent(Intent::SelectUiPage(UiPage::Surround), area)?;
+            Ok(())
+        }
         AppKeyCode::Char('r') => {
             controller.apply_intent(Intent::ToggleRoutingPopup, area)?;
             Ok(())
@@ -546,191 +808,39 @@ pub fn handle_key_press(
             controller.apply_intent(Intent::RefreshQueriedState, area)?;
             Ok(())
         }
+        AppKeyCode::Tab if surround_page_input_active(&controller.state) => {
+            controller.apply_intent(Intent::CycleSurroundFocus { forward: true }, area)?;
+            Ok(())
+        }
+        AppKeyCode::BackTab if surround_page_input_active(&controller.state) => {
+            controller.apply_intent(Intent::CycleSurroundFocus { forward: false }, area)?;
+            Ok(())
+        }
         AppKeyCode::Tab => {
             controller.apply_intent(Intent::CycleFocus, area)?;
             Ok(())
         }
         AppKeyCode::BackTab => Ok(()),
         AppKeyCode::Char('?') => {
+            controller.state.ui.surround_drag = None;
             controller.state.toggle_hotkeys_popup();
             Ok(())
         }
-        AppKeyCode::Up
-            if controller.state.popup.assignment_picker.is_some()
-                || controller.state.popup.selector_popup.is_some() =>
-        {
-            controller.apply_intent(Intent::MovePopupSelection(false), area)?;
-            Ok(())
-        }
-        AppKeyCode::Down
-            if controller.state.popup.assignment_picker.is_some()
-                || controller.state.popup.selector_popup.is_some() =>
-        {
-            controller.apply_intent(Intent::MovePopupSelection(true), area)?;
-            Ok(())
-        }
-        AppKeyCode::Enter
-            if controller.state.popup.assignment_picker.is_some()
-                || controller.state.popup.selector_popup.is_some() =>
-        {
-            activate_popup_selection(controller)
-        }
-        AppKeyCode::Up
-            if controller.state.popup.routing_open
-                && controller.state.popup.routing_editor.is_some() =>
-        {
-            let editor = controller
-                .state
-                .popup
-                .routing_editor
-                .expect("guarded above");
-            let index = controller
-                .state
-                .routing_capabilities
-                .iter()
-                .position(|group| group.destination == editor.destination)
-                .unwrap_or(0);
-            let destination =
-                controller.state.routing_capabilities[index.saturating_sub(1)].destination;
-            controller.apply_intent(Intent::SelectRoutingDestination { destination }, area)?;
-            Ok(())
-        }
-        AppKeyCode::Down
-            if controller.state.popup.routing_open
-                && controller.state.popup.routing_editor.is_some() =>
-        {
-            let editor = controller
-                .state
-                .popup
-                .routing_editor
-                .expect("guarded above");
-            let index = controller
-                .state
-                .routing_capabilities
-                .iter()
-                .position(|group| group.destination == editor.destination)
-                .unwrap_or(0);
-            let next = index.saturating_add(1).min(
-                controller
-                    .state
-                    .routing_capabilities
-                    .len()
-                    .saturating_sub(1),
-            );
-            let destination = controller.state.routing_capabilities[next].destination;
-            controller.apply_intent(Intent::SelectRoutingDestination { destination }, area)?;
-            Ok(())
-        }
-        AppKeyCode::Left
-            if controller.state.popup.routing_open
-                && controller.state.popup.routing_editor.is_some() =>
-        {
-            let editor = controller
-                .state
-                .popup
-                .routing_editor
-                .expect("guarded above");
-            controller.apply_intent(
-                Intent::SelectRoutingChannel {
-                    destination: editor.destination,
-                    channel: editor.channel.saturating_sub(1),
-                },
-                area,
-            )?;
-            Ok(())
-        }
-        AppKeyCode::Right
-            if controller.state.popup.routing_open
-                && controller.state.popup.routing_editor.is_some() =>
-        {
-            let editor = controller
-                .state
-                .popup
-                .routing_editor
-                .expect("guarded above");
-            let last = controller
-                .state
-                .routing_capabilities
-                .iter()
-                .find(|group| group.destination == editor.destination)
-                .map_or(0, |group| group.channel_count.saturating_sub(1));
-            controller.apply_intent(
-                Intent::SelectRoutingChannel {
-                    destination: editor.destination,
-                    channel: editor.channel.saturating_add(1).min(last),
-                },
-                area,
-            )?;
-            Ok(())
-        }
-        AppKeyCode::Enter
-            if controller.state.popup.routing_open
-                && controller.state.popup.routing_editor.is_some() =>
-        {
-            let editor = controller
-                .state
-                .popup
-                .routing_editor
-                .expect("guarded above");
-            if controller
-                .state
-                .general_routing_channel_available(editor.destination, editor.channel)
-            {
-                controller.apply_intent(
-                    Intent::OpenRoutingSourcePicker {
-                        destination: editor.destination,
-                        channel: editor.channel,
-                    },
-                    area,
-                )?;
-            } else {
-                controller.state.ui.last_message =
-                    "Routing source is unavailable until complete readback arrives".to_string();
+        AppKeyCode::Left | AppKeyCode::Down if surround_page_input_active(&controller.state) => {
+            if let Some(intent) = surround_adjust_intent(&controller.state, false) {
+                apply_interaction_intent(controller, intent, area)?;
             }
             Ok(())
         }
-        AppKeyCode::Char('[') if controller.state.popup.raw_view_open => {
-            controller.apply_intent(Intent::CycleRawMapScope { forward: false }, area)?;
-            Ok(())
-        }
-        AppKeyCode::Char(']') if controller.state.popup.raw_view_open => {
-            controller.apply_intent(Intent::CycleRawMapScope { forward: true }, area)?;
-            Ok(())
-        }
-        AppKeyCode::PageUp if controller.state.popup.raw_view_open => {
-            controller.apply_intent(
-                Intent::ScrollRawDump {
-                    increase: false,
-                    page: true,
-                },
-                area,
-            )?;
-            Ok(())
-        }
-        AppKeyCode::PageDown if controller.state.popup.raw_view_open => {
-            controller.apply_intent(
-                Intent::ScrollRawDump {
-                    increase: true,
-                    page: true,
-                },
-                area,
-            )?;
-            Ok(())
-        }
-        AppKeyCode::Left if controller.state.popup.raw_view_open => {
-            if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
-                controller.apply_intent(Intent::ScrollQueryReplyList { increase: false }, area)?;
-            } else {
-                controller.state.cycle_raw_packet(false);
+        AppKeyCode::Right | AppKeyCode::Up if surround_page_input_active(&controller.state) => {
+            if let Some(intent) = surround_adjust_intent(&controller.state, true) {
+                apply_interaction_intent(controller, intent, area)?;
             }
             Ok(())
         }
-        AppKeyCode::Right if controller.state.popup.raw_view_open => {
-            if controller.state.raw_view.selected_tab == zen_go_tui::app::RawPacketTab::Query75 {
-                controller.apply_intent(Intent::ScrollQueryReplyList { increase: true }, area)?;
-            } else {
-                controller.state.cycle_raw_packet(true);
-            }
+        AppKeyCode::Char('m' | 'd' | 'o' | 'a' | 'l' | '[' | ']' | '3')
+            if controller.state.active_ui_page() == UiPage::Surround =>
+        {
             Ok(())
         }
         AppKeyCode::Left => {
@@ -780,37 +890,7 @@ pub fn handle_key_press(
             }
             Ok(())
         }
-        AppKeyCode::Char('a') => {
-            if controller.state.ui.focus == FocusArea::Mixer {
-                if let Some(address) = controller
-                    .state
-                    .active_mixer_surface()
-                    .and_then(|index| controller.state.mixers().get(index))
-                    .and_then(|surface| surface.strips.get(controller.state.mixer.selected_channel))
-                    .map(|strip| MixerAddress {
-                        surface: controller
-                            .state
-                            .active_mixer_surface()
-                            .and_then(|index| controller.state.mixers().get(index))
-                            .map_or(0, |surface| surface.surface),
-                        strip: strip.strip,
-                    })
-                {
-                    if controller
-                        .state
-                        .ui_profile
-                        .supports_assignment(address.surface, address.strip)
-                    {
-                        controller
-                            .apply_intent(Intent::OpenAssignmentPickerAt { address }, area)?;
-                    } else {
-                        controller.state.ui.last_message =
-                            "Routing assignment is unsupported for the selected strip.".into();
-                    }
-                }
-            }
-            Ok(())
-        }
+        AppKeyCode::Char('a') => open_selected_assignment_picker(controller, area),
         AppKeyCode::Char('l') => {
             if controller.state.ui.focus == FocusArea::Mixer {
                 if let Some((surface, strip)) = controller
@@ -969,31 +1049,6 @@ pub fn handle_key_press(
             }
             Ok(())
         }
-        AppKeyCode::Char('b') if controller.state.popup.raw_view_open => {
-            controller.apply_intent(Intent::CaptureRawBaseline, area)?;
-            Ok(())
-        }
-        AppKeyCode::Char('x') if controller.state.popup.raw_view_open => {
-            controller.apply_intent(Intent::ClearRawBaseline, area)?;
-            Ok(())
-        }
-        AppKeyCode::Esc
-            if controller.state.popup.assignment_picker.is_some()
-                || controller.state.popup.selector_popup.is_some()
-                || controller.state.popup.routing_open
-                || controller.state.popup.hotkeys_open
-                || controller.state.popup.options_open =>
-        {
-            controller.state.popup.assignment_picker = None;
-            controller.state.popup.selector_popup = None;
-            controller.state.popup.routing_editor = None;
-            controller.state.popup.routing_open = false;
-            controller.state.popup.selected_index = 0;
-            controller.state.popup.hotkeys_open = false;
-            controller.state.popup.options_open = false;
-            controller.state.ui.last_message = "Closed popup".to_string();
-            Ok(())
-        }
         _ => Ok(()),
     };
 
@@ -1054,7 +1109,7 @@ fn device_header_name_mouse_hit(
     state: &zen_go_tui::app::AppState,
     mouse: AppMouseEvent,
 ) -> bool {
-    !state.popup.raw_view_open
+    page_navigation_available(state)
         && matches!(mouse.kind, AppMouseEventKind::Down(AppMouseButton::Left))
         && ui::device_header_name_hit(area, state, mouse.column, mouse.row)
 }
@@ -1064,6 +1119,7 @@ fn open_device_selector_for_runtime(
     controller: &mut Controller,
     active_candidate: Option<&DeviceCandidate>,
 ) {
+    controller.state.ui.surround_drag = None;
     if let Err(error) = runtime.open_selector_for(active_candidate.cloned()) {
         controller.state.ui.last_message = format!("Device selector unavailable: {error}");
     }
@@ -1239,6 +1295,7 @@ fn app_loop_inner(
                         needs_redraw = true;
                     }
                     zen_go_tui::terminal::AppInputEvent::FocusLost => {
+                        controller.state.ui.surround_drag = None;
                         if let Err(error) = controller.release_talkback_if_held() {
                             if is_device_error(&error) {
                                 return Ok(AppLoopExit::Disconnected);
@@ -1311,6 +1368,48 @@ fn app_loop_inner(
     }
 
     Ok(AppLoopExit::Quit)
+}
+
+fn page_navigation_available(state: &zen_go_tui::app::AppState) -> bool {
+    !state.popup.raw_view_open
+        && !state.popup.hotkeys_open
+        && !state.popup.profiles_open
+        && state.popup.profile_editor.is_none()
+        && state.popup.selector_popup.is_none()
+        && state.popup.assignment_picker.is_none()
+        && state.popup.routing_source_picker.is_none()
+        && !state.popup.routing_open
+        && !state.popup.options_open
+}
+
+fn surround_page_input_active(state: &zen_go_tui::app::AppState) -> bool {
+    page_navigation_available(state) && state.active_ui_page() == UiPage::Surround
+}
+
+fn surround_adjust_intent(state: &zen_go_tui::app::AppState, increase: bool) -> Option<Intent> {
+    if !state.surround_controls_enabled() {
+        return None;
+    }
+    let display = state.displayed_surround_state()?;
+    let (level_range, delay_range) = state.surround_control_ranges()?;
+    Some(match state.ui.surround_focus {
+        SurroundControlFocus::Level => Intent::SetSurroundGlobalLevel(
+            if increase {
+                display.level_raw.saturating_add(1)
+            } else {
+                display.level_raw.saturating_sub(1)
+            }
+            .clamp(level_range.0, level_range.1),
+        ),
+        SurroundControlFocus::Delay => Intent::SetSurroundGlobalDelay(
+            if increase {
+                display.delay_tenths_ms.saturating_add(1)
+            } else {
+                display.delay_tenths_ms.saturating_sub(1)
+            }
+            .clamp(delay_range.0, delay_range.1),
+        ),
+    })
 }
 
 pub fn move_selection(controller: &mut Controller, right: bool, area: ratatui::layout::Rect) {
@@ -1515,19 +1614,27 @@ pub fn handle_mouse_event(
 ) -> Result<()> {
     match mouse.kind {
         AppMouseEventKind::Down(AppMouseButton::Left) => {
+            let drag = ui::surround_drag_target(area, &controller.state, mouse.column, mouse.row);
+            controller.state.ui.surround_drag = drag;
+            if let Some(focus) = drag {
+                controller.state.ui.surround_focus = focus;
+            }
             if let Some(action) = ui::mouse_action(area, &controller.state, mouse.column, mouse.row)
             {
-                controller.apply_intent(action, area)?;
+                apply_interaction_intent(controller, action, area)?;
             }
         }
         AppMouseEventKind::Up(AppMouseButton::Left) => {
+            controller.state.ui.surround_drag = None;
             controller.release_talkback_if_held()?;
         }
         AppMouseEventKind::Drag(AppMouseButton::Left) => {
             if let Some(action) =
                 ui::slider_mouse_action(area, &controller.state, mouse.column, mouse.row)
             {
-                controller.apply_intent(action, area)?;
+                apply_interaction_intent(controller, action, area)?;
+            } else {
+                controller.state.ui.surround_drag = None;
             }
         }
         AppMouseEventKind::ScrollLeft
@@ -1541,7 +1648,7 @@ pub fn handle_mouse_event(
             if let Some(action) =
                 ui::slider_wheel_action(area, &controller.state, mouse.column, mouse.row, increase)
             {
-                controller.apply_intent(action, area)?;
+                apply_interaction_intent(controller, action, area)?;
                 return Ok(());
             }
         }
@@ -1553,7 +1660,10 @@ pub fn handle_mouse_event(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
     use std::time::Duration;
 
     use super::*;
@@ -1563,7 +1673,7 @@ mod tests {
     };
     use ratatui::{backend::TestBackend, Terminal};
     use zen_go_tui::terminal::AppModifiers;
-    use zen_go_tui::transport::{MockTransport, Transport};
+    use zen_go_tui::transport::{MockTransport, Transport, TransportError};
 
     struct RecordingDriver {
         definition: DriverDefinition,
@@ -1783,6 +1893,17 @@ mod tests {
         ));
         assert!(devices.selector().is_none());
 
+        controller.state.popup.raw_view_open = false;
+        controller.state.popup.options_open = true;
+        assert!(!handle_device_selector_header_mouse(
+            &mut devices,
+            &mut controller,
+            None,
+            area,
+            name_click,
+        ));
+        assert!(devices.selector().is_none());
+
         assert!(handle_device_selector_hotkey(
             &mut devices,
             &mut controller,
@@ -1852,6 +1973,486 @@ mod tests {
             .clone();
         let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
         Controller::new_for_entry(transport, Box::new(driver), &entry).expect("controller")
+    }
+
+    fn surround_readback_fixture() -> Vec<u8> {
+        include_str!("../antelope-protocol/tests/fixtures/orion/surround_global_20_readback.hex")
+            .split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).expect("Surround fixture byte"))
+            .collect()
+    }
+
+    fn authoritative_surround_controller() -> (Controller, MockTransport) {
+        let transport = MockTransport::default();
+        let mut controller = orion_settings_controller(Box::new(transport.clone()));
+        transport.push_read(surround_readback_fixture());
+        assert!(controller
+            .poll_device(Duration::ZERO)
+            .expect("Surround readback"));
+        transport.take_writes();
+        (controller, transport)
+    }
+
+    struct DisconnectOnWriteTransport {
+        read: Mutex<Option<Vec<u8>>>,
+        write_attempts: Arc<AtomicUsize>,
+    }
+
+    impl Transport for DisconnectOnWriteTransport {
+        fn write(&self, _data: &[u8]) -> Result<()> {
+            self.write_attempts.fetch_add(1, Ordering::SeqCst);
+            Err(anyhow::anyhow!(TransportError::DeviceDisconnected))
+        }
+
+        fn read(&self, _timeout: Duration) -> Result<Option<Vec<u8>>> {
+            Ok(self.read.lock().expect("disconnect read lock").take())
+        }
+    }
+
+    #[test]
+    fn surround_keyboard_navigation_adjustment_and_modal_isolation_are_page_local() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let (mut controller, transport) = authoritative_surround_controller();
+        assert_eq!(controller.state.ui.page, UiPage::Mixer);
+        handle_key_press(&mut controller, key(AppKeyCode::F(3)), area).expect("F3 Surround");
+        assert_eq!(controller.state.ui.page, UiPage::Surround);
+        assert_eq!(
+            controller.state.ui.surround_focus,
+            SurroundControlFocus::Level
+        );
+
+        let keyboard = surround_adjust_intent(&controller.state, true);
+        let wheel = (0..area.height).find_map(|y| {
+            (0..area.width)
+                .find_map(|x| ui::slider_wheel_action(area, &controller.state, x, y, true))
+        });
+        assert_eq!(keyboard, Some(Intent::SetSurroundGlobalLevel(601)));
+        assert_eq!(wheel, keyboard);
+
+        handle_key_press(&mut controller, key(AppKeyCode::Tab), area).expect("forward focus");
+        assert_eq!(
+            controller.state.ui.surround_focus,
+            SurroundControlFocus::Delay
+        );
+        handle_key_press(&mut controller, key(AppKeyCode::BackTab), area).expect("reverse focus");
+        assert_eq!(
+            controller.state.ui.surround_focus,
+            SurroundControlFocus::Level
+        );
+
+        handle_key_press(&mut controller, key(AppKeyCode::Up), area).expect("level up");
+        assert_eq!(
+            controller
+                .state
+                .surround_global
+                .as_ref()
+                .and_then(|cache| cache.pending_expected.as_ref())
+                .map(|state| state.level_raw),
+            Some(601)
+        );
+        assert!(!transport.take_writes().is_empty());
+
+        controller.state.popup.options_open = true;
+        let before = controller
+            .state
+            .surround_global
+            .as_ref()
+            .and_then(|cache| cache.pending_expected.as_ref())
+            .map(|state| state.level_raw);
+        handle_key_press(&mut controller, key(AppKeyCode::Up), area).expect("modal key");
+        assert_eq!(
+            controller
+                .state
+                .surround_global
+                .as_ref()
+                .and_then(|cache| cache.pending_expected.as_ref())
+                .map(|state| state.level_raw),
+            before
+        );
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn raw_routing_and_assignment_keyboard_handlers_are_exhaustive() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let dangerous = [
+            AppKeyCode::Char('m'),
+            AppKeyCode::F(1),
+            AppKeyCode::Tab,
+            AppKeyCode::Char('2'),
+            AppKeyCode::Char('s'),
+            AppKeyCode::Char('c'),
+        ];
+
+        let (mut raw, raw_transport) = authoritative_surround_controller();
+        raw.apply_intent(Intent::SelectUiPage(UiPage::Surround), area)
+            .expect("select Surround");
+        raw.apply_intent(Intent::ToggleRawView, area)
+            .expect("open raw view");
+        let raw_focus = raw.state.ui.focus;
+        let surround_focus = raw.state.ui.surround_focus;
+        for code in dangerous {
+            assert_eq!(
+                handle_key_press(&mut raw, key(code), area).expect("raw consumes key"),
+                KeyAction::Continue
+            );
+        }
+        assert_eq!(raw.state.ui.page, UiPage::Surround);
+        assert_eq!(raw.state.ui.focus, raw_focus);
+        assert_eq!(raw.state.ui.surround_focus, surround_focus);
+        assert!(raw_transport.take_writes().is_empty());
+        handle_key_press(&mut raw, key(AppKeyCode::PageDown), area)
+            .expect("raw page-down remains active");
+        assert_eq!(raw.state.raw_view.raw_dump_scroll, 10);
+
+        let (mut routing, routing_transport) = authoritative_surround_controller();
+        routing
+            .apply_intent(Intent::SelectUiPage(UiPage::Surround), area)
+            .expect("select Surround");
+        routing
+            .apply_intent(Intent::OpenRoutingPopup, area)
+            .expect("open routing");
+        let routing_focus = routing.state.ui.focus;
+        let surround_focus = routing.state.ui.surround_focus;
+        for code in dangerous {
+            assert_eq!(
+                handle_key_press(&mut routing, key(code), area).expect("routing consumes key"),
+                KeyAction::Continue
+            );
+        }
+        assert_eq!(routing.state.ui.page, UiPage::Surround);
+        assert_eq!(routing.state.ui.focus, routing_focus);
+        assert_eq!(routing.state.ui.surround_focus, surround_focus);
+        assert!(routing_transport.take_writes().is_empty());
+        let channel = routing
+            .state
+            .popup
+            .routing_editor
+            .expect("routing editor")
+            .channel;
+        handle_key_press(&mut routing, key(AppKeyCode::Right), area)
+            .expect("routing right remains active");
+        assert_eq!(
+            routing
+                .state
+                .popup
+                .routing_editor
+                .expect("routing editor")
+                .channel,
+            channel.saturating_add(1)
+        );
+        handle_key_press(&mut routing, key(AppKeyCode::Char('r')), area)
+            .expect("routing shortcut closes popup");
+        assert!(!routing.state.popup.routing_open);
+
+        let (mut assignment, assignment_transport) = authoritative_surround_controller();
+        assignment
+            .apply_intent(Intent::SelectUiPage(UiPage::Surround), area)
+            .expect("select Surround");
+        assignment.state.popup.assignment_picker =
+            Some(zen_go_tui::app::AssignmentPickerState { strip: 1 });
+        assignment.state.popup.selected_index = 0;
+        let assignment_focus = assignment.state.ui.focus;
+        let surround_focus = assignment.state.ui.surround_focus;
+        for code in dangerous {
+            assert_eq!(
+                handle_key_press(&mut assignment, key(code), area)
+                    .expect("assignment consumes key"),
+                KeyAction::Continue
+            );
+        }
+        assert_eq!(assignment.state.ui.page, UiPage::Surround);
+        assert_eq!(assignment.state.ui.focus, assignment_focus);
+        assert_eq!(assignment.state.ui.surround_focus, surround_focus);
+        assert!(assignment_transport.take_writes().is_empty());
+        handle_key_press(&mut assignment, key(AppKeyCode::Down), area)
+            .expect("assignment down remains active");
+        assert_eq!(assignment.state.popup.selected_index, 1);
+        handle_key_press(&mut assignment, key(AppKeyCode::Esc), area)
+            .expect("assignment escape remains active");
+        assert!(assignment.state.popup.assignment_picker.is_none());
+    }
+
+    #[test]
+    fn stale_surround_interactions_are_consumed_without_writes() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+
+        for origin in ["keyboard", "drag", "wheel"] {
+            let (mut controller, transport) = authoritative_surround_controller();
+            controller
+                .apply_intent(Intent::SelectUiPage(UiPage::Surround), area)
+                .expect("select Surround");
+            let intent = match origin {
+                "keyboard" => surround_adjust_intent(&controller.state, true),
+                "drag" => {
+                    controller.state.ui.surround_drag = Some(SurroundControlFocus::Level);
+                    (0..area.height).find_map(|y| {
+                        (0..area.width)
+                            .find_map(|x| ui::slider_mouse_action(area, &controller.state, x, y))
+                    })
+                }
+                "wheel" => (0..area.height).find_map(|y| {
+                    (0..area.width)
+                        .find_map(|x| ui::slider_wheel_action(area, &controller.state, x, y, true))
+                }),
+                _ => unreachable!(),
+            }
+            .expect("interaction is eligible before freshness changes");
+            controller
+                .state
+                .surround_global
+                .as_mut()
+                .expect("Surround cache")
+                .freshness = zen_go_tui::app::SurroundFreshness::Stale;
+            controller.state.ui.surround_drag = Some(SurroundControlFocus::Level);
+
+            apply_interaction_intent(&mut controller, intent, area)
+                .expect("stale interaction is consumed");
+
+            assert!(transport.take_writes().is_empty(), "{origin}");
+            assert_eq!(
+                controller
+                    .state
+                    .surround_global
+                    .as_ref()
+                    .expect("Surround cache")
+                    .freshness,
+                zen_go_tui::app::SurroundFreshness::Stale,
+                "{origin}"
+            );
+            assert!(controller.state.ui.surround_drag.is_none(), "{origin}");
+            assert_eq!(
+                controller.state.ui.last_message, SURROUND_INTERACTION_UNAVAILABLE_MESSAGE,
+                "{origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn surround_interaction_does_not_swallow_range_or_device_errors() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let (mut invalid, transport) = authoritative_surround_controller();
+        let error =
+            apply_interaction_intent(&mut invalid, Intent::SetSurroundGlobalLevel(u16::MAX), area)
+                .expect_err("invalid driver range must propagate");
+        assert!(!is_surround_write_unavailable(&error));
+        assert!(!is_device_error(&error));
+        assert!(transport.take_writes().is_empty());
+
+        let write_attempts = Arc::new(AtomicUsize::new(0));
+        let transport = DisconnectOnWriteTransport {
+            read: Mutex::new(Some(surround_readback_fixture())),
+            write_attempts: write_attempts.clone(),
+        };
+        let mut disconnected = orion_settings_controller(Box::new(transport));
+        disconnected
+            .poll_device(Duration::ZERO)
+            .expect("authoritative Surround readback");
+        disconnected
+            .apply_intent(Intent::SelectUiPage(UiPage::Surround), area)
+            .expect("select Surround");
+
+        let error = handle_key_press(&mut disconnected, key(AppKeyCode::Up), area)
+            .expect_err("device failure must propagate to the existing runtime disconnect path");
+        assert!(is_device_error(&error));
+        assert!(!is_surround_write_unavailable(&error));
+        assert_eq!(write_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            disconnected
+                .state
+                .surround_global
+                .as_ref()
+                .expect("Surround cache")
+                .freshness,
+            zen_go_tui::app::SurroundFreshness::Stale
+        );
+    }
+
+    #[test]
+    fn surround_drag_lifetime_ends_on_release_page_modal_and_disconnect() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let (mut controller, _) = authoritative_surround_controller();
+        controller
+            .apply_intent(Intent::SelectUiPage(UiPage::Surround), area)
+            .expect("select Surround");
+        let (x, y) = (0..area.height)
+            .find_map(|y| {
+                (0..area.width).find_map(|x| {
+                    matches!(
+                        ui::mouse_action(area, &controller.state, x, y),
+                        Some(Intent::SetSurroundGlobalLevel(_))
+                    )
+                    .then_some((x, y))
+                })
+            })
+            .expect("visible level track");
+        let down = AppMouseEvent {
+            kind: AppMouseEventKind::Down(AppMouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: AppModifiers::default(),
+        };
+        handle_mouse_event(area, &mut controller, down).expect("start drag");
+        assert_eq!(
+            controller.state.ui.surround_drag,
+            Some(SurroundControlFocus::Level)
+        );
+        handle_mouse_event(
+            area,
+            &mut controller,
+            AppMouseEvent {
+                kind: AppMouseEventKind::Up(AppMouseButton::Left),
+                ..down
+            },
+        )
+        .expect("release drag");
+        assert!(controller.state.ui.surround_drag.is_none());
+
+        controller.state.ui.surround_drag = Some(SurroundControlFocus::Delay);
+        controller
+            .apply_intent(Intent::OpenOptionsPopup, area)
+            .expect("open modal");
+        assert!(controller.state.ui.surround_drag.is_none());
+        controller.state.popup.options_open = false;
+
+        controller.state.ui.surround_drag = Some(SurroundControlFocus::Level);
+        controller
+            .apply_intent(Intent::SelectUiPage(UiPage::Mixer), area)
+            .expect("select Mixer");
+        assert!(controller.state.ui.surround_drag.is_none());
+
+        controller.state.ui.surround_drag = Some(SurroundControlFocus::Level);
+        controller.state.mark_disconnected();
+        assert!(controller.state.ui.surround_drag.is_none());
+    }
+
+    #[test]
+    fn raw_and_modal_mouse_events_cannot_reach_hidden_surround_controls() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+
+        for overlay in ["raw", "routing", "assignment", "options"] {
+            for kind in [
+                AppMouseEventKind::Down(AppMouseButton::Left),
+                AppMouseEventKind::Drag(AppMouseButton::Left),
+                AppMouseEventKind::ScrollUp,
+            ] {
+                let (mut controller, transport) = authoritative_surround_controller();
+                controller
+                    .apply_intent(Intent::SelectUiPage(UiPage::Surround), area)
+                    .expect("select Surround");
+                let (x, y) = (0..area.height)
+                    .find_map(|y| {
+                        (0..area.width).find_map(|x| {
+                            ui::surround_drag_target(area, &controller.state, x, y)
+                                .is_some()
+                                .then_some((x, y))
+                        })
+                    })
+                    .expect("visible Surround track");
+                controller.state.ui.surround_drag = Some(SurroundControlFocus::Delay);
+                match overlay {
+                    "raw" => controller
+                        .apply_intent(Intent::ToggleRawView, area)
+                        .expect("open raw view"),
+                    "routing" => controller
+                        .apply_intent(Intent::OpenRoutingPopup, area)
+                        .expect("open routing"),
+                    "assignment" => {
+                        controller.state.popup.assignment_picker =
+                            Some(zen_go_tui::app::AssignmentPickerState { strip: 1 });
+                        controller.state.ui.surround_drag = None;
+                    }
+                    "options" => controller
+                        .apply_intent(Intent::OpenOptionsPopup, area)
+                        .expect("open options"),
+                    _ => unreachable!(),
+                }
+                assert!(controller.state.ui.surround_drag.is_none(), "{overlay}");
+                assert_eq!(
+                    ui::surround_drag_target(area, &controller.state, x, y),
+                    None,
+                    "{overlay}"
+                );
+
+                handle_mouse_event(
+                    area,
+                    &mut controller,
+                    AppMouseEvent {
+                        kind,
+                        column: x,
+                        row: y,
+                        modifiers: AppModifiers::default(),
+                    },
+                )
+                .expect("overlay consumes hidden control event");
+
+                assert!(controller.state.ui.surround_drag.is_none(), "{overlay}");
+                assert!(transport.take_writes().is_empty(), "{overlay}: {kind:?}");
+            }
+        }
+
+        let header_area = ratatui::layout::Rect::new(0, 0, 160, 50);
+        let transport = MockTransport::default();
+        let mut raw = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller");
+        raw.state.device.status.clock_source =
+            (-16..=16).find(|value| raw.state.ui_profile.clock_source_is_internal(Some(*value)));
+        assert!(raw.state.device.status.clock_source.is_some());
+        let (sample_x, sample_y) = (0..header_area.height)
+            .find_map(|y| {
+                (0..header_area.width).find_map(|x| {
+                    matches!(
+                        ui::mouse_action(header_area, &raw.state, x, y),
+                        Some(Intent::OpenSampleRateSelector)
+                    )
+                    .then_some((x, y))
+                })
+            })
+            .expect("visible sample-rate control");
+        raw.apply_intent(Intent::ToggleRawView, header_area)
+            .expect("open raw view");
+        handle_mouse_event(
+            header_area,
+            &mut raw,
+            AppMouseEvent {
+                kind: AppMouseEventKind::Down(AppMouseButton::Left),
+                column: sample_x,
+                row: sample_y,
+                modifiers: AppModifiers::default(),
+            },
+        )
+        .expect("raw view consumes hidden sample-rate click");
+        assert!(raw.state.popup.selector_popup.is_none());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn zen_go_f3_is_absent_and_mixer_surface_shortcuts_remain_unchanged() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let transport = MockTransport::default();
+        let (driver, actions) = RecordingDriver::new();
+        let entry = zen_go_tui::device::ProfileCatalog::builtin()
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "zen_go_sc")
+            .expect("Zen Go entry")
+            .clone();
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport), Box::new(driver), &entry)
+                .expect("controller");
+
+        handle_key_press(&mut controller, key(AppKeyCode::F(3)), area).expect("ignored F3");
+        assert_eq!(controller.state.ui.page, UiPage::Mixer);
+        handle_key_press(&mut controller, key(AppKeyCode::Char('2')), area)
+            .expect("Mixer 2 shortcut");
+        assert_eq!(controller.state.mixer.surface_index, 1);
+        handle_key_press(&mut controller, key(AppKeyCode::Char('1')), area)
+            .expect("Mixer 1 shortcut");
+        assert_eq!(controller.state.mixer.surface_index, 0);
+        assert!(actions.lock().expect("recorded actions").is_empty());
     }
 
     #[derive(Default)]

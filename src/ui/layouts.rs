@@ -1,7 +1,9 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::{Block, Borders};
 
-use crate::app::{AppState, RawMapScope, RawPacketTab, MIXER_STRIP_PAGE_SIZE};
+use crate::app::{
+    AppState, RawMapScope, RawPacketTab, SurroundControlFocus, UiPage, MIXER_STRIP_PAGE_SIZE,
+};
 use antelope_protocol::{
     meter_display_db, FaderDirection, FaderSemantics, InputAddress, InputControl, MixerAddress,
     MixerControl, OutputControl, RuntimeInputControlKind,
@@ -35,9 +37,128 @@ const OUTPUT_CARD_MIN_WIDTH: u16 = 28;
 pub(crate) fn root_chunks(area: Rect) -> [Rect; 2] {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(17)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(16),
+        ])
         .split(area);
-    [chunks[0], chunks[1]]
+    [chunks[0], chunks[2]]
+}
+
+pub(crate) fn page_bar_area(area: Rect) -> Rect {
+    let header = root_chunks(area)[0];
+    Rect::new(
+        area.x,
+        header.y.saturating_add(header.height),
+        area.width,
+        area.height.saturating_sub(header.height).min(1),
+    )
+}
+
+pub(crate) fn page_tab_areas(area: Rect, state: &AppState) -> Vec<(UiPage, Rect)> {
+    let bar = page_bar_area(area);
+    if bar.height == 0 {
+        return Vec::new();
+    }
+    let mut tabs = vec![(UiPage::Mixer, Rect::new(bar.x, bar.y, 12.min(bar.width), 1))];
+    if state.surround_page_available() {
+        let x = bar.x.saturating_add(12);
+        tabs.push((
+            UiPage::Surround,
+            Rect::new(
+                x.min(bar.right()),
+                bar.y,
+                15.min(bar.right().saturating_sub(x)),
+                1,
+            ),
+        ));
+    }
+    tabs
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SurroundPageGeometry {
+    pub status: Rect,
+    pub level_card: Rect,
+    pub delay_card: Rect,
+    pub level_track: Rect,
+    pub delay_track: Rect,
+}
+
+impl SurroundPageGeometry {
+    fn empty(area: Rect) -> Self {
+        let empty = Rect::new(area.x, area.y, 0, 0);
+        Self {
+            status: empty,
+            level_card: empty,
+            delay_card: empty,
+            level_track: empty,
+            delay_track: empty,
+        }
+    }
+}
+
+fn surround_track(card: Rect) -> Rect {
+    if card.width < 5 || card.height < 5 {
+        return Rect::new(card.x, card.y, 0, 0);
+    }
+    Rect::new(
+        card.x.saturating_add(2),
+        card.bottom().saturating_sub(2),
+        card.width.saturating_sub(4),
+        1,
+    )
+}
+
+pub(crate) fn surround_page_geometry(area: Rect) -> SurroundPageGeometry {
+    if area.width == 0 || area.height < 3 {
+        return SurroundPageGeometry::empty(area);
+    }
+    let status = Rect::new(area.x, area.y, area.width, 3.min(area.height));
+    let controls_y = status.bottom();
+    let controls_height = area.bottom().saturating_sub(controls_y);
+    let (level_card, delay_card) = if area.width >= 72 && controls_height >= 5 {
+        let left_width = area.width.saturating_sub(1) / 2;
+        (
+            Rect::new(area.x, controls_y, left_width, controls_height),
+            Rect::new(
+                area.x.saturating_add(left_width).saturating_add(1),
+                controls_y,
+                area.width.saturating_sub(left_width).saturating_sub(1),
+                controls_height,
+            ),
+        )
+    } else if controls_height >= 10 {
+        let top_height = controls_height.saturating_sub(1) / 2;
+        (
+            Rect::new(area.x, controls_y, area.width, top_height),
+            Rect::new(
+                area.x,
+                controls_y.saturating_add(top_height).saturating_add(1),
+                area.width,
+                controls_height.saturating_sub(top_height).saturating_sub(1),
+            ),
+        )
+    } else {
+        let empty = Rect::new(area.x, controls_y, 0, 0);
+        (empty, empty)
+    };
+    SurroundPageGeometry {
+        status,
+        level_card,
+        delay_card,
+        level_track: surround_track(level_card),
+        delay_track: surround_track(delay_card),
+    }
+}
+
+pub(crate) fn surround_control_track(area: Rect, focus: SurroundControlFocus) -> Rect {
+    let geometry = surround_page_geometry(area);
+    match focus {
+        SurroundControlFocus::Level => geometry.level_track,
+        SurroundControlFocus::Delay => geometry.delay_track,
+    }
 }
 
 pub(crate) fn titlebar_layout(area: Rect) -> [Rect; 2] {
@@ -228,7 +349,7 @@ pub(crate) fn mixer_page_layout(area: Rect) -> [Rect; 2] {
     let output_height = if area.height >= 52 { 14 } else { 8 };
     let sections = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(14), Constraint::Length(output_height)])
+        .constraints([Constraint::Min(13), Constraint::Length(output_height)])
         .split(area);
     [sections[0], sections[1]]
 }

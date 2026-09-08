@@ -4,6 +4,7 @@ use antelope_protocol::{
     DeviceEvent, DynamicMeterState, DynamicRoutingGroup, DynamicStatePatch, InputAddress,
     InputControl, MixerAddress, MixerAssignment, MixerControl, OutputControl, RoutingSource,
     RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeMeterTarget, RuntimeReadiness,
+    SurroundGlobalState,
 };
 use ratatui::{
     backend::TestBackend,
@@ -15,7 +16,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{AppState, Intent},
+    app::{AppState, Intent, SurroundControlFocus, SurroundFreshness, SurroundGlobalCache, UiPage},
     device::{DeviceCandidate, DevicePickerState, ProfileCatalog},
 };
 
@@ -43,6 +44,28 @@ fn discrete_4_ui_state() -> AppState {
 
 fn zen_go_ui_state() -> AppState {
     AppState::from_entry(&entry("zen_go_sc"))
+}
+
+fn surround_ui_state(freshness: SurroundFreshness, writable: bool) -> AppState {
+    let mut state = orion_ui_state();
+    state.ui.page = UiPage::Surround;
+    state.device.connection.connected = true;
+    let surround = SurroundGlobalState {
+        format_name: Some(if writable { "2.0" } else { "2.1" }.to_string()),
+        flags_a: 0x02,
+        flags_b: 0x1f,
+        delay_tenths_ms: 20,
+        level_raw: 600,
+        mask_words: [3, 0, 0],
+        template: vec![0; 151],
+        writable,
+    };
+    state.surround_global = Some(SurroundGlobalCache {
+        state: Some(surround.clone()),
+        pending_expected: (freshness == SurroundFreshness::PendingReadback).then_some(surround),
+        freshness,
+    });
+    state
 }
 
 fn supported_dynamic_state() -> AppState {
@@ -86,6 +109,216 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
         text.push('\n');
     }
     text
+}
+
+#[test]
+fn surround_navigation_is_capability_gated_and_falls_back_to_mixer() {
+    let area = Rect::new(0, 0, 120, 30);
+    let zen = zen_go_ui_state();
+    assert_eq!(zen.active_ui_page(), UiPage::Mixer);
+    assert_eq!(super::layouts::page_tab_areas(area, &zen).len(), 1);
+    assert!(!matches!(
+        mouse_action(area, &zen, 13, 3),
+        Some(Intent::SelectUiPage(UiPage::Surround))
+    ));
+
+    let mut orion = surround_ui_state(SurroundFreshness::Authoritative, true);
+    let tabs = super::layouts::page_tab_areas(area, &orion);
+    assert_eq!(tabs.len(), 2);
+    let surround_tab = tabs[1].1;
+    assert_eq!(
+        mouse_action(area, &orion, surround_tab.x, surround_tab.y),
+        Some(Intent::SelectUiPage(UiPage::Surround))
+    );
+    orion.ui.surround_drag = Some(SurroundControlFocus::Level);
+    orion.surround_global = None;
+    assert_eq!(orion.active_ui_page(), UiPage::Mixer);
+    orion.normalize_ui_page();
+    assert_eq!(orion.ui.page, UiPage::Mixer);
+    assert!(orion.ui.surround_drag.is_none());
+
+    let mut terminal = test_terminal(area.width, area.height);
+    draw_page(&mut terminal, &zen);
+    let text = terminal_text(&terminal);
+    assert!(text.contains("F1 Mixer"), "{text}");
+    assert!(
+        !text.contains("F2") && !text.contains("F3 Surround"),
+        "{text}"
+    );
+}
+
+#[test]
+fn surround_wide_narrow_and_read_only_views_show_only_grounded_controls() {
+    let state = surround_ui_state(SurroundFreshness::Authoritative, true);
+    let wide_area = Rect::new(0, 0, 120, 30);
+    let wide_page = super::layouts::root_chunks(wide_area)[1];
+    let wide = super::layouts::surround_page_geometry(wide_page);
+    assert_eq!(wide.level_card.y, wide.delay_card.y);
+    assert!(wide.level_card.right() < wide.delay_card.right());
+
+    let mut terminal = test_terminal(wide_area.width, wide_area.height);
+    draw_page(&mut terminal, &state);
+    let text = terminal_text(&terminal);
+    for expected in [
+        "F3 Surround",
+        "FORMAT 2.0",
+        "AUTHORITATIVE",
+        "Global Level",
+        "+0.0 dB  (raw 600)",
+        "Lip-sync Delay",
+        "2.0 ms  (raw 20)",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    for unsupported in ["Aura", "Speaker", "EQ", "Bass", "Meter"] {
+        assert!(
+            !text.contains(unsupported),
+            "unexpected {unsupported}: {text}"
+        );
+    }
+
+    let narrow_area = Rect::new(0, 0, 60, 30);
+    let narrow =
+        super::layouts::surround_page_geometry(super::layouts::root_chunks(narrow_area)[1]);
+    assert!(narrow.delay_card.y > narrow.level_card.y);
+
+    let readonly = surround_ui_state(SurroundFreshness::Authoritative, false);
+    let mut terminal = test_terminal(wide_area.width, wide_area.height);
+    draw_page(&mut terminal, &readonly);
+    let text = terminal_text(&terminal);
+    assert!(text.contains("FORMAT 2.1"), "{text}");
+    assert!(
+        text.contains("NO WRITES") && text.matches("READ ONLY").count() == 2,
+        "{text}"
+    );
+    assert!(!matches!(
+        mouse_action(wide_area, &readonly, wide.level_track.x, wide.level_track.y),
+        Some(Intent::SetSurroundGlobalLevel(_) | Intent::SetSurroundGlobalDelay(_))
+    ));
+
+    let mut waiting = surround_ui_state(SurroundFreshness::AwaitingReadback, true);
+    waiting.surround_global.as_mut().unwrap().state = None;
+    let mut terminal = test_terminal(wide_area.width, wide_area.height);
+    draw_page(&mut terminal, &waiting);
+    let text = terminal_text(&terminal);
+    assert!(
+        text.contains("WAITING FOR READBACK") && text.contains("NO WRITES"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("Global Level") && !text.contains("Lip-sync Delay"),
+        "{text}"
+    );
+}
+
+#[test]
+fn surround_mouse_drag_and_wheel_share_geometry_ranges_and_disabled_gates() {
+    let area = Rect::new(0, 0, 120, 30);
+    let mut state = surround_ui_state(SurroundFreshness::Authoritative, true);
+    let geometry = super::layouts::surround_page_geometry(super::layouts::root_chunks(area)[1]);
+    let level_left = (geometry.level_track.x, geometry.level_track.y);
+    let level_right = (geometry.level_track.right() - 1, geometry.level_track.y);
+    let delay_left = (geometry.delay_track.x, geometry.delay_track.y);
+    let delay_right = (geometry.delay_track.right() - 1, geometry.delay_track.y);
+
+    assert_eq!(
+        mouse_action(area, &state, level_left.0, level_left.1),
+        Some(Intent::SetSurroundGlobalLevel(0))
+    );
+    assert_eq!(
+        mouse_action(area, &state, level_right.0, level_right.1),
+        Some(Intent::SetSurroundGlobalLevel(760))
+    );
+    assert_eq!(
+        mouse_action(area, &state, delay_left.0, delay_left.1),
+        Some(Intent::SetSurroundGlobalDelay(6))
+    );
+    assert_eq!(
+        mouse_action(area, &state, delay_right.0, delay_right.1),
+        Some(Intent::SetSurroundGlobalDelay(45))
+    );
+
+    state.ui.surround_drag = Some(SurroundControlFocus::Level);
+    assert_eq!(
+        slider_mouse_action(area, &state, 0, level_left.1),
+        Some(Intent::SetSurroundGlobalLevel(0))
+    );
+    assert_eq!(
+        slider_mouse_action(area, &state, u16::MAX, level_right.1),
+        Some(Intent::SetSurroundGlobalLevel(760))
+    );
+    state
+        .surround_global
+        .as_mut()
+        .unwrap()
+        .state
+        .as_mut()
+        .unwrap()
+        .level_raw = 760;
+    assert_eq!(
+        slider_wheel_action(area, &state, level_right.0, level_right.1, true),
+        Some(Intent::SetSurroundGlobalLevel(760))
+    );
+
+    state.surround_global.as_mut().unwrap().freshness = SurroundFreshness::Stale;
+    assert!(mouse_action(area, &state, level_left.0, level_left.1).is_none());
+    assert!(slider_mouse_action(area, &state, level_left.0, level_left.1).is_none());
+    assert!(slider_wheel_action(area, &state, level_left.0, level_left.1, true).is_none());
+
+    state.popup.options_open = true;
+    assert!(!matches!(
+        mouse_action(area, &state, level_left.0, level_left.1),
+        Some(Intent::SetSurroundGlobalLevel(_) | Intent::SetSurroundGlobalDelay(_))
+    ));
+}
+
+#[test]
+fn short_surround_page_has_no_invisible_control_hitboxes() {
+    let area = Rect::new(0, 0, 60, 10);
+    let state = surround_ui_state(SurroundFreshness::Authoritative, true);
+    let geometry = super::layouts::surround_page_geometry(super::layouts::root_chunks(area)[1]);
+    assert_eq!(geometry.level_track.width, 0);
+    assert_eq!(geometry.delay_track.width, 0);
+    for y in 0..area.height {
+        for x in 0..area.width {
+            assert!(!matches!(
+                mouse_action(area, &state, x, y),
+                Some(Intent::SetSurroundGlobalLevel(_) | Intent::SetSurroundGlobalDelay(_))
+            ));
+        }
+    }
+}
+
+#[test]
+#[ignore = "writes mock TestBackend Surround visual artifacts on demand"]
+fn capture_surround_visuals_from_mock_states() {
+    let visual_dir = std::path::Path::new("target/tui-visuals");
+    std::fs::create_dir_all(visual_dir).expect("create visual artifact directory");
+    for (name, width, height, state) in [
+        (
+            "surround-wide-20.txt",
+            120,
+            30,
+            surround_ui_state(SurroundFreshness::Authoritative, true),
+        ),
+        (
+            "surround-narrow-20.txt",
+            60,
+            30,
+            surround_ui_state(SurroundFreshness::PendingReadback, true),
+        ),
+        (
+            "surround-readonly-21.txt",
+            120,
+            30,
+            surround_ui_state(SurroundFreshness::Authoritative, false),
+        ),
+    ] {
+        let mut terminal = test_terminal(width, height);
+        draw_page(&mut terminal, &state);
+        std::fs::write(visual_dir.join(name), terminal_text(&terminal))
+            .expect("write Surround visual artifact");
+    }
 }
 
 #[test]

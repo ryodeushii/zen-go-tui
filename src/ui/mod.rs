@@ -23,6 +23,7 @@ pub use mouse::mixer_strip_viewport_capacity;
 pub use mouse::mouse_action;
 pub use mouse::slider_mouse_action;
 pub use mouse::slider_wheel_action;
+pub use mouse::surround_drag_target;
 pub use render::draw;
 pub use render::draw_device_picker;
 pub use render::profile_editor_cursor;

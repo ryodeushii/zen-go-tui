@@ -2,7 +2,7 @@ use ratatui::layout::Rect;
 
 use crate::app::{
     AppState, AssignmentPickerState, Intent, RawMapScope, RawPacketTab, SelectorPopupKind,
-    SelectorPopupState, QUERY_REPLY_VISIBLE_COUNT,
+    SelectorPopupState, SurroundControlFocus, UiPage, QUERY_REPLY_VISIBLE_COUNT,
 };
 use crate::device::DevicePickerState;
 #[cfg(test)]
@@ -18,8 +18,10 @@ use super::styles::section_block;
 fn any_modal_popup_open(state: &AppState) -> bool {
     state.popup.hotkeys_open
         || state.popup.profiles_open
+        || state.popup.profile_editor.is_some()
         || state.popup.selector_popup.is_some()
         || state.popup.assignment_picker.is_some()
+        || state.popup.routing_source_picker.is_some()
         || state.popup.routing_open
         || state.popup.options_open
 }
@@ -185,6 +187,18 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
             .ui_profile
             .supports_global(GlobalControl::TalkbackGain),
         Intent::SelectSurface(_) => state.ui_profile.supports_global(GlobalControl::Surface),
+        Intent::SetSurroundGlobalLevel(value) => {
+            state.surround_controls_enabled()
+                && state
+                    .surround_control_ranges()
+                    .is_some_and(|(range, _)| *value >= range.0 && *value <= range.1)
+        }
+        Intent::SetSurroundGlobalDelay(value) => {
+            state.surround_controls_enabled()
+                && state
+                    .surround_control_ranges()
+                    .is_some_and(|(_, range)| *value >= range.0 && *value <= range.1)
+        }
         Intent::AdjustFocused(_) | Intent::ToggleFocusedMute | Intent::ToggleFocusedDim => {
             state.ui_profile.actionable
         }
@@ -254,16 +268,27 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
         return options_popup_mouse_action(area, state, point);
     }
 
-    if let Some(action) = device_header_mouse_action(area, state, point) {
-        return Some(action);
-    }
-
     if state.popup.raw_view_open {
         return raw_mouse_action(area, state, point);
     }
 
+    if let Some(action) = device_header_mouse_action(area, state, point) {
+        return Some(action);
+    }
+
     if contains_point(titlebar_layout(chunks[0])[1], point) {
         return system_panel_mouse_action(titlebar_layout(chunks[0])[1], state, point);
+    }
+
+    if let Some((page, _)) = page_tab_areas(area, state)
+        .into_iter()
+        .find(|(_, tab)| contains_point(*tab, point))
+    {
+        return Some(Intent::SelectUiPage(page));
+    }
+
+    if state.active_ui_page() == UiPage::Surround {
+        return surround_page_mouse_action(chunks[1], state, point);
     }
 
     let page = mixer_page_layout(chunks[1]);
@@ -302,6 +327,10 @@ fn slider_mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -
 
     let point = (x, y);
     let chunks = root_chunks(area);
+    if state.active_ui_page() == UiPage::Surround {
+        let focus = state.ui.surround_drag?;
+        return surround_set_action(chunks[1], state, focus, x);
+    }
     let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout_for_state(page[0], state);
     let mixer_sections = mixer_layout(main[1]);
@@ -345,6 +374,29 @@ fn slider_wheel_action_unchecked(
     }
 
     let chunks = root_chunks(area);
+    if state.active_ui_page() == UiPage::Surround {
+        let focus = surround_control_at(chunks[1], state, point)?;
+        let (level_range, delay_range) = state.surround_control_ranges()?;
+        let display = state.displayed_surround_state()?;
+        return Some(match focus {
+            SurroundControlFocus::Level => Intent::SetSurroundGlobalLevel(
+                if increase {
+                    display.level_raw.saturating_add(1)
+                } else {
+                    display.level_raw.saturating_sub(1)
+                }
+                .clamp(level_range.0, level_range.1),
+            ),
+            SurroundControlFocus::Delay => Intent::SetSurroundGlobalDelay(
+                if increase {
+                    display.delay_tenths_ms.saturating_add(1)
+                } else {
+                    display.delay_tenths_ms.saturating_sub(1)
+                }
+                .clamp(delay_range.0, delay_range.1),
+            ),
+        });
+    }
     let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout_for_state(page[0], state);
     let mixer_sections = mixer_layout(main[1]);
@@ -352,6 +404,101 @@ fn slider_wheel_action_unchecked(
     output_list_slider_wheel_action(page[1], state, point, increase)
         .or_else(|| mixer_list_slider_wheel_action(mixer_sections[1], state, point, increase))
         .or_else(|| preamp_slider_wheel_action(main[0], state, point, increase))
+}
+
+fn scaled_surround_value(track: Rect, x: u16, range: (u16, u16)) -> u16 {
+    if track.width <= 1 || range.0 >= range.1 {
+        return range.0;
+    }
+    let position = x
+        .clamp(track.x, track.right().saturating_sub(1))
+        .saturating_sub(track.x);
+    let span = u32::from(range.1.saturating_sub(range.0));
+    range.0.saturating_add(
+        u16::try_from(
+            u32::from(position)
+                .saturating_mul(span)
+                .saturating_add(u32::from(track.width.saturating_sub(1)) / 2)
+                / u32::from(track.width.saturating_sub(1)),
+        )
+        .unwrap_or(range.1),
+    )
+}
+
+fn surround_set_action(
+    area: Rect,
+    state: &AppState,
+    focus: SurroundControlFocus,
+    x: u16,
+) -> Option<Intent> {
+    if !state.surround_controls_enabled() {
+        return None;
+    }
+    let track = surround_control_track(area, focus);
+    if track.width == 0 {
+        return None;
+    }
+    let (level_range, delay_range) = state.surround_control_ranges()?;
+    Some(match focus {
+        SurroundControlFocus::Level => {
+            Intent::SetSurroundGlobalLevel(scaled_surround_value(track, x, level_range))
+        }
+        SurroundControlFocus::Delay => Intent::SetSurroundGlobalDelay(
+            u8::try_from(scaled_surround_value(
+                track,
+                x,
+                (u16::from(delay_range.0), u16::from(delay_range.1)),
+            ))
+            .ok()?,
+        ),
+    })
+}
+
+pub fn surround_drag_target(
+    area: Rect,
+    state: &AppState,
+    x: u16,
+    y: u16,
+) -> Option<SurroundControlFocus> {
+    if any_modal_popup_open(state) || state.popup.raw_view_open {
+        return None;
+    }
+    surround_control_at(root_chunks(area)[1], state, (x, y))
+}
+
+fn surround_control_at(
+    area: Rect,
+    state: &AppState,
+    point: (u16, u16),
+) -> Option<SurroundControlFocus> {
+    if state.active_ui_page() != UiPage::Surround || !state.surround_controls_enabled() {
+        return None;
+    }
+    let geometry = surround_page_geometry(area);
+    if contains_point(geometry.level_track, point) {
+        Some(SurroundControlFocus::Level)
+    } else if contains_point(geometry.delay_track, point) {
+        Some(SurroundControlFocus::Delay)
+    } else {
+        None
+    }
+}
+
+fn surround_page_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
+    let geometry = surround_page_geometry(area);
+    let focus = if contains_point(geometry.level_card, point) {
+        SurroundControlFocus::Level
+    } else if contains_point(geometry.delay_card, point) {
+        SurroundControlFocus::Delay
+    } else {
+        return None;
+    };
+    if contains_point(surround_control_track(area, focus), point)
+        && state.surround_controls_enabled()
+    {
+        return surround_set_action(area, state, focus, point.0);
+    }
+    (focus != state.ui.surround_focus).then_some(Intent::CycleSurroundFocus { forward: true })
 }
 
 fn routing_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {

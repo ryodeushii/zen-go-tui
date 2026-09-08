@@ -7,7 +7,7 @@ use ratatui::Frame;
 
 use crate::app::{
     AppState, FocusArea, ProfileEditorMode, RawMapScope, RawPacketTab, RefreshRate,
-    SelectorPopupKind,
+    SelectorPopupKind, SurroundControlFocus, SurroundFreshness, UiPage,
 };
 use crate::device::DevicePickerState;
 use crate::terminal;
@@ -117,7 +117,11 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     let system_area = titlebar_layout(chunks[0])[1];
 
     draw_titlebar(frame, device_area, system_area, state);
-    draw_mixer_page(frame, chunks[1], state);
+    draw_page_bar(frame, area, state);
+    match state.active_ui_page() {
+        UiPage::Mixer => draw_mixer_page(frame, chunks[1], state),
+        UiPage::Surround => draw_surround_page(frame, chunks[1], state),
+    }
     draw_routing_popup(frame, frame.area(), state);
     draw_profiles_popup(frame, frame.area(), state);
     draw_assignment_picker(frame, frame.area(), state);
@@ -174,6 +178,28 @@ fn draw_titlebar(frame: &mut Frame<'_>, device_area: Rect, system_area: Rect, st
     );
 }
 
+fn draw_page_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let active = state.active_ui_page();
+    for (page, tab) in page_tab_areas(area, state) {
+        if tab.width == 0 {
+            continue;
+        }
+        let label = match page {
+            UiPage::Mixer => " F1 Mixer ",
+            UiPage::Surround => " F3 Surround ",
+        };
+        let style = if page == active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Gray).bg(Color::DarkGray)
+        };
+        frame.render_widget(Paragraph::new(label).style(style), tab);
+    }
+}
+
 fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
     let sections = mixer_page_layout(area);
     let main = mixer_main_layout_for_state(sections[0], state);
@@ -181,6 +207,163 @@ fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     draw_mixer_main(frame, main[1], state);
     draw_output_panel(frame, sections[1], state);
+}
+
+fn surround_track_line(value: u16, range: (u16, u16), width: u16, enabled: bool) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+    let span = range.1.saturating_sub(range.0);
+    let position = value.clamp(range.0, range.1).saturating_sub(range.0);
+    let filled = if span == 0 {
+        width
+    } else {
+        u16::try_from(
+            u32::from(position)
+                .saturating_mul(u32::from(width))
+                .saturating_add(u32::from(span) / 2)
+                / u32::from(span),
+        )
+        .unwrap_or(width)
+        .min(width)
+    };
+    let empty = width.saturating_sub(filled);
+    let active = if enabled {
+        Color::LightCyan
+    } else {
+        Color::DarkGray
+    };
+    Line::from(vec![
+        Span::styled("█".repeat(usize::from(filled)), Style::default().fg(active)),
+        Span::styled(
+            "░".repeat(usize::from(empty)),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+}
+
+fn draw_surround_control_card(
+    frame: &mut Frame<'_>,
+    card: Rect,
+    track: Rect,
+    title: &str,
+    value: String,
+    raw: u16,
+    range: (u16, u16),
+    focused: bool,
+    enabled: bool,
+) {
+    if card.width == 0 || card.height == 0 {
+        return;
+    }
+    let border = if focused {
+        Color::LightCyan
+    } else {
+        Color::DarkGray
+    };
+    frame.render_widget(panel_block(title, border, focused), card);
+    let inner = inner_area(card);
+    if inner.height > 0 {
+        frame.render_widget(
+            Paragraph::new(if enabled { "EDITABLE" } else { "READ ONLY" }).style(if enabled {
+                Style::default().fg(Color::LightGreen)
+            } else {
+                subdued_style()
+            }),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+    }
+    if inner.height > 1 {
+        frame.render_widget(
+            Paragraph::new(value)
+                .style(if enabled {
+                    strong_style(Color::LightCyan)
+                } else {
+                    subdued_style()
+                })
+                .alignment(Alignment::Center),
+            Rect::new(inner.x, inner.y.saturating_add(1), inner.width, 1),
+        );
+    }
+    if track.width > 0 {
+        frame.render_widget(
+            Paragraph::new(surround_track_line(raw, range, track.width, enabled)),
+            track,
+        );
+    }
+}
+
+fn draw_surround_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let geometry = surround_page_geometry(area);
+    let Some(cache) = state.surround_global.as_ref() else {
+        return;
+    };
+    let display = state.displayed_surround_state();
+    let format = display
+        .and_then(|surround| surround.format_name.as_deref())
+        .unwrap_or("unknown");
+    let freshness = match cache.freshness {
+        SurroundFreshness::AwaitingReadback => "WAITING FOR READBACK",
+        SurroundFreshness::Authoritative => "AUTHORITATIVE",
+        SurroundFreshness::PendingReadback => "PENDING READBACK",
+        SurroundFreshness::Stale => "STALE / SESSION LOCKED",
+    };
+    let enabled = state.surround_controls_enabled();
+    if geometry.status.width > 0 {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "FORMAT {format}  |  {freshness}  |  {}",
+                if enabled {
+                    "WRITES ENABLED"
+                } else {
+                    "NO WRITES"
+                }
+            ))
+            .block(panel_block("Surround", Color::LightMagenta, true)),
+            geometry.status,
+        );
+    }
+
+    let Some(display) = display else {
+        return;
+    };
+    let Some((level_range, delay_range)) = state.surround_control_ranges() else {
+        return;
+    };
+    let level_tenths_db = i32::from(display.level_raw) - 600;
+    let level_value = format!(
+        "{}{:.1} dB  (raw {})",
+        if level_tenths_db >= 0 { "+" } else { "" },
+        level_tenths_db as f64 / 10.0,
+        display.level_raw
+    );
+    let delay_value = format!(
+        "{:.1} ms  (raw {})",
+        f64::from(display.delay_tenths_ms) / 10.0,
+        display.delay_tenths_ms
+    );
+    draw_surround_control_card(
+        frame,
+        geometry.level_card,
+        geometry.level_track,
+        "Global Level",
+        level_value,
+        display.level_raw,
+        level_range,
+        state.ui.surround_focus == SurroundControlFocus::Level,
+        enabled,
+    );
+    draw_surround_control_card(
+        frame,
+        geometry.delay_card,
+        geometry.delay_track,
+        "Lip-sync Delay",
+        delay_value,
+        u16::from(display.delay_tenths_ms),
+        (u16::from(delay_range.0), u16::from(delay_range.1)),
+        state.ui.surround_focus == SurroundControlFocus::Delay,
+        enabled,
+    );
 }
 
 fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

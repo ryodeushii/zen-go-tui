@@ -270,6 +270,9 @@ fn hotkeys_popup_text_lists_core_shortcuts() {
     assert!(rendered.contains("Global"));
     assert!(rendered.contains("? hotkeys"));
     assert!(rendered.contains("Ctrl+d raw inspector"));
+    assert!(rendered.contains("F1 Mixer"));
+    assert!(rendered.contains("F3 Surround (when available)"));
+    assert!(rendered.contains("Tab/Shift+Tab focus"));
     assert!(rendered.contains("r routing"));
     assert!(rendered.contains("p profiles"));
 }
