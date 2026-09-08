@@ -1118,7 +1118,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(zen["internal_value"], 0)
         self.assertEqual(
             zen["values"],
-            [[index, f"Raw {index} (label unconfirmed)"] for index in range(3)],
+            [[0, "Internal"], [1, "S/PDIF"], [2, "USB"]],
         )
 
     def test_clock_internal_value_must_be_a_declared_choice(self) -> None:

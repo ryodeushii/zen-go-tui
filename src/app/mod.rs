@@ -3904,6 +3904,57 @@ mod tests {
     }
 
     #[test]
+    fn zen_clock_source_capture_codes_round_trip_through_write_and_readback() {
+        let transport = MockTransport::default();
+        let mut controller = zen_go_controller(Box::new(transport.clone()));
+
+        for source in ClockSource::all_confirmed() {
+            let code = source.code();
+            controller
+                .send(
+                    Action::SetGlobal {
+                        control: GlobalControl::ClockSource,
+                        value: ControlValue::Enum(i32::from(code)),
+                    },
+                    None,
+                )
+                .expect("set confirmed clock source");
+            controller.flush_commands().expect("flush clock source");
+
+            let writes = transport.take_writes();
+            assert_eq!(writes.len(), 1);
+            assert_eq!(&writes[0][0x10..0x12], &[0x04, code]);
+
+            let mut readback = raw_frame(&[]);
+            readback[0..4].copy_from_slice(&0x73_u32.to_le_bytes());
+            readback[4..8].copy_from_slice(&0x20_u32.to_le_bytes());
+            readback[0x10 + 0x02] = SampleRate::Hz48000.code();
+            readback[0x10 + 0x03] = code;
+            readback[0x10 + 0x04..0x10 + 0x08].copy_from_slice(&48_000_u32.to_be_bytes());
+            transport.push_read(readback.to_vec());
+
+            assert!(controller
+                .poll_device(Duration::ZERO)
+                .expect("poll readback"));
+            assert_eq!(
+                controller.state.device.status.clock_source,
+                Some(i32::from(code))
+            );
+        }
+
+        assert!(controller
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(9),
+                },
+                None,
+            )
+            .is_err());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
     fn sample_rate_change_does_not_force_refresh_query_readback() {
         let transport = MockTransport::default();
         let mut controller = zen_go_controller(Box::new(transport.clone()));

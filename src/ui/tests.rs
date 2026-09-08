@@ -2142,8 +2142,9 @@ fn orion_clock_selector_uses_all_profile_labels_and_unknown_is_unavailable() {
 }
 
 #[test]
-fn zen_clock_choices_remain_explicitly_unconfirmed_and_bounded() {
-    let state = zen_go_state();
+fn zen_clock_header_and_selector_use_confirmed_profile_labels() {
+    let mut state = zen_go_state();
+    let expected = [(0, "Internal"), (1, "S/PDIF"), (2, "USB")];
     assert_eq!(
         state
             .ui_profile
@@ -2151,12 +2152,41 @@ fn zen_clock_choices_remain_explicitly_unconfirmed_and_bounded() {
             .iter()
             .map(|choice| (choice.value, choice.label.as_str()))
             .collect::<Vec<_>>(),
-        vec![
-            (0, "Raw 0 (label unconfirmed)"),
-            (1, "Raw 1 (label unconfirmed)"),
-            (2, "Raw 2 (label unconfirmed)"),
-        ]
+        expected
     );
+
+    for (value, label) in expected {
+        state.device.status.clock_source = Some(value);
+        assert_eq!(layouts::device_header_labels(&state).clock_source, label);
+    }
+    state.device.status.clock_source = Some(9);
+    assert_eq!(
+        layouts::device_header_labels(&state).clock_source,
+        "Clock raw 9 (unavailable)"
+    );
+    assert!(!state.ui_profile.clock_source_is_internal(Some(9)));
+
+    state.popup.selector_popup = Some(SelectorPopupState {
+        kind: SelectorPopupKind::ClockSource,
+    });
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).expect("test terminal");
+    terminal
+        .draw(|frame| render::draw(frame, &state))
+        .expect("render clock selector");
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    for (_, label) in expected {
+        assert!(
+            rendered.contains(label),
+            "missing clock-source label {label}"
+        );
+    }
+
     assert!(state.ui_profile.clock_source_is_internal(Some(0)));
     assert!(!state.ui_profile.clock_source_is_internal(Some(1)));
 }
