@@ -7,13 +7,14 @@ use crate::driver::{
     DriverError, DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMeterState,
     DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
     DynamicStatePatch, GlobalControl, InputAddress, InputControl, MeterInvalidationTarget,
-    MixerAddress, OutputAddress, OutputControl, OutputTrimAddress, RoutingSource,
-    SurroundGlobalControl, SurroundGlobalState,
+    MixerAddress, OutputAddress, OutputControl, OutputTrimAddress, RoutingSource, SurroundEqBand,
+    SurroundGlobalControl, SurroundGlobalState, SurroundSpeakerEqState,
 };
 use crate::profile::{
-    validate_auraverb_contract, validate_surround_global_contract, FrameOperation,
-    ParamReadbackField, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeInputControlKind,
-    RuntimeLinkDomainKind, RuntimeMeterTarget, RuntimeParam, RuntimeProfile, RuntimeReadiness,
+    validate_auraverb_contract, validate_surround_global_contract,
+    validate_surround_speaker_eq_contract, FrameOperation, ParamReadbackField, RuntimeDriverKind,
+    RuntimeEntry, RuntimeFrame, RuntimeInputControlKind, RuntimeLinkDomainKind, RuntimeMeterTarget,
+    RuntimeParam, RuntimeProfile, RuntimeReadiness,
 };
 use crate::profile_codec;
 use crate::types::PanState;
@@ -1074,6 +1075,10 @@ impl ProfileDriver {
             validate_surround_global_contract(&driver.definition.id, &driver.profile, contract)
                 .map_err(DriverError::InvalidAction)?;
         }
+        if let Some(contract) = &driver.profile.surround_speaker_eq {
+            validate_surround_speaker_eq_contract(&driver.profile, contract)
+                .map_err(DriverError::InvalidAction)?;
+        }
         driver.validate_output_mono_capability()?;
         let zero_report = vec![0; report_size];
         driver.decode_state(&zero_report)?;
@@ -1905,6 +1910,66 @@ impl ProfileDriver {
             room_size: block[0],
             reverb_level: block[8],
             enabled: block[9] == 1,
+        })
+    }
+
+    fn decode_surround_speaker_eq(
+        &self,
+        bytes: &[u8],
+        speaker_index: u8,
+    ) -> Result<SurroundSpeakerEqState, DriverError> {
+        let contract = self.profile.surround_speaker_eq.as_ref().ok_or_else(|| {
+            DriverError::UnsupportedAction("profile has no Surround speaker EQ contract".into())
+        })?;
+        if bytes.len() != profile_codec::report_size(&self.profile)?
+            || speaker_index >= u8::try_from(contract.record_count).unwrap_or(0)
+            || bytes[..contract.header_prefix.len()] != contract.header_prefix
+            || bytes.get(usize::from(contract.index_offset)) != Some(&speaker_index)
+            || bytes[usize::from(contract.index_offset) + 1..usize::from(contract.data_offset)]
+                != contract.header_suffix
+            || bytes[usize::from(contract.fixed_tail_offset)..]
+                .iter()
+                .any(|byte| *byte != 0)
+        {
+            return Err(DriverError::InvalidAction(
+                "Surround speaker EQ readback header, index, length, or zero tail differs from capture"
+                    .into(),
+            ));
+        }
+        let bands_start = usize::from(contract.data_offset + contract.candidate_head_size);
+        let mut bands = Vec::with_capacity(usize::from(contract.band_count));
+        for band_index in 0..usize::from(contract.band_count) {
+            let start = bands_start + band_index * usize::from(contract.band_stride);
+            let read_u16 = |offset: u16| {
+                let at = start + usize::from(offset);
+                u16::from_le_bytes([bytes[at], bytes[at + 1]])
+            };
+            let frequency_hz = read_u16(contract.frequency_offset);
+            let q_raw = read_u16(contract.q_offset);
+            let gain_raw = read_u16(contract.gain_offset) as i16;
+            let mode_raw = bytes[start + usize::from(contract.mode_offset)];
+            if !(contract.frequency_range.0..=contract.frequency_range.1).contains(&frequency_hz)
+                || !(contract.q_raw_range.0..=contract.q_raw_range.1).contains(&q_raw)
+                || !(contract.gain_raw_range.0..=contract.gain_raw_range.1).contains(&gain_raw)
+            {
+                return Err(DriverError::InvalidAction(format!(
+                    "Surround speaker EQ band {} is outside captured numeric bounds",
+                    band_index + 1
+                )));
+            }
+            bands.push(SurroundEqBand {
+                frequency_hz,
+                q_raw,
+                gain_raw,
+                mode_raw,
+            });
+        }
+        let bands: [SurroundEqBand; 16] = bands.try_into().map_err(|_| {
+            DriverError::InvalidAction("Surround speaker EQ band count is not 16".into())
+        })?;
+        Ok(SurroundSpeakerEqState {
+            speaker_index,
+            bands,
         })
     }
 
@@ -3249,6 +3314,15 @@ impl DeviceDriver for ProfileDriver {
             } else if category == self.routing_readback_category {
                 Some(DynamicStatePatch::Routing(
                     self.decode_routing(bytes, index)?,
+                ))
+            } else if self
+                .profile
+                .surround_speaker_eq
+                .as_ref()
+                .is_some_and(|contract| category == contract.readback_category)
+            {
+                Some(DynamicStatePatch::SurroundSpeakerEq(
+                    self.decode_surround_speaker_eq(bytes, index)?,
                 ))
             } else if self
                 .profile

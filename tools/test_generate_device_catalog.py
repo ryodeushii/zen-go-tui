@@ -1055,6 +1055,70 @@ class GeneratorTests(unittest.TestCase):
         )
         self.assertIsNone(generator._normalized_profile_record(zen)["surround_global"])
 
+    def test_surround_speaker_eq_contract_and_raw_fixture_hashes_are_exact(self) -> None:
+        orion = generator.load_profile(ORION_PROFILE, ORION_PROFILE.parent)
+        contract = generator._normalized_profile_record(orion)["surround_speaker_eq"]
+        self.assertEqual((contract["readback_category"], contract["record_count"]), (0x1A, 16))
+        self.assertEqual(
+            (contract["data_offset"], contract["candidate_head_size"], contract["band_count"], contract["band_stride"]),
+            (16, 4, 16, 7),
+        )
+        self.assertEqual(contract["fixed_tail_offset"], 132)
+        self.assertEqual(contract["frequency_range"], [20, 20_000])
+        self.assertEqual(contract["q_raw_range"], [10, 1_800])
+        self.assertEqual(contract["gain_raw_range"], [-2_400, 1_200])
+        self.assertTrue(contract["read_only"])
+
+        fixture_dir = REPO_ROOT / "antelope-protocol" / "tests" / "fixtures" / "orion" / "surround_speaker_eq"
+        expected = {
+            "l.hex": "1d24d575830495cc8ee035e4167c916c20aef8ffec02e6dba3d6608e4a555457",
+            "r.hex": "e64c226aa323787d2da3a40e43e173a8d3b7c6a02489b5fd60c08b59bdff5591",
+            "lfe.hex": "102b1b66a5e7abcd74c67f381a24a821dbb373d6bcc26272bdc6762afef848ef",
+        }
+        for name, digest in expected.items():
+            raw = bytes.fromhex((fixture_dir / name).read_text(encoding="utf-8"))
+            self.assertEqual(len(raw), 320)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+
+        zen = generator.load_profile(
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "zen_go_sc.json",
+            ORION_PROFILE.parent,
+        )
+        self.assertIsNone(generator._normalized_profile_record(zen)["surround_speaker_eq"])
+
+    def test_surround_speaker_eq_contract_mutations_fail_closed(self) -> None:
+        mutations = (
+            lambda contract: contract.__setitem__("record_count", 15),
+            lambda contract: contract.__setitem__("record_size", 112),
+            lambda contract: contract.__setitem__("fixed_tail_offset", 131),
+            lambda contract: contract.__setitem__("candidate_head_size", 0),
+            lambda contract: contract.__setitem__("band_stride", 6),
+            lambda contract: contract.__setitem__("frequency_range", [20, 20001]),
+            lambda contract: contract.__setitem__("gain_raw_range", [-2401, 1200]),
+            lambda contract: contract.__setitem__("read_only", False),
+        )
+        for mutate in mutations:
+            invalid = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+            mutate(invalid["runtime_contracts"]["surround_speaker_eq"])
+            with self.assertRaises(generator.ProfileError):
+                generator.normalize_profile(invalid, path=ORION_PROFILE)
+
+    def test_surround_speaker_eq_requires_complete_startup_coverage(self) -> None:
+        for field in ("startup_queries", "safe_queries"):
+            for missing in (0, 15):
+                with self.subTest(field=field, missing=missing):
+                    data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+                    readback = data["frame"]["readback"]
+                    readback[field] = [
+                        query for query in readback["startup_queries"]
+                        if not (
+                            generator.parse_int(query["category"], "category") == 0x1a
+                            and query["index"] == missing
+                        )
+                    ]
+                    with self.assertRaisesRegex(generator.ProfileError, "startup coverage"):
+                        generator.normalize_profile(data, path=ORION_PROFILE)
+
     def test_surround_global_contract_mutations_fail_closed(self) -> None:
         data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
         del data["frame"]["surround_global_command"]["contract"]

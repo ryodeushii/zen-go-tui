@@ -416,6 +416,24 @@ fn slider_wheel_action_unchecked(
             .then_some(Intent::ScrollAuraVerbPage { down: !increase });
     }
     if state.active_ui_page() == UiPage::Surround {
+        let geometry = surround_page_geometry(chunks[1]);
+        if contains_point(geometry.speaker_selector, point) {
+            return Some(Intent::NavigateSurroundEq {
+                focus: SurroundControlFocus::Speaker,
+                forward: increase,
+            });
+        }
+        if contains_point(geometry.bank_selector, point)
+            || geometry
+                .eq_rows
+                .iter()
+                .any(|row| contains_point(*row, point))
+        {
+            return Some(Intent::NavigateSurroundEq {
+                focus: SurroundControlFocus::EqBank,
+                forward: increase,
+            });
+        }
         let focus = surround_control_at(chunks[1], state, point)?;
         let (level_range, delay_range) = state.surround_control_ranges()?;
         let display = state.displayed_surround_state()?;
@@ -436,6 +454,7 @@ fn slider_wheel_action_unchecked(
                 }
                 .clamp(delay_range.0, delay_range.1),
             ),
+            SurroundControlFocus::Speaker | SurroundControlFocus::EqBank => unreachable!(),
         });
     }
     let page = mixer_page_layout(chunks[1]);
@@ -574,6 +593,7 @@ fn surround_set_action(
             ))
             .ok()?,
         ),
+        SurroundControlFocus::Speaker | SurroundControlFocus::EqBank => return None,
     })
 }
 
@@ -613,6 +633,15 @@ fn surround_page_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
         SurroundControlFocus::Level
     } else if contains_point(geometry.delay_card, point) {
         SurroundControlFocus::Delay
+    } else if contains_point(geometry.speaker_selector, point) {
+        SurroundControlFocus::Speaker
+    } else if contains_point(geometry.bank_selector, point)
+        || geometry
+            .eq_rows
+            .iter()
+            .any(|row| contains_point(*row, point))
+    {
+        SurroundControlFocus::EqBank
     } else {
         return None;
     };
@@ -621,7 +650,7 @@ fn surround_page_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -
     {
         return surround_set_action(area, state, focus, point.0);
     }
-    (focus != state.ui.surround_focus).then_some(Intent::CycleSurroundFocus { forward: true })
+    (focus != state.ui.surround_focus).then_some(Intent::SelectSurroundControl(focus))
 }
 
 fn routing_popup_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {

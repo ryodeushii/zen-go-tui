@@ -83,6 +83,8 @@ pub struct AppState {
     pub auraverb: Option<AuraVerbCache>,
     /// Present only when the active profile has a validated Surround global contract.
     pub surround_global: Option<SurroundGlobalCache>,
+    /// Per-index read-only EQ records; each entry has its own session freshness.
+    pub surround_speaker_eq: Option<Vec<SurroundSpeakerEqRecordCache>>,
     pub ui: UiState,
     pub popup: PopupState,
     pub raw_view: RawViewState,
@@ -288,6 +290,9 @@ impl AppState {
                 .surround_global
                 .as_ref()
                 .map(|_| SurroundGlobalCache::default()),
+            surround_speaker_eq: profile.surround_speaker_eq.as_ref().map(|contract| {
+                vec![SurroundSpeakerEqRecordCache::default(); usize::from(contract.record_count)]
+            }),
             mixer_send_surfaces: profile
                 .mixers
                 .iter()
@@ -435,6 +440,44 @@ impl AppState {
             SurroundFreshness::Authoritative
             | SurroundFreshness::AwaitingReadback
             | SurroundFreshness::Stale => cache.state.as_ref(),
+        }
+    }
+
+    pub fn active_surround_speaker_indices(&self) -> &[u8] {
+        let Some(cache) = self.surround_global.as_ref() else {
+            return &[];
+        };
+        if !matches!(
+            cache.freshness,
+            SurroundFreshness::Authoritative | SurroundFreshness::PendingReadback
+        ) {
+            return &[];
+        }
+        match self
+            .displayed_surround_state()
+            .and_then(|state| state.format_name.as_deref())
+        {
+            Some("2.0") => &[0, 1],
+            Some("2.1") => &[0, 1, 2],
+            _ => &[],
+        }
+    }
+
+    pub fn selected_surround_speaker_eq(&self) -> Option<&SurroundSpeakerEqRecordCache> {
+        self.active_surround_speaker_indices()
+            .contains(&self.ui.surround_speaker_index)
+            .then_some(())?;
+        self.surround_speaker_eq
+            .as_ref()?
+            .get(usize::from(self.ui.surround_speaker_index))
+    }
+
+    pub fn surround_speaker_label(index: u8) -> Option<&'static str> {
+        match index {
+            0 => Some("L"),
+            1 => Some("R"),
+            2 => Some("LFE"),
+            _ => None,
         }
     }
 
@@ -2211,7 +2254,7 @@ impl AppState {
                 let Some(cache) = self.surround_global.as_mut() else {
                     return false;
                 };
-                match cache.freshness {
+                let changed = match cache.freshness {
                     SurroundFreshness::PendingReadback => {
                         if cache.pending_expected.as_ref() != Some(&state) {
                             return false;
@@ -2242,7 +2285,30 @@ impl AppState {
                         changed
                     }
                     SurroundFreshness::Stale => false,
+                };
+                let active = self.active_surround_speaker_indices();
+                if !active.contains(&self.ui.surround_speaker_index) {
+                    self.ui.surround_speaker_index = active.first().copied().unwrap_or(0);
+                    self.ui.surround_drag = None;
                 }
+                changed
+            }
+            DynamicStatePatch::SurroundSpeakerEq(state) => {
+                self.ui.surround_drag = None;
+                let Some(records) = self.surround_speaker_eq.as_mut() else {
+                    return false;
+                };
+                let Some(cache) = records.get_mut(usize::from(state.speaker_index)) else {
+                    return false;
+                };
+                if cache.freshness == SurroundFreshness::Stale {
+                    return false;
+                }
+                let changed = cache.state.as_ref() != Some(&state)
+                    || cache.freshness != SurroundFreshness::Authoritative;
+                cache.state = Some(state);
+                cache.freshness = SurroundFreshness::Authoritative;
+                changed
             }
             DynamicStatePatch::Globals(globals) => {
                 if !globals.iter().all(|global| {
@@ -2570,6 +2636,11 @@ impl AppState {
         }
         if let Some(cache) = self.surround_global.as_mut() {
             cache.freshness = SurroundFreshness::Stale;
+        }
+        if let Some(records) = self.surround_speaker_eq.as_mut() {
+            for record in records {
+                record.freshness = SurroundFreshness::Stale;
+            }
         }
     }
 

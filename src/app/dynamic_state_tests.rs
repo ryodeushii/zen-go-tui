@@ -13,7 +13,7 @@ use antelope_protocol::{
     DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
     DynamicStatePatch, GlobalControl, InputAddress, MixerAddress, OutputAddress, OutputControl,
     OutputMode, ProfileDriver, QueryRequest, RoutingSource, RuntimeDriverKind, RuntimeEntry,
-    RuntimeProfile, RuntimeReadiness, Surface,
+    RuntimeProfile, RuntimeReadiness, Surface, SurroundEqBand, SurroundSpeakerEqState,
 };
 
 use ratatui::layout::Rect;
@@ -51,6 +51,50 @@ fn canonical_orion_entry() -> RuntimeEntry {
         .find(|entry| entry.id == "orion_studio_3")
         .expect("built-in Orion profile")
         .clone()
+}
+
+#[test]
+fn surround_speaker_eq_patch_is_per_index_and_cannot_refresh_a_stale_device_session() {
+    let mut state = AppState::from_profile(&orion_profile());
+    let bands = [SurroundEqBand {
+        frequency_hz: 1_000,
+        q_raw: 71,
+        gain_raw: -100,
+        mode_raw: 0xfe,
+    }; 16];
+    assert!(
+        state.apply_dynamic_patch(DynamicStatePatch::SurroundSpeakerEq(
+            SurroundSpeakerEqState {
+                speaker_index: 1,
+                bands,
+            },
+        ))
+    );
+    let records = state.surround_speaker_eq.as_ref().unwrap();
+    assert!(records[0].state.is_none());
+    assert_eq!(records[1].state.as_ref().unwrap().speaker_index, 1);
+    assert!(records[2].state.is_none());
+
+    state.mark_disconnected();
+    let mut replacement = bands;
+    replacement[0].gain_raw = 200;
+    assert!(
+        !state.apply_dynamic_patch(DynamicStatePatch::SurroundSpeakerEq(
+            SurroundSpeakerEqState {
+                speaker_index: 1,
+                bands: replacement,
+            },
+        ))
+    );
+    assert_eq!(
+        state.surround_speaker_eq.as_ref().unwrap()[1]
+            .state
+            .as_ref()
+            .unwrap()
+            .bands[0]
+            .gain_raw,
+        -100
+    );
 }
 
 fn zen_go_profile() -> RuntimeProfile {

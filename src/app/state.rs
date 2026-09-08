@@ -148,6 +148,21 @@ impl Default for SurroundGlobalCache {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SurroundSpeakerEqRecordCache {
+    pub state: Option<antelope_protocol::SurroundSpeakerEqState>,
+    pub freshness: SurroundFreshness,
+}
+
+impl Default for SurroundSpeakerEqRecordCache {
+    fn default() -> Self {
+        Self {
+            state: None,
+            freshness: SurroundFreshness::AwaitingReadback,
+        }
+    }
+}
+
 /// Device connection and status tracking.
 #[derive(Debug, Clone, Default)]
 pub struct DeviceState {
@@ -809,7 +824,9 @@ pub struct UiState {
     /// Set only for a pointer press that began on an enabled visible AuraVerb track.
     pub auraverb_drag: Option<AuraVerbControlFocus>,
     pub surround_focus: SurroundControlFocus,
-    /// Set only for a pointer press that began on an enabled Surround track.
+    pub surround_speaker_index: u8,
+    pub surround_eq_bank: u8,
+    /// Set only for a pointer press that began on an enabled Surround global track.
     pub surround_drag: Option<SurroundControlFocus>,
     pub last_message: String,
     pub settings: AppSettings,
@@ -977,6 +994,8 @@ impl Default for UiState {
             auraverb_scroll: 0,
             auraverb_drag: None,
             surround_focus: SurroundControlFocus::Level,
+            surround_speaker_index: 0,
+            surround_eq_bank: 0,
             surround_drag: None,
             last_message:
                 "Press ? for help. Device state is authoritative where decoding is confirmed."

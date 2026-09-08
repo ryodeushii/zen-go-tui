@@ -340,6 +340,11 @@ fn promoted_orion_fixture_matches_current_generated_runtime_fields() {
         generated.profile.surround_global
     );
     assert_field!(
+        "profile.surround_speaker_eq",
+        fixture.profile.surround_speaker_eq,
+        generated.profile.surround_speaker_eq
+    );
+    assert_field!(
         "profile.link_domains",
         fixture.profile.link_domains,
         generated.profile.link_domains

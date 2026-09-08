@@ -715,6 +715,7 @@ def normalize_profile(
     _build_frames(normalized)
     _auraverb_contract(normalized)
     _surround_global_contract(normalized)
+    _surround_speaker_eq_contract(normalized)
     _build_params(normalized)
     _build_constraints(normalized)
     _build_hazards(normalized)
@@ -5657,6 +5658,115 @@ def _surround_global_contract(profile: NormalizedProfile) -> dict[str, Any] | No
     }
 
 
+def _surround_speaker_eq_contract(profile: NormalizedProfile) -> dict[str, Any] | None:
+    """Compile the finite read-only category-0x1a speaker EQ contract, if declared."""
+
+    readback = profile.frame.get("readback")
+    if not isinstance(readback, Mapping) or not _is_orion(profile):
+        return None
+    runtime_contracts = profile.raw.get("runtime_contracts")
+    contract = runtime_contracts.get("surround_speaker_eq") if isinstance(runtime_contracts, Mapping) else None
+    if not isinstance(contract, Mapping):
+        return None
+    context = "runtime_contracts.surround_speaker_eq"
+    if _normalized_status(str(contract.get("status", ""))) != "confirmed":
+        return None
+    evidence = contract.get("evidence")
+    if not isinstance(evidence, str) or not evidence.strip():
+        raise ProfileError(f"{context}.evidence must be non-empty")
+
+    def u8(name: str) -> int:
+        return _checked_u8(contract.get(name), f"{context}.{name}")
+
+    def u16(name: str) -> int:
+        return _checked_u16(contract.get(name), f"{context}.{name}")
+
+    def exact_array(name: str, expected: list[int]) -> list[int]:
+        raw = contract.get(name)
+        if not isinstance(raw, list):
+            raise ProfileError(f"{context}.{name} must be an array")
+        result = [_checked_u8(value, f"{context}.{name}[{index}]") for index, value in enumerate(raw)]
+        if result != expected:
+            raise ProfileError(f"{context}.{name} differs from captured geometry")
+        return result
+
+    def unsigned_range(name: str, expected: tuple[int, int]) -> list[int]:
+        raw = contract.get(name)
+        if not isinstance(raw, list) or len(raw) != 2:
+            raise ProfileError(f"{context}.{name} must contain two bounds")
+        result = [_checked_u16(value, f"{context}.{name}") for value in raw]
+        if tuple(result) != expected:
+            raise ProfileError(f"{context}.{name} differs from captured bounds")
+        return result
+
+    def signed_range(name: str, expected: tuple[int, int]) -> list[int]:
+        raw = contract.get(name)
+        if not isinstance(raw, list) or len(raw) != 2:
+            raise ProfileError(f"{context}.{name} must contain two bounds")
+        result = [_checked_int(value, f"{context}.{name}", -32768, 32767) for value in raw]
+        if tuple(result) != expected:
+            raise ProfileError(f"{context}.{name} differs from captured bounds")
+        return result
+
+    result = {
+        "readback_category": u8("readback_category"),
+        "record_count": u16("record_count"),
+        "header_prefix": exact_array("header_prefix", [0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x1a, 0, 0, 0]),
+        "index_offset": u16("index_offset"),
+        "header_suffix": exact_array("header_suffix", [0, 0, 0]),
+        "data_offset": u16("data_offset"),
+        "record_size": u16("record_size"),
+        "fixed_tail_offset": u16("fixed_tail_offset"),
+        "candidate_head_size": u16("candidate_head_size"),
+        "band_count": u16("band_count"),
+        "band_stride": u16("band_stride"),
+        "frequency_offset": u16("frequency_offset"),
+        "frequency_range": unsigned_range("frequency_range", (20, 20000)),
+        "q_offset": u16("q_offset"),
+        "q_raw_range": unsigned_range("q_raw_range", (10, 1800)),
+        "gain_offset": u16("gain_offset"),
+        "gain_raw_range": signed_range("gain_raw_range", (-2400, 1200)),
+        "mode_offset": u16("mode_offset"),
+        "read_only": contract.get("read_only"),
+        "evidence": evidence,
+    }
+    exact = (0x1a, 16, 12, 16, 116, 132, 4, 16, 7, 0, 2, 4, 6, True)
+    actual = (
+        result["readback_category"], result["record_count"], result["index_offset"],
+        result["data_offset"], result["record_size"], result["fixed_tail_offset"],
+        result["candidate_head_size"], result["band_count"], result["band_stride"],
+        result["frequency_offset"], result["q_offset"], result["gain_offset"],
+        result["mode_offset"], result["read_only"],
+    )
+    counts = readback.get("category_counts")
+    geometry = (
+        parse_int(readback.get("response_magic"), "frame.readback.response_magic"),
+        parse_int(readback.get("response_discriminator_offset"), "frame.readback.response_discriminator_offset"),
+        parse_int(readback.get("response_discriminator"), "frame.readback.response_discriminator"),
+        parse_int(readback.get("category_offset"), "frame.readback.category_offset"),
+        parse_int(readback.get("index_offset"), "frame.readback.index_offset"),
+        parse_int(readback.get("data_offset"), "frame.readback.data_offset"),
+    )
+    if (
+        profile.transport.report_size != 320
+        or actual != exact
+        or result["data_offset"] + result["record_size"] != result["fixed_tail_offset"]
+        or result["candidate_head_size"] + result["band_count"] * result["band_stride"] != result["record_size"]
+        or not isinstance(counts, Mapping)
+        or parse_int(counts.get("0x1a"), "frame.readback.category_counts.0x1a") != 16
+        or geometry != (0x75, 1, 0, 8, 12, 16)
+    ):
+        raise ProfileError(f"{context} requires the exact bounded read-only category-0x1a geometry")
+    _, startup_queries = _readback_definition(profile)
+    indices = {
+        query["sub_id"] for query in startup_queries
+        if query["query_id"] == result["readback_category"]
+    }
+    if indices != set(range(result["record_count"])):
+        raise ProfileError(f"{context} requires complete category-0x1a startup coverage")
+    return result
+
+
 def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
     readiness = classify_readiness(profile)
     spaces = _build_address_spaces(profile)
@@ -5758,6 +5868,7 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
         "meter_mappings": _meter_mappings(profile),
         "auraverb": _auraverb_contract(profile),
         "surround_global": _surround_global_contract(profile),
+        "surround_speaker_eq": _surround_speaker_eq_contract(profile),
         "frames": [
             {
                 "id": frame["id"],
@@ -6156,6 +6267,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         "    SafeQueryDefinition, MixerReadbackLayoutDefinition, StateReportDefinition,",
         "    ByteEqualsPredicateDefinition, CandidatePreampMeterDefinition, MeterMappingDefinition, MeterTargetDefinition,",
         "    AuraVerbContractDefinition, AuraVerbFieldDefinition, SurroundFormatDefinition, SurroundGlobalContractDefinition,",
+        "    SurroundSpeakerEqContractDefinition,",
         "    FaderDirectionDefinition, FaderSemanticsDefinition,",
         "    Readiness, StartupQueryDefinition, Status, SupportLevel, TransportDefinition, TransportKind,",
         "};",
@@ -6176,6 +6288,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         frames = _build_frames(profile)
         auraverb = _auraverb_contract(profile)
         surround_global = _surround_global_contract(profile)
+        surround_speaker_eq = _surround_speaker_eq_contract(profile)
         decoders = _build_decoders(frames)
         params = _build_params(profile)
         constraints = _build_constraints(profile)
@@ -6526,6 +6639,23 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             )
             auraverb_name = f"Some({slug}_AURAVERB)"
 
+        if surround_speaker_eq is None:
+            surround_speaker_eq_name = "None"
+        else:
+            lines.append(
+                f"static {slug}_SURROUND_SPEAKER_EQ: SurroundSpeakerEqContractDefinition = SurroundSpeakerEqContractDefinition {{ "
+                f"readback_category: {surround_speaker_eq['readback_category']}u8, record_count: {surround_speaker_eq['record_count']}u16, "
+                f"header_prefix: [{', '.join(str(value) + 'u8' for value in surround_speaker_eq['header_prefix'])}], index_offset: {surround_speaker_eq['index_offset']}u16, "
+                f"header_suffix: [{', '.join(str(value) + 'u8' for value in surround_speaker_eq['header_suffix'])}], data_offset: {surround_speaker_eq['data_offset']}u16, "
+                f"record_size: {surround_speaker_eq['record_size']}u16, fixed_tail_offset: {surround_speaker_eq['fixed_tail_offset']}u16, candidate_head_size: {surround_speaker_eq['candidate_head_size']}u16, "
+                f"band_count: {surround_speaker_eq['band_count']}u16, band_stride: {surround_speaker_eq['band_stride']}u16, frequency_offset: {surround_speaker_eq['frequency_offset']}u16, "
+                f"frequency_range: ({surround_speaker_eq['frequency_range'][0]}u16, {surround_speaker_eq['frequency_range'][1]}u16), q_offset: {surround_speaker_eq['q_offset']}u16, "
+                f"q_raw_range: ({surround_speaker_eq['q_raw_range'][0]}u16, {surround_speaker_eq['q_raw_range'][1]}u16), gain_offset: {surround_speaker_eq['gain_offset']}u16, "
+                f"gain_raw_range: ({surround_speaker_eq['gain_raw_range'][0]}i16, {surround_speaker_eq['gain_raw_range'][1]}i16), mode_offset: {surround_speaker_eq['mode_offset']}u16, "
+                f"read_only: {str(surround_speaker_eq['read_only']).lower()}, evidence: {_rust_string(surround_speaker_eq['evidence'])} }};"
+            )
+            surround_speaker_eq_name = f"Some({slug}_SURROUND_SPEAKER_EQ)"
+
         if surround_global is None:
             surround_global_name = "None"
         else:
@@ -6625,6 +6755,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 "state_report": state_report_name,
                 "auraverb": auraverb_name,
                 "surround_global": surround_global_name,
+                "surround_speaker_eq": surround_speaker_eq_name,
                 "readback": readback_name,
                 "raw": f"{slug}_RAW_PROFILE",
             }
@@ -6679,7 +6810,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             f"            frames: {item['frames']}, decoders: {item['decoders']}, params: {item['params']}, constraints: {item['constraints']}, hazards: {item['hazards']}, meter_mappings: {item['meter_mappings']},"
         )
         lines.append(
-            f"            startup_queries: {item['startup_queries']}, state_report: {item['state_report']}, auraverb: {item['auraverb']}, surround_global: {item['surround_global']}, readback: {item['readback']},"
+            f"            startup_queries: {item['startup_queries']}, state_report: {item['state_report']}, auraverb: {item['auraverb']}, surround_global: {item['surround_global']}, surround_speaker_eq: {item['surround_speaker_eq']}, readback: {item['readback']},"
         )
         lines.append(
             f"            status: Status::{_status_variant(status)}, status_text: {_rust_string(status)}, "

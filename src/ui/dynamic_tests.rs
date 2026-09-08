@@ -4,7 +4,8 @@ use antelope_protocol::{
     AuraVerbParameter, AuraVerbState, DeviceEvent, DynamicMeterState, DynamicRoutingGroup,
     DynamicStatePatch, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
     OutputControl, RoutingSource, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind,
-    RuntimeMeterTarget, RuntimeReadiness, SurroundGlobalState,
+    RuntimeMeterTarget, RuntimeReadiness, SurroundEqBand, SurroundGlobalState,
+    SurroundSpeakerEqState,
 };
 use ratatui::{
     backend::TestBackend,
@@ -18,7 +19,8 @@ use ratatui::{
 use crate::{
     app::{
         AppState, AuraVerbCache, AuraVerbControlFocus, AuraVerbFreshness, Intent,
-        SurroundControlFocus, SurroundFreshness, SurroundGlobalCache, UiPage,
+        SurroundControlFocus, SurroundFreshness, SurroundGlobalCache, SurroundSpeakerEqRecordCache,
+        UiPage,
     },
     device::{DeviceCandidate, DevicePickerState, ProfileCatalog},
 };
@@ -91,6 +93,35 @@ fn surround_ui_state(freshness: SurroundFreshness, writable: bool) -> AppState {
         pending_expected: (freshness == SurroundFreshness::PendingReadback).then_some(surround),
         freshness,
     });
+    let mut bands = [SurroundEqBand {
+        frequency_hz: 1_000,
+        q_raw: 71,
+        gain_raw: 0,
+        mode_raw: 2,
+    }; 16];
+    bands[0] = SurroundEqBand {
+        frequency_hz: 30,
+        q_raw: 71,
+        gain_raw: -1_234,
+        mode_raw: 0,
+    };
+    bands[15] = SurroundEqBand {
+        frequency_hz: 14_000,
+        q_raw: 180,
+        gain_raw: 1_200,
+        mode_raw: 0xfe,
+    };
+    if let Some(records) = state.surround_speaker_eq.as_mut() {
+        for index in 0..=2 {
+            records[index] = SurroundSpeakerEqRecordCache {
+                state: Some(SurroundSpeakerEqState {
+                    speaker_index: index as u8,
+                    bands,
+                }),
+                freshness,
+            };
+        }
+    }
     state
 }
 
@@ -455,25 +486,53 @@ fn surround_wide_narrow_and_read_only_views_show_only_grounded_controls() {
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
-    for unsupported in ["Speaker", "EQ", "Bass", "Meter"] {
+    for expected in [
+        "Speaker EQ",
+        "READ ONLY",
+        "Speaker: < L >  [L/R]",
+        "Bank: < 1–8 >",
+        "30 Hz",
+        "-12.34 dB",
+        "RAW 0x00",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    for unsupported in ["Bass", "candidate head", "invert"] {
         assert!(
             !text.contains(unsupported),
             "unexpected {unsupported}: {text}"
         );
     }
 
+    let mut bank_two = surround_ui_state(SurroundFreshness::Authoritative, true);
+    bank_two.ui.surround_eq_bank = 1;
+    let mut compact_terminal = test_terminal(80, 24);
+    draw_page(&mut compact_terminal, &bank_two);
+    let compact = terminal_text(&compact_terminal);
+    assert!(compact.contains("Bank: < 9–16 >"), "{compact}");
+    assert!(
+        compact.contains("  16") && compact.contains("14000 Hz"),
+        "{compact}"
+    );
+    assert!(
+        compact.contains("+12.00 dB") && compact.contains("RAW 0xfe"),
+        "{compact}"
+    );
+
     let narrow_area = Rect::new(0, 0, 60, 30);
     let narrow =
         super::layouts::surround_page_geometry(super::layouts::root_chunks(narrow_area)[1]);
-    assert!(narrow.delay_card.y > narrow.level_card.y);
+    assert_eq!(narrow.delay_card.y, narrow.level_card.y);
+    assert_eq!(narrow.eq_rows.iter().filter(|row| row.width > 0).count(), 8);
 
     let readonly = surround_ui_state(SurroundFreshness::Authoritative, false);
     let mut terminal = test_terminal(wide_area.width, wide_area.height);
     draw_page(&mut terminal, &readonly);
     let text = terminal_text(&terminal);
     assert!(text.contains("FORMAT 2.1"), "{text}");
+    assert!(text.contains("Speaker: < L >  [L/R/LFE]"), "{text}");
     assert!(
-        text.contains("NO WRITES") && text.matches("READ ONLY").count() == 2,
+        text.contains("NO GLOBAL WRITES") && text.contains("READ ONLY"),
         "{text}"
     );
     assert!(!matches!(
@@ -481,17 +540,26 @@ fn surround_wide_narrow_and_read_only_views_show_only_grounded_controls() {
         Some(Intent::SetSurroundGlobalLevel(_) | Intent::SetSurroundGlobalDelay(_))
     ));
 
+    let mut missing_record = surround_ui_state(SurroundFreshness::Authoritative, true);
+    missing_record.surround_speaker_eq.as_mut().unwrap()[0] =
+        SurroundSpeakerEqRecordCache::default();
+    let mut terminal = test_terminal(wide_area.width, wide_area.height);
+    draw_page(&mut terminal, &missing_record);
+    assert!(terminal_text(&terminal).contains("WAITING FOR THIS SPEAKER"));
+
     let mut waiting = surround_ui_state(SurroundFreshness::AwaitingReadback, true);
     waiting.surround_global.as_mut().unwrap().state = None;
     let mut terminal = test_terminal(wide_area.width, wide_area.height);
     draw_page(&mut terminal, &waiting);
     let text = terminal_text(&terminal);
     assert!(
-        text.contains("WAITING FOR READBACK") && text.contains("NO WRITES"),
+        text.contains("WAITING FOR READBACK") && text.contains("NO GLOBAL WRITES"),
         "{text}"
     );
     assert!(
-        !text.contains("Global Level") && !text.contains("Lip-sync Delay"),
+        !text.contains("Global Level")
+            && !text.contains("Lip-sync Delay")
+            && text.contains("fresh known format required"),
         "{text}"
     );
 }

@@ -23,7 +23,7 @@ pub use definition::{
     ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition, Readiness,
     RoutingGroupDefinition, RoutingReadbackSourceDomainDefinition, RoutingSourceDomainDefinition,
     SafeQueryDefinition, StartupQueryDefinition, StateReportDefinition, Status, SupportLevel,
-    TransportDefinition, TransportKind,
+    SurroundSpeakerEqContractDefinition, TransportDefinition, TransportKind,
 };
 pub use discovery::{
     classify_candidate, classify_candidate_details, classify_candidates,

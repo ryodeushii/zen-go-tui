@@ -624,6 +624,32 @@ pub struct SurroundGlobalContractDefinition {
     pub evidence: &'static str,
 }
 
+/// Finite read-only category-0x1a per-speaker EQ contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurroundSpeakerEqContractDefinition {
+    pub readback_category: u8,
+    pub record_count: u16,
+    pub header_prefix: [u8; 12],
+    pub index_offset: u16,
+    pub header_suffix: [u8; 3],
+    pub data_offset: u16,
+    pub record_size: u16,
+    pub fixed_tail_offset: u16,
+    /// Opaque bytes before the first band. Their possible engineering meaning is unverified.
+    pub candidate_head_size: u16,
+    pub band_count: u16,
+    pub band_stride: u16,
+    pub frequency_offset: u16,
+    pub frequency_range: (u16, u16),
+    pub q_offset: u16,
+    pub q_raw_range: (u16, u16),
+    pub gain_offset: u16,
+    pub gain_raw_range: (i16, i16),
+    pub mode_offset: u16,
+    pub read_only: bool,
+    pub evidence: &'static str,
+}
+
 /// Optional generic readback layout retained in the built-in artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadbackDefinition {
@@ -661,6 +687,7 @@ pub struct DeviceDefinition {
     pub startup_queries: &'static [StartupQueryDefinition],
     pub auraverb: Option<AuraVerbContractDefinition>,
     pub surround_global: Option<SurroundGlobalContractDefinition>,
+    pub surround_speaker_eq: Option<SurroundSpeakerEqContractDefinition>,
     pub readback: Option<ReadbackDefinition>,
     pub status: Status,
     pub status_text: &'static str,

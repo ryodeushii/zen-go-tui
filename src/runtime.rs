@@ -1481,6 +1481,17 @@ fn surround_page_input_active(state: &zen_go_tui::app::AppState) -> bool {
 }
 
 fn surround_adjust_intent(state: &zen_go_tui::app::AppState, increase: bool) -> Option<Intent> {
+    if matches!(
+        state.ui.surround_focus,
+        SurroundControlFocus::Speaker | SurroundControlFocus::EqBank
+    ) {
+        return (!state.active_surround_speaker_indices().is_empty()).then_some(
+            Intent::NavigateSurroundEq {
+                focus: state.ui.surround_focus,
+                forward: increase,
+            },
+        );
+    }
     if !state.surround_controls_enabled() {
         return None;
     }
@@ -1503,6 +1514,7 @@ fn surround_adjust_intent(state: &zen_go_tui::app::AppState, increase: bool) -> 
             }
             .clamp(delay_range.0, delay_range.1),
         ),
+        SurroundControlFocus::Speaker | SurroundControlFocus::EqBank => unreachable!(),
     })
 }
 
@@ -2099,13 +2111,38 @@ mod tests {
             .collect()
     }
 
+    fn surround_eq_readback_fixture(name: &str) -> Vec<u8> {
+        let text = match name {
+            "l" => {
+                include_str!("../antelope-protocol/tests/fixtures/orion/surround_speaker_eq/l.hex")
+            }
+            "r" => {
+                include_str!("../antelope-protocol/tests/fixtures/orion/surround_speaker_eq/r.hex")
+            }
+            "lfe" => include_str!(
+                "../antelope-protocol/tests/fixtures/orion/surround_speaker_eq/lfe.hex"
+            ),
+            _ => panic!("unknown fixture"),
+        };
+        text.split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).expect("speaker EQ fixture byte"))
+            .collect()
+    }
+
     fn authoritative_surround_controller() -> (Controller, MockTransport) {
         let transport = MockTransport::default();
         let mut controller = orion_settings_controller(Box::new(transport.clone()));
-        transport.push_read(surround_readback_fixture());
-        assert!(controller
-            .poll_device(Duration::ZERO)
-            .expect("Surround readback"));
+        for readback in [
+            surround_readback_fixture(),
+            surround_eq_readback_fixture("l"),
+            surround_eq_readback_fixture("r"),
+            surround_eq_readback_fixture("lfe"),
+        ] {
+            transport.push_read(readback);
+            assert!(controller
+                .poll_device(Duration::ZERO)
+                .expect("Surround readback"));
+        }
         transport.take_writes();
         (controller, transport)
     }
@@ -2493,6 +2530,88 @@ mod tests {
             before
         );
         assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn surround_eq_keyboard_and_wheel_navigation_are_read_only_and_reachable() {
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let (mut controller, transport) = authoritative_surround_controller();
+        controller
+            .apply_intent(Intent::SelectUiPage(UiPage::Surround), area)
+            .unwrap();
+        controller.state.ui.surround_focus = SurroundControlFocus::Speaker;
+        controller.state.ui.surround_drag = Some(SurroundControlFocus::Level);
+
+        handle_key_press(&mut controller, key(AppKeyCode::Right), area).unwrap();
+        assert_eq!(controller.state.ui.surround_speaker_index, 1);
+        assert!(controller.state.ui.surround_drag.is_none());
+        assert!(transport.take_writes().is_empty());
+        handle_key_press(&mut controller, key(AppKeyCode::Left), area).unwrap();
+        assert_eq!(controller.state.ui.surround_speaker_index, 0);
+        assert!(transport.take_writes().is_empty());
+
+        controller.state.ui.surround_focus = SurroundControlFocus::EqBank;
+        handle_key_press(&mut controller, key(AppKeyCode::Up), area).unwrap();
+        assert_eq!(controller.state.ui.surround_eq_bank, 1);
+        assert!(transport.take_writes().is_empty());
+        let wheel = (0..area.height).find_map(|y| {
+            (0..area.width).find_map(|x| {
+                ui::slider_wheel_action(area, &controller.state, x, y, true).filter(|intent| {
+                    matches!(
+                        intent,
+                        Intent::NavigateSurroundEq {
+                            focus: SurroundControlFocus::EqBank,
+                            ..
+                        }
+                    )
+                })
+            })
+        });
+        controller
+            .apply_intent(wheel.expect("visible EQ wheel target"), area)
+            .unwrap();
+        assert_eq!(controller.state.ui.surround_eq_bank, 0);
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn surround_eq_active_labels_follow_only_fresh_known_global_format() {
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let (mut controller, transport) = authoritative_surround_controller();
+        assert_eq!(controller.state.active_surround_speaker_indices(), &[0, 1]);
+
+        let command =
+            include_str!("../antelope-protocol/tests/fixtures/orion/surround_global_21_bm_on.hex")
+                .split_whitespace()
+                .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                .collect::<Vec<_>>();
+        let mut readback = vec![0_u8; 320];
+        readback[..16]
+            .copy_from_slice(&[0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x1b, 0, 0, 0, 0, 0, 0, 0]);
+        readback[16..167].copy_from_slice(&command[18..169]);
+        transport.push_read(readback);
+        controller.poll_device(Duration::ZERO).unwrap();
+        assert_eq!(
+            controller.state.active_surround_speaker_indices(),
+            &[0, 1, 2]
+        );
+        controller.state.ui.surround_speaker_index = 2;
+
+        transport.push_read(surround_readback_fixture());
+        controller.poll_device(Duration::ZERO).unwrap();
+        assert_eq!(controller.state.active_surround_speaker_indices(), &[0, 1]);
+        assert_eq!(controller.state.ui.surround_speaker_index, 0);
+        controller.state.mark_disconnected();
+        assert!(controller
+            .state
+            .active_surround_speaker_indices()
+            .is_empty());
+        assert_eq!(
+            controller.state.surround_speaker_eq.as_ref().unwrap()[0].freshness,
+            zen_go_tui::app::SurroundFreshness::Stale
+        );
+        assert!(transport.take_writes().is_empty());
+        let _ = area;
     }
 
     #[test]

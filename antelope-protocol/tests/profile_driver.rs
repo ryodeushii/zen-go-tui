@@ -1099,6 +1099,182 @@ fn surround_global_21_full_export_is_read_only_and_unknown_states_fail_closed() 
 }
 
 #[test]
+fn surround_speaker_eq_raw_fixtures_decode_exact_geometry_units_and_indices() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical driver");
+    for (fixture, expected_index) in [
+        (include_str!("fixtures/orion/surround_speaker_eq/l.hex"), 0),
+        (include_str!("fixtures/orion/surround_speaker_eq/r.hex"), 1),
+        (
+            include_str!("fixtures/orion/surround_speaker_eq/lfe.hex"),
+            2,
+        ),
+    ] {
+        let captured = hex_fixture(fixture);
+        assert_eq!(captured.len(), 320);
+        assert_eq!(captured[12], expected_index);
+        assert!(captured[132..].iter().all(|byte| *byte == 0));
+        let state = match driver.decode(&captured).expect("decode").expect("event") {
+            DeviceEvent::QueryReply {
+                query_id: 0x1a,
+                sub_id,
+                patch: Some(DynamicStatePatch::SurroundSpeakerEq(state)),
+                ..
+            } => {
+                assert_eq!(sub_id, expected_index);
+                state
+            }
+            other => panic!("unexpected event {other:?}"),
+        };
+        assert_eq!(state.speaker_index, expected_index);
+        assert_eq!(state.bands[0].frequency_hz, 30);
+        assert_eq!(state.bands[0].q_raw, 71);
+        assert_eq!(state.bands[15].frequency_hz, 14_000);
+        assert_eq!(state.bands[15].q_raw, 71);
+    }
+    let l = hex_fixture(include_str!("fixtures/orion/surround_speaker_eq/l.hex"));
+    let state = match driver.decode(&l).unwrap().unwrap() {
+        DeviceEvent::QueryReply {
+            patch: Some(DynamicStatePatch::SurroundSpeakerEq(state)),
+            ..
+        } => state,
+        other => panic!("unexpected event {other:?}"),
+    };
+    assert_eq!(state.bands[1].gain_raw, -1668);
+    assert_eq!(state.bands[1].mode_raw, 2);
+}
+
+#[test]
+fn surround_speaker_eq_rejects_malformed_frames_but_keeps_unknown_mode_raw_read_only() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical driver");
+    let captured = hex_fixture(include_str!("fixtures/orion/surround_speaker_eq/l.hex"));
+    assert!(driver.decode(&captured[..319]).is_err());
+    for offset in (1..8).chain(9..12).chain(13..16) {
+        let mut malformed = captured.clone();
+        malformed[offset] ^= 1;
+        assert!(driver.decode(&malformed).is_err(), "header {offset}");
+    }
+    let mut wrong_index = captured.clone();
+    wrong_index[12] = 16;
+    assert!(driver.decode(&wrong_index).is_err());
+    let mut nonzero_tail = captured.clone();
+    nonzero_tail[132] = 1;
+    assert!(driver.decode(&nonzero_tail).is_err());
+    for (offset, raw) in [(20, 19_u16), (22, 9_u16), (24, (-2401_i16) as u16)] {
+        let mut out_of_range = captured.clone();
+        out_of_range[offset..offset + 2].copy_from_slice(&raw.to_le_bytes());
+        assert!(
+            driver.decode(&out_of_range).is_err(),
+            "range offset {offset}"
+        );
+    }
+
+    let mut unknown_mode = captured;
+    unknown_mode[26] = 0xfe;
+    let state = match driver.decode(&unknown_mode).unwrap().unwrap() {
+        DeviceEvent::QueryReply {
+            patch: Some(DynamicStatePatch::SurroundSpeakerEq(state)),
+            ..
+        } => state,
+        other => panic!("unexpected event {other:?}"),
+    };
+    assert_eq!(state.bands[0].mode_raw, 0xfe);
+    assert!(canonical_orion_entry()
+        .profile
+        .surround_speaker_eq
+        .as_ref()
+        .is_some_and(|contract| contract.read_only));
+}
+
+#[test]
+fn surround_speaker_eq_capability_is_profile_derived_and_finite() {
+    let pack = load_profile_pack(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/device/generated_profiles.json"
+    )))
+    .expect("generated pack");
+    let zen = pack
+        .profiles
+        .iter()
+        .find(|entry| entry.profile.identity.pid == 0xa015)
+        .expect("Zen profile");
+    assert!(zen.profile.surround_speaker_eq.is_none());
+
+    let mutations: [fn(&mut RuntimeEntry); 8] = [
+        |entry| {
+            entry
+                .profile
+                .surround_speaker_eq
+                .as_mut()
+                .unwrap()
+                .record_count = 15
+        },
+        |entry| {
+            entry
+                .profile
+                .surround_speaker_eq
+                .as_mut()
+                .unwrap()
+                .record_size = 112
+        },
+        |entry| {
+            entry
+                .profile
+                .surround_speaker_eq
+                .as_mut()
+                .unwrap()
+                .candidate_head_size = 0
+        },
+        |entry| {
+            entry
+                .profile
+                .surround_speaker_eq
+                .as_mut()
+                .unwrap()
+                .band_stride = 6
+        },
+        |entry| {
+            entry
+                .profile
+                .surround_speaker_eq
+                .as_mut()
+                .unwrap()
+                .frequency_range
+                .1 = 20_001
+        },
+        |entry| {
+            entry
+                .profile
+                .surround_speaker_eq
+                .as_mut()
+                .unwrap()
+                .gain_raw_range
+                .0 = -2_401
+        },
+        |entry| {
+            entry
+                .profile
+                .surround_speaker_eq
+                .as_mut()
+                .unwrap()
+                .read_only = false
+        },
+        |entry| {
+            entry
+                .profile
+                .surround_speaker_eq
+                .as_mut()
+                .unwrap()
+                .header_prefix[8] = 0x1b
+        },
+    ];
+    for mutate in mutations {
+        let mut orion = canonical_orion_entry();
+        mutate(&mut orion);
+        assert!(ProfileDriver::new(orion).is_err());
+    }
+}
+
+#[test]
 fn surround_global_readback_requires_every_captured_header_constant_only_for_its_family() {
     let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical driver");
     let captured = hex_fixture(include_str!(
@@ -1112,7 +1288,7 @@ fn surround_global_readback_requires_every_captured_header_constant_only_for_its
 
     let mut other_family = captured;
     other_family[4] ^= 0x01;
-    other_family[8] = 0x1a;
+    other_family[8] = 0x11;
     assert!(driver
         .decode(&other_family)
         .expect("other readback family")
@@ -2515,7 +2691,7 @@ fn malformed_declared_state_meter_is_rejected_even_with_meter_report_source() {
 #[test]
 fn valid_bounded_non_patch_readbacks_return_owned_none_patch() {
     let driver = profile_driver_from_fixture();
-    for (category, index) in [(0x0b, 4), (0x11, 1), (0x19, 63), (0x1a, 15)] {
+    for (category, index) in [(0x0b, 4), (0x11, 1), (0x19, 63)] {
         let mut frame = vec![0; 320];
         frame[0] = 0x75;
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());

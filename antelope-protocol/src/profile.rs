@@ -42,6 +42,8 @@ pub struct RuntimeProfile {
     #[serde(default)]
     pub surround_global: Option<RuntimeSurroundGlobalContract>,
     #[serde(default)]
+    pub surround_speaker_eq: Option<RuntimeSurroundSpeakerEqContract>,
+    #[serde(default)]
     pub link_domains: Vec<RuntimeLinkDomain>,
     pub routing_groups: Vec<RuntimeRoutingGroup>,
     pub frames: Vec<RuntimeFrame>,
@@ -218,6 +220,31 @@ pub struct RuntimeSurroundGlobalContract {
     pub level_offset: u16,
     pub level_range: (u16, u16),
     pub mask_offsets: [u16; 3],
+    pub evidence: String,
+}
+
+/// Finite read-only category-0x1a per-speaker EQ contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSurroundSpeakerEqContract {
+    pub readback_category: u8,
+    pub record_count: u16,
+    pub header_prefix: [u8; 12],
+    pub index_offset: u16,
+    pub header_suffix: [u8; 3],
+    pub data_offset: u16,
+    pub record_size: u16,
+    pub fixed_tail_offset: u16,
+    pub candidate_head_size: u16,
+    pub band_count: u16,
+    pub band_stride: u16,
+    pub frequency_offset: u16,
+    pub frequency_range: (u16, u16),
+    pub q_offset: u16,
+    pub q_raw_range: (u16, u16),
+    pub gain_offset: u16,
+    pub gain_raw_range: (i16, i16),
+    pub mode_offset: u16,
+    pub read_only: bool,
     pub evidence: String,
 }
 
@@ -1688,6 +1715,9 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
     if let Some(contract) = &profile.surround_global {
         validate_surround_global(profile_id, entry_index, profile, contract)?;
     }
+    if let Some(contract) = &profile.surround_speaker_eq {
+        validate_surround_speaker_eq(profile_id, entry_index, profile, contract)?;
+    }
 
     if selectable_profile {
         let readback =
@@ -2065,6 +2095,80 @@ fn validate_surround_global(
         ProfileLoadError::InvalidReportGeometry {
             profile_id: profile_id.to_owned(),
             field: format!("profiles[{entry_index}].surround_global"),
+            detail,
+        }
+    })
+}
+
+pub(crate) fn validate_surround_speaker_eq_contract(
+    profile: &RuntimeProfile,
+    contract: &RuntimeSurroundSpeakerEqContract,
+) -> Result<(), String> {
+    let exact_geometry = contract.readback_category == 0x1a
+        && contract.record_count == 16
+        && contract.header_prefix == [0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x1a, 0, 0, 0]
+        && contract.index_offset == 12
+        && contract.header_suffix == [0, 0, 0]
+        && contract.data_offset == 16
+        && contract.record_size == 116
+        && contract.fixed_tail_offset == 132
+        && contract.candidate_head_size == 4
+        && contract.band_count == 16
+        && contract.band_stride == 7
+        && contract.frequency_offset == 0
+        && contract.q_offset == 2
+        && contract.gain_offset == 4
+        && contract.mode_offset == 6
+        && contract.frequency_range == (20, 20_000)
+        && contract.q_raw_range == (10, 1_800)
+        && contract.gain_raw_range == (-2_400, 1_200)
+        && contract.read_only
+        && !contract.evidence.trim().is_empty();
+    let Some(readback) = profile.readback.as_ref() else {
+        return Err("speaker EQ contract requires profile readback".into());
+    };
+    let readback_geometry = profile.transport.report_size == Some(320)
+        && readback.response_magic == 0x75
+        && readback.response_discriminator_offset == 1
+        && readback.response_discriminator == 0
+        && readback.category_offset == 8
+        && readback.index_offset == contract.index_offset
+        && readback.data_offset == contract.data_offset
+        && readback
+            .category_counts
+            .iter()
+            .any(|bound| bound.category == 0x1a && bound.count == 16)
+        && (0u8..16).all(|index| {
+            profile
+                .startup_queries
+                .iter()
+                .any(|query| query.query_id == 0x1a && query.sub_id == index)
+        });
+    let arithmetic = usize::from(contract.data_offset) + usize::from(contract.record_size)
+        == usize::from(contract.fixed_tail_offset)
+        && usize::from(contract.candidate_head_size)
+            + usize::from(contract.band_count) * usize::from(contract.band_stride)
+            == usize::from(contract.record_size)
+        && profile
+            .transport
+            .report_size
+            .is_some_and(|size| contract.fixed_tail_offset <= size);
+    if !exact_geometry || !readback_geometry || !arithmetic {
+        return Err("speaker EQ is not the exact finite read-only category-0x1a contract".into());
+    }
+    Ok(())
+}
+
+fn validate_surround_speaker_eq(
+    profile_id: &str,
+    entry_index: usize,
+    profile: &RuntimeProfile,
+    contract: &RuntimeSurroundSpeakerEqContract,
+) -> Result<(), ProfileLoadError> {
+    validate_surround_speaker_eq_contract(profile, contract).map_err(|detail| {
+        ProfileLoadError::InvalidReportGeometry {
+            profile_id: profile_id.to_owned(),
+            field: format!("profiles[{entry_index}].surround_speaker_eq"),
             detail,
         }
     })

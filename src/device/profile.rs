@@ -15,7 +15,8 @@ use antelope_protocol::{
     RuntimeLinkDomainKind, RuntimeMeterMapping, RuntimeMeterTarget, RuntimeMixer, RuntimeOutput,
     RuntimeParam, RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
     RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain, RuntimeStateReport,
-    RuntimeSurroundFormat, RuntimeSurroundGlobalContract, RuntimeTransport,
+    RuntimeSurroundFormat, RuntimeSurroundGlobalContract, RuntimeSurroundSpeakerEqContract,
+    RuntimeTransport,
 };
 use std::collections::HashSet;
 
@@ -373,6 +374,30 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     level_offset: contract.level_offset,
                     level_range: contract.level_range,
                     mask_offsets: contract.mask_offsets,
+                    evidence: contract.evidence.into(),
+                }
+            }),
+            surround_speaker_eq: definition.surround_speaker_eq.map(|contract| {
+                RuntimeSurroundSpeakerEqContract {
+                    readback_category: contract.readback_category,
+                    record_count: contract.record_count,
+                    header_prefix: contract.header_prefix,
+                    index_offset: contract.index_offset,
+                    header_suffix: contract.header_suffix,
+                    data_offset: contract.data_offset,
+                    record_size: contract.record_size,
+                    fixed_tail_offset: contract.fixed_tail_offset,
+                    candidate_head_size: contract.candidate_head_size,
+                    band_count: contract.band_count,
+                    band_stride: contract.band_stride,
+                    frequency_offset: contract.frequency_offset,
+                    frequency_range: contract.frequency_range,
+                    q_offset: contract.q_offset,
+                    q_raw_range: contract.q_raw_range,
+                    gain_offset: contract.gain_offset,
+                    gain_raw_range: contract.gain_raw_range,
+                    mode_offset: contract.mode_offset,
+                    read_only: contract.read_only,
                     evidence: contract.evidence.into(),
                 }
             }),

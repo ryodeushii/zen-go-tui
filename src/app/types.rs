@@ -260,6 +260,11 @@ pub enum Intent {
     CycleSurroundFocus {
         forward: bool,
     },
+    SelectSurroundControl(SurroundControlFocus),
+    NavigateSurroundEq {
+        focus: SurroundControlFocus,
+        forward: bool,
+    },
     SelectAuraVerbControl(AuraVerbControlFocus),
     CycleAuraVerbFocus {
         forward: bool,
@@ -596,6 +601,19 @@ impl AuraVerbControlFocus {
 pub enum SurroundControlFocus {
     Level,
     Delay,
+    Speaker,
+    EqBank,
+}
+
+impl SurroundControlFocus {
+    pub const ALL: [Self; 4] = [Self::Level, Self::Delay, Self::Speaker, Self::EqBank];
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

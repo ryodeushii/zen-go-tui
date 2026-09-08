@@ -1454,6 +1454,18 @@ impl Controller {
             Intent::RefreshQueriedState => self.handle_refresh_queried_state()?,
             Intent::CycleFocus => self.handle_cycle_focus(),
             Intent::CycleSurroundFocus { forward } => self.handle_cycle_surround_focus(forward),
+            Intent::SelectSurroundControl(focus) => {
+                self.state.ui.surround_focus = focus;
+                if matches!(
+                    focus,
+                    SurroundControlFocus::Speaker | SurroundControlFocus::EqBank
+                ) {
+                    self.state.ui.surround_drag = None;
+                }
+            }
+            Intent::NavigateSurroundEq { focus, forward } => {
+                self.handle_navigate_surround_eq(focus, forward)
+            }
             Intent::SelectAuraVerbControl(focus) => self.state.ui.auraverb_focus = focus,
             Intent::CycleAuraVerbFocus { forward } => {
                 self.handle_cycle_auraverb_focus(forward, area)
@@ -1559,6 +1571,7 @@ impl Controller {
             if let Some(cache) = self.state.surround_global.as_mut() {
                 cache.freshness = super::SurroundFreshness::Stale;
             }
+            self.state.ui.surround_drag = None;
             self.surround_readback_deadline = None;
             return Err(error);
         }
@@ -3753,12 +3766,52 @@ impl Controller {
         self.state.cycle_focus();
     }
 
-    fn handle_cycle_surround_focus(&mut self, _forward: bool) {
-        // With two controls, forward and reverse traversal both select the other control.
-        self.state.ui.surround_focus = match self.state.ui.surround_focus {
-            SurroundControlFocus::Level => SurroundControlFocus::Delay,
-            SurroundControlFocus::Delay => SurroundControlFocus::Level,
+    fn handle_cycle_surround_focus(&mut self, forward: bool) {
+        let current = self.state.ui.surround_focus.index();
+        let count = SurroundControlFocus::ALL.len();
+        let next = if forward {
+            (current + 1) % count
+        } else {
+            (current + count - 1) % count
         };
+        self.state.ui.surround_focus = SurroundControlFocus::ALL[next];
+        if matches!(
+            self.state.ui.surround_focus,
+            SurroundControlFocus::Speaker | SurroundControlFocus::EqBank
+        ) {
+            self.state.ui.surround_drag = None;
+        }
+    }
+
+    fn handle_navigate_surround_eq(&mut self, focus: SurroundControlFocus, forward: bool) {
+        self.state.ui.surround_focus = focus;
+        self.state.ui.surround_drag = None;
+        match focus {
+            SurroundControlFocus::Speaker => {
+                let active = self.state.active_surround_speaker_indices();
+                if active.is_empty() {
+                    return;
+                }
+                let current = active
+                    .iter()
+                    .position(|index| *index == self.state.ui.surround_speaker_index)
+                    .unwrap_or(0);
+                let next = if forward {
+                    (current + 1) % active.len()
+                } else {
+                    (current + active.len() - 1) % active.len()
+                };
+                self.state.ui.surround_speaker_index = active[next];
+            }
+            SurroundControlFocus::EqBank => {
+                self.state.ui.surround_eq_bank = if forward {
+                    (self.state.ui.surround_eq_bank + 1) % 2
+                } else {
+                    (self.state.ui.surround_eq_bank + 1) % 2
+                };
+            }
+            SurroundControlFocus::Level | SurroundControlFocus::Delay => {}
+        }
     }
 
     fn handle_cycle_auraverb_focus(&mut self, forward: bool, area: Rect) {

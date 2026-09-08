@@ -128,7 +128,7 @@ Saved-state TOML profiles contain user control snapshots. They are not normalize
 - `F2` — show AuraVerb only when the active profile has the validated Orion Mix-1 AuraVerb contract
 - `F3` — show Surround only when the active profile has a validated Surround capability
 - click the device name in the header to open the device selector
-- `Tab` / `Shift+Tab` — move forward/backward through AuraVerb controls or between level and delay on Surround; `Tab` keeps its existing Mixer focus cycle
+- `Tab` / `Shift+Tab` — move forward/backward through AuraVerb controls or through global level, global delay, speaker, and EQ bank on Surround; `Tab` keeps its existing Mixer focus cycle
 - `Tab` — cycle focus between status, outputs, mixer, preamp on the Mixer page
 - `Left` / `Right` — select output or mixer channel
 - `Up` / `Down` — adjust the focused output level, mixer fader, or preamp gain
@@ -165,14 +165,16 @@ Authoritative and complete pending state is editable. Missing, awaiting, stale, 
 
 The one-row page bar is shown below the existing device header. Mixer is always available. Surround appears only for a profile with the validated global Surround contract; it is absent on Zen Go. If that capability is no longer present after a device/profile change, the active page falls back to Mixer.
 
-The current bounded Surround page exposes only the capture-backed global controls:
+The bounded Surround page keeps the existing capture-backed global controls:
 
 - level raw `0..760`, displayed as `-60.0..+16.0 dB` with `600 = 0.0 dB`;
 - lip-sync delay raw `6..45`, displayed as `0.6..4.5 ms`.
 
-A recognized captured 2.0 readback is writable. A 2.1 readback is displayed read-only. Missing, unknown, stale, disconnected, or timed-out state disables both controls. Pending complete-state writes remain visible while awaiting matching readback; a timeout locks Surround writes until a fresh controller/device session. Keyboard arrows, mouse clicks/drags, and the wheel all use the same profile-owned ranges and controller intents.
+A recognized captured 2.0 global readback is writable. A 2.1 global readback is displayed read-only. Missing, unknown, stale, disconnected, or timed-out global state disables both controls. Pending complete-state writes remain visible while awaiting matching readback; a timeout locks Surround writes until a fresh controller/device session. Keyboard arrows, mouse clicks/drags, and the wheel all use the same profile-owned ranges and controller intents.
 
-No Surround speakers, EQ, bass management, meters, format controls, or masks are exposed by this slice.
+Below those controls, a separate **read-only Speaker EQ** view shows 16 bands in banks 1–8 and 9–16. Each band displays captured frequency in Hz, Q, signed gain in dB, and the mode byte as `RAW 0xNN`; endpoint shelf/pass names are not inferred. Only `L` and `R` are exposed for a fresh known 2.0 format, and only `L`, `R`, and `LFE` for fresh known 2.1. Unknown or stale global format grants no speaker ownership, and every speaker record reports its own waiting/authoritative/stale state. The four bytes before band 1 remain an opaque candidate head and are not displayed as delay, level, or invert because dynamic readback has not been proven.
+
+Speaker and bank navigation is read-only: arrows and the mouse wheel emit no HID writes. There is no speaker level/delay/invert control, EQ edit gesture, preset, copy/paste, reset, or opcode-`0x87` capability. Bass management, Surround meters, format controls, masks, and labels for speaker indices 3–15 remain out of scope.
 
 ## Raw frame view
 
@@ -300,7 +302,7 @@ Mixer protocol notes:
 - **link / unlink controls**: the TUI exposes Zen Go link toggles across visible adjacent pairs using the grounded selector pattern. Orion input-link controls remain unavailable because their independent domains are ambiguous.
 - **startup `0x75` blocks**: the app now reads back the grounded assignment subset from `0x03`, but it still intentionally does **not** decode the inner meaning of the `0x00` capability/default block or `0x11` status/capability value beyond conservative byte summaries, and it does not trust `0x18/00` for startup level/pan/mute yet
 - **`0x04/*` and `0x0b/03`**: `0x0b/03` is now grounded for startup visible link state on `CH1..16`, and `0x04/00` plus `0x04/01` are grounded for startup level/pan/mute state
-- **Surround metering and extended controls**: no Surround speaker meters, speaker controls, EQ, bass management, format selection, or mask controls are exposed; current evidence supports only the bounded global level/delay page described above
+- **Surround metering and extended controls**: the per-speaker 16-band EQ is exposed only as the bounded read-only view described above; no Surround speaker meters, per-speaker writes, bass management, format selection, or mask controls are exposed
 - **metering decode**: per-channel strip metering remains separate from stored level, and the preamp panel retains narrow observed input meters for `A1` from `0xce` and `A2` from `0xcf`. Output cards now show the explicitly approved provisional full-report pairs `0xea/0xeb` (Monitor L/R), `0xec/0xed` (HP1 L/R), and `0xee/0xef` (HP2 L/R). Each byte is read independently; a missing or out-of-range lane stays unavailable rather than borrowing another output's value or becoming fake zero. The UI labels these feeds provisional and leaves their meter stage unknown.
 
 ## Verification expectations without hardware

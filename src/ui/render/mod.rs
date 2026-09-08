@@ -425,9 +425,9 @@ fn draw_surround_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             Paragraph::new(format!(
                 "FORMAT {format}  |  {freshness}  |  {}",
                 if enabled {
-                    "WRITES ENABLED"
+                    "GLOBAL WRITES ENABLED"
                 } else {
-                    "NO WRITES"
+                    "NO GLOBAL WRITES"
                 }
             ))
             .block(panel_block("Surround", Color::LightMagenta, true)),
@@ -435,46 +435,133 @@ fn draw_surround_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         );
     }
 
-    let Some(display) = display else {
+    if let (Some(display), Some((level_range, delay_range))) =
+        (display, state.surround_control_ranges())
+    {
+        let level_tenths_db = i32::from(display.level_raw) - 600;
+        let level_value = format!(
+            "{}{:.1} dB  (raw {})",
+            if level_tenths_db >= 0 { "+" } else { "" },
+            level_tenths_db as f64 / 10.0,
+            display.level_raw
+        );
+        let delay_value = format!(
+            "{:.1} ms  (raw {})",
+            f64::from(display.delay_tenths_ms) / 10.0,
+            display.delay_tenths_ms
+        );
+        draw_surround_control_card(
+            frame,
+            geometry.level_card,
+            geometry.level_track,
+            "Global Level",
+            level_value,
+            display.level_raw,
+            level_range,
+            state.ui.surround_focus == SurroundControlFocus::Level,
+            enabled,
+        );
+        draw_surround_control_card(
+            frame,
+            geometry.delay_card,
+            geometry.delay_track,
+            "Lip-sync Delay",
+            delay_value,
+            u16::from(display.delay_tenths_ms),
+            (u16::from(delay_range.0), u16::from(delay_range.1)),
+            state.ui.surround_focus == SurroundControlFocus::Delay,
+            enabled,
+        );
+    }
+
+    if geometry.eq_card.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        panel_block(
+            "Speaker EQ — READ ONLY — Band   Frequency      Q       Gain      Mode",
+            Color::LightCyan,
+            true,
+        ),
+        geometry.eq_card,
+    );
+    let active = state.active_surround_speaker_indices();
+    let speaker_text = if active.is_empty() {
+        "Speaker: unavailable (fresh known format required)".to_string()
+    } else {
+        let labels = active
+            .iter()
+            .filter_map(|index| AppState::surround_speaker_label(*index))
+            .collect::<Vec<_>>()
+            .join("/");
+        let selected =
+            AppState::surround_speaker_label(state.ui.surround_speaker_index).unwrap_or("unknown");
+        format!("Speaker: < {selected} >  [{labels}]")
+    };
+    Paragraph::new(speaker_text)
+        .style(
+            if state.ui.surround_focus == SurroundControlFocus::Speaker {
+                strong_style(Color::LightCyan)
+            } else {
+                subdued_style()
+            },
+        )
+        .render(geometry.speaker_selector, frame.buffer_mut());
+    Paragraph::new(format!(
+        "Bank: < {}–{} >",
+        if state.ui.surround_eq_bank == 0 { 1 } else { 9 },
+        if state.ui.surround_eq_bank == 0 {
+            8
+        } else {
+            16
+        }
+    ))
+    .style(if state.ui.surround_focus == SurroundControlFocus::EqBank {
+        strong_style(Color::LightCyan)
+    } else {
+        subdued_style()
+    })
+    .render(geometry.bank_selector, frame.buffer_mut());
+
+    let Some(record) = state.selected_surround_speaker_eq() else {
         return;
     };
-    let Some((level_range, delay_range)) = state.surround_control_ranges() else {
+    let record_status = match record.freshness {
+        SurroundFreshness::AwaitingReadback => "WAITING FOR THIS SPEAKER",
+        SurroundFreshness::Authoritative => "",
+        SurroundFreshness::PendingReadback => "PENDING (READ ONLY)",
+        SurroundFreshness::Stale => "STALE / DISCONNECTED",
+    };
+    let Some(eq) = record.state.as_ref() else {
+        if let Some(row) = geometry.eq_rows.first() {
+            Paragraph::new(record_status)
+                .style(subdued_style())
+                .render(*row, frame.buffer_mut());
+        }
         return;
     };
-    let level_tenths_db = i32::from(display.level_raw) - 600;
-    let level_value = format!(
-        "{}{:.1} dB  (raw {})",
-        if level_tenths_db >= 0 { "+" } else { "" },
-        level_tenths_db as f64 / 10.0,
-        display.level_raw
-    );
-    let delay_value = format!(
-        "{:.1} ms  (raw {})",
-        f64::from(display.delay_tenths_ms) / 10.0,
-        display.delay_tenths_ms
-    );
-    draw_surround_control_card(
-        frame,
-        geometry.level_card,
-        geometry.level_track,
-        "Global Level",
-        level_value,
-        display.level_raw,
-        level_range,
-        state.ui.surround_focus == SurroundControlFocus::Level,
-        enabled,
-    );
-    draw_surround_control_card(
-        frame,
-        geometry.delay_card,
-        geometry.delay_track,
-        "Lip-sync Delay",
-        delay_value,
-        u16::from(display.delay_tenths_ms),
-        (u16::from(delay_range.0), u16::from(delay_range.1)),
-        state.ui.surround_focus == SurroundControlFocus::Delay,
-        enabled,
-    );
+    let start = usize::from(state.ui.surround_eq_bank.min(1)) * 8;
+    for (visible, row) in geometry.eq_rows.into_iter().enumerate() {
+        if row.width == 0 {
+            continue;
+        }
+        let band_index = start + visible;
+        let band = eq.bands[band_index];
+        let status = if visible == 0 && !record_status.is_empty() {
+            format!("  {record_status}")
+        } else {
+            String::new()
+        };
+        Paragraph::new(format!(
+            "{:>4}   {:>6} Hz   {:>5.2}   {:+7.2} dB   RAW 0x{:02x}{status}",
+            band_index + 1,
+            band.frequency_hz,
+            f64::from(band.q_raw) / 100.0,
+            f64::from(band.gain_raw) / 100.0,
+            band.mode_raw,
+        ))
+        .render(row, frame.buffer_mut());
+    }
 }
 
 fn draw_routing_popup(frame: &mut Frame<'_>, area: Rect, state: &AppState) {

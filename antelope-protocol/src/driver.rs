@@ -170,6 +170,25 @@ pub struct SurroundGlobalState {
     pub writable: bool,
 }
 
+/// One decoded read-only Surround speaker EQ band.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurroundEqBand {
+    pub frequency_hz: u16,
+    /// Q multiplied by 100.
+    pub q_raw: u16,
+    /// Signed dB multiplied by 100.
+    pub gain_raw: i16,
+    /// Capture byte retained without inventing shelf/pass semantics.
+    pub mode_raw: u8,
+}
+
+/// One complete category-0x1a record. The opaque four-byte candidate head is omitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurroundSpeakerEqState {
+    pub speaker_index: u8,
+    pub bands: [SurroundEqBand; 16],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlValue {
     Bool(bool),
@@ -335,6 +354,7 @@ pub enum DynamicStatePatch {
     Globals(Vec<DynamicGlobalState>),
     AuraVerb(AuraVerbState),
     SurroundGlobal(SurroundGlobalState),
+    SurroundSpeakerEq(SurroundSpeakerEqState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

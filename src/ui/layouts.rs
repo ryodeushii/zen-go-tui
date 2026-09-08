@@ -226,6 +226,10 @@ pub(crate) struct SurroundPageGeometry {
     pub delay_card: Rect,
     pub level_track: Rect,
     pub delay_track: Rect,
+    pub eq_card: Rect,
+    pub speaker_selector: Rect,
+    pub bank_selector: Rect,
+    pub eq_rows: [Rect; 8],
 }
 
 impl SurroundPageGeometry {
@@ -237,6 +241,10 @@ impl SurroundPageGeometry {
             delay_card: empty,
             level_track: empty,
             delay_track: empty,
+            eq_card: empty,
+            speaker_selector: empty,
+            bank_selector: empty,
+            eq_rows: [empty; 8],
         }
     }
 }
@@ -259,39 +267,53 @@ pub(crate) fn surround_page_geometry(area: Rect) -> SurroundPageGeometry {
     }
     let status = Rect::new(area.x, area.y, area.width, 3.min(area.height));
     let controls_y = status.bottom();
-    let controls_height = area.bottom().saturating_sub(controls_y);
-    let (level_card, delay_card) = if area.width >= 72 && controls_height >= 5 {
-        let left_width = area.width.saturating_sub(1) / 2;
-        (
-            Rect::new(area.x, controls_y, left_width, controls_height),
-            Rect::new(
-                area.x.saturating_add(left_width).saturating_add(1),
-                controls_y,
-                area.width.saturating_sub(left_width).saturating_sub(1),
-                controls_height,
-            ),
-        )
-    } else if controls_height >= 10 {
-        let top_height = controls_height.saturating_sub(1) / 2;
-        (
-            Rect::new(area.x, controls_y, area.width, top_height),
-            Rect::new(
-                area.x,
-                controls_y.saturating_add(top_height).saturating_add(1),
-                area.width,
-                controls_height.saturating_sub(top_height).saturating_sub(1),
-            ),
-        )
-    } else {
-        let empty = Rect::new(area.x, controls_y, 0, 0);
-        (empty, empty)
-    };
+    let remaining = area.bottom().saturating_sub(controls_y);
+    // At 80x24 the content area is 20 rows: 3 status + 6 globals + 11 EQ.
+    // Reserving the EQ height keeps all eight rows visible instead of silently truncating them.
+    let global_height = if remaining >= 17 { 6 } else { 0 };
+    let left_width = area.width.saturating_sub(1) / 2;
+    let level_card = Rect::new(area.x, controls_y, left_width, global_height);
+    let delay_card = Rect::new(
+        area.x.saturating_add(left_width).saturating_add(1),
+        controls_y,
+        area.width.saturating_sub(left_width).saturating_sub(1),
+        global_height,
+    );
+    let eq_y = controls_y.saturating_add(global_height);
+    let eq_card = Rect::new(area.x, eq_y, area.width, area.bottom().saturating_sub(eq_y));
+    let inner_x = eq_card.x.saturating_add(1);
+    let inner_width = eq_card.width.saturating_sub(2);
+    let selector_y = eq_card.y.saturating_add(1);
+    let selector_left = inner_width.saturating_sub(1) / 2;
+    let speaker_selector = Rect::new(
+        inner_x,
+        selector_y,
+        selector_left,
+        u16::from(eq_card.height >= 3),
+    );
+    let bank_selector = Rect::new(
+        inner_x.saturating_add(selector_left).saturating_add(1),
+        selector_y,
+        inner_width.saturating_sub(selector_left).saturating_sub(1),
+        u16::from(eq_card.height >= 3),
+    );
+    let mut eq_rows = [Rect::new(inner_x, selector_y, 0, 0); 8];
+    for (index, row) in eq_rows.iter_mut().enumerate() {
+        let y = selector_y.saturating_add(1).saturating_add(index as u16);
+        if y < eq_card.bottom().saturating_sub(1) {
+            *row = Rect::new(inner_x, y, inner_width, 1);
+        }
+    }
     SurroundPageGeometry {
         status,
         level_card,
         delay_card,
         level_track: surround_track(level_card),
         delay_track: surround_track(delay_card),
+        eq_card,
+        speaker_selector,
+        bank_selector,
+        eq_rows,
     }
 }
 
@@ -300,6 +322,9 @@ pub(crate) fn surround_control_track(area: Rect, focus: SurroundControlFocus) ->
     match focus {
         SurroundControlFocus::Level => geometry.level_track,
         SurroundControlFocus::Delay => geometry.delay_track,
+        SurroundControlFocus::Speaker | SurroundControlFocus::EqBank => {
+            Rect::new(area.x, area.y, 0, 0)
+        }
     }
 }
 
