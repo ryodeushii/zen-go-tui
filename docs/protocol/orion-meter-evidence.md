@@ -25,6 +25,93 @@ not establish route-independent physical-input ownership, stereo/L/R mapping,
 or a hardware-confirmed fixed lane owner. No new capture or hardware test is
 implied.
 
+## Todo 41 bounded current-corpus update
+
+### Inventory and provenance
+
+The current read-only inventory contains **99 files** and **15 dated pcaps**,
+compared with the earlier 92-file snapshot and eight dated pcaps. The seven
+additions exercise HP1, HP2, Line Out, Monitor A, Monitor B, Reamp, and S/PDIF.
+This retracts any absolute statement that output-capture coverage was
+exhausted. The bounded replacement is: all output captures present in this
+99-file snapshot have been reviewed; future captures can still add evidence.
+
+This update was consolidated at root
+`7a436608239ca61d474707cea6101f09b70006b4` and nested Antelope-Ctl
+`eb950a3f9582662571dab750775530e5adf3f47e`; the current canonical Orion
+profile SHA-256 is
+`9e76a4e4b77279961741c8c1ebf7ed01b3f3aff3d9325b3d9b9ed53966d6193f`.
+The managed analysis is
+`/home/ryodeushii/.pi/agent/sessions/--home-ryodeushii-repos-zen-go-tui--/subagent-artifacts/outputs/b67fef34-0986-4688-b9cd-3dd44e8cf143/orion-updated-capture-analysis.md`
+(SHA-256 `76c432aabd172bc7025141bb10dd4a496378f3153fd993bff32b5eb0e7809697`).
+Its inventory, state-context, and full-window inputs are respectively:
+
+- `orion-current-inventory.json`, SHA-256 `83201ec3dc9495009440f7bcab5d36d09c0a48c347315b8d7873729bb73d76ae`;
+- `dated-state-context.json`, SHA-256 `1dcfa19d01a261cd0cfea6b1f7c1fce86193b7a48ef2e4bd63e835a38ae4939c`;
+- `dated-full-scan.json`, SHA-256 `c3aad0769efa16fc8256b30d17ef2cb05c8f31cbc5c9499284f92e3b34b1e5d6`.
+
+The route windows below use `on frame/time -> mute frame/time`. They come from
+the full 320-byte OUT reports, not from filenames.
+
+| New capture | SHA-256 | Complete route windows |
+|---|---|---|
+| `antelope-orion-hp1-1-2-oscillator1khz-4secpauses.pcapng` | `baca5f3d9f6005cd73f8dcd4359dd958913a02c1462f82fa5c05b68ce9f4d3e8` | ch1 1429/2.829457 -> 3079/6.126455; ch2 4061/8.084999 -> 5885/11.732428 |
+| `antelope-orion-hp2-1-2-oscillator1khz-4secpauses.pcapng` | `5a8295c8ce0e4e4a66edeb15a8b3350863aa75a885c708394209c2dd23d667fb` | ch1 2037/4.049911 -> 5819/11.608810; ch2 6523/13.013124 -> 9021/18.004798 |
+| `antelope-orion-lineout-1-16-oscillator1khz-4secpauses.pcapng` | `7bd6001f0411a22c49bf74ffb86fa9c12fb6c640bddfca528984d6e5a8c5d4d8` | ch1 1699/3.373887 -> 3917/7.806729; ch2 4397/8.762186 -> 6599/13.159807; ch3 7365/14.687756 -> 10465/20.886097; ch4 10987/21.924246 -> 13711/27.367801; ch5 14271/28.483780 -> 16937/33.812807; ch6 17995/35.922943 -> 22429/44.786728; ch7 22937/45.800819 -> 26113/52.147213; ch8 26811/53.540463 -> 30265/60.444927; ch9 31053/62.017288 -> 35013/69.929865; ch10 35757/71.416710 -> 38615/77.128252; ch11 39181/78.254027 -> 41591/83.070567; ch12 42009/83.902842 -> 44445/88.772904; ch13 45103/90.084728 -> 47341/94.553828; ch14 48373/96.614879 -> 51431/102.727858; ch15 52111/104.080875 -> 54325/108.508127; ch16 54955/109.761416 -> 56993/113.835872 |
+| `antelope-orion-monitora-1-2-oscillator1khz-4secpauses.pcapng` | `bf53cb17a14e7453b22c96039dc5963e6b8a04c382a907214688f77f5250a8e7` | ch1 1901/3.775574 -> 4133/8.235754; ch2 5223/10.412089 -> 7889/15.739989 |
+| `antelope-orion-monitorb-1-2-oscillator1khz-4secpauses.pcapng` | `8007e4d4ab4a9a11986820a0b22acc02a52fbb2602faad681d8cd5a16b1c7e5e` | ch1 2015/4.002805 -> 4939/9.846135; ch2 5525/11.014136 -> 9631/19.224749 |
+| `antelope-orion-reamp-1-16-oscillator1khz-4secpauses.pcapng` | `1d15d0e747c77f077521b1fcace198cd29ac1dfa1002b904e7c391da45895f9e` | ch1 2053/4.084083 -> 4509/8.988928; ch2 5285/10.538832 -> 7903/15.771708 |
+| `antelope-orion-spdif-1-2-oscillator1khz-4secpauses.pcapng` | `d75ae8c05de5884cd5544d5afcdab8f14ee209f4c516f67c85560095c114b4fe` | ch1 1793/3.557094 -> 5043/10.053071; ch2 6107/12.178771 -> 9229/18.417756 |
+
+### Bounded result
+
+All seven captures keep state selector full-report @121 at 18. Across all six
+bus-control slots, mute, dim, and mono status bits are clear; the levels are
+static. Each route-on report installs source `(0x0c, 0)` and the paired report
+restores mute `(0x0b, 0)`. No file contains `SET_GLOBAL(0x0a)`, and generator
+state has no `0x73` readback. The command's absence therefore means generator
+signal is **unconfirmed**, not that the generator was off.
+
+All 28 on/mute windows were checked at every full-report byte @0..319 and at
+every constituent bit in both `0x73` and `75/1f`. There is no sustained meter
+response. The existing six one-lane output mappings remain observed,
+provisional, and unchanged; all six candidate offsets stayed raw 96 in all
+28,689 new `0x73` reports. This is not a contradiction because source emission
+was not independently confirmed. The physical-input map @221-232 and the
+selector-gated partial Mix 2 map (strips 20-32 at @144-156 when @121=22) also
+remain unchanged. No runtime or profile delta follows.
+
+The one new free-running event is bounded to the Reamp capture above. After the
+channel-1 mute at frame 4509 / 8.988928 s, five `75/1f` reports at frames
+4643, 4647, 4651, 4655, and 4659 / 9.256078-9.288096 s set all four offsets
+@32, @33, @48, and @49 to raw 0. It begins 267.150 ms after mute; frames
+4631-4639 are raw 96 and frames 4663-4667 return to raw 96. Because it is a
+32 ms, all-pairs, post-mute event, it proves neither Reamp nor Surround meter
+ownership. The Surround positive capture retains full SHA-256
+`fd8e93d550d2c3bcf8bbb0f1a979c1c2918c7463abe8c1e8bbf2329728ce9947`:
+its sustained ch1/ch2 correlation remains valid, but the pair region is shared
+or otherwise unresolved and must not drive Surround meters.
+
+### Surround-export boundary and follow-ups
+
+`new/srrnd-20-21.frames.txt` is a legitimate full-report export, SHA-256
+`3a2ad5b8710beda965bc1fe5ff07673371cd961897d4bc957baaa88d51deac8b`.
+Its lines 1 and 35, at 7.248712 s and 13.730188 s, are 320-byte 2.1 reports
+with report SHA-256
+`f0e167bf8cba68b76873b92337f741fb64c1f02ad1bea2d861784830d31e571e`;
+they are not synthetic. The separate gap is a paired category-`0x1b` 2.1
+readback/full-write contract. `new/macos-srrnd-tab.frames.txt` contains 32-byte
+heads, but that limitation must not be generalized to the other `new/`
+exports.
+
+| Todo | Evidence-bound next step |
+|---:|---|
+| 35-36 | Stay blocked for the remaining unobserved meter maps. |
+| 37 | The existing 2.0 global Surround UI can resume after this documentation commit; the separate 2.1 paired-readback gap remains. |
+| 38 | Orion AuraVerb can proceed independently. The Zen wire contract remains unverified. |
+| 39 | Mixer evidence blocker; this is not a navigation/UI todo. |
+| 40 | Output-ownership blocker; this is not a navigation/UI todo. |
+
 ## Approved provisional output assignment
 
 The runtime stores this explicit user-approved packet-order hypothesis:
@@ -234,8 +321,12 @@ Before full mixer-meter support, capture these items:
 
 The source annotation is `settings-general-explained.md`, SHA-256
 `3c3ff8cb0398d95e3ec2798b3904bf5b40b39fafbd3e34b2edb4c8e6219a2e98`.
-The audit compared its full contents with the canonical profile at `cd7adb6`.
-The annotation describes operator intent, not protocol truth by itself.
+A fresh full reread produced that same hash, exactly matching the hash already
+recorded in this document; the file is unchanged relative to this documented
+evidence. The managed inventory's lack of an older JSON-side annotation hash
+does not make the prior hash unavailable. The audit compared its full contents
+with the canonical profile at `cd7adb6`. The annotation describes operator
+intent, not protocol truth by itself.
 
 | Annotated captures | Current profile clarification | Audit result |
 |---|---|---|
@@ -313,6 +404,8 @@ tshark -r "$D/antelope-orion-mix2-ch1-32-oscillator1khz-4secpauses.pcapng" \
 ### Surround first-slice meter boundary
 
 The first functional Surround slice adds no meter ownership. The `0x75/0x1f`
-pairs at @32/@48 remain route-correlated for channels 1–2 only, and the
-selector-dependent `0x73` bank remains scoped to its existing Mix 2 mapping.
-No Surround output, mix, or 16-channel meter map is inferred from those bytes.
+pairs at @32/@48 and @33/@49 remain sustained route-correlated observations
+for channels 1 and 2 respectively; the Reamp post-mute all-pairs transient above prevents an
+exclusive Surround-owner interpretation. The selector-dependent `0x73` bank
+remains scoped to its existing Mix 2 mapping. No Surround output, mix, or
+16-channel meter map is inferred from those bytes.
