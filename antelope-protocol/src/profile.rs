@@ -164,7 +164,14 @@ pub struct ReadbackCategory {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMeterTarget {
     MixMaster,
+    MixerStrip,
     PhysicalOutput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeByteEqualsPredicate {
+    pub offset: usize,
+    pub value: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +183,8 @@ pub struct RuntimeMeterMapping {
     pub offset: usize,
     pub raw_min: u8,
     pub raw_max: u8,
+    #[serde(default)]
+    pub byte_equals: Option<RuntimeByteEqualsPredicate>,
     pub status: String,
     pub status_text: String,
     pub evidence: String,
@@ -1214,6 +1223,7 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
         }
     }
     let mut meter_mapping_keys = HashSet::new();
+    let mut meter_source_offsets = HashSet::new();
     for (mapping_index, mapping) in profile.meter_mappings.iter().enumerate() {
         let field = format!("profiles[{entry_index}].meter_mappings[{mapping_index}]");
         let Some(frame) = profile
@@ -1257,11 +1267,22 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                 detail: format!("meter offset {} exceeds report size", mapping.offset),
             });
         }
+        if !meter_source_offsets.insert((mapping.frame_id.as_str(), mapping.offset)) {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field,
+                detail: "meter source byte is declared more than once in one frame".into(),
+            });
+        }
         let target_exists = match mapping.target {
             RuntimeMeterTarget::MixMaster => profile
                 .mixers
                 .iter()
                 .any(|mixer| u16::from(mixer.mix_index) == mapping.target_index),
+            RuntimeMeterTarget::MixerStrip => profile.mixers.iter().any(|mixer| {
+                u16::from(mixer.mix_index) == mapping.target_index
+                    && (1..=mixer.strip_count).contains(&u16::from(mapping.lane))
+            }),
             RuntimeMeterTarget::PhysicalOutput => profile
                 .outputs
                 .iter()
@@ -1283,6 +1304,60 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
                 profile_id: profile_id.to_owned(),
                 field,
                 detail: "meter target lane is declared more than once across frames".into(),
+            });
+        }
+        match (
+            mapping.target,
+            mapping.frame_id.as_str(),
+            mapping.byte_equals,
+        ) {
+            (RuntimeMeterTarget::MixerStrip, "state_report", Some(predicate)) => {
+                if profile
+                    .transport
+                    .report_size
+                    .is_some_and(|size| predicate.offset >= usize::from(size))
+                {
+                    return Err(ProfileLoadError::InvalidReportGeometry {
+                        profile_id: profile_id.to_owned(),
+                        field,
+                        detail: "meter byte_equals predicate exceeds report size".into(),
+                    });
+                }
+                if predicate.offset == mapping.offset {
+                    return Err(ProfileLoadError::InvalidReportGeometry {
+                        profile_id: profile_id.to_owned(),
+                        field,
+                        detail: "meter byte_equals predicate overlaps its source byte".into(),
+                    });
+                }
+            }
+            (RuntimeMeterTarget::MixerStrip, _, _) => {
+                return Err(ProfileLoadError::InvalidReportGeometry {
+                    profile_id: profile_id.to_owned(),
+                    field,
+                    detail: "mixer-strip meters require a state_report byte_equals predicate"
+                        .into(),
+                });
+            }
+            (_, _, Some(_)) => {
+                return Err(ProfileLoadError::InvalidReportGeometry {
+                    profile_id: profile_id.to_owned(),
+                    field,
+                    detail: "byte_equals predicates are limited to state-report mixer strips"
+                        .into(),
+                });
+            }
+            (_, _, None) => {}
+        }
+    }
+    for (mapping_index, mapping) in profile.meter_mappings.iter().enumerate() {
+        if mapping.byte_equals.is_some_and(|predicate| {
+            meter_source_offsets.contains(&(mapping.frame_id.as_str(), predicate.offset))
+        }) {
+            return Err(ProfileLoadError::InvalidReportGeometry {
+                profile_id: profile_id.to_owned(),
+                field: format!("profiles[{entry_index}].meter_mappings[{mapping_index}]"),
+                detail: "meter byte_equals predicate overlaps a declared source byte".into(),
             });
         }
     }

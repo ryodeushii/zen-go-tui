@@ -97,6 +97,13 @@ impl DeviceDriver for RecordingProfileDriver {
     }
 }
 
+fn hex_fixture(input: &str) -> Vec<u8> {
+    input
+        .split_ascii_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).expect("hex byte"))
+        .collect()
+}
+
 fn controller_for_profile(entry: RuntimeEntry) -> Controller {
     Controller::new(
         Box::new(MockTransport::default()),
@@ -131,6 +138,83 @@ fn orion_physical_meter_snapshot_updates_channels_one_and_twelve_independently()
     assert_eq!(physical[0].meter, Some(0));
     assert_eq!(physical[1].meter, Some(96));
     assert_eq!(physical[11].meter, Some(48));
+}
+
+#[test]
+fn orion_mix2_selector_sequence_replaces_only_declared_strip_meters() {
+    let entry = canonical_orion_entry();
+    let driver = ProfileDriver::new(entry.clone()).expect("canonical Orion driver");
+    let mut state = AppState::from_entry(&entry);
+    let mut frame = hex_fixture(include_str!(
+        "../../antelope-protocol/tests/fixtures/orion/mix2_strip21_selector22_frame114099.hex"
+    ));
+
+    frame[121] = 21;
+    state.observe_event(driver.decode(&frame).unwrap().unwrap());
+    assert_eq!(state.mixers()[1].strips[20].meter, None);
+
+    frame[121] = 22;
+    state.observe_event(driver.decode(&frame).unwrap().unwrap());
+    assert_eq!(state.mixers()[1].strips[20].meter, Some(0));
+    state.mixers_mut()[0].strips[0].meter = Some(37);
+    let physical_before = state.inputs_for_space("physical_inputs")[0].meter;
+    let outputs_before = state.meters.clone();
+
+    frame[145] = 255;
+    state.observe_event(driver.decode(&frame).unwrap().unwrap());
+    assert_eq!(state.mixers()[1].strips[20].meter, None);
+
+    frame[145] = 0;
+    state.observe_event(driver.decode(&frame).unwrap().unwrap());
+    assert_eq!(state.mixers()[1].strips[20].meter, Some(0));
+    frame[121] = 23;
+    state.observe_event(driver.decode(&frame).unwrap().unwrap());
+    assert_eq!(state.mixers()[1].strips[20].meter, None);
+    assert_eq!(state.mixers()[0].strips[0].meter, Some(37));
+    assert_eq!(
+        state.inputs_for_space("physical_inputs")[0].meter,
+        physical_before
+    );
+    assert_eq!(state.meters, outputs_before);
+}
+
+#[test]
+fn orion_controller_truncated_state_invalidates_mix2_and_propagates_error_without_writes() {
+    let entry = canonical_orion_entry();
+    let transport = MockTransport::default();
+    let driver = ProfileDriver::new(entry.clone()).expect("canonical Orion driver");
+    let mut controller =
+        Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+            .expect("Orion controller");
+    let frame = hex_fixture(include_str!(
+        "../../antelope-protocol/tests/fixtures/orion/mix2_strip21_selector22_frame114099.hex"
+    ));
+    transport.push_read(frame.clone());
+    controller
+        .poll_device_without_writes(Duration::ZERO)
+        .expect("captured state report");
+    assert_eq!(controller.state.mixers()[1].strips[20].meter, Some(0));
+    controller.state.mixers_mut()[0].strips[0].meter = Some(41);
+    let physical_before = controller.state.inputs_for_space("physical_inputs")[0].meter;
+    let outputs_before = controller.state.meters.clone();
+
+    transport.push_read(frame[..156].to_vec());
+    let error = controller
+        .poll_device_without_writes(Duration::ZERO)
+        .expect_err("truncated 0x73 remains an error");
+    assert!(error
+        .to_string()
+        .contains("report length 156 does not match 320; known record is truncated"));
+    assert!(controller.state.mixers()[1].strips[19..32]
+        .iter()
+        .all(|strip| strip.meter.is_none()));
+    assert_eq!(controller.state.mixers()[0].strips[0].meter, Some(41));
+    assert_eq!(
+        controller.state.inputs_for_space("physical_inputs")[0].meter,
+        physical_before
+    );
+    assert_eq!(controller.state.meters, outputs_before);
+    assert!(transport.take_writes().is_empty());
 }
 
 #[test]

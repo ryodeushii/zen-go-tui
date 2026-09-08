@@ -277,6 +277,9 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                         super::MeterTargetDefinition::MixMaster => {
                             RuntimeMeterTarget::MixMaster
                         }
+                        super::MeterTargetDefinition::MixerStrip => {
+                            RuntimeMeterTarget::MixerStrip
+                        }
                         super::MeterTargetDefinition::PhysicalOutput => {
                             RuntimeMeterTarget::PhysicalOutput
                         }
@@ -286,6 +289,12 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                     offset: mapping.offset,
                     raw_min: mapping.raw_min,
                     raw_max: mapping.raw_max,
+                    byte_equals: mapping.byte_equals.map(|predicate| {
+                        antelope_protocol::RuntimeByteEqualsPredicate {
+                            offset: predicate.offset,
+                            value: predicate.value,
+                        }
+                    }),
                     status: status(mapping.status).into(),
                     status_text: mapping.status_text.into(),
                     evidence: mapping.evidence.into(),

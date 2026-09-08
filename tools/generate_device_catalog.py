@@ -5087,10 +5087,11 @@ def _meter_mappings(profile: NormalizedProfile) -> list[dict[str, Any]]:
     """Normalize explicit one-byte meter lanes to full report offsets."""
 
     outputs = {item["id"] for item in _build_outputs(profile)}
-    mixers = {item["mix_index"] for item in _build_mixers(profile)}
+    mixers = {item["mix_index"]: item for item in _build_mixers(profile)}
     report_size = profile.transport.report_size
     mappings: list[dict[str, Any]] = []
     seen: set[tuple[str, int, int]] = set()
+    seen_offsets: set[tuple[str, int]] = set()
     for frame_id in ("state_report", "meter_report"):
         section = profile.frame.get(frame_id)
         if section is None:
@@ -5107,19 +5108,25 @@ def _meter_mappings(profile: NormalizedProfile) -> list[dict[str, Any]]:
             if not isinstance(raw_mapping, Mapping):
                 raise ProfileError(f"{context} must be an object")
             target = raw_mapping.get("target")
-            if target not in {"mix_master", "physical_output"}:
+            if target not in {"mix_master", "mixer_strip", "physical_output"}:
                 raise ProfileError(
-                    f"{context}.target must be mix_master or physical_output"
+                    f"{context}.target must be mix_master, mixer_strip, or physical_output"
                 )
             target_index = _checked_u16(
                 raw_mapping.get("target_index"), f"{context}.target_index"
             )
-            target_ids = mixers if target == "mix_master" else outputs
+            target_ids = outputs if target == "physical_output" else set(mixers)
             if target_index not in target_ids:
                 raise ProfileError(
                     f"{context}.target_index {target_index} is not declared in profile topology"
                 )
             lane = _checked_u8(raw_mapping.get("lane"), f"{context}.lane")
+            if target == "mixer_strip" and not (
+                1 <= lane <= mixers[target_index]["strip_count"]
+            ):
+                raise ProfileError(
+                    f"{context}.lane {lane} is not a declared strip on mixer {target_index}"
+                )
             key = (target, target_index, lane)
             if key in seen:
                 raise ProfileError(
@@ -5134,6 +5141,44 @@ def _meter_mappings(profile: NormalizedProfile) -> list[dict[str, Any]]:
                 raise ProfileError(
                     f"{context}.payload_offset {payload_offset:#x} falls outside report size {report_size} after payload conversion"
                 )
+            if (frame_id, offset) in seen_offsets:
+                raise ProfileError(f"{context}.payload_offset duplicates a meter source byte")
+            seen_offsets.add((frame_id, offset))
+
+            raw_predicate = raw_mapping.get("byte_equals")
+            predicate = None
+            if raw_predicate is not None:
+                if target != "mixer_strip" or frame_id != "state_report":
+                    raise ProfileError(
+                        f"{context}.byte_equals is supported only for state_report mixer_strip mappings"
+                    )
+                if not isinstance(raw_predicate, Mapping):
+                    raise ProfileError(f"{context}.byte_equals must be an object")
+                predicate_payload_offset = _checked_u16(
+                    raw_predicate.get("payload_offset"),
+                    f"{context}.byte_equals.payload_offset",
+                )
+                predicate_offset = predicate_payload_offset + SNAPSHOT_PAYLOAD_OFFSET
+                if not _report_span_fits(predicate_offset, 1, report_size):
+                    raise ProfileError(
+                        f"{context}.byte_equals.payload_offset falls outside report size"
+                    )
+                if predicate_offset == offset:
+                    raise ProfileError(
+                        f"{context}.byte_equals predicate overlaps its meter source byte"
+                    )
+                predicate = {
+                    "offset": predicate_offset,
+                    "payload_offset": predicate_payload_offset,
+                    "value": _checked_u8(
+                        raw_predicate.get("value"), f"{context}.byte_equals.value"
+                    ),
+                }
+            elif target == "mixer_strip":
+                raise ProfileError(
+                    f"{context}.mixer_strip requires a state_report byte_equals predicate"
+                )
+
             raw_range = raw_mapping.get("raw_range")
             if not isinstance(raw_range, list) or len(raw_range) != 2:
                 raise ProfileError(f"{context}.raw_range must contain [minimum, maximum]")
@@ -5157,10 +5202,18 @@ def _meter_mappings(profile: NormalizedProfile) -> list[dict[str, Any]]:
                     "payload_offset": payload_offset,
                     "raw_min": raw_min,
                     "raw_max": raw_max,
+                    "byte_equals": predicate,
                     "status": status,
                     "status_text": status,
                     "evidence": evidence,
                 }
+            )
+    source_offsets = {(mapping["frame_id"], mapping["offset"]) for mapping in mappings}
+    for index, mapping in enumerate(mappings):
+        predicate = mapping["byte_equals"]
+        if predicate is not None and (mapping["frame_id"], predicate["offset"]) in source_offsets:
+            raise ProfileError(
+                f"meter mapping {index} byte_equals predicate overlaps a declared meter source byte"
             )
     return mappings
 
@@ -5804,7 +5857,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         "    OutputDefinition, ParamDefinition, ParamOffsetDefinition, ParamRangeDefinition, ParamReadbackFieldDefinition, ParamReference, RoutingGroupDefinition, RoutingReadbackSourceDomainDefinition, RoutingSourceDomainDefinition,",
         "    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition,",
         "    SafeQueryDefinition, MixerReadbackLayoutDefinition, StateReportDefinition,",
-        "    CandidatePreampMeterDefinition, MeterMappingDefinition, MeterTargetDefinition,",
+        "    ByteEqualsPredicateDefinition, CandidatePreampMeterDefinition, MeterMappingDefinition, MeterTargetDefinition,",
         "    FaderDirectionDefinition, FaderSemanticsDefinition,",
         "    Readiness, StartupQueryDefinition, Status, SupportLevel, TransportDefinition, TransportKind,",
         "};",
@@ -6092,14 +6145,26 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         meter_mappings = runtime_record["meter_mappings"]
         lines.append(f"static {slug}_METER_MAPPINGS: &[MeterMappingDefinition] = &[")
         for mapping in meter_mappings:
-            target = "MixMaster" if mapping["target"] == "mix_master" else "PhysicalOutput"
+            target = {
+                "mix_master": "MixMaster",
+                "mixer_strip": "MixerStrip",
+                "physical_output": "PhysicalOutput",
+            }[mapping["target"]]
+            predicate = mapping["byte_equals"]
+            rendered_predicate = (
+                "Some(ByteEqualsPredicateDefinition { "
+                f"offset: {predicate['offset']}usize, value: {predicate['value']}u8 }})"
+                if predicate is not None
+                else "None"
+            )
             lines.append(
                 "    MeterMappingDefinition { "
                 f"frame_id: {_rust_string(mapping['frame_id'])}, "
                 f"target: MeterTargetDefinition::{target}, "
                 f"target_index: {mapping['target_index']}u16, lane: {mapping['lane']}u8, "
                 f"offset: {mapping['offset']}usize, raw_min: {mapping['raw_min']}u8, "
-                f"raw_max: {mapping['raw_max']}u8, status: Status::{_status_variant(mapping['status'])}, "
+                f"raw_max: {mapping['raw_max']}u8, byte_equals: {rendered_predicate}, "
+                f"status: Status::{_status_variant(mapping['status'])}, "
                 f"status_text: {_rust_string(mapping['status'])}, evidence: {_rust_string(mapping['evidence'])} }},"
             )
         lines.append("];\n")

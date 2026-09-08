@@ -1334,6 +1334,7 @@ impl AppState {
         for output in state.outputs {
             changed |= self.merge_output_state(output);
         }
+        changed |= self.replace_declared_mixer_strip_meters(&state.mixers);
         for mixer in state.mixers {
             changed |= self.merge_mixer_surface(mixer);
         }
@@ -1402,6 +1403,21 @@ impl AppState {
                     .mixers()
                     .iter()
                     .any(|surface| surface.surface == meter.target_index as u8),
+                antelope_protocol::RuntimeMeterTarget::MixerStrip => {
+                    u8::try_from(meter.target_index)
+                        .ok()
+                        .and_then(|surface| {
+                            self.mixers()
+                                .iter()
+                                .find(|candidate| candidate.surface == surface)
+                        })
+                        .is_some_and(|surface| {
+                            surface
+                                .strips
+                                .iter()
+                                .any(|strip| strip.strip == u16::from(meter.lane))
+                        })
+                }
                 antelope_protocol::RuntimeMeterTarget::PhysicalOutput => self
                     .outputs()
                     .iter()
@@ -1751,6 +1767,90 @@ impl AppState {
             }
         }
         *existing != before
+    }
+
+    fn set_mixer_strip_meter(&mut self, surface: u16, strip: u8, meter: Option<u8>) -> bool {
+        let Ok(surface) = u8::try_from(surface) else {
+            return false;
+        };
+        let Some(existing) = self
+            .mixer
+            .surfaces
+            .iter_mut()
+            .find(|candidate| candidate.surface == surface)
+            .and_then(|candidate| {
+                candidate
+                    .strips
+                    .iter_mut()
+                    .find(|candidate| candidate.strip == u16::from(strip))
+            })
+        else {
+            return false;
+        };
+        if existing.meter == meter {
+            false
+        } else {
+            existing.meter = meter;
+            true
+        }
+    }
+
+    fn replace_declared_mixer_strip_meters(&mut self, incoming: &[DynamicMixerSurface]) -> bool {
+        let Some(profile) = self.runtime_profile.as_ref() else {
+            return false;
+        };
+        let updates = profile
+            .meter_mappings
+            .iter()
+            .filter(|mapping| mapping.target == antelope_protocol::RuntimeMeterTarget::MixerStrip)
+            .map(|mapping| {
+                let meter = u8::try_from(mapping.target_index).ok().and_then(|surface| {
+                    incoming
+                        .iter()
+                        .find(|candidate| candidate.surface == surface)
+                        .and_then(|candidate| {
+                            candidate
+                                .strips
+                                .iter()
+                                .find(|candidate| candidate.strip == u16::from(mapping.lane))
+                                .and_then(|strip| strip.meter)
+                        })
+                });
+                (mapping.target_index, mapping.lane, meter)
+            })
+            .collect::<Vec<_>>();
+        updates
+            .into_iter()
+            .fold(false, |changed, (surface, strip, meter)| {
+                self.set_mixer_strip_meter(surface, strip, meter) || changed
+            })
+    }
+
+    pub(crate) fn invalidate_meters(
+        &mut self,
+        targets: &[antelope_protocol::MeterInvalidationTarget],
+    ) -> bool {
+        let Some(profile) = self.runtime_profile.as_ref() else {
+            return false;
+        };
+        let declared = targets
+            .iter()
+            .filter(|target| {
+                target.target == antelope_protocol::RuntimeMeterTarget::MixerStrip
+                    && profile.meter_mappings.iter().any(|mapping| {
+                        mapping.target == target.target
+                            && mapping.target_index == target.target_index
+                            && mapping.lane == target.lane
+                            && mapping.byte_equals.is_some()
+                    })
+            })
+            .map(|target| (target.target_index, target.lane))
+            .collect::<Vec<_>>();
+        declared
+            .into_iter()
+            .fold(false, |changed, (surface, strip)| {
+                self.set_mixer_strip_meter(surface, strip, None) || changed
+            })
     }
 
     fn merge_mixer_surface(&mut self, incoming: DynamicMixerSurface) -> bool {

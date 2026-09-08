@@ -527,7 +527,15 @@ pub struct CandidatePreampMeterDefinition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeterTargetDefinition {
     MixMaster,
+    MixerStrip,
     PhysicalOutput,
+}
+
+/// Concrete report-byte equality gate for a meter lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ByteEqualsPredicateDefinition {
+    pub offset: usize,
+    pub value: u8,
 }
 
 /// One explicit profile-owned meter lane.
@@ -540,6 +548,7 @@ pub struct MeterMappingDefinition {
     pub offset: usize,
     pub raw_min: u8,
     pub raw_max: u8,
+    pub byte_equals: Option<ByteEqualsPredicateDefinition>,
     pub status: Status,
     pub status_text: &'static str,
     pub evidence: &'static str,

@@ -6,8 +6,8 @@ use crate::driver::{
     Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition, DriverError,
     DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMeterState,
     DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
-    DynamicStatePatch, GlobalControl, InputAddress, InputControl, MixerAddress, OutputAddress,
-    OutputControl, OutputTrimAddress, RoutingSource,
+    DynamicStatePatch, GlobalControl, InputAddress, InputControl, MeterInvalidationTarget,
+    MixerAddress, OutputAddress, OutputControl, OutputTrimAddress, RoutingSource,
 };
 use crate::profile::{
     FrameOperation, ParamReadbackField, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
@@ -585,6 +585,7 @@ impl ProfileDriver {
             }
         }
         let mut meter_mapping_keys = HashSet::new();
+        let mut meter_source_offsets = HashSet::new();
         for mapping in &entry.profile.meter_mappings {
             if !matches!(mapping.frame_id.as_str(), "state_report" | "meter_report")
                 || !frame_index.contains_key(&mapping.frame_id)
@@ -603,12 +604,21 @@ impl ProfileDriver {
                     "meter mapping is malformed or outside report geometry".into(),
                 ));
             }
+            if !meter_source_offsets.insert((mapping.frame_id.as_str(), mapping.offset)) {
+                return Err(DriverError::InvalidAction(
+                    "meter source byte is declared more than once in one frame".into(),
+                ));
+            }
             let target_exists = match mapping.target {
                 RuntimeMeterTarget::MixMaster => entry
                     .profile
                     .mixers
                     .iter()
                     .any(|mixer| u16::from(mixer.mix_index) == mapping.target_index),
+                RuntimeMeterTarget::MixerStrip => entry.profile.mixers.iter().any(|mixer| {
+                    u16::from(mixer.mix_index) == mapping.target_index
+                        && (1..=mixer.strip_count).contains(&u16::from(mapping.lane))
+                }),
                 RuntimeMeterTarget::PhysicalOutput => entry
                     .profile
                     .outputs
@@ -626,6 +636,40 @@ impl ProfileDriver {
                     "meter target lane is declared more than once across frames".into(),
                 ));
             }
+            match (
+                mapping.target,
+                mapping.frame_id.as_str(),
+                mapping.byte_equals,
+            ) {
+                (RuntimeMeterTarget::MixerStrip, "state_report", Some(predicate)) => {
+                    if predicate.offset >= report_size || predicate.offset == mapping.offset {
+                        return Err(DriverError::InvalidAction(
+                            "meter byte_equals predicate is outside geometry or overlaps its source"
+                                .into(),
+                        ));
+                    }
+                }
+                (RuntimeMeterTarget::MixerStrip, _, _) => {
+                    return Err(DriverError::InvalidAction(
+                        "mixer-strip meters require a state_report byte_equals predicate".into(),
+                    ));
+                }
+                (_, _, Some(_)) => {
+                    return Err(DriverError::InvalidAction(
+                        "byte_equals predicates are limited to state-report mixer strips".into(),
+                    ));
+                }
+                (_, _, None) => {}
+            }
+        }
+        if entry.profile.meter_mappings.iter().any(|mapping| {
+            mapping.byte_equals.is_some_and(|predicate| {
+                meter_source_offsets.contains(&(mapping.frame_id.as_str(), predicate.offset))
+            })
+        }) {
+            return Err(DriverError::InvalidAction(
+                "meter byte_equals predicate overlaps a declared source byte".into(),
+            ));
         }
         Self::validate_settings_contract(&entry.profile, &frame_index)?;
         Self::validate_talkback_contract(&entry.profile, &frame_index)?;
@@ -1831,22 +1875,85 @@ impl ProfileDriver {
         }
     }
 
+    fn mapped_meter_value(
+        mapping: &crate::profile::RuntimeMeterMapping,
+        bytes: &[u8],
+    ) -> Option<u8> {
+        if mapping
+            .byte_equals
+            .is_some_and(|predicate| bytes.get(predicate.offset).copied() != Some(predicate.value))
+        {
+            return None;
+        }
+        bytes
+            .get(mapping.offset)
+            .copied()
+            .filter(|value| (mapping.raw_min..=mapping.raw_max).contains(value))
+    }
+
     fn mapped_meters(&self, frame_id: &str, bytes: &[u8]) -> Vec<DynamicMeterState> {
         self.profile
             .meter_mappings
             .iter()
-            .filter(|mapping| mapping.frame_id == frame_id)
+            .filter(|mapping| {
+                mapping.frame_id == frame_id && mapping.target != RuntimeMeterTarget::MixerStrip
+            })
             .filter_map(|mapping| {
-                bytes
-                    .get(mapping.offset)
-                    .copied()
-                    .filter(|value| (mapping.raw_min..=mapping.raw_max).contains(value))
-                    .map(|value| DynamicMeterState {
-                        target: mapping.target,
-                        target_index: mapping.target_index,
-                        lane: mapping.lane,
-                        value,
-                    })
+                Self::mapped_meter_value(mapping, bytes).map(|value| DynamicMeterState {
+                    target: mapping.target,
+                    target_index: mapping.target_index,
+                    lane: mapping.lane,
+                    value,
+                })
+            })
+            .collect()
+    }
+
+    fn apply_mapped_mixer_strip_meters(
+        &self,
+        frame_id: &str,
+        bytes: &[u8],
+        state: &mut DynamicDeviceState,
+    ) -> Result<(), DriverError> {
+        for mapping in self.profile.meter_mappings.iter().filter(|mapping| {
+            mapping.frame_id == frame_id && mapping.target == RuntimeMeterTarget::MixerStrip
+        }) {
+            let surface = u8::try_from(mapping.target_index).map_err(|_| {
+                DriverError::InvalidAction("mixer-strip meter surface exceeds byte range".into())
+            })?;
+            let strip = state
+                .mixers
+                .iter_mut()
+                .find(|mixer| mixer.surface == surface)
+                .and_then(|mixer| {
+                    mixer
+                        .strips
+                        .iter_mut()
+                        .find(|strip| strip.strip == u16::from(mapping.lane))
+                })
+                .ok_or_else(|| {
+                    DriverError::InvalidAction(
+                        "validated mixer-strip meter target is absent from topology".into(),
+                    )
+                })?;
+            strip.meter = Self::mapped_meter_value(mapping, bytes);
+        }
+        Ok(())
+    }
+
+    fn gated_mixer_strip_invalidations(&self, frame_id: &str) -> Vec<MeterInvalidationTarget> {
+        self.profile
+            .meter_mappings
+            .iter()
+            .filter(|mapping| {
+                mapping.frame_id == frame_id
+                    && mapping.target == RuntimeMeterTarget::MixerStrip
+                    && mapping.byte_equals.is_some()
+            })
+            .map(|mapping| MeterInvalidationTarget {
+                target: mapping.target,
+                target_index: mapping.target_index,
+                lane: mapping.lane,
             })
             .collect()
     }
@@ -2120,6 +2227,7 @@ impl ProfileDriver {
         let frame = self.frame("state_report")?;
         let mut state = self.topology_state();
         state.meters = self.mapped_meters("state_report", bytes);
+        self.apply_mapped_mixer_strip_meters("state_report", bytes, &mut state)?;
         let layouts = [
             ("physical_gain", "gain_base", "physical_inputs"),
             ("physical_status", "status_base", "physical_inputs"),
@@ -2813,10 +2921,23 @@ impl DeviceDriver for ProfileDriver {
     fn decode(&self, bytes: &[u8]) -> Result<Option<DeviceEvent>, DriverError> {
         let expected = profile_codec::report_size(&self.profile)?;
         if bytes.len() != expected {
-            return Err(DriverError::InvalidAction(format!(
+            let detail = format!(
                 "report length {} does not match {expected}; known record is truncated",
                 bytes.len()
-            )));
+            );
+            let state_magic = self
+                .frame_index
+                .get("state_report")
+                .and_then(|index| self.profile.frames.get(*index))
+                .and_then(|frame| profile_codec::fixed_byte(frame, 0));
+            let targets = (bytes.first().copied() == state_magic)
+                .then(|| self.gated_mixer_strip_invalidations("state_report"))
+                .unwrap_or_default();
+            return if targets.is_empty() {
+                Err(DriverError::InvalidAction(detail))
+            } else {
+                Err(DriverError::InvalidActionWithMeterInvalidation { detail, targets })
+            };
         }
         let state_frame = self.frame("state_report")?;
         let state_magic = profile_codec::fixed_byte(state_frame, 0);

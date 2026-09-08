@@ -449,6 +449,16 @@ fn build_profile_snapshot_map(
                     .unwrap_or_else(|| format!("Mix {}", mapping.target_index + 1));
                 (RawDomain::Mixer, format!("{name} master meter"))
             }
+            RuntimeMeterTarget::MixerStrip => {
+                let name = profile
+                    .mixer(mapping.target_index as u8)
+                    .map(|mixer| mixer.name.clone())
+                    .unwrap_or_else(|| format!("Mix {}", mapping.target_index + 1));
+                (
+                    RawDomain::Mixer,
+                    format!("{name} strip {} meter", mapping.lane),
+                )
+            }
             RuntimeMeterTarget::PhysicalOutput => {
                 let name = profile
                     .outputs
@@ -1790,7 +1800,11 @@ mod tests {
                     .filter(|mapping| {
                         mapping.frame_id == "state_report"
                             && mapping.offset < bytes.len()
-                            && mapping.target == antelope_protocol::RuntimeMeterTarget::MixMaster
+                            && matches!(
+                                mapping.target,
+                                antelope_protocol::RuntimeMeterTarget::MixMaster
+                                    | antelope_protocol::RuntimeMeterTarget::MixerStrip
+                            )
                     })
                     .count(),
                 "profile {}",

@@ -1,8 +1,8 @@
 # Orion meter evidence (provisional)
 
 This is a compact evidence summary for the Orion Studio III profile. The
-implemented change corrects canonical meter metadata and its generated runtime
-mapping; it does not add hardware writes or selected-page behavior.
+implemented mapping includes only capture-verified meter lanes and passive
+selector readback gating; it adds no hardware writes or automatic page selection.
 
 ## Scope and limits
 
@@ -198,10 +198,31 @@ manual conflict was found.
 
 The bounded 12-channel state-report `physical_meter` layout uses full-report
 base 221, payload base `0xcd`, stride 1, count 12, and inverted raw range 0-96.
-The selector-dependent @125-156 bank and `0x75/0x1f` pairs remain excluded from
-static mappings.
+The selected bank now has one bounded runtime mapping: Mix 2 strips 20-32 use
+full-report @144-156 (payload @128-140) only when the same complete `0x73`
+report reads selector @121 (payload @105) == 22. The profile names the real
+normalized Mix 2 surface (`mix_index` 1) and the 1-based strip ids 20-32. Each
+lane remains unknown until a matching complete report arrives; a selector
+mismatch, an out-of-range sample, or a recognized truncated `0x73` invalidates
+only these 13 strip readings. Physical-input and provisional output meters are
+not cleared by that selector gate. Decoding is read-only and emits no page
+selection write. The existing dynamic mixer-strip meter UI is reused, with
+`None` remaining visibly unknown rather than false zero/silence.
 
-Before a selected-page implementation, capture these items:
+This is verified **partial** Mix 2 support, not a complete mixer-meter map.
+Mix 2 strips 1-19, every Mix 1/3/4 strip, and full-report @205 remain unmapped.
+The `0x75/0x1f` family remains excluded from mixer-strip decoding and its
+readback discriminator behavior is unchanged.
+
+Regression fixtures are exact 320-byte `usbhid.data` extractions from capture
+`antelope-orion-mix2-ch1-32-oscillator1khz-4secpauses.pcapng` (SHA-256
+`0e7ba242fce5a09ab750a91bed1b175596d5b7dcd6c179ed8bb0edfd2a957ad2`):
+
+- frame 111359, strip 20 fixture: `43ef942e447524305bcdd2e782002b24219acb8218bbef52408e92d88422a28b`
+- frame 114099, strip 21 fixture: `0523dbd3ab0f2785541bfb9e3064ba054f0054ac232c5e44cbd99cab1c4a450d`
+- frame 178351, strip 32 fixture: `384b23ae6ee9085705b149ab7ca2517af37e485dfe7c0facce9c7c0b79afcf32`
+
+Before full mixer-meter support, capture these items:
 
 1. Record each Meters-tab row name with its `0x49` write and the next @121 value.
 2. Select Mix 2 before sweeping channels 1-32 to test @125-143.

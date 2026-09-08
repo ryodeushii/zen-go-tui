@@ -170,6 +170,14 @@ pub struct DynamicMeterState {
     pub value: u8,
 }
 
+/// One profile-declared meter address that must be made unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeterInvalidationTarget {
+    pub target: RuntimeMeterTarget,
+    pub target_index: u16,
+    pub lane: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DynamicRoutingGroup {
     pub destination: u16,
@@ -315,6 +323,11 @@ pub enum DriverError {
     UnsupportedAction(String),
     #[error("invalid driver action: {0}")]
     InvalidAction(String),
+    #[error("invalid driver action: {detail}")]
+    InvalidActionWithMeterInvalidation {
+        detail: String,
+        targets: Vec<MeterInvalidationTarget>,
+    },
 }
 
 pub trait DeviceDriver: Send {

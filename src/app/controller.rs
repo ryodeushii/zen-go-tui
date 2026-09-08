@@ -7,7 +7,7 @@ use crate::command_queue::{CommandQueue, QueueEntryId, QueueEntryOutcome};
 use crate::profile::DeviceProfile;
 use crate::transport::Transport;
 use antelope_protocol::{
-    Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DynamicStatePatch,
+    Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverError, DynamicStatePatch,
     GlobalControl, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
     MixerSurface, OutputAddress, OutputControl, OutputMode, OutputTrimAddress, PanState,
     PreampMode, QueryRequest, RoutingSource, RuntimeEntry, SampleRate, Surface,
@@ -1478,7 +1478,19 @@ impl Controller {
 
             next_timeout = Duration::ZERO;
 
-            if let Some(event) = self.driver.decode(&bytes)? {
+            let decoded = match self.driver.decode(&bytes) {
+                Ok(decoded) => decoded,
+                Err(DriverError::InvalidActionWithMeterInvalidation { detail, targets }) => {
+                    self.state.invalidate_meters(&targets);
+                    return Err(DriverError::InvalidActionWithMeterInvalidation {
+                        detail,
+                        targets,
+                    }
+                    .into());
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if let Some(event) = decoded {
                 let clock_source_readback = Self::clock_source_readback(&event);
                 let snapshot_modes = if matches!(event, DeviceEvent::Snapshot { .. }) {
                     self.pending_output_modes

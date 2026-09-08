@@ -3,9 +3,10 @@ use antelope_protocol::{
     Action, Command, ControlValue, DeviceDriver, DeviceEvent, DriverError, DynamicMixerSurface,
     DynamicStatePatch, FrameEndian, FrameOperation, GlobalControl, InputAddress, InputControl,
     MixerAddress, MixerControl, OutputAddress, OutputControl, OutputTrimAddress,
-    ParamReadbackField, ProfileDriver, QueryRequest, RoutingSource, RuntimeConstraint,
-    RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeMeterMapping, RuntimeMeterTarget,
-    RuntimeReadiness, RuntimeRoutingReadbackSourceDomain, WholeStateField, ZenGoDriver,
+    ParamReadbackField, ProfileDriver, QueryRequest, RoutingSource, RuntimeByteEqualsPredicate,
+    RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeMeterMapping,
+    RuntimeMeterTarget, RuntimeReadiness, RuntimeRoutingReadbackSourceDomain, WholeStateField,
+    ZenGoDriver,
 };
 
 fn stored_orion_entry() -> RuntimeEntry {
@@ -1476,6 +1477,7 @@ fn profile_driver_decodes_explicit_mapped_meter_lanes_from_full_report_offsets()
         offset: 0xea,
         raw_min: 0,
         raw_max: 96,
+        byte_equals: None,
         status: "observed".into(),
         status_text: "observed".into(),
         evidence: "synthetic full-report lane".into(),
@@ -1505,6 +1507,7 @@ fn profile_driver_rejects_competing_explicit_meter_lane_across_frames() {
             offset: 0xea,
             raw_min: 0,
             raw_max: 96,
+            byte_equals: None,
             status: "observed".into(),
             status_text: "observed".into(),
             evidence: "first lane".into(),
@@ -1517,6 +1520,7 @@ fn profile_driver_rejects_competing_explicit_meter_lane_across_frames() {
             offset: 0xea,
             raw_min: 0,
             raw_max: 96,
+            byte_equals: None,
             status: "observed".into(),
             status_text: "observed".into(),
             evidence: "competing lane".into(),
@@ -1603,6 +1607,201 @@ fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
 }
 
 #[test]
+fn canonical_orion_captured_mix2_reports_decode_only_verified_strips() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let cases = [
+        (
+            include_str!("fixtures/orion/mix2_strip20_selector22_frame111359.hex"),
+            20_u16,
+        ),
+        (
+            include_str!("fixtures/orion/mix2_strip21_selector22_frame114099.hex"),
+            21_u16,
+        ),
+        (
+            include_str!("fixtures/orion/mix2_strip32_selector22_frame178351.hex"),
+            32_u16,
+        ),
+    ];
+    for (fixture, active_strip) in cases {
+        let frame = hex_fixture(fixture);
+        let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+            panic!("snapshot")
+        };
+        let mix2 = state.mixers.iter().find(|mix| mix.surface == 1).unwrap();
+        for strip in &mix2.strips {
+            let expected = if strip.strip == active_strip { 0 } else { 96 };
+            if (20..=32).contains(&strip.strip) {
+                assert_eq!(strip.meter, Some(expected), "strip {}", strip.strip);
+            } else {
+                assert_eq!(strip.meter, None, "unverified strip {}", strip.strip);
+            }
+        }
+        assert!(state
+            .mixers
+            .iter()
+            .filter(|mix| mix.surface != 1)
+            .flat_map(|mix| &mix.strips)
+            .all(|strip| strip.meter.is_none()));
+    }
+}
+
+#[test]
+fn canonical_orion_mix2_strips_21_and_32_decode_independently_after_strip20() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = hex_fixture(include_str!(
+        "fixtures/orion/mix2_strip20_selector22_frame111359.hex"
+    ));
+    frame[144] = 17;
+    frame[145] = 31;
+    frame[156] = 47;
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("snapshot")
+    };
+    let mix2 = state.mixers.iter().find(|mix| mix.surface == 1).unwrap();
+    assert_eq!(mix2.strips[19].meter, Some(17));
+    assert_eq!(mix2.strips[20].meter, Some(31));
+    assert_eq!(mix2.strips[31].meter, Some(47));
+}
+
+#[test]
+fn canonical_orion_selector_mismatch_invalidates_only_mix2_verified_strips() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = hex_fixture(include_str!(
+        "fixtures/orion/mix2_strip21_selector22_frame114099.hex"
+    ));
+    for (selector, raw, expected) in [
+        (21, 0, None),
+        (22, 0, Some(0)),
+        (22, 255, None),
+        (23, 0, None),
+    ] {
+        frame[121] = selector;
+        frame[145] = raw;
+        let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+            panic!("snapshot")
+        };
+        let mix2 = state.mixers.iter().find(|mix| mix.surface == 1).unwrap();
+        assert_eq!(mix2.strips[20].meter, expected);
+        assert_eq!(state.inputs[0].meter, Some(frame[221]));
+        assert_eq!(
+            state.meters.len(),
+            6,
+            "physical-output candidates remain decoded"
+        );
+    }
+}
+
+#[test]
+fn canonical_orion_non_state_reports_never_decode_mixer_strip_bytes() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = vec![0; 320];
+    frame[121] = 22;
+    frame[145] = 0;
+
+    frame[0] = 0x75;
+    frame[1] = 0x1f;
+    assert!(driver.decode(&frame).unwrap().is_none());
+
+    frame[0] = 0x71;
+    frame[1] = 0;
+    assert!(driver.decode(&frame).unwrap().is_none());
+}
+
+#[test]
+fn canonical_orion_truncated_state_error_carries_only_declared_strip_invalidations() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = hex_fixture(include_str!(
+        "fixtures/orion/mix2_strip21_selector22_frame114099.hex"
+    ));
+    frame.truncate(156);
+    let error = driver
+        .decode(&frame)
+        .expect_err("truncated report must remain an error");
+    let DriverError::InvalidActionWithMeterInvalidation { detail, targets } = error else {
+        panic!("expected targeted invalidation error")
+    };
+    assert_eq!(
+        detail,
+        "report length 156 does not match 320; known record is truncated"
+    );
+    assert_eq!(targets.len(), 13);
+    assert!(targets.iter().all(|target| {
+        target.target == RuntimeMeterTarget::MixerStrip
+            && target.target_index == 1
+            && (20..=32).contains(&target.lane)
+    }));
+
+    let mut non_state = frame;
+    non_state[0] = 0x75;
+    assert!(matches!(
+        driver.decode(&non_state),
+        Err(DriverError::InvalidAction(_))
+    ));
+}
+
+#[test]
+fn truncated_profile_without_gated_strip_mappings_keeps_plain_error() {
+    let driver = ProfileDriver::new(state_meter_fixture_entry()).expect("state meter fixture");
+    let frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    assert!(matches!(
+        driver.decode(&frame[..156]),
+        Err(DriverError::InvalidAction(_))
+    ));
+}
+
+#[test]
+fn direct_constructor_rejects_widened_or_overlapping_mixer_strip_contracts() {
+    let mut entry = canonical_orion_entry();
+    let mapping = entry
+        .profile
+        .meter_mappings
+        .iter_mut()
+        .find(|mapping| mapping.target == RuntimeMeterTarget::MixerStrip)
+        .unwrap();
+    mapping.byte_equals = None;
+    let error = ProfileDriver::new(entry).expect_err("ungated mixer-strip meter");
+    assert!(
+        error
+            .to_string()
+            .contains("require a state_report byte_equals predicate"),
+        "{error}"
+    );
+
+    let mut entry = canonical_orion_entry();
+    let mapping = entry
+        .profile
+        .meter_mappings
+        .iter_mut()
+        .find(|mapping| mapping.target == RuntimeMeterTarget::MixerStrip)
+        .unwrap();
+    mapping.byte_equals = Some(RuntimeByteEqualsPredicate {
+        offset: mapping.offset,
+        value: 22,
+    });
+    assert!(ProfileDriver::new(entry)
+        .expect_err("overlapping predicate")
+        .to_string()
+        .contains("overlaps"));
+
+    let mut entry = canonical_orion_entry();
+    let output = entry
+        .profile
+        .meter_mappings
+        .iter_mut()
+        .find(|mapping| mapping.target == RuntimeMeterTarget::PhysicalOutput)
+        .unwrap();
+    output.byte_equals = Some(RuntimeByteEqualsPredicate {
+        offset: 121,
+        value: 22,
+    });
+    assert!(ProfileDriver::new(entry)
+        .expect_err("predicate must not widen old target contracts")
+        .to_string()
+        .contains("limited to state-report mixer strips"));
+}
+
+#[test]
 fn canonical_orion_profile_driver_decodes_all_physical_and_provisional_output_meters() {
     let entry = canonical_orion_entry();
     assert_eq!(
@@ -1610,6 +1809,7 @@ fn canonical_orion_profile_driver_decodes_all_physical_and_provisional_output_me
             .profile
             .meter_mappings
             .iter()
+            .filter(|mapping| mapping.target == RuntimeMeterTarget::PhysicalOutput)
             .map(|mapping| (
                 mapping.target,
                 mapping.target_index,

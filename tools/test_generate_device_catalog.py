@@ -256,35 +256,27 @@ class GeneratorTests(unittest.TestCase):
             *[{"category": 0x19, "index": index} for index in range(12)],
         ]))
 
-    def test_orion_profile_declares_six_provisional_output_meter_candidates(self) -> None:
-        profile = normalized_orion()
-        mappings = profile["meter_mappings"]
+    def test_orion_profile_declares_bounded_mix2_and_provisional_output_meters(self) -> None:
+        mappings = normalized_orion()["meter_mappings"]
+        strips = [item for item in mappings if item["target"] == "mixer_strip"]
+        outputs = [item for item in mappings if item["target"] == "physical_output"]
 
         self.assertEqual(
-            [
-                (
-                    item["frame_id"],
-                    item["target"],
-                    item["target_index"],
-                    item["lane"],
-                    item["offset"],
-                    item["raw_min"],
-                    item["raw_max"],
-                )
-                for item in mappings
-            ],
-            [
-                ("state_report", "physical_output", 0, 0, 157, 0, 96),
-                ("state_report", "physical_output", 1, 0, 158, 0, 96),
-                ("state_report", "physical_output", 2, 0, 159, 0, 96),
-                ("state_report", "physical_output", 3, 0, 160, 0, 96),
-                ("state_report", "physical_output", 4, 0, 177, 0, 96),
-                ("state_report", "physical_output", 5, 0, 178, 0, 96),
-            ],
+            [(item["target_index"], item["lane"], item["offset"]) for item in strips],
+            [(1, lane, 124 + lane) for lane in range(20, 33)],
         )
-        self.assertTrue(all(item["status"] == "observed" for item in mappings))
-        self.assertTrue(all("packet-order hypothesis" in item["evidence"] for item in mappings))
-        self.assertTrue(all("stage unknown" in item["evidence"] for item in mappings))
+        self.assertEqual(
+            {tuple(item["byte_equals"].values()) for item in strips},
+            {(121, 0x69, 22)},
+        )
+        self.assertTrue(all(item["status"] == "confirmed" for item in strips))
+        self.assertEqual(
+            [(item["target_index"], item["lane"], item["offset"]) for item in outputs],
+            [(0, 0, 157), (1, 0, 158), (2, 0, 159), (3, 0, 160), (4, 0, 177), (5, 0, 178)],
+        )
+        self.assertTrue(all(item["byte_equals"] is None for item in outputs))
+        self.assertTrue(all(item["status"] == "observed" for item in outputs))
+        self.assertTrue(all("packet-order hypothesis" in item["evidence"] for item in outputs))
         self.assertFalse(any(item["target"] == "mix_master" for item in mappings))
 
     def test_zen_go_profile_declares_capture_scoped_mixer_layouts(self) -> None:
@@ -438,6 +430,63 @@ class GeneratorTests(unittest.TestCase):
         }
 
         with self.assertRaisesRegex(generator.ProfileError, "target lane is declared more than once"):
+            generator.normalize_profile(data)
+
+    def test_mixer_strip_meter_rejects_bad_target_predicate_and_overlap(self) -> None:
+        data = profile_data("Test", "0xa001")
+        mapping = {
+            "target": "mixer_strip",
+            "target_index": 0,
+            "lane": 1,
+            "payload_offset": "0x80",
+            "raw_range": [0, 96],
+            "status": "confirmed",
+            "evidence": "synthetic gated strip meter",
+        }
+        data["frame"]["state_report"]["meter_mappings"] = [mapping]
+
+        with self.assertRaisesRegex(generator.ProfileError, "requires a state_report byte_equals"):
+            generator.normalize_profile(data)
+
+        mapping["byte_equals"] = {"payload_offset": "0x80", "value": 22}
+        with self.assertRaisesRegex(generator.ProfileError, "overlaps its meter source"):
+            generator.normalize_profile(data)
+
+        mapping["byte_equals"]["payload_offset"] = "0x69"
+        mapping["lane"] = 17
+        with self.assertRaisesRegex(generator.ProfileError, "not a declared strip"):
+            generator.normalize_profile(data)
+
+        mapping["lane"] = 1
+        data["frame"]["state_report"]["meter_mappings"] = []
+        data["frame"]["meter_report"] = {
+            "magic_offset": 0,
+            "magic": "0x75",
+            "meter_mappings": [mapping],
+        }
+        with self.assertRaisesRegex(generator.ProfileError, "supported only for state_report"):
+            generator.normalize_profile(data)
+
+    def test_meter_mapping_rejects_duplicate_source_and_predicate_source_overlap(self) -> None:
+        data = profile_data("Test", "0xa001")
+        base = {
+            "target": "mixer_strip",
+            "target_index": 0,
+            "lane": 1,
+            "payload_offset": "0x80",
+            "byte_equals": {"payload_offset": "0x69", "value": 22},
+            "raw_range": [0, 96],
+            "status": "confirmed",
+            "evidence": "synthetic gated strip meter",
+        }
+        duplicate = dict(base, lane=2)
+        data["frame"]["state_report"]["meter_mappings"] = [base, duplicate]
+        with self.assertRaisesRegex(generator.ProfileError, "duplicates a meter source byte"):
+            generator.normalize_profile(data)
+
+        duplicate["payload_offset"] = "0x69"
+        duplicate["byte_equals"] = {"payload_offset": "0x68", "value": 22}
+        with self.assertRaisesRegex(generator.ProfileError, "overlaps a declared meter source"):
             generator.normalize_profile(data)
 
     def test_meter_mapping_requires_ordered_byte_range(self) -> None:

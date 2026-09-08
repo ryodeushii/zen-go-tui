@@ -30,8 +30,8 @@ pub use driver::{
     DriverDefinition, DriverError, DynamicDeviceState, DynamicGlobalState, DynamicInputState,
     DynamicMeterState, DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState,
     DynamicRoutingGroup, DynamicStatePatch, GlobalControl, InputAddress, InputControl,
-    MixerAddress, MixerControl, OutputAddress, OutputControl, OutputTrimAddress, RoutingSource,
-    WholeStateField,
+    MeterInvalidationTarget, MixerAddress, MixerControl, OutputAddress, OutputControl,
+    OutputTrimAddress, RoutingSource, WholeStateField,
 };
 mod encoder;
 mod frame;
@@ -61,13 +61,13 @@ pub use profile::{
     load_profile_pack, load_profile_pack_file, CandidatePreampMeter, FaderDirection,
     FaderSemantics, FrameEndian, FrameOperation, MixerReadbackLayout, ParamReadbackField,
     ParamReference, ProfileLoadError, ProfilePack, ReadbackCategory, ReadbackDefinition,
-    RuntimeAddressSpace, RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry,
-    RuntimeFrame, RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability,
-    RuntimeInputControlKind, RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping,
-    RuntimeMeterTarget, RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile,
-    RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup, RuntimeRoutingReadbackSourceDomain,
-    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport, SafeQuery,
-    PROFILE_PACK_SCHEMA_VERSION,
+    RuntimeAddressSpace, RuntimeByteEqualsPredicate, RuntimeConstraint, RuntimeDecoder,
+    RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeHazard, RuntimeIdentity, RuntimeInput,
+    RuntimeInputCapability, RuntimeInputControlKind, RuntimeLinkDomain, RuntimeLinkDomainKind,
+    RuntimeMeterMapping, RuntimeMeterTarget, RuntimeMixer, RuntimeOutput, RuntimeParam,
+    RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
+    RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain, RuntimeStateReport,
+    RuntimeTransport, SafeQuery, PROFILE_PACK_SCHEMA_VERSION,
 };
 pub use query::{control_panel_startup_queries, DeviceMetadata, QueryRequest, QueryResponse};
 
