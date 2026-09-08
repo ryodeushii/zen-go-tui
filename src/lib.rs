@@ -4,6 +4,7 @@ pub mod device;
 pub mod profile;
 pub mod settings;
 pub mod terminal;
+pub mod traffic;
 pub mod transport;
 pub mod ui;
 

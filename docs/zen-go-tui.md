@@ -197,6 +197,16 @@ The TUI includes a raw-data page for live protocol inspection.
 
 This is especially useful while continuing reverse-engineering of late `0x73` mixer state and auxiliary traffic.
 
+The controller also maintains a backend-only traffic journal for a future Raw view. It observes each
+application `Transport` read result and attempted write exactly once, outside `ThreadedTransport`.
+Its sequence and elapsed time describe application transport completion order, not physical USB bus
+chronology. RX length and retained bytes are what the selected transport returned after HID report
+normalization; reports rejected before that boundary and other USB interfaces are not captured.
+Read timeouts increment a counter without adding events, and failed writes are labeled delivery
+uncertain. The journal retains at most 1,024 events and 1 MiB of payload, at most 4,096 payload bytes
+and 256 UTF-8 bytes of error text per event, and returns at most 256 events per window query. Oldest
+events are evicted to enforce both limits. The existing latest-packet Raw tabs remain unchanged.
+
 ## Confirmed Zen Go protocol support exposed in the app
 
 - startup `0x74` queries and `0x75` metadata parsing

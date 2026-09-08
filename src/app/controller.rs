@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 
 use crate::command_queue::{CommandQueue, QueueEntryId, QueueEntryOutcome};
 use crate::profile::DeviceProfile;
+use crate::traffic::{DecodeStatus, DecodedEventKind, ObservedTransport, TrafficJournal};
 use crate::transport::Transport;
 use antelope_protocol::{
     Action, AuraVerbParameter, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverError,
@@ -116,7 +117,8 @@ struct PendingOutputMode {
 }
 
 pub struct Controller {
-    transport: Box<dyn Transport>,
+    transport: ObservedTransport,
+    traffic_journal: TrafficJournal,
     driver: Box<dyn DeviceDriver>,
     pub state: AppState,
     pub(crate) pending_mutation: Option<PendingMutation>,
@@ -140,8 +142,10 @@ impl Controller {
         let Some(entry) = catalog.find(driver.definition().vid, driver.definition().pid) else {
             // Unknown drivers remain available for protocol-fixture tests; runtime sessions must
             // use `new_for_entry` so selected profile topology cannot be replaced by this state.
+            let traffic_journal = TrafficJournal::default();
             return Ok(Self {
-                transport,
+                transport: ObservedTransport::new(transport, traffic_journal.clone()),
+                traffic_journal,
                 driver,
                 state: AppState::default(),
                 pending_mutation: None,
@@ -173,8 +177,10 @@ impl Controller {
                 entry.profile.identity.name
             );
         }
+        let traffic_journal = TrafficJournal::default();
         Ok(Self {
-            transport,
+            transport: ObservedTransport::new(transport, traffic_journal.clone()),
+            traffic_journal,
             driver,
             state: AppState::from_entry(entry),
             pending_mutation: None,
@@ -189,6 +195,11 @@ impl Controller {
 
     pub fn driver_definition(&self) -> &antelope_protocol::DriverDefinition {
         self.driver.definition()
+    }
+
+    /// Read-only handle for the RAW traffic owner. A new controller/session owns a new journal.
+    pub fn traffic_journal(&self) -> &TrafficJournal {
+        &self.traffic_journal
     }
 
     pub fn bootstrap(&mut self) -> Result<()> {
@@ -901,7 +912,7 @@ impl Controller {
         let mut outcomes = Vec::new();
         let mut effective_input_modes = HashMap::new();
         let result = self.command_queue.flush_with_validation(
-            self.transport.as_ref(),
+            &self.transport,
             self.driver.as_ref(),
             |action| {
                 Self::validate_queued_input_gain(&self.state, &mut effective_input_modes, action)
@@ -1715,23 +1726,43 @@ impl Controller {
         state_dirty |= self.expire_surround_readback();
 
         for _ in 0..MAX_FRAMES_PER_POLL {
-            let Some(bytes) = self.transport.read(next_timeout)? else {
+            let observed = self.transport.read_with_sequence(next_timeout);
+            let Some(bytes) = observed.result? else {
                 break;
             };
+            let sequence = observed
+                .sequence
+                .expect("a returned transport frame must have a traffic sequence");
 
             next_timeout = Duration::ZERO;
 
             let decoded = match self.driver.decode(&bytes) {
-                Ok(decoded) => decoded,
-                Err(DriverError::InvalidActionWithMeterInvalidation { detail, targets }) => {
-                    self.state.invalidate_meters(&targets);
-                    return Err(DriverError::InvalidActionWithMeterInvalidation {
-                        detail,
-                        targets,
-                    }
-                    .into());
+                Ok(Some(event)) => {
+                    self.traffic_journal.mark_decode(
+                        sequence,
+                        DecodeStatus::Accepted(Self::decoded_event_kind(&event)),
+                    );
+                    Some(event)
                 }
-                Err(error) => return Err(error.into()),
+                Ok(None) => {
+                    self.traffic_journal
+                        .mark_decode(sequence, DecodeStatus::Ignored);
+                    None
+                }
+                Err(error) => {
+                    self.traffic_journal.mark_decode_rejected(sequence, &error);
+                    match error {
+                        DriverError::InvalidActionWithMeterInvalidation { detail, targets } => {
+                            self.state.invalidate_meters(&targets);
+                            return Err(DriverError::InvalidActionWithMeterInvalidation {
+                                detail,
+                                targets,
+                            }
+                            .into());
+                        }
+                        error => return Err(error.into()),
+                    }
+                }
             };
             if let Some(event) = decoded {
                 let clock_source_readback = Self::clock_source_readback(&event);
@@ -1773,6 +1804,16 @@ impl Controller {
         state_dirty |= self.expire_auraverb_readback();
         state_dirty |= self.expire_surround_readback();
         Ok(state_dirty)
+    }
+
+    fn decoded_event_kind(event: &DeviceEvent) -> DecodedEventKind {
+        match event {
+            DeviceEvent::Snapshot { .. } => DecodedEventKind::Snapshot,
+            DeviceEvent::QueryReply { .. } => DecodedEventKind::QueryReply,
+            DeviceEvent::Meter { .. } => DecodedEventKind::Meter,
+            DeviceEvent::Auxiliary { .. } => DecodedEventKind::Auxiliary,
+            DeviceEvent::Notification { .. } => DecodedEventKind::Notification,
+        }
     }
 
     pub fn confirm_pending_write(&mut self) -> bool {
@@ -4024,6 +4065,7 @@ mod correction_tests {
 
     use super::*;
     use crate::app::{AuraVerbFreshness, SurroundFreshness};
+    use crate::traffic::{DecodeStatus, DecodedEventKind, TrafficOutcome, TrafficSequence};
     use crate::transport::{MockTransport, Transport};
 
     struct AcceptingDriver {
@@ -4110,6 +4152,336 @@ mod correction_tests {
         fn decode(&self, _bytes: &[u8]) -> std::result::Result<Option<DeviceEvent>, DriverError> {
             Ok(self.decoded_event.clone())
         }
+    }
+
+    #[test]
+    fn raw_traffic_marks_accepted_ignored_and_rejected_rx_by_explicit_sequence() {
+        let accepted_transport = MockTransport::default();
+        accepted_transport.push_read(vec![0x99]);
+        let mut accepted = Controller::new(
+            Box::new(accepted_transport),
+            Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
+        )
+        .expect("accepted controller");
+        accepted
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("accepted frame");
+        let accepted_event = accepted
+            .traffic_journal()
+            .event(TrafficSequence(1))
+            .expect("RX");
+        assert_eq!(
+            accepted_event.decode_status,
+            Some(DecodeStatus::Accepted(DecodedEventKind::Snapshot))
+        );
+        assert_eq!(
+            accepted.traffic_journal().stats().counters.decoder_accepted,
+            1
+        );
+
+        let ignored_transport = MockTransport::default();
+        ignored_transport.push_read(vec![0x98]);
+        let mut ignored = Controller::new(
+            Box::new(ignored_transport),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("ignored controller");
+        ignored
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("ignored frame");
+        assert_eq!(
+            ignored
+                .traffic_journal()
+                .event(TrafficSequence(1))
+                .expect("RX")
+                .decode_status,
+            Some(DecodeStatus::Ignored)
+        );
+        assert_eq!(
+            ignored.traffic_journal().stats().counters.decoder_ignored,
+            1
+        );
+
+        let rejected_transport = MockTransport::default();
+        rejected_transport.push_read(vec![0x97]);
+        let mut rejected_driver = AcceptingDriver::new();
+        rejected_driver.definition.supported = true;
+        struct RejectingDriver(AcceptingDriver);
+        impl DeviceDriver for RejectingDriver {
+            fn definition(&self) -> &DriverDefinition {
+                &self.0.definition
+            }
+            fn startup_requests(&self) -> &[QueryRequest] {
+                &[]
+            }
+            fn encode(&self, action: Action) -> std::result::Result<CommandBatch, DriverError> {
+                self.0.encode(action)
+            }
+            fn decode(
+                &self,
+                _bytes: &[u8],
+            ) -> std::result::Result<Option<DeviceEvent>, DriverError> {
+                Err(DriverError::InvalidAction("malformed test frame".into()))
+            }
+        }
+        let mut rejected = Controller::new(
+            Box::new(rejected_transport),
+            Box::new(RejectingDriver(rejected_driver)),
+        )
+        .expect("rejected controller");
+        assert!(rejected.poll_device_without_writes(Duration::ZERO).is_err());
+        let rejected_event = rejected
+            .traffic_journal()
+            .event(TrafficSequence(1))
+            .expect("RX");
+        assert!(matches!(
+            rejected_event.decode_status,
+            Some(DecodeStatus::Rejected { ref error, truncated: false })
+                if error.as_ref() == "invalid driver action: malformed test frame"
+        ));
+        assert_eq!(rejected_event.retained_bytes.as_ref(), &[0x97]);
+        assert_eq!(
+            rejected.traffic_journal().stats().counters.decoder_rejected,
+            1
+        );
+    }
+
+    #[test]
+    fn raw_traffic_retains_real_driver_unknown_and_short_decode_failures() {
+        for bytes in [vec![0x99; 320], vec![0x73; 7]] {
+            let transport = MockTransport::default();
+            transport.push_read(bytes.clone());
+            let mut controller = Controller::new(
+                Box::new(transport),
+                Box::new(crate::device::builtin_zen_go_driver().expect("Zen Go driver")),
+            )
+            .expect("controller");
+
+            assert!(controller
+                .poll_device_without_writes(Duration::ZERO)
+                .is_err());
+
+            let event = controller
+                .traffic_journal()
+                .event(TrafficSequence(1))
+                .expect("rejected RX");
+            assert_eq!(event.reported_len, bytes.len());
+            assert_eq!(event.retained_bytes.as_ref(), bytes.as_slice());
+            assert!(matches!(
+                event.decode_status,
+                Some(DecodeStatus::Rejected { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn raw_traffic_preserves_orion_75_1f_as_generic_ignored_rx() {
+        let transport = MockTransport::default();
+        let mut meter = vec![0; 320];
+        meter[0] = 0x75;
+        meter[1] = 0x1f;
+        transport.push_read(meter);
+        let mut controller = orion_controller(transport);
+
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("superseded meter remains ignored by driver");
+
+        let event = controller
+            .traffic_journal()
+            .event(TrafficSequence(1))
+            .expect("RX");
+        assert_eq!(event.decode_status, Some(DecodeStatus::Ignored));
+        assert_eq!(event.classifier.byte_0, Some(0x75));
+        assert_eq!(event.classifier.byte_1, Some(0x1f));
+        assert_eq!(event.classifier.query_category_at_8, None);
+    }
+
+    #[test]
+    fn raw_traffic_covers_direct_refresh_and_queued_writes_in_completion_order() {
+        let transport = MockTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        controller
+            .write_batch(CommandBatch {
+                frames: vec![vec![0x70]],
+                refresh_requests: vec![QueryRequest::new(1, 2)],
+            })
+            .expect("direct and refresh writes");
+        controller
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(0),
+                },
+                None,
+            )
+            .expect("queue write");
+        controller.flush_commands().expect("queued write");
+
+        assert_eq!(transport.take_writes().len(), 3);
+        let events = controller.traffic_journal().window(None, None, 10);
+        assert_eq!(events.len(), 3);
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            vec![TrafficSequence(1), TrafficSequence(2), TrafficSequence(3)]
+        );
+        assert!(events
+            .iter()
+            .all(|event| event.outcome == TrafficOutcome::WriteSucceeded));
+    }
+
+    #[test]
+    fn raw_traffic_failed_direct_write_is_delivery_uncertain() {
+        let transport = FailingTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        assert!(controller
+            .write_batch(CommandBatch {
+                frames: vec![vec![0x70, 0xaa]],
+                refresh_requests: Vec::new(),
+            })
+            .is_err());
+
+        assert_eq!(transport.take_writes(), vec![vec![0x70, 0xaa]]);
+        let event = controller
+            .traffic_journal()
+            .event(TrafficSequence(1))
+            .expect("TX");
+        assert_eq!(event.outcome, TrafficOutcome::WriteFailedDeliveryUncertain);
+        assert_eq!(event.retained_bytes.as_ref(), &[0x70, 0xaa]);
+    }
+
+    #[test]
+    fn raw_traffic_failed_queued_write_is_delivery_uncertain() {
+        let transport = FailingTransport::default();
+        let mut controller = Controller::new(
+            Box::new(transport.clone()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("controller");
+        controller
+            .send(
+                Action::SetGlobal {
+                    control: GlobalControl::ClockSource,
+                    value: ControlValue::Enum(0),
+                },
+                None,
+            )
+            .expect("queue write");
+        assert!(controller.flush_commands().is_err());
+
+        assert_eq!(transport.take_writes().len(), 1);
+        let event = controller
+            .traffic_journal()
+            .event(TrafficSequence(1))
+            .expect("TX");
+        assert_eq!(event.outcome, TrafficOutcome::WriteFailedDeliveryUncertain);
+        assert_eq!(
+            controller
+                .traffic_journal()
+                .stats()
+                .counters
+                .tx_failed_delivery_uncertain,
+            1
+        );
+    }
+
+    #[test]
+    fn raw_traffic_read_error_cannot_leak_a_decode_token_to_the_next_frame() {
+        struct ErrorThenFrameTransport {
+            reads: std::sync::Mutex<std::collections::VecDeque<anyhow::Result<Option<Vec<u8>>>>>,
+        }
+        impl Transport for ErrorThenFrameTransport {
+            fn write(&self, _data: &[u8]) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn read(&self, _timeout: Duration) -> anyhow::Result<Option<Vec<u8>>> {
+                self.reads
+                    .lock()
+                    .expect("scripted reads")
+                    .pop_front()
+                    .unwrap_or(Ok(None))
+            }
+        }
+        let transport = ErrorThenFrameTransport {
+            reads: std::sync::Mutex::new(std::collections::VecDeque::from([
+                Err(anyhow::anyhow!("device disconnected")),
+                Ok(Some(vec![0x73])),
+            ])),
+        };
+        let mut controller = Controller::new(
+            Box::new(transport),
+            Box::new(AcceptingDriver::with_event(empty_snapshot_event())),
+        )
+        .expect("controller");
+
+        assert!(controller
+            .poll_device_without_writes(Duration::ZERO)
+            .is_err());
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("following frame");
+
+        let events = controller.traffic_journal().window(None, None, 10);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].outcome, TrafficOutcome::ReadFailed);
+        assert_eq!(events[0].decode_status, None);
+        assert_eq!(events[1].sequence, TrafficSequence(2));
+        assert_eq!(
+            events[1].decode_status,
+            Some(DecodeStatus::Accepted(DecodedEventKind::Snapshot))
+        );
+        assert_eq!(
+            controller
+                .traffic_journal()
+                .stats()
+                .counters
+                .decode_updates_lost,
+            0
+        );
+    }
+
+    #[test]
+    fn raw_traffic_timeout_and_session_replacement_do_not_leak_events_or_tokens() {
+        let first_transport = MockTransport::default();
+        first_transport.push_read(vec![0x75]);
+        let mut first =
+            Controller::new(Box::new(first_transport), Box::new(AcceptingDriver::new()))
+                .expect("first controller");
+        first
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("first poll");
+        let first_journal = first.traffic_journal().clone();
+
+        let mut replacement = Controller::new(
+            Box::new(MockTransport::default()),
+            Box::new(AcceptingDriver::new()),
+        )
+        .expect("replacement controller");
+        replacement
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("replacement timeout");
+
+        assert_eq!(first_journal.stats().retained_events, 1);
+        assert_eq!(replacement.traffic_journal().stats().retained_events, 0);
+        assert_eq!(
+            replacement.traffic_journal().stats().counters.read_timeouts,
+            1
+        );
+        assert!(replacement
+            .traffic_journal()
+            .event(TrafficSequence(1))
+            .is_none());
     }
 
     #[test]
