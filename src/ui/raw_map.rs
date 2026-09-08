@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use antelope_protocol::{
-    control_panel_startup_queries, FrameOperation, QueryResponse, RuntimeMeterTarget,
+    control_panel_startup_queries, FrameEndian, FrameOperation, QueryResponse, RuntimeMeterTarget,
     RuntimeProfile, HID_REPORT_SIZE, OFFSET_CLOCK_SOURCE, OFFSET_FRONT_PANEL_BYTES_END,
     OFFSET_FRONT_PANEL_BYTES_START, OFFSET_HP1_MODE, OFFSET_HP1_VOLUME, OFFSET_HP2_MODE,
     OFFSET_HP2_VOLUME, OFFSET_LATE_SHADOW_START, OFFSET_METER_LANES_END, OFFSET_METER_LANES_START,
@@ -15,12 +15,15 @@ use antelope_protocol::{
 };
 
 use crate::app::{RawMapScope, RawPacketTab};
+use crate::traffic::TrafficDirection;
 
 /// Coverage classification used by the RAW view's semantic map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Coverage {
     Used,
     Readback,
+    Fixed,
+    Opaque,
     Observed,
     Parser,
     Unmapped,
@@ -30,8 +33,10 @@ pub(crate) enum Coverage {
 impl Coverage {
     pub(crate) const fn rank(self) -> u8 {
         match self {
-            Self::Used => 6,
-            Self::Readback => 5,
+            Self::Used => 8,
+            Self::Readback => 7,
+            Self::Fixed => 6,
+            Self::Opaque => 5,
             Self::Observed => 4,
             Self::Parser => 3,
             Self::Unmapped => 2,
@@ -47,6 +52,8 @@ pub(crate) enum RawDomain {
     Output,
     Preamp,
     Mixer,
+    Fx,
+    Surround,
     Query,
     Status,
     Parser,
@@ -221,6 +228,719 @@ pub(crate) fn build_raw_packet_map_for_profile(
     }
 }
 
+/// Build the diagnostic map for one selected application-transport event.
+///
+/// Unlike the legacy tab maps, this entry point requires direction, exact profile report geometry,
+/// and a matching family envelope before adding semantic labels. Unknown or partial traffic keeps
+/// every retained byte and receives only honest UNMAPPED coverage.
+pub(crate) fn build_raw_traffic_map(
+    direction: TrafficDirection,
+    bytes: &[u8],
+    profile: Option<&RuntimeProfile>,
+) -> RawPacketMap {
+    let report_len = bytes.len();
+    let mut entries = Vec::new();
+    let Some(profile) = profile else {
+        return finish_map(entries, report_len, None);
+    };
+    let Some(expected_len) = profile.transport.report_size.map(usize::from) else {
+        return finish_map(entries, report_len, None);
+    };
+    if report_len != expected_len {
+        return finish_map(entries, report_len, None);
+    }
+
+    match direction {
+        TrafficDirection::Rx => build_profile_rx_traffic_map(&mut entries, bytes, profile),
+        TrafficDirection::Tx => build_profile_tx_traffic_map(&mut entries, bytes, profile),
+    }
+    finish_map(entries, report_len, None)
+}
+
+fn finish_map(
+    mut entries: Vec<RawMapEntry>,
+    report_len: usize,
+    payload: Option<(usize, usize)>,
+) -> RawPacketMap {
+    derive_unmapped_complements(&mut entries, report_len, payload);
+    annotate_overlaps(&mut entries);
+    entries.sort_by(|left, right| {
+        first_offset(left)
+            .cmp(&first_offset(right))
+            .then_with(|| right.coverage.rank().cmp(&left.coverage.rank()))
+    });
+    RawPacketMap {
+        entries,
+        report_len,
+    }
+}
+
+fn build_profile_rx_traffic_map(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    profile: &RuntimeProfile,
+) {
+    let report_len = bytes.len();
+    if profile_frame(profile, "state_report")
+        .is_some_and(|frame| frame_fixed_bytes_match(frame, bytes))
+    {
+        build_profile_snapshot_map(entries, report_len, profile);
+        return;
+    }
+
+    let Some(readback) = profile.readback.as_ref() else {
+        return;
+    };
+    if bytes.first() != Some(&readback.response_magic) {
+        return;
+    }
+    let discriminator_offset = usize::from(readback.response_discriminator_offset);
+    if bytes.get(discriminator_offset) == Some(&readback.response_discriminator) {
+        let category = bytes.get(usize::from(readback.category_offset)).copied();
+        let index = bytes.get(usize::from(readback.index_offset)).copied();
+        if category.zip(index).is_some_and(|(category, index)| {
+            readback.allows(antelope_protocol::QueryRequest::new(category, index))
+        }) {
+            build_query_reply_map(entries, bytes, report_len, Some(profile));
+        }
+        return;
+    }
+
+    if meter_discriminator(profile) == bytes.get(discriminator_offset).copied()
+        && profile_frame(profile, "meter_report")
+            .is_some_and(|frame| frame_fixed_bytes_match(frame, bytes))
+    {
+        build_profile_frame_map(entries, "meter_report", report_len, profile);
+        add_exact_extent(
+            entries,
+            RawDomain::Parser,
+            Coverage::Fixed,
+            "meter report discriminator",
+            "Profile/runtime-owned meter family discriminator; kept distinct from 0x75/00 readback.",
+            discriminator_offset..discriminator_offset + 1,
+            None,
+            report_len,
+        );
+    }
+}
+
+fn build_profile_tx_traffic_map(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    profile: &RuntimeProfile,
+) {
+    if profile_query_request_matches(profile, bytes) {
+        build_profile_query_request_map(entries, bytes, profile);
+        return;
+    }
+
+    let mut candidates = profile
+        .frames
+        .iter()
+        .filter(|frame| {
+            frame.kind.eq_ignore_ascii_case("command")
+                && frame
+                    .status
+                    .trim()
+                    .to_ascii_lowercase()
+                    .starts_with("confirm")
+                && frame_fixed_bytes_match(frame, bytes)
+        })
+        .map(|frame| {
+            let fixed_count = frame
+                .operations
+                .iter()
+                .filter(|operation| matches!(operation, FrameOperation::FixedByte { .. }))
+                .count();
+            (frame, fixed_count)
+        })
+        .filter(|(_, fixed_count)| *fixed_count >= 2)
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|(_, fixed_count)| std::cmp::Reverse(*fixed_count));
+    let Some((frame, specificity)) = candidates.first().copied() else {
+        return;
+    };
+    if candidates
+        .get(1)
+        .is_some_and(|(_, next_specificity)| *next_specificity == specificity)
+    {
+        return;
+    }
+
+    let auraverb = profile
+        .auraverb
+        .as_ref()
+        .is_some_and(|contract| contract.command_frame_id == frame.id);
+    let surround_global = profile
+        .surround_global
+        .as_ref()
+        .is_some_and(|contract| contract.command_frame_id == frame.id);
+    let routing = (frame.id == "routing_command")
+        .then(|| routing_command_match(frame, bytes, profile))
+        .flatten();
+    if (frame.id == "routing_command" && routing.is_none())
+        || (auraverb && !auraverb_tx_matches(bytes, profile))
+        || (surround_global && !surround_global_tx_matches(bytes, profile))
+        || (!auraverb
+            && !surround_global
+            && frame.id != "routing_command"
+            && !encoder_zero_envelope_matches(frame, bytes, &[]))
+    {
+        return;
+    }
+
+    if let Some(routing) = routing {
+        build_profile_routing_command_map(entries, frame, bytes.len(), profile, &routing);
+        add_routing_encoder_zero_extents(entries, frame, bytes.len(), &routing);
+    } else {
+        build_profile_command_map(entries, frame, bytes.len(), profile);
+        if !auraverb && !surround_global {
+            add_encoder_zero_extents(entries, frame, bytes.len(), &[]);
+        }
+    }
+    if auraverb {
+        add_auraverb_tx_extents(entries, bytes, profile);
+    }
+    if surround_global {
+        add_surround_global_tx_extents(entries, bytes, profile);
+    }
+}
+
+struct RoutingCommandMatch<'a> {
+    group: &'a antelope_protocol::RuntimeRoutingGroup,
+    destination_range: Range<usize>,
+    pairs: Vec<RoutingSourcePairMatch<'a>>,
+}
+
+struct RoutingSourcePairMatch<'a> {
+    range: Range<usize>,
+    bank: u8,
+    index: u8,
+    domain: &'a antelope_protocol::RuntimeRoutingSourceDomain,
+}
+
+fn routing_command_match<'a>(
+    frame: &antelope_protocol::RuntimeFrame,
+    bytes: &[u8],
+    profile: &'a RuntimeProfile,
+) -> Option<RoutingCommandMatch<'a>> {
+    if frame.report_size.map(usize::from) != Some(bytes.len()) || profile.routing_groups.is_empty()
+    {
+        return None;
+    }
+
+    let mut destinations = frame
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            FrameOperation::Scalar {
+                field,
+                offset,
+                width,
+                endian,
+            } if field == "destination" => {
+                Some((usize::from(*offset), usize::from(*width), *endian))
+            }
+            _ => None,
+        });
+    let (destination_offset, destination_width, destination_endian) = destinations.next()?;
+    if destinations.next().is_some() {
+        return None;
+    }
+    let destination_range =
+        destination_offset..destination_offset.checked_add(destination_width)?;
+    let destination = read_profile_scalar(bytes, destination_range.clone(), destination_endian)?;
+    let mut groups = profile
+        .routing_groups
+        .iter()
+        .filter(|group| group.destination == destination);
+    let group = groups.next()?;
+    if groups.next().is_some() || group.channel_count == 0 {
+        return None;
+    }
+
+    let mut layouts = frame
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            FrameOperation::Indexed {
+                base,
+                stride,
+                index_field,
+                width: 2,
+                max_index: Some(max_index),
+            } if index_field == "source_pair" => Some((
+                usize::from(*base),
+                usize::from(*stride),
+                usize::from(*max_index),
+            )),
+            FrameOperation::Indexed {
+                base,
+                stride,
+                index_field,
+                width: 1,
+                max_index: Some(max_index),
+            } if index_field == "channel" => Some((
+                usize::from(*base),
+                usize::from(*stride),
+                usize::from(*max_index),
+            )),
+            _ => None,
+        });
+    let (base, stride, max_index) = layouts.next()?;
+    if layouts.next().is_some()
+        || frame
+            .operations
+            .iter()
+            .filter(|operation| matches!(operation, FrameOperation::Indexed { .. }))
+            .count()
+            != 1
+        || stride < 2
+    {
+        return None;
+    }
+    let declared_max = profile
+        .routing_groups
+        .iter()
+        .map(|group| usize::from(group.channel_count))
+        .max()?;
+    if max_index.checked_add(1) != Some(declared_max)
+        || usize::from(group.channel_count) > declared_max
+    {
+        return None;
+    }
+
+    let mut pairs = Vec::with_capacity(usize::from(group.channel_count));
+    for channel in 0..usize::from(group.channel_count) {
+        let start = base.checked_add(stride.checked_mul(channel)?)?;
+        let range = start..start.checked_add(2)?;
+        if ranges_overlap(&range, &destination_range)
+            || frame.operations.iter().any(|operation| {
+                matches!(operation, FrameOperation::FixedByte { offset, .. } if range.contains(&usize::from(*offset)))
+            })
+        {
+            return None;
+        }
+        let pair = bytes.get(range.clone())?;
+        let mut domains = group.source_domains.iter().filter(|domain| {
+            domain.bank == pair[0]
+                && domain.index_count > 0
+                && domain.index_count <= 256
+                && domain
+                    .status
+                    .trim()
+                    .to_ascii_lowercase()
+                    .starts_with("confirm")
+                && !domain.evidence.trim().is_empty()
+        });
+        let domain = domains.next()?;
+        if domains.next().is_some() || u16::from(pair[1]) >= domain.index_count {
+            return None;
+        }
+        pairs.push(RoutingSourcePairMatch {
+            range,
+            bank: pair[0],
+            index: pair[1],
+            domain,
+        });
+    }
+
+    let mut occupied = vec![false; bytes.len()];
+    for range in frame
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            FrameOperation::FixedByte { offset, .. } => {
+                let start = usize::from(*offset);
+                Some(start..start + 1)
+            }
+            _ => None,
+        })
+        .chain(std::iter::once(destination_range.clone()))
+        .chain(pairs.iter().map(|pair| pair.range.clone()))
+    {
+        for occupied in occupied.get_mut(range)? {
+            *occupied = true;
+        }
+    }
+    if bytes
+        .iter()
+        .zip(occupied)
+        .any(|(byte, occupied)| !occupied && *byte != 0)
+    {
+        return None;
+    }
+
+    Some(RoutingCommandMatch {
+        group,
+        destination_range,
+        pairs,
+    })
+}
+
+fn read_profile_scalar(bytes: &[u8], range: Range<usize>, endian: FrameEndian) -> Option<u16> {
+    let value = bytes.get(range)?;
+    let decoded = match endian {
+        FrameEndian::NotApplicable if value.len() == 1 => u32::from(value[0]),
+        FrameEndian::Little if (2..=4).contains(&value.len()) => value
+            .iter()
+            .enumerate()
+            .fold(0_u32, |decoded, (shift, byte)| {
+                decoded | (u32::from(*byte) << (shift * 8))
+            }),
+        FrameEndian::Big if (2..=4).contains(&value.len()) => value
+            .iter()
+            .fold(0_u32, |decoded, byte| (decoded << 8) | u32::from(*byte)),
+        _ => return None,
+    };
+    u16::try_from(decoded).ok()
+}
+
+fn build_profile_routing_command_map(
+    entries: &mut Vec<RawMapEntry>,
+    frame: &antelope_protocol::RuntimeFrame,
+    report_len: usize,
+    profile: &RuntimeProfile,
+    routing: &RoutingCommandMatch<'_>,
+) {
+    let payload_offset = profile_payload_offset(Some(profile));
+    for operation in &frame.operations {
+        if matches!(operation, FrameOperation::FixedByte { .. }) {
+            add_profile_operation(entries, &frame.id, operation, payload_offset, report_len);
+        }
+    }
+    add_bounded_entry(
+        entries,
+        RawDomain::Base,
+        Some(RawMapScope::Base),
+        Coverage::Used,
+        format!("{} {} destination", frame.id, routing.group.name),
+        "Selected destination group validated against the active profile topology.",
+        vec![profile_range(
+            routing.destination_range.start,
+            routing.destination_range.len(),
+            payload_offset,
+        )],
+        report_len,
+    );
+    for (channel, pair) in routing.pairs.iter().enumerate() {
+        add_bounded_entry(
+            entries,
+            RawDomain::Base,
+            Some(RawMapScope::Base),
+            Coverage::Used,
+            format!(
+                "{} {} channel {:02} source pair",
+                frame.id,
+                routing.group.name,
+                channel + 1
+            ),
+            format!(
+                "Profile-authoritative complete routing source pair: {} bank {:#04x}, index {}; channel order is positional.",
+                pair.domain.name, pair.bank, pair.index
+            ),
+            vec![profile_range(
+                pair.range.start,
+                pair.range.len(),
+                payload_offset,
+            )],
+            report_len,
+        );
+    }
+}
+
+fn add_routing_encoder_zero_extents(
+    entries: &mut Vec<RawMapEntry>,
+    frame: &antelope_protocol::RuntimeFrame,
+    report_len: usize,
+    routing: &RoutingCommandMatch<'_>,
+) {
+    let mut occupied = vec![false; report_len];
+    for range in frame
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            FrameOperation::FixedByte { offset, .. } => {
+                let start = usize::from(*offset);
+                Some(start..start + 1)
+            }
+            _ => None,
+        })
+        .chain(std::iter::once(routing.destination_range.clone()))
+        .chain(routing.pairs.iter().map(|pair| pair.range.clone()))
+    {
+        for byte in occupied
+            .iter_mut()
+            .take(range.end.min(report_len))
+            .skip(range.start.min(report_len))
+        {
+            *byte = true;
+        }
+    }
+    let mut start = None;
+    for offset in 0..=report_len {
+        let fixed_zero = offset < report_len && !occupied[offset];
+        match (start, fixed_zero) {
+            (None, true) => start = Some(offset),
+            (Some(run_start), false) => {
+                add_exact_extent(
+                    entries,
+                    RawDomain::Parser,
+                    Coverage::Fixed,
+                    format!("{} encoder zero envelope", frame.id),
+                    "Validated zero-initialized bytes outside the selected destination's complete ordered source pairs.",
+                    run_start..offset,
+                    None,
+                    report_len,
+                );
+                start = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn build_profile_frame_map(
+    entries: &mut Vec<RawMapEntry>,
+    frame_id: &str,
+    report_len: usize,
+    profile: &RuntimeProfile,
+) {
+    let payload_offset = profile_payload_offset(Some(profile));
+    if let Some(frame) = profile_frame(profile, frame_id) {
+        for operation in &frame.operations {
+            add_profile_operation(entries, frame_id, operation, payload_offset, report_len);
+        }
+    }
+}
+
+fn build_profile_command_map(
+    entries: &mut Vec<RawMapEntry>,
+    frame: &antelope_protocol::RuntimeFrame,
+    report_len: usize,
+    profile: &RuntimeProfile,
+) {
+    let payload_offset = profile_payload_offset(Some(profile));
+    for operation in &frame.operations {
+        match operation {
+            FrameOperation::Indexed { .. } => {
+                // The frame does not carry which zero-valued indexed slot was selected. Keep the
+                // candidate extent unmapped rather than claiming every possible slot was used.
+            }
+            FrameOperation::PairIndex {
+                base, pair_field, ..
+            } => add_bounded_entry(
+                entries,
+                profile_domain(pair_field),
+                profile_scope(profile_domain(pair_field)),
+                Coverage::Used,
+                format!("{} {}", frame.id, pair_field),
+                "Profile encoder writes the selected pair code at this single byte.",
+                vec![profile_range(usize::from(*base), 1, payload_offset)],
+                report_len,
+            ),
+            _ => add_profile_operation(entries, &frame.id, operation, payload_offset, report_len),
+        }
+    }
+}
+
+fn operation_possible_ranges(operation: &FrameOperation) -> Vec<Range<usize>> {
+    match operation {
+        FrameOperation::FixedByte { offset, .. } | FrameOperation::BitField { offset, .. } => {
+            vec![usize::from(*offset)..usize::from(*offset) + 1]
+        }
+        FrameOperation::Scalar { offset, width, .. } => {
+            vec![usize::from(*offset)..usize::from(*offset) + usize::from(*width)]
+        }
+        FrameOperation::Indexed {
+            base,
+            stride,
+            width,
+            max_index: Some(max_index),
+            ..
+        } => (0..=usize::from(*max_index))
+            .map(|index| {
+                let start = usize::from(*base) + index * usize::from(*stride);
+                start..start + usize::from(*width)
+            })
+            .collect(),
+        FrameOperation::PairIndex { base, .. } => {
+            vec![usize::from(*base)..usize::from(*base) + 1]
+        }
+        FrameOperation::AllowedValues { .. }
+        | FrameOperation::UncompiledFormula { .. }
+        | FrameOperation::Indexed {
+            max_index: None, ..
+        } => Vec::new(),
+    }
+}
+
+fn encoder_occupied_bytes(
+    frame: &antelope_protocol::RuntimeFrame,
+    report_len: usize,
+    extra_ranges: &[Range<usize>],
+) -> Vec<bool> {
+    let mut occupied = vec![false; report_len];
+    for range in frame
+        .operations
+        .iter()
+        .flat_map(operation_possible_ranges)
+        .chain(extra_ranges.iter().cloned())
+    {
+        for byte in occupied
+            .iter_mut()
+            .take(range.end.min(report_len))
+            .skip(range.start.min(report_len))
+        {
+            *byte = true;
+        }
+    }
+    occupied
+}
+
+fn encoder_zero_envelope_matches(
+    frame: &antelope_protocol::RuntimeFrame,
+    bytes: &[u8],
+    extra_ranges: &[Range<usize>],
+) -> bool {
+    let occupied = encoder_occupied_bytes(frame, bytes.len(), extra_ranges);
+    bytes
+        .iter()
+        .zip(occupied)
+        .all(|(byte, occupied)| occupied || *byte == 0)
+}
+
+fn add_encoder_zero_extents(
+    entries: &mut Vec<RawMapEntry>,
+    frame: &antelope_protocol::RuntimeFrame,
+    report_len: usize,
+    extra_ranges: &[Range<usize>],
+) {
+    let occupied = encoder_occupied_bytes(frame, report_len, extra_ranges);
+    let mut start = None;
+    for offset in 0..=report_len {
+        let is_zero_envelope = offset < report_len && !occupied[offset];
+        match (start, is_zero_envelope) {
+            (None, true) => start = Some(offset),
+            (Some(run_start), false) => {
+                add_exact_extent(
+                    entries,
+                    RawDomain::Parser,
+                    Coverage::Fixed,
+                    format!("{} encoder zero envelope", frame.id),
+                    "Validated zero-initialized bytes outside the frame operation extents.",
+                    run_start..offset,
+                    None,
+                    report_len,
+                );
+                start = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn frame_fixed_bytes_match(frame: &antelope_protocol::RuntimeFrame, bytes: &[u8]) -> bool {
+    let mut fixed = 0usize;
+    for operation in &frame.operations {
+        if let FrameOperation::FixedByte { offset, value } = operation {
+            fixed += 1;
+            if bytes.get(usize::from(*offset)) != Some(value) {
+                return false;
+            }
+        }
+    }
+    fixed > 0
+}
+
+fn profile_query_request_matches(profile: &RuntimeProfile, bytes: &[u8]) -> bool {
+    let Some(readback) = profile.readback.as_ref() else {
+        return false;
+    };
+    let category_offset = usize::from(readback.category_offset);
+    let index_offset = usize::from(readback.index_offset);
+    let Some(category) = bytes.get(category_offset).copied() else {
+        return false;
+    };
+    let Some(index) = bytes.get(index_offset).copied() else {
+        return false;
+    };
+    bytes.first() == Some(&readback.request_magic)
+        && bytes.get(4..8) == Some(readback.request_subcommand.to_le_bytes().as_slice())
+        && readback.allows(antelope_protocol::QueryRequest::new(category, index))
+        && bytes.iter().enumerate().all(|(offset, byte)| {
+            offset == 0
+                || (4..8).contains(&offset)
+                || offset == category_offset
+                || offset == index_offset
+                || *byte == 0
+        })
+}
+
+fn meter_discriminator(profile: &RuntimeProfile) -> Option<u8> {
+    let readback = profile.readback.as_ref()?;
+    let frame = profile_frame(profile, "meter_report")?;
+    profile_fixed_byte(
+        profile,
+        "meter_report",
+        usize::from(readback.response_discriminator_offset),
+    )
+    .or_else(|| {
+        ((profile.identity.vid, profile.identity.pid) == (0x23e5, 0xa221)
+            && frame
+                .metadata
+                .contains("\"status\":\"superseded_for_per_channel\""))
+        .then_some(0x1f)
+    })
+}
+
+fn build_profile_query_request_map(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    profile: &RuntimeProfile,
+) {
+    let readback = profile.readback.as_ref().expect("request shape checked");
+    let report_len = bytes.len();
+    let category_offset = usize::from(readback.category_offset);
+    let index_offset = usize::from(readback.index_offset);
+    for (label, range) in [
+        ("query request family", 0..1),
+        ("query request subcommand", 4..8),
+    ] {
+        add_bounded_entry(
+            entries,
+            RawDomain::Query,
+            Some(RawMapScope::Query),
+            Coverage::Fixed,
+            label,
+            "Profile query encoder fixed extent.",
+            vec![RawMapRange {
+                report: range,
+                payload: None,
+            }],
+            report_len,
+        );
+    }
+    for (label, offset) in [
+        ("query category", category_offset),
+        ("query index", index_offset),
+    ] {
+        add_bounded_entry(
+            entries,
+            RawDomain::Query,
+            Some(RawMapScope::Query),
+            Coverage::Used,
+            label,
+            "Profile-bounded query selector emitted by the encoder.",
+            vec![RawMapRange {
+                report: offset..offset + 1,
+                payload: None,
+            }],
+            report_len,
+        );
+    }
+}
+
 fn profile_payload_offset(profile: Option<&RuntimeProfile>) -> usize {
     profile
         .and_then(|profile| profile.readback.as_ref())
@@ -259,6 +979,624 @@ fn profile_range(offset: usize, width: usize, payload_offset: usize) -> RawMapRa
     }
 }
 
+fn add_exact_extent(
+    entries: &mut Vec<RawMapEntry>,
+    domain: RawDomain,
+    coverage: Coverage,
+    label: impl Into<String>,
+    note: impl Into<String>,
+    range: Range<usize>,
+    payload_offset: Option<usize>,
+    report_len: usize,
+) {
+    let payload = payload_offset.and_then(|offset| {
+        (range.start >= offset).then(|| (range.start - offset)..(range.end - offset))
+    });
+    add_bounded_entry(
+        entries,
+        domain,
+        profile_scope(domain),
+        coverage,
+        label,
+        note,
+        vec![RawMapRange {
+            report: range,
+            payload,
+        }],
+        report_len,
+    );
+}
+
+fn add_profile_special_readback(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    profile: &RuntimeProfile,
+) -> bool {
+    let Some(readback) = profile.readback.as_ref() else {
+        return false;
+    };
+    let category = bytes.get(usize::from(readback.category_offset)).copied();
+    let index = bytes.get(usize::from(readback.index_offset)).copied();
+
+    if let Some(contract) = profile.auraverb.as_ref() {
+        if category == Some(contract.readback_category)
+            && index == Some(contract.readback_index)
+            && auraverb_readback_matches(bytes, profile)
+        {
+            add_auraverb_rx_extents(entries, bytes, profile);
+            return true;
+        }
+    }
+    if let Some(contract) = profile.surround_speaker_eq.as_ref() {
+        if category == Some(contract.readback_category)
+            && index.is_some_and(|index| u16::from(index) < contract.record_count)
+            && surround_speaker_eq_readback_matches(bytes, profile)
+        {
+            add_surround_speaker_eq_rx_extents(entries, bytes, profile);
+            return true;
+        }
+    }
+    if let Some(contract) = profile.surround_global.as_ref() {
+        if category == Some(contract.readback_category)
+            && index == Some(contract.readback_index)
+            && surround_global_readback_matches(bytes, profile)
+        {
+            add_surround_global_rx_extents(entries, bytes, profile);
+            return true;
+        }
+    }
+    false
+}
+
+fn exact_profile_report(bytes: &[u8], profile: &RuntimeProfile) -> bool {
+    profile
+        .transport
+        .report_size
+        .is_some_and(|size| bytes.len() == usize::from(size))
+}
+
+fn auraverb_readback_matches(bytes: &[u8], profile: &RuntimeProfile) -> bool {
+    let Some(contract) = profile.auraverb.as_ref() else {
+        return false;
+    };
+    let Some(readback) = profile.readback.as_ref() else {
+        return false;
+    };
+    let data = usize::from(readback.data_offset);
+    let block_start = data + usize::from(contract.readback_block_offset);
+    let block_end = block_start + usize::from(contract.readback_block_size);
+    let record_end = data + usize::from(contract.readback_record_size);
+    let Some(block) = bytes.get(block_start..block_end) else {
+        return false;
+    };
+    let Some(command_origin) = auraverb_command_origin(contract) else {
+        return false;
+    };
+    let Some(wet_offset) = usize::from(contract.wet_offset).checked_sub(command_origin) else {
+        return false;
+    };
+    let Some(enabled_offset) = usize::from(contract.enabled_offset).checked_sub(command_origin)
+    else {
+        return false;
+    };
+    exact_profile_report(bytes, profile)
+        && bytes.get(..contract.readback_header.len()) == Some(contract.readback_header.as_slice())
+        && bytes.get(data) == Some(&contract.readback_body_header)
+        && record_end == usize::from(contract.fixed_tail_offset)
+        && bytes
+            .get(record_end..)
+            .is_some_and(|tail| tail.iter().all(|byte| *byte == 0))
+        && block.get(wet_offset) == Some(&contract.wet_constant)
+        && block.get(usize::from(contract.terminator_offset)) == Some(&contract.terminator_constant)
+        && block
+            .get(enabled_offset)
+            .is_some_and(|value| matches!(value, 0 | 1))
+        && contract.fields.iter().all(|field| {
+            block
+                .get(usize::from(field.readback_offset))
+                .is_some_and(|value| (contract.range.0..=contract.range.1).contains(value))
+        })
+}
+
+fn add_auraverb_rx_extents(entries: &mut Vec<RawMapEntry>, bytes: &[u8], profile: &RuntimeProfile) {
+    let contract = profile.auraverb.as_ref().expect("AuraVerb shape checked");
+    let readback = profile.readback.as_ref().expect("AuraVerb readback");
+    let data = usize::from(readback.data_offset);
+    let block = data + usize::from(contract.readback_block_offset);
+    let record_end = data + usize::from(contract.readback_record_size);
+    add_exact_extent(
+        entries,
+        RawDomain::Fx,
+        Coverage::Fixed,
+        "AuraVerb readback header",
+        "Exact profile category 0x0a, index, family, discriminator, and header.",
+        0..data,
+        None,
+        bytes.len(),
+    );
+    add_exact_extent(
+        entries,
+        RawDomain::Fx,
+        Coverage::Fixed,
+        "AuraVerb body header",
+        "Validated fixed record header.",
+        data..data + 1,
+        Some(data),
+        bytes.len(),
+    );
+    for field in &contract.fields {
+        let offset = block + usize::from(field.readback_offset);
+        add_exact_extent(
+            entries,
+            RawDomain::Fx,
+            Coverage::Readback,
+            format!("AuraVerb Mix 1 {}", field.name),
+            "Runtime-consumed typed AuraVerb field; annotation does not grant write authority.",
+            offset..offset + 1,
+            Some(data),
+            bytes.len(),
+        );
+    }
+    let command_origin = auraverb_command_origin(contract).expect("AuraVerb shape checked");
+    let wet_offset = usize::from(contract.wet_offset) - command_origin;
+    let enabled_offset = usize::from(contract.enabled_offset) - command_origin;
+    for (label, relative, coverage) in [
+        ("AuraVerb wet constant", wet_offset, Coverage::Fixed),
+        ("AuraVerb enabled", enabled_offset, Coverage::Readback),
+        (
+            "AuraVerb terminator",
+            usize::from(contract.terminator_offset),
+            Coverage::Fixed,
+        ),
+    ] {
+        let offset = block + relative;
+        add_exact_extent(
+            entries,
+            RawDomain::Fx,
+            coverage,
+            label,
+            "Validated by the profile-owned AuraVerb decoder.",
+            offset..offset + 1,
+            Some(data),
+            bytes.len(),
+        );
+    }
+    let block_end = block + usize::from(contract.readback_block_size);
+    add_exact_extent(
+        entries,
+        RawDomain::Fx,
+        Coverage::Opaque,
+        "AuraVerb preserved Mix 2-4 record bytes",
+        "Present inside the validated record but not consumed by the Mix-1 runtime state.",
+        block_end..record_end,
+        Some(data),
+        bytes.len(),
+    );
+    add_exact_extent(
+        entries,
+        RawDomain::Fx,
+        Coverage::Fixed,
+        "AuraVerb fixed zero tail",
+        "Every byte is validated zero by the runtime decoder.",
+        record_end..bytes.len(),
+        Some(data),
+        bytes.len(),
+    );
+}
+
+fn auraverb_command_origin(contract: &antelope_protocol::RuntimeAuraVerbContract) -> Option<usize> {
+    contract
+        .fields
+        .iter()
+        .map(|field| usize::from(field.command_offset))
+        .min()
+}
+
+fn auraverb_tx_matches(bytes: &[u8], profile: &RuntimeProfile) -> bool {
+    let Some(contract) = profile.auraverb.as_ref() else {
+        return false;
+    };
+    let Some(frame) = profile_frame(profile, &contract.command_frame_id) else {
+        return false;
+    };
+    let operation_end = frame
+        .operations
+        .iter()
+        .filter_map(operation_end)
+        .max()
+        .unwrap_or(0);
+    let scalar = |field: &str| {
+        frame
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                FrameOperation::Scalar {
+                    field: name,
+                    offset,
+                    width: 1,
+                    ..
+                } if name == field => bytes.get(usize::from(*offset)).copied(),
+                _ => None,
+            })
+    };
+    exact_profile_report(bytes, profile)
+        && encoder_zero_envelope_matches(frame, bytes, &[])
+        && scalar("target") == u8::try_from(contract.target).ok()
+        && scalar("enabled").is_some_and(|value| matches!(value, 0 | 1))
+        && contract.fields.iter().all(|field| {
+            scalar(&format!("field_{}", field.id))
+                .is_some_and(|value| (contract.range.0..=contract.range.1).contains(&value))
+        })
+        && bytes
+            .get(operation_end..)
+            .is_some_and(|tail| tail.iter().all(|byte| *byte == 0))
+}
+
+fn add_auraverb_tx_extents(entries: &mut Vec<RawMapEntry>, bytes: &[u8], profile: &RuntimeProfile) {
+    let contract = profile.auraverb.as_ref().expect("AuraVerb frame matched");
+    let Some(frame) = profile_frame(profile, &contract.command_frame_id) else {
+        return;
+    };
+    let end = frame
+        .operations
+        .iter()
+        .filter_map(operation_end)
+        .max()
+        .unwrap_or(0);
+    if bytes
+        .get(end..)
+        .is_some_and(|tail| tail.iter().all(|byte| *byte == 0))
+    {
+        add_exact_extent(
+            entries,
+            RawDomain::Fx,
+            Coverage::Fixed,
+            "AuraVerb encoder zero tail",
+            "Fixed by the validated whole-state command encoder.",
+            end..bytes.len(),
+            None,
+            bytes.len(),
+        );
+    }
+}
+
+fn surround_speaker_eq_readback_matches(bytes: &[u8], profile: &RuntimeProfile) -> bool {
+    let Some(contract) = profile.surround_speaker_eq.as_ref() else {
+        return false;
+    };
+    let index = bytes.get(usize::from(contract.index_offset)).copied();
+    let bands_start = usize::from(contract.data_offset + contract.candidate_head_size);
+    exact_profile_report(bytes, profile)
+        && bytes.get(..contract.header_prefix.len()) == Some(contract.header_prefix.as_slice())
+        && index.is_some_and(|index| u16::from(index) < contract.record_count)
+        && bytes.get(usize::from(contract.index_offset) + 1..usize::from(contract.data_offset))
+            == Some(contract.header_suffix.as_slice())
+        && bytes
+            .get(usize::from(contract.fixed_tail_offset)..)
+            .is_some_and(|tail| tail.iter().all(|byte| *byte == 0))
+        && (0..usize::from(contract.band_count)).all(|band| {
+            let start = bands_start + band * usize::from(contract.band_stride);
+            let read_u16 = |relative: u16| {
+                let offset = start + usize::from(relative);
+                bytes
+                    .get(offset..offset + 2)
+                    .map(|value| u16::from_le_bytes([value[0], value[1]]))
+            };
+            read_u16(contract.frequency_offset).is_some_and(|value| {
+                contract.frequency_range.0 <= value && value <= contract.frequency_range.1
+            }) && read_u16(contract.q_offset).is_some_and(|value| {
+                contract.q_raw_range.0 <= value && value <= contract.q_raw_range.1
+            }) && read_u16(contract.gain_offset)
+                .map(|value| value as i16)
+                .is_some_and(|value| {
+                    contract.gain_raw_range.0 <= value && value <= contract.gain_raw_range.1
+                })
+                && bytes
+                    .get(start + usize::from(contract.mode_offset))
+                    .is_some()
+        })
+}
+
+fn add_surround_speaker_eq_rx_extents(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    profile: &RuntimeProfile,
+) {
+    let contract = profile
+        .surround_speaker_eq
+        .as_ref()
+        .expect("speaker EQ shape checked");
+    let data = usize::from(contract.data_offset);
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Fixed,
+        "Surround speaker EQ readback header",
+        "Exact RX family, category 0x1a, discriminator, and fixed header bytes.",
+        0..usize::from(contract.index_offset),
+        None,
+        bytes.len(),
+    );
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Readback,
+        "Surround speaker EQ index",
+        "Validated profile-bounded speaker index; read-only contract.",
+        usize::from(contract.index_offset)..usize::from(contract.index_offset) + 1,
+        None,
+        bytes.len(),
+    );
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Fixed,
+        "Surround speaker EQ header suffix",
+        "Fixed bytes validated before band decoding.",
+        usize::from(contract.index_offset) + 1..data,
+        None,
+        bytes.len(),
+    );
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Opaque,
+        "Surround speaker EQ candidate head",
+        "Observed bytes remain opaque; no engineering meaning or write authority is claimed.",
+        data..data + usize::from(contract.candidate_head_size),
+        Some(data),
+        bytes.len(),
+    );
+    let bands = data + usize::from(contract.candidate_head_size);
+    for band in 0..usize::from(contract.band_count) {
+        let start = bands + band * usize::from(contract.band_stride);
+        for (label, relative, width) in [
+            ("frequency", contract.frequency_offset, 2usize),
+            ("Q", contract.q_offset, 2),
+            ("gain", contract.gain_offset, 2),
+            ("raw mode (unknown, read-only)", contract.mode_offset, 1),
+        ] {
+            let offset = start + usize::from(relative);
+            add_exact_extent(
+                entries,
+                RawDomain::Surround,
+                Coverage::Readback,
+                format!("Surround speaker EQ band {:02} {label}", band + 1),
+                "Runtime-consumed read-only band field; raw mode values are retained without semantic promotion.",
+                offset..offset + width,
+                Some(data),
+                bytes.len(),
+            );
+        }
+    }
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Fixed,
+        "Surround speaker EQ fixed zero tail",
+        "Every byte from the profile-owned tail offset is validated zero.",
+        usize::from(contract.fixed_tail_offset)..bytes.len(),
+        Some(data),
+        bytes.len(),
+    );
+}
+
+fn surround_global_readback_matches(bytes: &[u8], profile: &RuntimeProfile) -> bool {
+    let Some(contract) = profile.surround_global.as_ref() else {
+        return false;
+    };
+    let Some(readback) = profile.readback.as_ref() else {
+        return false;
+    };
+    let data = usize::from(readback.data_offset);
+    let tail = data + usize::from(contract.template_size);
+    exact_profile_report(bytes, profile)
+        && bytes.get(..contract.readback_header.len()) == Some(contract.readback_header.as_slice())
+        && bytes
+            .get(tail..)
+            .is_some_and(|tail| tail.iter().all(|byte| *byte == 0))
+}
+
+fn add_surround_global_rx_extents(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    profile: &RuntimeProfile,
+) {
+    let contract = profile
+        .surround_global
+        .as_ref()
+        .expect("Surround global shape checked");
+    let data = usize::from(profile.readback.as_ref().expect("readback").data_offset);
+    let template_end = data + usize::from(contract.template_size);
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Fixed,
+        "Surround global readback header",
+        "Exact RX family, discriminator, category 0x1b, index, and fixed header.",
+        0..data,
+        None,
+        bytes.len(),
+    );
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Opaque,
+        "Surround global preserved template",
+        "Whole validated template is retained, but only overlaid fields are semantically decoded.",
+        data..template_end,
+        Some(data),
+        bytes.len(),
+    );
+    add_surround_global_fields(entries, bytes.len(), profile, data, true);
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Fixed,
+        "Surround global fixed zero tail",
+        "Every byte after the RX template extent is validated zero.",
+        template_end..bytes.len(),
+        Some(data),
+        bytes.len(),
+    );
+}
+
+fn surround_global_tx_matches(bytes: &[u8], profile: &RuntimeProfile) -> bool {
+    let Some(contract) = profile.surround_global.as_ref() else {
+        return false;
+    };
+    let payload = usize::from(contract.payload_offset);
+    let template_end = payload + usize::from(contract.template_size);
+    let read_u16 = |offset: u16| {
+        let offset = usize::from(offset);
+        bytes
+            .get(offset..offset + 2)
+            .map(|value| u16::from_le_bytes([value[0], value[1]]))
+    };
+    let flags_a = bytes.get(usize::from(contract.flags_a_offset)).copied();
+    let flags_b = bytes.get(usize::from(contract.flags_b_offset)).copied();
+    let writable_format = flags_a.zip(flags_b).is_some_and(|(flags_a, flags_b)| {
+        contract.formats.iter().any(|format| {
+            format.writable
+                && flags_a & contract.flags_a_mask == format.flags_a & contract.flags_a_mask
+                && flags_b & contract.flags_b_mask == format.flags_b & contract.flags_b_mask
+        })
+    });
+    let Some(frame) = profile_frame(profile, &contract.command_frame_id) else {
+        return false;
+    };
+    exact_profile_report(bytes, profile)
+        && template_end == usize::from(contract.fixed_tail_offset)
+        && encoder_zero_envelope_matches(frame, bytes, &[payload..template_end])
+        && writable_format
+        && bytes
+            .get(usize::from(contract.delay_offset))
+            .is_some_and(|value| {
+                contract.delay_range.0 <= u16::from(*value)
+                    && u16::from(*value) <= contract.delay_range.1
+            })
+        && read_u16(contract.level_offset)
+            .is_some_and(|value| contract.level_range.0 <= value && value <= contract.level_range.1)
+        && bytes
+            .get(template_end..)
+            .is_some_and(|tail| tail.iter().all(|byte| *byte == 0))
+}
+
+fn add_surround_global_tx_extents(
+    entries: &mut Vec<RawMapEntry>,
+    bytes: &[u8],
+    profile: &RuntimeProfile,
+) {
+    let contract = profile
+        .surround_global
+        .as_ref()
+        .expect("Surround global frame matched");
+    let payload = usize::from(contract.payload_offset);
+    let template_end = payload + usize::from(contract.template_size);
+    if bytes
+        .get(usize::from(contract.fixed_tail_offset)..)
+        .is_none_or(|tail| tail.iter().any(|byte| *byte != 0))
+        || template_end != usize::from(contract.fixed_tail_offset)
+    {
+        return;
+    }
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Opaque,
+        "Surround global copied whole template",
+        "The encoder copies this complete validated template; unoverlaid bytes remain preserved opaque and annotation grants no write authority.",
+        payload..template_end,
+        Some(payload),
+        bytes.len(),
+    );
+    add_surround_global_fields(entries, bytes.len(), profile, payload, false);
+    add_exact_extent(
+        entries,
+        RawDomain::Surround,
+        Coverage::Fixed,
+        "Surround global encoder zero tail",
+        "Fixed zero extent after the complete copied template.",
+        template_end..bytes.len(),
+        Some(payload),
+        bytes.len(),
+    );
+}
+
+fn add_surround_global_fields(
+    entries: &mut Vec<RawMapEntry>,
+    report_len: usize,
+    profile: &RuntimeProfile,
+    report_payload_start: usize,
+    rx: bool,
+) {
+    let contract = profile.surround_global.as_ref().expect("Surround contract");
+    let translate = |contract_offset: u16| {
+        report_payload_start + usize::from(contract_offset - contract.payload_offset)
+    };
+    for (label, offset, width) in [
+        (
+            "Surround global format flags A",
+            contract.flags_a_offset,
+            1usize,
+        ),
+        ("Surround global format flags B", contract.flags_b_offset, 1),
+        ("Surround global delay", contract.delay_offset, 1),
+        ("Surround global level", contract.level_offset, 2),
+        ("Surround global mask word 1", contract.mask_offsets[0], 2),
+        ("Surround global mask word 2", contract.mask_offsets[1], 2),
+        ("Surround global mask word 3", contract.mask_offsets[2], 2),
+    ] {
+        let offset = translate(offset);
+        add_exact_extent(
+            entries,
+            RawDomain::Surround,
+            if rx {
+                Coverage::Readback
+            } else {
+                Coverage::Used
+            },
+            label,
+            if rx {
+                "Runtime-decoded field; unknown format flag combinations remain accepted read-only."
+            } else {
+                "Typed or authorization-relevant field inside the copied command template."
+            },
+            offset..offset + width,
+            Some(report_payload_start),
+            report_len,
+        );
+    }
+}
+
+fn operation_end(operation: &FrameOperation) -> Option<usize> {
+    match operation {
+        FrameOperation::FixedByte { offset, .. } | FrameOperation::BitField { offset, .. } => {
+            Some(usize::from(*offset) + 1)
+        }
+        FrameOperation::Scalar { offset, width, .. } => {
+            Some(usize::from(*offset) + usize::from(*width))
+        }
+        FrameOperation::Indexed {
+            base,
+            stride,
+            width,
+            max_index: Some(max_index),
+            ..
+        } => Some(
+            usize::from(*base)
+                + usize::from(*stride) * usize::from(*max_index)
+                + usize::from(*width),
+        ),
+        FrameOperation::PairIndex { base, .. } => Some(usize::from(*base) + 1),
+        FrameOperation::AllowedValues { .. }
+        | FrameOperation::UncompiledFormula { .. }
+        | FrameOperation::Indexed {
+            max_index: None, ..
+        } => None,
+    }
+}
+
 fn profile_domain(field: &str) -> RawDomain {
     let field = field.to_ascii_lowercase();
     if field.contains("physical_meter")
@@ -286,6 +1624,7 @@ fn profile_scope(domain: RawDomain) -> Option<RawMapScope> {
         RawDomain::Output => Some(RawMapScope::Outputs),
         RawDomain::Preamp => Some(RawMapScope::Preamps),
         RawDomain::Mixer => Some(RawMapScope::Mixer),
+        RawDomain::Fx | RawDomain::Surround => Some(RawMapScope::Status),
         _ => None,
     }
 }
@@ -317,9 +1656,9 @@ fn add_profile_operation(
             entries,
             RawDomain::Parser,
             Some(RawMapScope::Parser),
-            Coverage::Parser,
-            format!("{frame_id} magic 0x{value:02x}"),
-            "Profile-declared report discriminator.",
+            Coverage::Fixed,
+            format!("{frame_id} fixed 0x{value:02x}"),
+            "Profile-declared fixed byte validated for this frame.",
             vec![profile_range(usize::from(*offset), 1, payload_offset)],
             report_len,
         ),
@@ -469,19 +1808,40 @@ fn build_profile_snapshot_map(
                 (RawDomain::Output, format!("{name} output meter"))
             }
         };
+        let gate_note = mapping.byte_equals.map_or_else(String::new, |predicate| {
+            format!(
+                " Gated by report @{} == {}; source report @{}.",
+                predicate.offset, predicate.value, mapping.offset
+            )
+        });
         add_bounded_entry(
             entries,
             domain,
             profile_scope(domain),
             Coverage::Observed,
-            label,
+            label.clone(),
             format!(
-                "Profile-owned observed meter mapping ({}). One lane only; no stereo L/R inference. {}",
+                "Profile-owned observed meter mapping ({}). One lane only; no stereo L/R inference.{gate_note} {}",
                 mapping.status_text, mapping.evidence
             ),
             vec![profile_range(mapping.offset, 1, payload_offset)],
             report_len,
         );
+        if let Some(predicate) = mapping.byte_equals {
+            add_bounded_entry(
+                entries,
+                domain,
+                profile_scope(domain),
+                Coverage::Used,
+                format!("{label} selector gate"),
+                format!(
+                    "Runtime byte_equals predicate: report @{} must equal {}; gates source report @{}.",
+                    predicate.offset, predicate.value, mapping.offset
+                ),
+                vec![profile_range(predicate.offset, 1, payload_offset)],
+                report_len,
+            );
+        }
     }
 }
 
@@ -933,6 +2293,10 @@ fn build_query_reply_map(
             );
             return;
         }
+    }
+
+    if profile.is_some_and(|profile| add_profile_special_readback(entries, bytes, profile)) {
+        return;
     }
 
     let Some(response) = query_response(bytes, profile) else {
@@ -1667,12 +3031,15 @@ mod tests {
             .unwrap_or_else(|| panic!("missing raw map entry: {label}"))
     }
 
-    fn builtin_profile(pid: u16) -> antelope_protocol::RuntimeProfile {
+    fn builtin_entry(pid: u16) -> antelope_protocol::RuntimeEntry {
         crate::device::ProfileCatalog::builtin()
             .find(0x23e5, pid)
             .unwrap_or_else(|| panic!("missing built-in profile for pid {pid:#06x}"))
-            .profile()
             .clone()
+    }
+
+    fn builtin_profile(pid: u16) -> antelope_protocol::RuntimeProfile {
+        builtin_entry(pid).profile
     }
 
     fn query_bytes(query_id: u8, sub_id: u8, body: &[u8]) -> [u8; 320] {
@@ -1686,6 +3053,475 @@ mod tests {
         bytes[SNAPSHOT_PAYLOAD_OFFSET..SNAPSHOT_PAYLOAD_OFFSET + body_len]
             .copy_from_slice(&body[..body_len]);
         bytes
+    }
+
+    fn hex_fixture(text: &str) -> Vec<u8> {
+        text.split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16).expect("fixture byte"))
+            .collect()
+    }
+
+    fn only_unmapped(map: &RawPacketMap) -> bool {
+        map.entries()
+            .iter()
+            .all(|entry| entry.coverage == Coverage::Unmapped)
+    }
+
+    #[test]
+    fn selected_traffic_maps_complete_routing_group_preserves_every_ordered_source_pair() {
+        use antelope_protocol::{Action, DeviceDriver, ProfileDriver, RoutingSource};
+
+        let profile_entry = builtin_entry(0xa221);
+        let profile = profile_entry.profile.clone();
+        let driver = ProfileDriver::new(profile_entry).expect("Orion profile driver");
+        let sources = (0..16)
+            .map(|index| RoutingSource { bank: 3, index })
+            .collect::<Vec<_>>();
+        let frame = driver
+            .encode(Action::SetRoutingGroup {
+                destination: 0,
+                changed_channel: None,
+                sources,
+            })
+            .expect("complete routing group")
+            .frames
+            .remove(0);
+
+        let map = build_raw_traffic_map(TrafficDirection::Tx, &frame, Some(&profile));
+        for channel in 0..16 {
+            let pair = entry(
+                &map,
+                &format!(
+                    "routing_command line_out channel {:02} source pair",
+                    channel + 1
+                ),
+            );
+            assert_eq!(pair.coverage, Coverage::Used);
+            assert_eq!(
+                pair.ranges[0].report,
+                (19 + channel * 2)..(21 + channel * 2)
+            );
+        }
+        assert_eq!(&frame[19..21], &[3, 0]);
+        assert!(
+            entry(&map, "routing_command line_out channel 01 source pair")
+                .note
+                .contains("bank 0x03, index 0")
+        );
+        assert_eq!(map.classify(20, RawMapScope::All).coverage, Coverage::Used);
+        assert_eq!(map.classify(51, RawMapScope::All).coverage, Coverage::Fixed);
+
+        let zero_frame = driver
+            .encode(Action::SetRoutingGroup {
+                destination: 1,
+                changed_channel: None,
+                sources: vec![RoutingSource { bank: 0, index: 0 }; 2],
+            })
+            .expect("zero-valued active routing pairs")
+            .frames
+            .remove(0);
+        let zero_map = build_raw_traffic_map(TrafficDirection::Tx, &zero_frame, Some(&profile));
+        assert_eq!(&zero_frame[19..23], &[0, 0, 0, 0]);
+        let zero_pair = entry(
+            &zero_map,
+            "routing_command headphone_1 channel 02 source pair",
+        );
+        assert_eq!(zero_pair.ranges[0].report, 21..23);
+        assert!(zero_pair.note.contains("bank 0x00, index 0"));
+
+        let mut invalid_source = frame.clone();
+        invalid_source[20] = 16;
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &invalid_source,
+            Some(&profile)
+        )));
+        let mut invalid_destination = frame.clone();
+        invalid_destination[18] = 15;
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &invalid_destination,
+            Some(&profile)
+        )));
+        let mut invalid_header = frame.clone();
+        invalid_header[17] ^= 1;
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &invalid_header,
+            Some(&profile)
+        )));
+        let mut invalid_tail = frame.clone();
+        invalid_tail[51] = 1;
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &invalid_tail,
+            Some(&profile)
+        )));
+
+        let mut invalid_geometry = profile.clone();
+        let routing = invalid_geometry
+            .frames
+            .iter_mut()
+            .find(|candidate| candidate.id == "routing_command")
+            .expect("routing frame");
+        let indexed = routing
+            .operations
+            .iter_mut()
+            .find_map(|operation| match operation {
+                FrameOperation::Indexed { max_index, .. } => Some(max_index),
+                _ => None,
+            })
+            .expect("routing indexed geometry");
+        *indexed = Some(14);
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &frame,
+            Some(&invalid_geometry)
+        )));
+
+        let zen = builtin_profile(0xa015);
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &frame,
+            Some(&zen)
+        )));
+    }
+
+    #[test]
+    fn selected_traffic_maps_auraverb_rx_and_tx_exact_profile_extents() {
+        let profile = builtin_profile(0xa221);
+        let rx = hex_fixture(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/auraverb/readback_mix1_poweron.hex"
+        ));
+        let rx_map = build_raw_traffic_map(TrafficDirection::Rx, &rx, Some(&profile));
+        assert_eq!(
+            entry(&rx_map, "AuraVerb body header").ranges[0].report,
+            16..17
+        );
+        assert_eq!(
+            entry(&rx_map, "AuraVerb Mix 1 room_size").ranges[0].report,
+            17..18
+        );
+        assert_eq!(entry(&rx_map, "AuraVerb enabled").ranges[0].report, 26..27);
+        assert_eq!(
+            entry(&rx_map, "AuraVerb terminator").ranges[0].report,
+            27..28
+        );
+        assert_eq!(
+            entry(&rx_map, "AuraVerb preserved Mix 2-4 record bytes").ranges[0].report,
+            28..59
+        );
+        assert_eq!(
+            entry(&rx_map, "AuraVerb fixed zero tail").ranges[0].report,
+            59..320
+        );
+
+        let tx = hex_fixture(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/auraverb/color_0.hex"
+        ));
+        let tx_map = build_raw_traffic_map(TrafficDirection::Tx, &tx, Some(&profile));
+        assert_eq!(
+            entry(&tx_map, "auraverb_command target").ranges[0].report,
+            18..19
+        );
+        assert_eq!(
+            entry(&tx_map, "auraverb_command field_6").ranges[0].report,
+            19..20
+        );
+        assert_eq!(
+            entry(&tx_map, "auraverb_command enabled").ranges[0].report,
+            28..29
+        );
+        assert_eq!(
+            entry(&tx_map, "AuraVerb encoder zero tail").ranges[0].report,
+            29..320
+        );
+    }
+
+    #[test]
+    fn selected_traffic_maps_surround_global_rx_and_tx_without_calling_template_semantic() {
+        let profile = builtin_profile(0xa221);
+        let rx = hex_fixture(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/surround_global_20_readback.hex"
+        ));
+        let rx_map = build_raw_traffic_map(TrafficDirection::Rx, &rx, Some(&profile));
+        let rx_template = entry(&rx_map, "Surround global preserved template");
+        assert_eq!(rx_template.coverage, Coverage::Opaque);
+        assert_eq!(rx_template.ranges[0].report, 16..167);
+        assert_eq!(
+            entry(&rx_map, "Surround global delay").ranges[0].report,
+            18..19
+        );
+        assert_eq!(
+            entry(&rx_map, "Surround global level").ranges[0].report,
+            20..22
+        );
+        assert_eq!(
+            entry(&rx_map, "Surround global fixed zero tail").ranges[0].report,
+            167..320
+        );
+
+        let tx = hex_fixture(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/surround_global_20_eq_post.hex"
+        ));
+        let tx_map = build_raw_traffic_map(TrafficDirection::Tx, &tx, Some(&profile));
+        let tx_template = entry(&tx_map, "Surround global copied whole template");
+        assert_eq!(tx_template.coverage, Coverage::Opaque);
+        assert_eq!(tx_template.ranges[0].report, 18..169);
+        assert_eq!(
+            entry(&tx_map, "Surround global delay").ranges[0].report,
+            20..21
+        );
+        assert_eq!(
+            entry(&tx_map, "Surround global level").ranges[0].report,
+            22..24
+        );
+        assert_eq!(
+            entry(&tx_map, "Surround global encoder zero tail").ranges[0].report,
+            169..320
+        );
+    }
+
+    #[test]
+    fn selected_traffic_maps_speaker_eq_head_bands_mode_and_tail_at_exact_offsets() {
+        let profile = builtin_profile(0xa221);
+        let mut rx = hex_fixture(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/surround_speaker_eq/l.hex"
+        ));
+        rx[26] = 0xff;
+        let map = build_raw_traffic_map(TrafficDirection::Rx, &rx, Some(&profile));
+
+        let head = entry(&map, "Surround speaker EQ candidate head");
+        assert_eq!(head.coverage, Coverage::Opaque);
+        assert_eq!(head.ranges[0].report, 16..20);
+        assert_eq!(
+            entry(&map, "Surround speaker EQ band 01 frequency").ranges[0].report,
+            20..22
+        );
+        assert_eq!(
+            entry(&map, "Surround speaker EQ band 01 Q").ranges[0].report,
+            22..24
+        );
+        assert_eq!(
+            entry(&map, "Surround speaker EQ band 01 gain").ranges[0].report,
+            24..26
+        );
+        assert_eq!(
+            entry(
+                &map,
+                "Surround speaker EQ band 01 raw mode (unknown, read-only)"
+            )
+            .ranges[0]
+                .report,
+            26..27
+        );
+        assert_eq!(
+            entry(
+                &map,
+                "Surround speaker EQ band 16 raw mode (unknown, read-only)"
+            )
+            .ranges[0]
+                .report,
+            131..132
+        );
+        assert_eq!(
+            entry(&map, "Surround speaker EQ fixed zero tail").ranges[0].report,
+            132..320
+        );
+    }
+
+    #[test]
+    fn selected_traffic_rejects_wrong_direction_profile_header_index_and_truncation() {
+        let orion = builtin_profile(0xa221);
+        let zen = builtin_profile(0xa015);
+        let aura_rx = hex_fixture(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/auraverb/readback_mix1_poweron.hex"
+        ));
+        let aura_tx = hex_fixture(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/auraverb/color_0.hex"
+        ));
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &aura_rx,
+            Some(&orion)
+        )));
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Rx,
+            &aura_tx,
+            Some(&orion)
+        )));
+        assert!(
+            !build_raw_traffic_map(TrafficDirection::Rx, &aura_rx, Some(&zen))
+                .entries()
+                .iter()
+                .any(|item| {
+                    item.label.contains("AuraVerb")
+                        || item.label.contains("Surround")
+                        || item.coverage == Coverage::Readback
+                })
+        );
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Rx,
+            &aura_rx[..100],
+            Some(&orion)
+        )));
+        let unknown = vec![0x99; 320];
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Rx,
+            &unknown,
+            Some(&orion)
+        )));
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &unknown,
+            Some(&orion)
+        )));
+
+        let mut bad_header = aura_rx.clone();
+        bad_header[2] = 1;
+        assert!(
+            !build_raw_traffic_map(TrafficDirection::Rx, &bad_header, Some(&orion))
+                .entries()
+                .iter()
+                .any(|item| item.label.contains("AuraVerb Mix 1"))
+        );
+
+        let mut speaker = hex_fixture(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/surround_speaker_eq/l.hex"
+        ));
+        speaker[12] = 16;
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Rx,
+            &speaker,
+            Some(&orion)
+        )));
+    }
+
+    #[test]
+    fn profile_meter_predicates_annotate_selector_and_each_gated_source_from_metadata() {
+        let profile = builtin_profile(0xa221);
+        let mut bytes = vec![0_u8; 320];
+        bytes[0] = 0x73;
+        let map = build_raw_traffic_map(TrafficDirection::Rx, &bytes, Some(&profile));
+        let gated = profile
+            .meter_mappings
+            .iter()
+            .filter(|mapping| mapping.byte_equals.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(gated.len(), 13);
+        for mapping in gated {
+            let label = format!("Mix 2 strip {} meter selector gate", mapping.lane);
+            let gate = entry(&map, &label);
+            let predicate = mapping.byte_equals.expect("gated mapping");
+            assert_eq!(
+                gate.ranges[0].report,
+                predicate.offset..predicate.offset + 1
+            );
+            assert!(gate
+                .note
+                .contains(&format!("gates source report @{}", mapping.offset)));
+            assert!(map.entries().iter().any(|item| {
+                item.label == format!("Mix 2 strip {} meter", mapping.lane)
+                    && item.ranges[0].report == (mapping.offset..mapping.offset + 1)
+            }));
+        }
+        assert_eq!(
+            profile
+                .meter_mappings
+                .iter()
+                .filter_map(|mapping| mapping.byte_equals.map(|predicate| predicate.offset))
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([121])
+        );
+        assert_eq!(
+            profile
+                .meter_mappings
+                .iter()
+                .filter(|mapping| mapping.byte_equals.is_some())
+                .map(|mapping| mapping.offset)
+                .collect::<Vec<_>>(),
+            (144..=156).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn selected_traffic_keeps_orion_75_1f_distinct_and_reuses_typed_legacy_query_map() {
+        let orion = builtin_profile(0xa221);
+        let zen = builtin_profile(0xa015);
+        let mut meter = vec![0_u8; 320];
+        meter[0] = 0x75;
+        meter[1] = 0x1f;
+        let orion_meter = build_raw_traffic_map(TrafficDirection::Rx, &meter, Some(&orion));
+        assert_eq!(
+            entry(&orion_meter, "meter report discriminator").ranges[0].report,
+            1..2
+        );
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Rx,
+            &meter,
+            Some(&zen)
+        )));
+
+        let mut body = vec![0_u8; 34];
+        body[0] = 0;
+        let query = query_bytes(0x04, 0x00, &body);
+        let typed = build_raw_traffic_map(TrafficDirection::Rx, &query, Some(&zen));
+        assert_eq!(entry(&typed, "Mix1 CH01 level").ranges[0].report, 18..19);
+    }
+
+    #[test]
+    fn selected_traffic_maps_validated_profile_query_and_general_command_operations() {
+        let profile = builtin_profile(0xa221);
+        let query = antelope_protocol::encode_profile_query(
+            &profile,
+            antelope_protocol::QueryRequest::new(0x1b, 0),
+        )
+        .expect("safe profile query");
+        let query_map = build_raw_traffic_map(TrafficDirection::Tx, &query, Some(&profile));
+        assert_eq!(
+            entry(&query_map, "query request family").coverage,
+            Coverage::Fixed
+        );
+        assert_eq!(entry(&query_map, "query category").ranges[0].report, 8..9);
+        assert_eq!(entry(&query_map, "query index").ranges[0].report, 12..13);
+
+        let frame = profile_frame(&profile, "global_command").expect("global command");
+        let mut command = vec![0_u8; 320];
+        for operation in &frame.operations {
+            if let FrameOperation::FixedByte { offset, value } = operation {
+                command[usize::from(*offset)] = *value;
+            }
+        }
+        let scalar = frame
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                FrameOperation::Scalar {
+                    field,
+                    offset,
+                    width,
+                    ..
+                } => Some((field.clone(), usize::from(*offset), usize::from(*width))),
+                _ => None,
+            })
+            .expect("command scalar");
+        let command_map = build_raw_traffic_map(TrafficDirection::Tx, &command, Some(&profile));
+        assert_eq!(
+            entry(&command_map, &format!("global_command {}", scalar.0)).ranges[0].report,
+            scalar.1..scalar.1 + scalar.2
+        );
+        assert!(command_map.entries().iter().any(|item| {
+            item.label == "global_command encoder zero envelope"
+                && item.coverage == Coverage::Fixed
+                && item.ranges[0].report == (1..4)
+        }));
+
+        command[1] = 1;
+        assert!(only_unmapped(&build_raw_traffic_map(
+            TrafficDirection::Tx,
+            &command,
+            Some(&profile)
+        )));
     }
 
     #[test]

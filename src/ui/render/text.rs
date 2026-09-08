@@ -418,6 +418,8 @@ fn coverage_label(coverage: Coverage) -> &'static str {
     match coverage {
         Coverage::Used => "USED",
         Coverage::Readback => "READBACK",
+        Coverage::Fixed => "FIXED",
+        Coverage::Opaque => "OPAQUE",
         Coverage::Observed => "OBSERVED",
         Coverage::Parser => "PARSER",
         Coverage::Unmapped => "UNMAPPED",
@@ -431,6 +433,8 @@ fn domain_label(domain: RawDomain) -> &'static str {
         RawDomain::Output => "OUTPUT",
         RawDomain::Preamp => "PREAMP",
         RawDomain::Mixer => "MIXER",
+        RawDomain::Fx => "FX",
+        RawDomain::Surround => "SURROUND",
         RawDomain::Query => "QUERY",
         RawDomain::Status => "STATUS",
         RawDomain::Parser => "PARSER",

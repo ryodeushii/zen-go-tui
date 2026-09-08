@@ -245,6 +245,8 @@ pub(crate) fn raw_coverage_color(coverage: Coverage, selected: bool) -> Color {
     match coverage {
         Coverage::Used => Color::Green,
         Coverage::Readback => Color::Blue,
+        Coverage::Fixed => Color::Magenta,
+        Coverage::Opaque => Color::Gray,
         Coverage::Observed => Color::Yellow,
         Coverage::Parser => Color::Cyan,
         Coverage::Unmapped => {

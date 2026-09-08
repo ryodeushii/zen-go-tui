@@ -50,6 +50,12 @@ fn zen_go_state() -> AppState {
     AppState::from_entry(entry)
 }
 
+fn hex_fixture(text: &str) -> Vec<u8> {
+    text.split_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).expect("fixture byte"))
+        .collect()
+}
+
 fn zen_mixer_controls(
     area: Rect,
     state: &AppState,
@@ -1360,8 +1366,8 @@ fn raw_page_renders_borders_legend_and_footer_at_narrow_size() {
 
     assert!(rendered.contains("Field Map"));
     assert!(rendered.contains("0x73 State"));
-    assert!(rendered.contains("USED green"));
-    assert!(rendered.contains("PageUp/PageDown"));
+    assert!(rendered.contains("USED grn"));
+    assert!(rendered.contains("PgUp/PgDn"));
     assert!(rendered.contains("0000:"));
 }
 
@@ -1419,22 +1425,24 @@ fn narrow_raw_footer_shows_complete_legend_and_navigation_help() {
     }
 
     for token in [
-        "USED green",
-        "READBACK blue",
-        "OBSERVED amber",
-        "PARSER cyan",
+        "USED grn",
+        "READBACK blu",
+        "FIXED mag",
+        "OPAQUE gry",
+        "OBSERVED amb",
+        "PARSER cyn",
         "UNMAPPED red",
-        "PADDING gray",
+        "PADDING dim",
     ] {
         assert!(
             footer.contains(token),
             "missing footer token {token:?}: {footer:?}"
         );
     }
-    assert!(footer.contains("[/] scope"));
-    assert!(footer.contains("PageUp/PageDown scroll"));
-    assert!(footer.contains("map 0"));
-    assert!(footer.contains("dump 0"));
+    assert!(footer.contains("[/]scope"));
+    assert!(footer.contains("PgUp/PgDn"));
+    assert!(footer.contains("map0"));
+    assert!(footer.contains("dump0"));
 }
 
 #[test]
@@ -1701,6 +1709,41 @@ fn all_traffic_renders_outcomes_unknown_groups_and_generic_oversize_dump_at_targ
     });
     assert!(failed_tx.contains("WRITE FAILED · DELIVERY UNCERTAIN"));
     assert!(failed_tx.contains("Transport error: write failed"));
+}
+
+#[test]
+fn all_traffic_selected_event_shows_guarded_annotation_legend_map_and_highlight() {
+    let mut state = orion_state();
+    state.popup.raw_view_open = true;
+    state.raw_view.select_all_traffic();
+    let bytes = hex_fixture(include_str!(
+        "../../antelope-protocol/tests/fixtures/orion/auraverb/readback_mix1_poweron.hex"
+    ));
+    let sequence = state
+        .raw_view
+        .traffic_journal()
+        .record_read_returned(&bytes);
+    state.raw_view.toggle_traffic_freeze();
+    state.raw_view.select_traffic_sequence(sequence);
+
+    for (width, height, scroll) in [(140, 40, 0), (80, 24, 12)] {
+        state.raw_view.raw_dump_scroll = scroll;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| render::draw(frame, &state))
+            .expect("draw selected annotation");
+        let rendered = render_buffer(Rect::new(0, 0, width, height), |_, target| {
+            *target = terminal.backend().buffer().clone();
+        });
+        assert!(
+            rendered.contains("USED typed") || rendered.contains("AuraVerb readback header"),
+            "annotation legend/map not readable at {width}x{height}:\n{rendered}"
+        );
+        if width == 140 {
+            assert!(rendered.contains("FIXED FX AuraVerb readback header"));
+            assert!(rendered.contains("report 0x00..0x10"));
+        }
+    }
 }
 
 #[test]

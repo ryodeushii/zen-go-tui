@@ -21,7 +21,7 @@ use antelope_protocol::{
 };
 
 use super::layouts::*;
-use super::raw_map::build_raw_packet_map_for_profile;
+use super::raw_map::{build_raw_packet_map_for_profile, build_raw_traffic_map};
 use super::styles::*;
 use super::widgets::mixer;
 
@@ -1782,8 +1782,8 @@ pub(crate) fn raw_scroll_offset_for_test(
     raw_scroll_offset(scroll, text, viewport, wrapped)
 }
 
-const RAW_COVERAGE_LEGEND: &str =
-    "USED green | READBACK blue | OBSERVED amber | PARSER cyan | UNMAPPED red | PADDING gray";
+const RAW_COVERAGE_LEGEND: &str = "USED green | READBACK blue | FIXED magenta | OPAQUE gray | OBSERVED amber | PARSER cyan | UNMAPPED red | PADDING dark";
+const RAW_COVERAGE_LEGEND_COMPACT: &str = "USED grn | READBACK blu | FIXED mag | OPAQUE gry | OBSERVED amb | PARSER cyn | UNMAPPED red | PADDING dim";
 
 fn raw_footer_lines(width: u16, map_scroll: u16, dump_scroll: u16) -> Vec<Line<'static>> {
     let footer =
@@ -1796,11 +1796,13 @@ fn raw_footer_lines(width: u16, map_scroll: u16, dump_scroll: u16) -> Vec<Line<'
         ];
     }
 
-    let split = RAW_COVERAGE_LEGEND
+    let legend = RAW_COVERAGE_LEGEND_COMPACT;
+    let footer = format!("[/]scope PgUp/PgDn map{map_scroll} dump{dump_scroll}");
+    let split = legend
         .get(..width)
         .and_then(|prefix| prefix.rfind(" | "))
-        .unwrap_or(width.min(RAW_COVERAGE_LEGEND.len()));
-    let (first, second) = RAW_COVERAGE_LEGEND.split_at(split);
+        .unwrap_or(width.min(legend.len()));
+    let (first, second) = legend.split_at(split);
     vec![
         Line::from(Span::styled(first, muted_style())),
         Line::from(vec![
@@ -1863,7 +1865,7 @@ fn traffic_row_line(row: &TrafficMetadataRow) -> Line<'static> {
     ))
 }
 
-fn traffic_detail_text(event: &TrafficEvent) -> Text<'static> {
+fn traffic_detail_text(event: &TrafficEvent, state: &AppState) -> Text<'static> {
     let classifier = event.classifier;
     let numeric =
         |value: Option<u8>| value.map_or_else(|| "--".into(), |value| format!("{value:02x}"));
@@ -1923,32 +1925,31 @@ fn traffic_detail_text(event: &TrafficEvent) -> Text<'static> {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(
-        "Selected payload dump (generic; no legacy family map):",
+        "Annotation: USED typed · FIXED validated · OPAQUE preserved · UNMAPPED unknown",
     ));
+    let map = build_raw_traffic_map(
+        event.direction,
+        event.retained_bytes.as_ref(),
+        state.runtime_profile(),
+    );
     if event.retained_bytes.is_empty() {
         lines.push(Line::from("<no retained payload>"));
     } else {
-        for (row, bytes) in event.retained_bytes.chunks(16).enumerate() {
-            let hex = bytes
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let ascii = bytes
-                .iter()
-                .map(|byte| {
-                    if byte.is_ascii_graphic() {
-                        char::from(*byte)
-                    } else {
-                        '.'
-                    }
-                })
-                .collect::<String>();
-            lines.push(Line::from(format!(
-                "{:04x}  {hex:<47}  |{ascii}|",
-                row * 16
-            )));
-        }
+        lines.push(Line::from("Selected-event field map:"));
+        lines.extend(text::render_raw_map_text(&map, RawMapScope::All, true).lines);
+        lines.push(Line::from(""));
+        lines.push(Line::from(
+            "Selected payload dump (same selected-event map):",
+        ));
+        lines.extend(
+            text::render_full_packet_dump(
+                event.retained_bytes.as_ref(),
+                None,
+                &map,
+                RawMapScope::All,
+            )
+            .lines,
+        );
     }
     Text::from(lines)
 }
@@ -2070,7 +2071,7 @@ fn draw_raw_traffic_page(frame: &mut Frame<'_>, layout: &[Rect], state: &AppStat
         )
     });
     if let Some(event) = selected {
-        lines.extend(traffic_detail_text(&event).lines);
+        lines.extend(traffic_detail_text(&event, state).lines);
     } else if let Some(sequence) = display_sequence {
         lines.push(Line::from(format!(
             "SELECTED EVENT #{} EVICTED; selection was not silently replaced.",

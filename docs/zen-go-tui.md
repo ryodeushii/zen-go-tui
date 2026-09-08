@@ -189,7 +189,7 @@ The TUI includes a raw-data page for live protocol inspection.
 - use the raw-view mouse wheel to scroll the map and dump
 - use the Query75 history pane to select a reply. The map and dump follow that reply
 - each pane keeps offsets, hex bytes, and ASCII visible
-- the legend defines coverage as `USED green | READBACK blue | OBSERVED amber | PARSER cyan | UNMAPPED red | PADDING gray`
+- the legend defines coverage as `USED green | READBACK blue | FIXED magenta | OPAQUE gray | OBSERVED amber | PARSER cyan | UNMAPPED red | PADDING dark`
 - `UNMAPPED` keeps offsets visible and highlights bytes without a grounded decoder
 - mixed mixer bytes use correlation-group labels
 - press `b` on a legacy packet tab to capture a baseline
@@ -211,8 +211,36 @@ continues, including when the journal was empty at freeze time. The view reports
 evictions since freeze; an evicted selected sequence is reported explicitly. `Up`/`Down` selects and
 freezes, while `Home`/`End` selects the oldest/newest matching retained event inside the current
 frozen or live boundary. Filter changes preserve a matching selection or identify when they move it.
-`PageUp`/`PageDown` and the detail-pane mouse wheel scroll the selected generic payload dump. Raw
-traffic never applies a legacy tab's semantic map to a different family or command.
+`PageUp`/`PageDown` and the detail-pane mouse wheel scroll the selected event's field map and payload
+dump. The map is built only for that selected event. It validates active-profile report size,
+direction, family/discriminator, category/index bounds, fixed headers, and family-specific constants
+before showing semantic labels; malformed, truncated, wrong-profile, or wrong-direction bytes stay
+visible as `UNMAPPED`. Raw traffic never applies a legacy tab's semantic map to a different family or
+command.
+
+Selected-event coverage distinguishes runtime-used/readback fields, validated fixed extents,
+preserved opaque extents, and unmapped bytes. Added profile-backed coverage includes:
+
+- AuraVerb category-`0x0a` Mix-1 readback fields and validated record/tail extents, plus the exact
+  opcode-`0x1d`, operation-`0xda`, subcommand-`0x0b` whole-state TX fields and zero tail;
+- Surround global category-`0x1b` RX and whole-template TX, with flags, delay, level, mask words,
+  copied-template bytes marked opaque rather than semantically known, and validated zero tails;
+- read-only Surround speaker EQ category-`0x1a`: bounded speaker index, opaque four-byte candidate
+  head, 16 seven-byte bands (frequency, Q, gain, raw unknown mode), and zero tail at `132..320`;
+- state-report meter sources and each `byte_equals` selector predicate directly from profile metadata,
+  including the Orion selector/source association without hard-coded UI offsets;
+- complete routing TX groups, with the selected profile destination's declared channel count and each
+  ordered `(source bank, source index)` pair validated against its writable source domains;
+- profile query envelopes, confirmed command-frame operations plus validated zero-initialized general
+  TX envelope bytes, the existing typed legacy `0x75` query maps, and the distinct Orion `75/1f`
+  meter discriminator.
+
+Bytes stay `UNMAPPED` unless a decoder/profile contract owns at least their extent. Semantic meanings
+remain unclaimed for generic indexed-operation candidate slots outside the dedicated complete-routing
+contract when a selected zero-valued frame does not identify the active slot, unknown
+opcodes/categories, AuraVerb Mix 2-4 preserved readback records, opaque Surround template bytes
+outside typed fields, and speaker-EQ candidate-head/mode values. An annotation is diagnostic only
+and never grants write authority.
 
 The journal observes each application `Transport` read result and attempted write exactly once,
 outside `ThreadedTransport`. Sequence and elapsed time describe application transport completion
