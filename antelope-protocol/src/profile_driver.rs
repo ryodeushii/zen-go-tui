@@ -3,17 +3,17 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::driver::{
-    Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition, DriverError,
-    DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMeterState,
+    Action, AuraVerbState, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverDefinition,
+    DriverError, DynamicDeviceState, DynamicGlobalState, DynamicInputState, DynamicMeterState,
     DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
     DynamicStatePatch, GlobalControl, InputAddress, InputControl, MeterInvalidationTarget,
     MixerAddress, OutputAddress, OutputControl, OutputTrimAddress, RoutingSource,
     SurroundGlobalControl, SurroundGlobalState,
 };
 use crate::profile::{
-    validate_surround_global_contract, FrameOperation, ParamReadbackField, RuntimeDriverKind,
-    RuntimeEntry, RuntimeFrame, RuntimeInputControlKind, RuntimeLinkDomainKind, RuntimeMeterTarget,
-    RuntimeParam, RuntimeProfile, RuntimeReadiness,
+    validate_auraverb_contract, validate_surround_global_contract, FrameOperation,
+    ParamReadbackField, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeInputControlKind,
+    RuntimeLinkDomainKind, RuntimeMeterTarget, RuntimeParam, RuntimeProfile, RuntimeReadiness,
 };
 use crate::profile_codec;
 use crate::types::PanState;
@@ -1066,6 +1066,10 @@ impl ProfileDriver {
             canonical_orion_identity,
         };
         driver.validate_capabilities()?;
+        if let Some(contract) = &driver.profile.auraverb {
+            validate_auraverb_contract(&driver.definition.id, &driver.profile, contract)
+                .map_err(DriverError::InvalidAction)?;
+        }
         if let Some(contract) = &driver.profile.surround_global {
             validate_surround_global_contract(&driver.definition.id, &driver.profile, contract)
                 .map_err(DriverError::InvalidAction)?;
@@ -1459,6 +1463,16 @@ impl ProfileDriver {
     }
 
     fn whole_state_frame(&self, operation: u16) -> Result<&RuntimeFrame, DriverError> {
+        let contract = self.profile.auraverb.as_ref().ok_or_else(|| {
+            DriverError::UnsupportedAction(
+                "profile has no validated whole-state feature contract".into(),
+            )
+        })?;
+        if operation != contract.operation {
+            return Err(DriverError::UnsupportedAction(format!(
+                "whole-state operation {operation:#04x} is not the validated AuraVerb operation"
+            )));
+        }
         let operation = u8::try_from(operation).map_err(|_| {
             DriverError::InvalidAction(format!("whole-state operation {operation} exceeds byte"))
         })?;
@@ -1481,30 +1495,17 @@ impl ProfileDriver {
     }
 
     fn whole_state_field_ids(&self, operation: u16) -> Result<Vec<u16>, DriverError> {
-        let name = format!("whole_state.{operation}.field_ids");
-        let constraint = self
-            .profile
-            .constraints
-            .iter()
-            .find(|constraint| {
-                constraint.name == name && profile_codec::is_confirmed(&constraint.status)
-            })
-            .ok_or_else(|| {
-                DriverError::InvalidAction(format!(
-                    "whole-state operation {operation:#04x} has no confirmed complete field set"
-                ))
-            })?;
-        let fields: Vec<u16> = constraint
-            .values
-            .iter()
-            .map(|value| {
-                u16::try_from(*value).map_err(|_| {
-                    DriverError::InvalidAction(format!(
-                        "whole-state operation {operation:#04x} field id outside u16"
-                    ))
-                })
-            })
-            .collect::<Result<_, _>>()?;
+        let contract = self.profile.auraverb.as_ref().ok_or_else(|| {
+            DriverError::UnsupportedAction(
+                "profile has no validated whole-state feature contract".into(),
+            )
+        })?;
+        if operation != contract.operation {
+            return Err(DriverError::UnsupportedAction(format!(
+                "whole-state operation {operation:#04x} is not the validated AuraVerb operation"
+            )));
+        }
+        let fields: Vec<u16> = contract.fields.iter().map(|field| field.id).collect();
         let unique: HashSet<_> = fields.iter().copied().collect();
         if fields.is_empty() || fields.len() != unique.len() {
             return Err(DriverError::InvalidAction(format!(
@@ -1521,11 +1522,12 @@ impl ProfileDriver {
         }
         for field in self.whole_state_field_ids(operation)? {
             profile_codec::scalar_offset(frame, &format!("field_{field}"))?;
-            let name = format!("whole_state.{operation}.field.{field}");
-            let constraint = self.profile.constraints.iter().find(|constraint| {
-                constraint.name == name && profile_codec::is_confirmed(&constraint.status)
-            });
-            if constraint.and_then(|constraint| constraint.range).is_none() {
+            let contract = self
+                .profile
+                .auraverb
+                .as_ref()
+                .expect("operation contract checked");
+            if contract.range != (0, 100) {
                 return Err(DriverError::InvalidAction(format!(
                     "whole-state operation {operation:#04x} field {field} has no confirmed range"
                 )));
@@ -1817,6 +1819,15 @@ impl ProfileDriver {
         fields: Vec<crate::driver::WholeStateField>,
     ) -> Result<CommandBatch, DriverError> {
         self.validate_whole_state_operation(operation)?;
+        let contract = self.profile.auraverb.as_ref().ok_or_else(|| {
+            DriverError::UnsupportedAction("profile has no validated AuraVerb contract".into())
+        })?;
+        if target != contract.target {
+            return Err(DriverError::InvalidAction(format!(
+                "AuraVerb target {target} differs from captured Mix-1 target {}",
+                contract.target
+            )));
+        }
         let frame = self.whole_state_frame(operation)?;
         let required = self.whole_state_field_ids(operation)?;
         let supplied: HashSet<_> = fields.iter().map(|field| field.id).collect();
@@ -1830,22 +1841,8 @@ impl ProfileDriver {
         profile_codec::write_scalar(frame, &mut bytes, "target", i32::from(target))?;
         profile_codec::write_scalar(frame, &mut bytes, "enabled", i32::from(enabled))?;
         for field in fields {
-            let constraint_name = format!("whole_state.{operation}.field.{}", field.id);
-            let (minimum, maximum) = self
-                .profile
-                .constraints
-                .iter()
-                .find(|constraint| {
-                    constraint.name == constraint_name
-                        && profile_codec::is_confirmed(&constraint.status)
-                })
-                .and_then(|constraint| constraint.range)
-                .ok_or_else(|| {
-                    DriverError::InvalidAction(format!(
-                        "whole-state operation {operation:#04x} field {} has no range",
-                        field.id
-                    ))
-                })?;
+            let minimum = i32::from(contract.range.0);
+            let maximum = i32::from(contract.range.1);
             if !(minimum..=maximum).contains(&field.value) {
                 return Err(DriverError::InvalidAction(format!(
                     "whole-state operation {operation:#04x} field {} value {} outside {minimum}..={maximum}",
@@ -1861,7 +1858,53 @@ impl ProfileDriver {
         }
         Ok(CommandBatch {
             frames: vec![bytes],
-            refresh_requests: Vec::new(),
+            refresh_requests: vec![QueryRequest::new(
+                contract.readback_category,
+                contract.readback_index,
+            )],
+        })
+    }
+
+    fn decode_auraverb(&self, body: &[u8]) -> Result<AuraVerbState, DriverError> {
+        let contract = self.profile.auraverb.as_ref().ok_or_else(|| {
+            DriverError::UnsupportedAction("profile has no AuraVerb contract".into())
+        })?;
+        let block_start = usize::from(contract.readback_block_offset);
+        let block_end = block_start + usize::from(contract.readback_block_size);
+        if body.len() < block_end
+            || body.first() != Some(&contract.readback_body_header)
+            || body[usize::from(contract.readback_record_size)..]
+                .iter()
+                .any(|byte| *byte != 0)
+        {
+            return Err(DriverError::InvalidAction(
+                "AuraVerb readback body header, first block, or fixed zero tail differs from capture"
+                    .into(),
+            ));
+        }
+        let block = &body[block_start..block_end];
+        if block[3] != contract.wet_constant
+            || block[usize::from(contract.terminator_offset)] != contract.terminator_constant
+            || !matches!(block[9], 0 | 1)
+            || contract.fields.iter().any(|field| {
+                !(contract.range.0..=contract.range.1)
+                    .contains(&block[usize::from(field.readback_offset)])
+            })
+        {
+            return Err(DriverError::InvalidAction(
+                "AuraVerb readback constants, enabled value, or parameter range is invalid".into(),
+            ));
+        }
+        Ok(AuraVerbState {
+            color: block[1],
+            pre_delay: block[2],
+            early_reflection_gain: block[4],
+            late_reflection_delay: block[5],
+            richness: block[6],
+            reverb_time: block[7],
+            room_size: block[0],
+            reverb_level: block[8],
+            enabled: block[9] == 1,
         })
     }
 
@@ -3189,7 +3232,19 @@ impl DeviceDriver for ProfileDriver {
                 )));
             }
             let body = bytes[usize::from(readback.data_offset)..].to_vec();
-            let patch = if category == self.mixer_readback_category {
+            let patch = if self.profile.auraverb.as_ref().is_some_and(|contract| {
+                category == contract.readback_category && index == contract.readback_index
+            }) {
+                let contract = self.profile.auraverb.as_ref().expect("matched contract");
+                if bytes[..contract.readback_header.len()] != contract.readback_header
+                    || usize::from(contract.fixed_tail_offset) > bytes.len()
+                {
+                    return Err(DriverError::InvalidAction(
+                        "AuraVerb readback header differs from capture".into(),
+                    ));
+                }
+                Some(DynamicStatePatch::AuraVerb(self.decode_auraverb(&body)?))
+            } else if category == self.mixer_readback_category {
                 Some(DynamicStatePatch::Mixer(self.decode_mixer(bytes, index)?))
             } else if category == self.routing_readback_category {
                 Some(DynamicStatePatch::Routing(

@@ -12,10 +12,10 @@ use crate::command_queue::{CommandQueue, QueueEntryId, QueueEntryOutcome};
 use crate::profile::DeviceProfile;
 use crate::transport::Transport;
 use antelope_protocol::{
-    Action, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverError, DynamicStatePatch,
-    GlobalControl, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
-    MixerSurface, OutputAddress, OutputControl, OutputMode, OutputTrimAddress, PanState,
-    PreampMode, QueryRequest, RoutingSource, RuntimeEntry, SampleRate, Surface,
+    Action, AuraVerbParameter, CommandBatch, ControlValue, DeviceDriver, DeviceEvent, DriverError,
+    DynamicStatePatch, GlobalControl, InputAddress, InputControl, MixerAddress, MixerAssignment,
+    MixerControl, MixerSurface, OutputAddress, OutputControl, OutputMode, OutputTrimAddress,
+    PanState, PreampMode, QueryRequest, RoutingSource, RuntimeEntry, SampleRate, Surface,
     SurroundGlobalControl,
 };
 
@@ -31,7 +31,29 @@ use super::types::{
 use super::AppState;
 
 pub(crate) const MAX_FRAMES_PER_POLL: usize = 32;
+const AURAVERB_READBACK_TIMEOUT: Duration = Duration::from_secs(2);
 const SURROUND_READBACK_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// An AuraVerb write was rejected because this session lacks fresh complete state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuraVerbWriteUnavailable;
+
+impl fmt::Display for AuraVerbWriteUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "AuraVerb write requires authoritative or pending Mix-1 readback state"
+        )
+    }
+}
+
+impl StdError for AuraVerbWriteUnavailable {}
+
+pub fn is_auraverb_write_unavailable(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.downcast_ref::<AuraVerbWriteUnavailable>().is_some())
+}
 
 /// A Surround write was rejected because this session no longer has writable readback state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,6 +126,7 @@ pub struct Controller {
     /// stays locked for the session because snapshots have no freshness correlation.
     pending_output_modes: HashMap<OutputAddress, PendingOutputMode>,
     clock_readback_revision: u64,
+    auraverb_readback_deadline: Option<Instant>,
     surround_readback_deadline: Option<Instant>,
 }
 
@@ -126,6 +149,7 @@ impl Controller {
                 queued_mutations: Vec::new(),
                 pending_output_modes: HashMap::new(),
                 clock_readback_revision: 0,
+                auraverb_readback_deadline: None,
                 surround_readback_deadline: None,
             });
         };
@@ -158,6 +182,7 @@ impl Controller {
             queued_mutations: Vec::new(),
             pending_output_modes: HashMap::new(),
             clock_readback_revision: 0,
+            auraverb_readback_deadline: None,
             surround_readback_deadline: None,
         })
     }
@@ -1289,6 +1314,10 @@ impl Controller {
             Intent::CycleRawMapScope { forward } => self.handle_cycle_raw_map_scope(forward),
             Intent::ScrollRawDump { increase, page } => self.handle_scroll_raw_dump(increase, page),
             Intent::SelectOutput(index) => self.handle_output_select(index),
+            Intent::SetAuraVerbEnabled(enabled) => self.handle_set_auraverb(None, Some(enabled))?,
+            Intent::SetAuraVerbParameter { parameter, value } => {
+                self.handle_set_auraverb(Some((parameter, value)), None)?
+            }
             Intent::SetSurroundGlobalLevel(value) => {
                 self.handle_set_surround_global(SurroundGlobalControl::Level, value)?
             }
@@ -1431,6 +1460,57 @@ impl Controller {
         Ok(())
     }
 
+    fn handle_set_auraverb(
+        &mut self,
+        parameter_change: Option<(AuraVerbParameter, u8)>,
+        enabled_change: Option<bool>,
+    ) -> Result<()> {
+        self.expire_auraverb_readback();
+        let mut expected =
+            self.state
+                .auraverb
+                .as_ref()
+                .and_then(|cache| match cache.freshness {
+                    super::AuraVerbFreshness::Authoritative => cache.state.clone(),
+                    super::AuraVerbFreshness::PendingReadback => cache.pending_expected.clone(),
+                    super::AuraVerbFreshness::AwaitingReadback
+                    | super::AuraVerbFreshness::Stale => None,
+                })
+                .ok_or(AuraVerbWriteUnavailable)?;
+        if let Some((parameter, value)) = parameter_change {
+            expected.set_value(parameter, value);
+        }
+        if let Some(enabled) = enabled_change {
+            expected.enabled = enabled;
+        }
+        let (operation, target) = self
+            .state
+            .auraverb_contract()
+            .map(|contract| (contract.operation, contract.target))
+            .ok_or(AuraVerbWriteUnavailable)?;
+        let batch = self.driver.encode(Action::SetWholeState {
+            operation,
+            target,
+            enabled: expected.enabled,
+            fields: expected.whole_state_fields(),
+        })?;
+        self.flush_commands()?;
+        if let Err(error) = self.write_batch(batch) {
+            if let Some(cache) = self.state.auraverb.as_mut() {
+                cache.freshness = super::AuraVerbFreshness::Stale;
+            }
+            self.auraverb_readback_deadline = None;
+            return Err(error);
+        }
+        if let Some(cache) = self.state.auraverb.as_mut() {
+            cache.pending_expected = Some(expected);
+            cache.freshness = super::AuraVerbFreshness::PendingReadback;
+            self.auraverb_readback_deadline = Some(Instant::now() + AURAVERB_READBACK_TIMEOUT);
+        }
+        self.state.ui.last_message = "Sent complete AuraVerb Mix-1 state".into();
+        Ok(())
+    }
+
     fn handle_set_surround_global(
         &mut self,
         control: SurroundGlobalControl,
@@ -1535,6 +1615,26 @@ impl Controller {
         }
     }
 
+    // An expired AuraVerb transaction locks writes until a fresh Controller/device session.
+    // Late untagged replies cannot distinguish old state from a new authorization boundary.
+    fn expire_auraverb_readback(&mut self) -> bool {
+        let expired = self
+            .auraverb_readback_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        if !expired {
+            return false;
+        }
+        self.auraverb_readback_deadline = None;
+        let Some(cache) = self.state.auraverb.as_mut() else {
+            return false;
+        };
+        if cache.freshness != super::AuraVerbFreshness::PendingReadback {
+            return false;
+        }
+        cache.freshness = super::AuraVerbFreshness::Stale;
+        true
+    }
+
     // An expired Surround transaction locks writes until a fresh Controller/device session.
     // Late replies cannot safely restore authority because the protocol has no transaction ID.
     fn expire_surround_readback(&mut self) -> bool {
@@ -1581,7 +1681,8 @@ impl Controller {
         }
 
         let mut next_timeout = timeout;
-        let mut state_dirty = self.expire_surround_readback();
+        let mut state_dirty = self.expire_auraverb_readback();
+        state_dirty |= self.expire_surround_readback();
 
         for _ in 0..MAX_FRAMES_PER_POLL {
             let Some(bytes) = self.transport.read(next_timeout)? else {
@@ -1618,6 +1719,11 @@ impl Controller {
                     state_dirty |= self.confirm_pending_write();
                 }
                 state_dirty |= self.state.observe_event(event);
+                if self.state.auraverb.as_ref().is_some_and(|cache| {
+                    cache.freshness != super::AuraVerbFreshness::PendingReadback
+                }) {
+                    self.auraverb_readback_deadline = None;
+                }
                 if self.state.surround_global.as_ref().is_some_and(|cache| {
                     cache.freshness != super::SurroundFreshness::PendingReadback
                 }) {
@@ -1634,6 +1740,7 @@ impl Controller {
             }
         }
 
+        state_dirty |= self.expire_auraverb_readback();
         state_dirty |= self.expire_surround_readback();
         Ok(state_dirty)
     }
@@ -3818,7 +3925,7 @@ mod correction_tests {
     };
 
     use super::*;
-    use crate::app::SurroundFreshness;
+    use crate::app::{AuraVerbFreshness, SurroundFreshness};
     use crate::transport::{MockTransport, Transport};
 
     struct AcceptingDriver {
@@ -4193,6 +4300,229 @@ mod correction_tests {
                     .expect("Surround fixture hex")
             })
             .collect()
+    }
+
+    fn auraverb_readback_fixture() -> Vec<u8> {
+        hex_bytes(include_str!(
+            "../../antelope-protocol/tests/fixtures/orion/auraverb/readback_mix1_poweroff_on2.hex"
+        ))
+    }
+
+    fn auraverb_readback(state: &antelope_protocol::AuraVerbState) -> Vec<u8> {
+        let mut report = auraverb_readback_fixture();
+        report[17..28].copy_from_slice(&[
+            state.room_size,
+            state.color,
+            state.pre_delay,
+            100,
+            state.early_reflection_gain,
+            state.late_reflection_delay,
+            state.richness,
+            state.reverb_time,
+            state.reverb_level,
+            u8::from(state.enabled),
+            0xff,
+        ]);
+        report
+    }
+
+    #[test]
+    fn auraverb_rapid_writes_preserve_complete_pending_state_and_ignore_delayed_readbacks() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let error = controller
+            .apply_intent(Intent::SetAuraVerbEnabled(true), Rect::default())
+            .expect_err("no write before authoritative readback");
+        assert!(is_auraverb_write_unavailable(&error));
+        assert!(!crate::transport::is_device_error(&error));
+
+        let initial_readback = auraverb_readback_fixture();
+        transport.push_read(initial_readback.clone());
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("authoritative AuraVerb readback");
+        let range_error = controller
+            .apply_intent(
+                Intent::SetAuraVerbParameter {
+                    parameter: AuraVerbParameter::Color,
+                    value: 101,
+                },
+                Rect::default(),
+            )
+            .expect_err("out-of-range parameter is rejected by the profile driver");
+        assert!(!is_auraverb_write_unavailable(&range_error));
+        assert!(!crate::transport::is_device_error(&range_error));
+        assert!(transport.take_writes().is_empty());
+        assert_eq!(
+            controller.state.auraverb.as_ref().unwrap().freshness,
+            AuraVerbFreshness::Authoritative
+        );
+        controller
+            .apply_intent(Intent::SetAuraVerbEnabled(true), Rect::default())
+            .expect("complete enable write");
+        let enable_writes = transport.take_writes();
+        assert_eq!(enable_writes.len(), 2);
+        assert_eq!(
+            enable_writes[0],
+            hex_bytes(include_str!(
+                "../../antelope-protocol/tests/fixtures/orion/auraverb/enabled_on.hex"
+            ))
+        );
+
+        controller
+            .apply_intent(
+                Intent::SetAuraVerbParameter {
+                    parameter: AuraVerbParameter::Color,
+                    value: 0,
+                },
+                Rect::default(),
+            )
+            .expect("rapid parameter write");
+        let color_writes = transport.take_writes();
+        assert_eq!(color_writes.len(), 2);
+        assert_eq!(
+            color_writes[0],
+            hex_bytes(include_str!(
+                "../../antelope-protocol/tests/fixtures/orion/auraverb/color_0.hex"
+            ))
+        );
+
+        controller
+            .apply_intent(
+                Intent::SetAuraVerbParameter {
+                    parameter: AuraVerbParameter::PreDelay,
+                    value: 100,
+                },
+                Rect::default(),
+            )
+            .expect("second rapid parameter write");
+        let latest_writes = transport.take_writes();
+        assert_eq!(latest_writes.len(), 2);
+        assert_eq!((latest_writes[0][20], latest_writes[0][21]), (0, 100));
+        assert_eq!(
+            &latest_writes[0][19..29],
+            &[81, 0, 100, 100, 11, 13, 24, 66, 50, 1]
+        );
+
+        let expected = controller
+            .state
+            .auraverb
+            .as_ref()
+            .unwrap()
+            .pending_expected
+            .clone()
+            .unwrap();
+        for delayed in [
+            initial_readback,
+            auraverb_readback(&antelope_protocol::AuraVerbState {
+                pre_delay: 0,
+                ..expected.clone()
+            }),
+        ] {
+            transport.push_read(delayed);
+            controller
+                .poll_device_without_writes(Duration::ZERO)
+                .expect("ignore delayed AuraVerb state");
+            let cache = controller.state.auraverb.as_ref().unwrap();
+            assert_eq!(cache.freshness, AuraVerbFreshness::PendingReadback);
+            assert_eq!(cache.pending_expected.as_ref(), Some(&expected));
+        }
+
+        transport.push_read(auraverb_readback(&expected));
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("confirm latest complete state");
+        let cache = controller.state.auraverb.as_ref().unwrap();
+        assert_eq!(cache.freshness, AuraVerbFreshness::Authoritative);
+        assert_eq!(cache.state.as_ref(), Some(&expected));
+        assert!(cache.pending_expected.is_none());
+    }
+
+    #[test]
+    fn auraverb_timeout_disconnect_and_failed_io_fail_closed_until_new_session() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let readback = auraverb_readback_fixture();
+        transport.push_read(readback.clone());
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        controller
+            .apply_intent(Intent::SetAuraVerbEnabled(true), Rect::default())
+            .unwrap();
+        transport.take_writes();
+        controller.auraverb_readback_deadline = Some(Instant::now() - Duration::from_millis(1));
+        let error = controller
+            .apply_intent(
+                Intent::SetAuraVerbParameter {
+                    parameter: AuraVerbParameter::Color,
+                    value: 50,
+                },
+                Rect::default(),
+            )
+            .expect_err("deadline is checked before authorization");
+        assert!(is_auraverb_write_unavailable(&error));
+        assert_eq!(
+            controller.state.auraverb.as_ref().unwrap().freshness,
+            AuraVerbFreshness::Stale
+        );
+        transport.push_read(readback.clone());
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            controller.state.auraverb.as_ref().unwrap().freshness,
+            AuraVerbFreshness::Stale
+        );
+
+        let mut recovered = orion_controller(transport.clone());
+        transport.push_read(readback.clone());
+        recovered
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            recovered.state.auraverb.as_ref().unwrap().freshness,
+            AuraVerbFreshness::Authoritative
+        );
+        recovered.state.mark_disconnected();
+        transport.push_read(readback);
+        recovered
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            recovered.state.auraverb.as_ref().unwrap().freshness,
+            AuraVerbFreshness::Stale
+        );
+        let disconnected_error = recovered
+            .apply_intent(Intent::SetAuraVerbEnabled(true), Rect::default())
+            .expect_err("disconnected session remains fail-closed");
+        assert!(is_auraverb_write_unavailable(&disconnected_error));
+
+        let failing = FailingTransport {
+            reads: std::sync::Arc::new(std::sync::Mutex::new(
+                [auraverb_readback_fixture()].into_iter().collect(),
+            )),
+            writes: Default::default(),
+        };
+        let entry = orion_entry();
+        let driver = ProfileDriver::new(entry.clone()).unwrap();
+        let mut failed =
+            Controller::new_for_entry(Box::new(failing), Box::new(driver), &entry).unwrap();
+        failed
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("actual AuraVerb fixture grants initial authority");
+        let transport_error = failed
+            .apply_intent(Intent::SetAuraVerbEnabled(true), Rect::default())
+            .expect_err("transport failure propagates");
+        assert!(!is_auraverb_write_unavailable(&transport_error));
+        assert_eq!(
+            failed.state.auraverb.as_ref().unwrap().freshness,
+            AuraVerbFreshness::Stale
+        );
+        let stale_error = failed
+            .apply_intent(Intent::SetAuraVerbEnabled(true), Rect::default())
+            .expect_err("failed-I/O session stays stale");
+        assert!(is_auraverb_write_unavailable(&stale_error));
     }
 
     fn surround_fixture() -> (Vec<u8>, Vec<u8>) {

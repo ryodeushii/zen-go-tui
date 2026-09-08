@@ -53,6 +53,95 @@ pub struct RoutingSource {
     pub index: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AuraVerbParameter {
+    Color,
+    PreDelay,
+    EarlyReflectionGain,
+    LateReflectionDelay,
+    Richness,
+    ReverbTime,
+    RoomSize,
+    ReverbLevel,
+}
+
+impl AuraVerbParameter {
+    pub const ALL: [Self; 8] = [
+        Self::Color,
+        Self::PreDelay,
+        Self::EarlyReflectionGain,
+        Self::LateReflectionDelay,
+        Self::Richness,
+        Self::ReverbTime,
+        Self::RoomSize,
+        Self::ReverbLevel,
+    ];
+
+    pub const fn field_id(self) -> u16 {
+        match self {
+            Self::Color => 0,
+            Self::PreDelay => 1,
+            Self::EarlyReflectionGain => 2,
+            Self::LateReflectionDelay => 3,
+            Self::Richness => 4,
+            Self::ReverbTime => 5,
+            Self::RoomSize => 6,
+            Self::ReverbLevel => 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuraVerbState {
+    pub color: u8,
+    pub pre_delay: u8,
+    pub early_reflection_gain: u8,
+    pub late_reflection_delay: u8,
+    pub richness: u8,
+    pub reverb_time: u8,
+    pub room_size: u8,
+    pub reverb_level: u8,
+    pub enabled: bool,
+}
+
+impl AuraVerbState {
+    pub fn value(&self, parameter: AuraVerbParameter) -> u8 {
+        match parameter {
+            AuraVerbParameter::Color => self.color,
+            AuraVerbParameter::PreDelay => self.pre_delay,
+            AuraVerbParameter::EarlyReflectionGain => self.early_reflection_gain,
+            AuraVerbParameter::LateReflectionDelay => self.late_reflection_delay,
+            AuraVerbParameter::Richness => self.richness,
+            AuraVerbParameter::ReverbTime => self.reverb_time,
+            AuraVerbParameter::RoomSize => self.room_size,
+            AuraVerbParameter::ReverbLevel => self.reverb_level,
+        }
+    }
+
+    pub fn set_value(&mut self, parameter: AuraVerbParameter, value: u8) {
+        match parameter {
+            AuraVerbParameter::Color => self.color = value,
+            AuraVerbParameter::PreDelay => self.pre_delay = value,
+            AuraVerbParameter::EarlyReflectionGain => self.early_reflection_gain = value,
+            AuraVerbParameter::LateReflectionDelay => self.late_reflection_delay = value,
+            AuraVerbParameter::Richness => self.richness = value,
+            AuraVerbParameter::ReverbTime => self.reverb_time = value,
+            AuraVerbParameter::RoomSize => self.room_size = value,
+            AuraVerbParameter::ReverbLevel => self.reverb_level = value,
+        }
+    }
+
+    pub fn whole_state_fields(&self) -> Vec<WholeStateField> {
+        AuraVerbParameter::ALL
+            .into_iter()
+            .map(|parameter| WholeStateField {
+                id: parameter.field_id(),
+                value: i32::from(self.value(parameter)),
+            })
+            .collect()
+    }
+}
+
 /// One named field in a complete profile-defined whole-state operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WholeStateField {
@@ -244,6 +333,7 @@ pub enum DynamicStatePatch {
     Mixers(Vec<DynamicMixerSurface>),
     Routing(DynamicRoutingGroup),
     Globals(Vec<DynamicGlobalState>),
+    AuraVerb(AuraVerbState),
     SurroundGlobal(SurroundGlobalState),
 }
 

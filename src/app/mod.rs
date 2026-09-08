@@ -22,7 +22,10 @@ mod profile_editor;
 pub use profile_editor::*;
 
 mod controller;
-pub use controller::{is_surround_write_unavailable, Controller};
+pub use controller::{
+    is_auraverb_write_unavailable, is_surround_write_unavailable, AuraVerbWriteUnavailable,
+    Controller,
+};
 
 #[cfg(test)]
 mod dynamic_state_tests;
@@ -76,6 +79,8 @@ pub struct AppState {
     /// Explicit profile-owned meter lanes; these are not inferred physical outputs.
     pub meters: Vec<antelope_protocol::DynamicMeterState>,
     pub routing: Vec<DynamicRoutingGroup>,
+    /// Present only when the active profile has the validated Orion Mix-1 AuraVerb contract.
+    pub auraverb: Option<AuraVerbCache>,
     /// Present only when the active profile has a validated Surround global contract.
     pub surround_global: Option<SurroundGlobalCache>,
     pub ui: UiState,
@@ -278,6 +283,7 @@ impl AppState {
                 })
                 .collect(),
             routing: Vec::new(),
+            auraverb: profile.auraverb.as_ref().map(|_| AuraVerbCache::default()),
             surround_global: profile
                 .surround_global
                 .as_ref()
@@ -356,6 +362,10 @@ impl AppState {
 
     pub fn outputs(&self) -> &[DynamicOutputState] {
         &self.output.dynamic
+    }
+
+    pub(crate) fn auraverb_contract(&self) -> Option<&antelope_protocol::RuntimeAuraVerbContract> {
+        self.runtime_profile.as_ref()?.auraverb.as_ref()
     }
 
     pub fn surround_page_available(&self) -> bool {
@@ -2135,6 +2145,33 @@ impl AppState {
                 changed
             }
             DynamicStatePatch::Routing(group) => self.merge_routing_group(group),
+            DynamicStatePatch::AuraVerb(state) => {
+                let Some(cache) = self.auraverb.as_mut() else {
+                    return false;
+                };
+                match cache.freshness {
+                    AuraVerbFreshness::PendingReadback => {
+                        if cache.pending_expected.as_ref() != Some(&state) {
+                            return false;
+                        }
+                        cache.state = Some(state);
+                        cache.pending_expected = None;
+                        cache.freshness = AuraVerbFreshness::Authoritative;
+                        true
+                    }
+                    AuraVerbFreshness::AwaitingReadback | AuraVerbFreshness::Authoritative => {
+                        let changed = cache.state.as_ref() != Some(&state)
+                            || cache.freshness != AuraVerbFreshness::Authoritative;
+                        cache.state = Some(state);
+                        cache.pending_expected = None;
+                        cache.freshness = AuraVerbFreshness::Authoritative;
+                        changed
+                    }
+                    // Untagged late replies cannot restore write authority after timeout or
+                    // disconnect; a new Controller/device session is the freshness boundary.
+                    AuraVerbFreshness::Stale => false,
+                }
+            }
             DynamicStatePatch::SurroundGlobal(state) => {
                 self.ui.surround_drag = None;
                 let Some(cache) = self.surround_global.as_mut() else {
@@ -2493,6 +2530,9 @@ impl AppState {
         self.device.connection.connected = false;
         self.device.connection.last_frame_type = Some("disconnected");
         self.ui.surround_drag = None;
+        if let Some(cache) = self.auraverb.as_mut() {
+            cache.freshness = AuraVerbFreshness::Stale;
+        }
         if let Some(cache) = self.surround_global.as_mut() {
             cache.freshness = SurroundFreshness::Stale;
         }

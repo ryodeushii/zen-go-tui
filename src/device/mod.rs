@@ -11,18 +11,19 @@ pub mod profile;
 pub mod session;
 
 pub use definition::{
-    AddressSpaceDefinition, AddressSpaceKind, AddressingMode, CandidatePreampMeterDefinition,
-    ConstraintDefinition, DecoderDefinition, DefinitionStatus, DeviceDefinition, DeviceEntry,
-    DeviceIdentity, FaderDirectionDefinition, FaderSemanticsDefinition, FrameDefinition,
-    FrameEndianDefinition, FrameFieldDefinition, FrameKind, FrameOperationDefinition,
-    HazardDefinition, InputCapabilityDefinition, InputControlKind, InputDefinition,
-    LinkDomainDefinition, LinkDomainKind, MeterMappingDefinition, MeterTargetDefinition,
-    MixerDefinition, MixerReadbackLayoutDefinition, OutputDefinition, ParamDefinition,
-    ParamOffsetDefinition, ParamRangeDefinition, ParamReadbackFieldDefinition, ParamReference,
-    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition,
-    ReadbackDefinition, Readiness, RoutingGroupDefinition, RoutingReadbackSourceDomainDefinition,
-    RoutingSourceDomainDefinition, SafeQueryDefinition, StartupQueryDefinition,
-    StateReportDefinition, Status, SupportLevel, TransportDefinition, TransportKind,
+    AddressSpaceDefinition, AddressSpaceKind, AddressingMode, AuraVerbContractDefinition,
+    AuraVerbFieldDefinition, CandidatePreampMeterDefinition, ConstraintDefinition,
+    DecoderDefinition, DefinitionStatus, DeviceDefinition, DeviceEntry, DeviceIdentity,
+    FaderDirectionDefinition, FaderSemanticsDefinition, FrameDefinition, FrameEndianDefinition,
+    FrameFieldDefinition, FrameKind, FrameOperationDefinition, HazardDefinition,
+    InputCapabilityDefinition, InputControlKind, InputDefinition, LinkDomainDefinition,
+    LinkDomainKind, MeterMappingDefinition, MeterTargetDefinition, MixerDefinition,
+    MixerReadbackLayoutDefinition, OutputDefinition, ParamDefinition, ParamOffsetDefinition,
+    ParamRangeDefinition, ParamReadbackFieldDefinition, ParamReference, ParamValueDefinition,
+    ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition, Readiness,
+    RoutingGroupDefinition, RoutingReadbackSourceDomainDefinition, RoutingSourceDomainDefinition,
+    SafeQueryDefinition, StartupQueryDefinition, StateReportDefinition, Status, SupportLevel,
+    TransportDefinition, TransportKind,
 };
 pub use discovery::{
     classify_candidate, classify_candidate_details, classify_candidates,

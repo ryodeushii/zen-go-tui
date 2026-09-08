@@ -1,11 +1,11 @@
 use antelope_protocol::{
     encode_command, encode_mixer_assignment_frames_with_table, encode_query, load_profile_pack,
-    Action, Command, ControlValue, DeviceDriver, DeviceEvent, DriverError, DynamicMixerSurface,
-    DynamicStatePatch, FrameEndian, FrameOperation, GlobalControl, InputAddress, InputControl,
-    MixerAddress, MixerControl, OutputAddress, OutputControl, OutputTrimAddress,
-    ParamReadbackField, ProfileDriver, QueryRequest, RoutingSource, RuntimeByteEqualsPredicate,
-    RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeMeterMapping,
-    RuntimeMeterTarget, RuntimeReadiness, RuntimeRoutingReadbackSourceDomain,
+    Action, AuraVerbState, Command, ControlValue, DeviceDriver, DeviceEvent, DriverError,
+    DynamicMixerSurface, DynamicStatePatch, FrameEndian, FrameOperation, GlobalControl,
+    InputAddress, InputControl, MixerAddress, MixerControl, OutputAddress, OutputControl,
+    OutputTrimAddress, ParamReadbackField, ProfileDriver, QueryRequest, RoutingSource,
+    RuntimeByteEqualsPredicate, RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
+    RuntimeMeterMapping, RuntimeMeterTarget, RuntimeReadiness, RuntimeRoutingReadbackSourceDomain,
     SurroundGlobalControl, WholeStateField, ZenGoDriver,
 };
 
@@ -124,6 +124,7 @@ fn non_orion_fixture_entry() -> RuntimeEntry {
     entry.id = "synthetic_other_profile".into();
     entry.profile.identity.vid = 0x1234;
     entry.profile.identity.pid = 0x5678;
+    entry.profile.auraverb = None;
     entry.profile.surround_global = None;
     // This synthetic profile changes bus parameters to generic output scope,
     // so it cannot retain Orion's strictly bus-scoped MONO capability.
@@ -710,13 +711,13 @@ fn required_orion_actions() -> Vec<Action> {
             target: 0,
             enabled: true,
             fields: vec![
-                WholeStateField { id: 0, value: 81 },
-                WholeStateField { id: 1, value: 100 },
-                WholeStateField { id: 2, value: 0 },
-                WholeStateField { id: 3, value: 11 },
-                WholeStateField { id: 4, value: 13 },
-                WholeStateField { id: 5, value: 24 },
-                WholeStateField { id: 6, value: 66 },
+                WholeStateField { id: 0, value: 100 },
+                WholeStateField { id: 1, value: 0 },
+                WholeStateField { id: 2, value: 11 },
+                WholeStateField { id: 3, value: 13 },
+                WholeStateField { id: 4, value: 24 },
+                WholeStateField { id: 5, value: 66 },
+                WholeStateField { id: 6, value: 81 },
                 WholeStateField { id: 7, value: 50 },
             ],
         },
@@ -1119,6 +1120,50 @@ fn surround_global_readback_requires_every_captured_header_constant_only_for_its
 }
 
 #[test]
+fn auraverb_capability_is_profile_derived_and_rejects_mutated_contract() {
+    let pack = load_profile_pack(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/device/generated_profiles.json"
+    )))
+    .expect("generated pack");
+    let zen = pack
+        .profiles
+        .iter()
+        .find(|entry| entry.profile.identity.pid == 0xa015)
+        .expect("Zen profile");
+    assert!(zen.profile.auraverb.is_none());
+
+    let mutations: [fn(&mut RuntimeEntry); 7] = [
+        |entry| entry.id = "unknown_orion_clone".into(),
+        |entry| entry.profile.auraverb.as_mut().unwrap().target = 1,
+        |entry| entry.profile.auraverb.as_mut().unwrap().wet_constant = 99,
+        |entry| entry.profile.auraverb.as_mut().unwrap().fixed_tail_offset = 60,
+        |entry| entry.profile.auraverb.as_mut().unwrap().fields[0].command_offset = 21,
+        |entry| entry.profile.auraverb.as_mut().unwrap().fields[7].id = 6,
+        |entry| entry.profile.auraverb.as_mut().unwrap().readback_header[8] = 0x1b,
+    ];
+    for mutate in mutations {
+        let mut orion = canonical_orion_entry();
+        mutate(&mut orion);
+        assert!(ProfileDriver::new(orion).is_err());
+    }
+
+    let mut pack_json: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/device/generated_profiles.json"
+    )))
+    .expect("pack JSON");
+    let orion = pack_json["profiles"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["id"] == "orion_studio_3")
+        .unwrap();
+    orion["auraverb"]["target"] = 1.into();
+    assert!(load_profile_pack(&serde_json::to_vec(&pack_json).unwrap()).is_err());
+}
+
+#[test]
 fn surround_capability_is_profile_derived_and_rejects_mutated_contract() {
     let pack = load_profile_pack(include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1191,37 +1236,172 @@ fn surround_capability_is_profile_derived_and_rejects_mutated_contract() {
 fn profile_driver_encodes_every_confirmed_finite_orion_family() {
     let driver = profile_driver_from_fixture();
     for action in required_orion_actions() {
-        let is_unconfirmed = matches!(action, Action::SetWholeState { .. });
-        let result = driver.encode(action);
-        if is_unconfirmed {
-            assert!(
-                result.is_err(),
-                "unconfirmed AuraVerb action must fail closed"
-            );
-        } else {
-            let batch = result.expect("confirmed Orion action");
-            assert_eq!(batch.frames.len(), 1);
-            assert_eq!(batch.frames[0].len(), 320);
-        }
+        let batch = driver.encode(action).expect("confirmed Orion action");
+        assert_eq!(batch.frames.len(), 1);
+        assert_eq!(batch.frames[0].len(), 320);
     }
 }
 
 #[test]
-fn profile_derived_auraverb_whole_state_rejects_unconfirmed_frame() {
+fn profile_derived_auraverb_matches_captured_complete_frame_and_refresh() {
     let action = required_orion_actions()
         .into_iter()
         .find(|action| matches!(action, Action::SetWholeState { .. }))
         .expect("AuraVerb action");
-    let error = profile_driver_from_fixture()
+    let batch = profile_driver_from_fixture()
         .encode(action)
-        .expect_err("unconfirmed AuraVerb frame must fail closed");
-    assert!(error
-        .to_string()
-        .contains("confirmed whole-state operation"));
+        .expect("validated AuraVerb frame");
+    assert_eq!(
+        batch.frames[0],
+        hex_fixture(include_str!("fixtures/orion/auraverb/enabled_on.hex"))
+    );
+    assert_eq!(batch.refresh_requests, vec![QueryRequest::new(0x0a, 0)]);
 }
 
 #[test]
-fn whole_state_is_fail_closed_for_partial_duplicate_or_out_of_range_fields() {
+fn auraverb_capture_sweeps_change_only_the_independent_field_and_keep_tail_zero() {
+    for (offset, low, high) in [
+        (
+            19,
+            include_str!("fixtures/orion/auraverb/room_size_0.hex"),
+            include_str!("fixtures/orion/auraverb/room_size_100.hex"),
+        ),
+        (
+            20,
+            include_str!("fixtures/orion/auraverb/color_0.hex"),
+            include_str!("fixtures/orion/auraverb/color_100.hex"),
+        ),
+        (
+            21,
+            include_str!("fixtures/orion/auraverb/pre_delay_0.hex"),
+            include_str!("fixtures/orion/auraverb/pre_delay_100.hex"),
+        ),
+        (
+            23,
+            include_str!("fixtures/orion/auraverb/early_reflection_gain_0.hex"),
+            include_str!("fixtures/orion/auraverb/early_reflection_gain_100.hex"),
+        ),
+        (
+            24,
+            include_str!("fixtures/orion/auraverb/late_reflection_delay_0.hex"),
+            include_str!("fixtures/orion/auraverb/late_reflection_delay_100.hex"),
+        ),
+        (
+            25,
+            include_str!("fixtures/orion/auraverb/richness_0.hex"),
+            include_str!("fixtures/orion/auraverb/richness_100.hex"),
+        ),
+        (
+            26,
+            include_str!("fixtures/orion/auraverb/reverb_time_0.hex"),
+            include_str!("fixtures/orion/auraverb/reverb_time_100.hex"),
+        ),
+        (
+            27,
+            include_str!("fixtures/orion/auraverb/reverb_level_0.hex"),
+            include_str!("fixtures/orion/auraverb/reverb_level_100.hex"),
+        ),
+    ] {
+        let low = hex_fixture(low);
+        let high = hex_fixture(high);
+        let differences: Vec<_> = low
+            .iter()
+            .zip(&high)
+            .enumerate()
+            .filter_map(|(index, (left, right))| (left != right).then_some(index))
+            .collect();
+        assert_eq!(differences, vec![offset]);
+        assert_eq!((low[offset], high[offset]), (0, 100));
+        for report in [&low, &high] {
+            assert_eq!(
+                &report[..19],
+                &[0x70, 0, 0, 0, 0x1d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xda, 0x0b, 0]
+            );
+            assert_eq!(report[22], 100);
+            assert_eq!(report[28], 1);
+            assert!(report[29..].iter().all(|byte| *byte == 0));
+        }
+    }
+    let on = hex_fixture(include_str!("fixtures/orion/auraverb/enabled_on.hex"));
+    let off = hex_fixture(include_str!("fixtures/orion/auraverb/enabled_off.hex"));
+    assert_eq!(
+        on.iter()
+            .zip(&off)
+            .filter(|(left, right)| left != right)
+            .count(),
+        1
+    );
+    assert_eq!((on[28], off[28]), (1, 0));
+    for report in [&on, &off] {
+        assert_eq!(report.len(), 320);
+        assert_eq!(report[22], 100);
+        assert!(report[29..].iter().all(|byte| *byte == 0));
+    }
+}
+
+#[test]
+fn auraverb_actual_readback_decodes_only_complete_mix1_and_rejects_malformed_reports() {
+    let driver = profile_driver_from_fixture();
+    let reports = [
+        include_str!("fixtures/orion/auraverb/readback_mix1_poweroff_on2.hex"),
+        include_str!("fixtures/orion/auraverb/readback_mix1_poweroff_on3_saved.hex"),
+        include_str!("fixtures/orion/auraverb/readback_mix1_poweron.hex"),
+        include_str!("fixtures/orion/auraverb/readback_mix1_poweron_previous.hex"),
+    ]
+    .map(hex_fixture);
+    let report = reports[0].clone();
+    let expected = AuraVerbState {
+        color: 100,
+        pre_delay: 0,
+        early_reflection_gain: 11,
+        late_reflection_delay: 13,
+        richness: 24,
+        reverb_time: 66,
+        room_size: 81,
+        reverb_level: 50,
+        enabled: false,
+    };
+    let decode_state = |bytes: &[u8]| match driver.decode(bytes).expect("valid readback").unwrap() {
+        DeviceEvent::QueryReply {
+            patch: Some(DynamicStatePatch::AuraVerb(state)),
+            ..
+        } => state,
+        event => panic!("unexpected AuraVerb event: {event:?}"),
+    };
+    for independent_report in &reports {
+        assert_eq!(independent_report.len(), 320);
+        assert_eq!(independent_report, &report);
+        assert_eq!(decode_state(independent_report), expected);
+    }
+
+    let mut other_mixes_changed = report.clone();
+    other_mixes_changed[28..59].fill(0x55);
+    assert_eq!(decode_state(&other_mixes_changed), expected);
+
+    for offset in [0, 8, 12, 16, 18, 20, 27, 59] {
+        let mut malformed = report.clone();
+        malformed[offset] ^= 1;
+        let authorizes = matches!(
+            driver.decode(&malformed),
+            Ok(Some(DeviceEvent::QueryReply {
+                patch: Some(DynamicStatePatch::AuraVerb(_)),
+                ..
+            }))
+        );
+        assert!(!authorizes, "offset {offset}");
+    }
+    let mut invalid_enabled = report.clone();
+    invalid_enabled[26] = 2;
+    assert!(driver.decode(&invalid_enabled).is_err());
+    assert!(driver.decode(&report[..319]).is_err());
+
+    let mut other_index = report;
+    other_index[12] = 1;
+    assert!(driver.decode(&other_index).is_err());
+}
+
+#[test]
+fn whole_state_is_fail_closed_for_partial_duplicate_out_of_range_or_unvalidated_target() {
     let driver = profile_driver_from_fixture();
     for fields in [
         vec![WholeStateField { id: 0, value: 1 }],
@@ -1242,6 +1422,27 @@ fn whole_state_is_fail_closed_for_partial_duplicate_or_out_of_range_fields() {
                 target: 0,
                 enabled: true,
                 fields,
+            })
+            .is_err());
+    }
+    let complete = AuraVerbState {
+        color: 1,
+        pre_delay: 2,
+        early_reflection_gain: 3,
+        late_reflection_delay: 4,
+        richness: 5,
+        reverb_time: 6,
+        room_size: 7,
+        reverb_level: 8,
+        enabled: true,
+    };
+    for (operation, target) in [(0xdb, 0), (0xda, 1)] {
+        assert!(driver
+            .encode(Action::SetWholeState {
+                operation,
+                target,
+                enabled: complete.enabled,
+                fields: complete.whole_state_fields(),
             })
             .is_err());
     }
@@ -2314,7 +2515,7 @@ fn malformed_declared_state_meter_is_rejected_even_with_meter_report_source() {
 #[test]
 fn valid_bounded_non_patch_readbacks_return_owned_none_patch() {
     let driver = profile_driver_from_fixture();
-    for (category, index) in [(0x0a, 0), (0x0b, 4), (0x11, 1), (0x19, 63), (0x1a, 15)] {
+    for (category, index) in [(0x0b, 4), (0x11, 1), (0x19, 63), (0x1a, 15)] {
         let mut frame = vec![0; 320];
         frame[0] = 0x75;
         frame[4..8].copy_from_slice(&0x140_u32.to_le_bytes());
@@ -2518,9 +2719,9 @@ fn state_only_profile_decodes_readback_without_meter_frame() {
         .frames
         .retain(|frame| frame.id != "meter_report");
     let driver = ProfileDriver::new(entry).expect("state-only profile driver");
-    let mut frame = vec![0; 320];
-    frame[0] = 0x75;
-    frame[8] = 0x0a;
+    let frame = hex_fixture(include_str!(
+        "fixtures/orion/auraverb/readback_mix1_poweroff_on2.hex"
+    ));
     assert!(matches!(
         driver.decode(&frame),
         Ok(Some(DeviceEvent::QueryReply { .. }))

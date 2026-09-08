@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use antelope_protocol::{
-    DynamicInputState, DynamicMixerStrip, DynamicOutputState, DynamicRoutingGroup, InputAddress,
-    MixerAddress, MixerAssignment, OutputTrimAddress, PanState, PreampMode, RoutingSource,
-    SampleRate, Surface,
+    AuraVerbParameter, DynamicInputState, DynamicMixerStrip, DynamicOutputState,
+    DynamicRoutingGroup, InputAddress, MixerAddress, MixerAssignment, OutputTrimAddress, PanState,
+    PreampMode, RoutingSource, SampleRate, Surface,
 };
 
 use crate::app::AppState;
@@ -86,7 +86,14 @@ pub enum Intent {
         increase: bool,
     },
 
-    // Capture-backed Surround global controls (no page binding until the next cycle).
+    // Capture-backed AuraVerb backend controls; intentionally not page-bound here.
+    SetAuraVerbEnabled(bool),
+    SetAuraVerbParameter {
+        parameter: AuraVerbParameter,
+        value: u8,
+    },
+
+    // Capture-backed Surround global controls.
     SetSurroundGlobalLevel(u16),
     SetSurroundGlobalDelay(u8),
 
@@ -309,6 +316,8 @@ impl Intent {
                 | Self::PickClockSource(_)
                 | Self::PickBrightness(_)
                 | Self::PickOutputTrim { .. }
+                | Self::SetAuraVerbEnabled(_)
+                | Self::SetAuraVerbParameter { .. }
                 | Self::SetSurroundGlobalLevel(_)
                 | Self::SetSurroundGlobalDelay(_)
                 | Self::SetTalkbackButton(_)

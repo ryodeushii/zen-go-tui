@@ -560,6 +560,38 @@ pub struct StateReportDefinition {
     pub candidate_preamp_meters: &'static [CandidatePreampMeterDefinition],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuraVerbFieldDefinition {
+    pub id: u16,
+    pub name: &'static str,
+    pub command_offset: u16,
+    pub readback_offset: u16,
+}
+
+/// Finite Orion Mix-1 AuraVerb complete-state and readback contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuraVerbContractDefinition {
+    pub command_frame_id: &'static str,
+    pub operation: u16,
+    pub target: u16,
+    pub readback_category: u8,
+    pub readback_index: u8,
+    pub readback_header: [u8; 16],
+    pub readback_body_header: u8,
+    pub readback_block_offset: u16,
+    pub readback_block_size: u16,
+    pub readback_record_size: u16,
+    pub fixed_tail_offset: u16,
+    pub wet_offset: u16,
+    pub wet_constant: u8,
+    pub enabled_offset: u16,
+    pub terminator_offset: u16,
+    pub terminator_constant: u8,
+    pub fields: &'static [AuraVerbFieldDefinition],
+    pub range: (u8, u8),
+    pub evidence: &'static str,
+}
+
 /// One exact captured Surround format signature after non-format bits are masked out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SurroundFormatDefinition {
@@ -627,6 +659,7 @@ pub struct DeviceDefinition {
     pub meter_mappings: &'static [MeterMappingDefinition],
     pub state_report: Option<StateReportDefinition>,
     pub startup_queries: &'static [StartupQueryDefinition],
+    pub auraverb: Option<AuraVerbContractDefinition>,
     pub surround_global: Option<SurroundGlobalContractDefinition>,
     pub readback: Option<ReadbackDefinition>,
     pub status: Status,

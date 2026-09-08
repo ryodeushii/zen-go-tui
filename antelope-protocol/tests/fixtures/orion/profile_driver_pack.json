@@ -101,6 +101,96 @@
           "status_text": "confirmed"
         }
       ],
+      "auraverb": {
+        "command_frame_id": "auraverb_command",
+        "enabled_offset": 28,
+        "evidence": "Full 320-byte OUT captures: macos-auraverb-on-off.pcapng SHA-256 f610bfa4277b9648b41db57d2bc2b174606be31b4894ef391fa7dff74944d928 frames 5824 at 3.449054 s and 8628 at 8.242198 s; parameter capture SHA-256 7c2a0985cd4f9e1d0f1f67fecbcb6fc7ca79fb88d7438032e314da011ed334c7 contains 1836 complete opcode-0x1d reports and isolated 0..100 pairs for all eight offsets. Independent full 320-byte IN reports from four macOS init captures produce report SHA-256 53c50af3011aa165b52ce10ffce4e4b9b3cce863a86f7561fab913b25283a6dd: exact header, 0x00 body header, three complete 11-byte blocks plus a fourth block truncated to 9 bytes, then zero padding at report offsets 59..319. See docs/protocol/orion-auraverb-evidence.md.",
+        "fields": [
+          {
+            "command_offset": 20,
+            "id": 0,
+            "name": "color",
+            "readback_offset": 1
+          },
+          {
+            "command_offset": 21,
+            "id": 1,
+            "name": "pre_delay",
+            "readback_offset": 2
+          },
+          {
+            "command_offset": 23,
+            "id": 2,
+            "name": "early_reflection_gain",
+            "readback_offset": 4
+          },
+          {
+            "command_offset": 24,
+            "id": 3,
+            "name": "late_reflection_delay",
+            "readback_offset": 5
+          },
+          {
+            "command_offset": 25,
+            "id": 4,
+            "name": "richness",
+            "readback_offset": 6
+          },
+          {
+            "command_offset": 26,
+            "id": 5,
+            "name": "reverb_time",
+            "readback_offset": 7
+          },
+          {
+            "command_offset": 19,
+            "id": 6,
+            "name": "room_size",
+            "readback_offset": 0
+          },
+          {
+            "command_offset": 27,
+            "id": 7,
+            "name": "reverb_level",
+            "readback_offset": 8
+          }
+        ],
+        "fixed_tail_offset": 59,
+        "operation": 218,
+        "range": [
+          0,
+          100
+        ],
+        "readback_block_offset": 1,
+        "readback_block_size": 11,
+        "readback_body_header": 0,
+        "readback_category": 10,
+        "readback_header": [
+          117,
+          0,
+          0,
+          0,
+          64,
+          1,
+          0,
+          0,
+          10,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "readback_index": 0,
+        "readback_record_size": 43,
+        "target": 0,
+        "terminator_constant": 255,
+        "terminator_offset": 10,
+        "wet_constant": 100,
+        "wet_offset": 22
+      },
       "constraints": [
         {
           "metadata": "[\"0x12\",\"0x13\",\"0x14\",\"0x17\",\"0x1d\",\"0x53\",\"0xab\"]",
@@ -429,13 +519,6 @@
       ],
       "decoders": [
         {
-          "frame_id": "auraverb_command",
-          "id": "decode_auraverb_command",
-          "kind": "decoder",
-          "metadata": "{\"defaults\":{\"color\":100,\"early_reflection_gain\":11,\"late_reflection_delay\":13,\"pre_delay\":0,\"reverb_level\":50,\"reverb_time\":66,\"richness\":24,\"room_size\":81},\"enabled_offset\":28,\"magic\":\"0x70\",\"magic_offset\":0,\"mix_offset\":18,\"mix_wet_constant\":100,\"mix_wet_offset\":22,\"notes\":\"Its own command shape (opcode 0x1d) -- the AuraVerb reverb on the Mix 1 window (a device-BUNDLED Synergy Core effect: always present, no per-plugin activation -- IN SCOPE, unlike the licensed AFX plugin chain). DSP PARAMS DECODED from macos-auraverb-ctl-color-predelay-earlyrefgaij-laterefdelay-richness-reverbtime-roomsize-reverblevel (2026-08-31, native macOS): the user swept each of the 8 AuraVerb controls one at a time. Frame offsets 16-28: [16]=0xda param_id; [17]=0x0b constant sub-cmd; [18]=0x00 constant (only Mix 1 captured -- likely the mix index, AuraVerb lives on a mix window); [19]=Room Size; [20]=Color; [21]=Pre-Delay (0-100 maps to 0-32 ms per the public manual); [22]=0x64 (100) constant, NEVER swept -- assumed the wet/mix amount locked at 100% (AuraVerb runs 100% wet as a mix send), could also be a 9th unexposed control; [23]=Early Reflection Gain; [24]=Late Reflection Delay; [25]=Richness; [26]=Reverb Time; [27]=Reverb Level; [28]=enabled (01 on / 00 off, from macos-auraverb-on-off). Every param is a plain 0-100 byte (UI drags land on even values, granularity 2, but odd values are presumably legal); Color reached exactly 0x64=100, the rest topped out at 0x62=98 only because the drag stopped short. The frame carries ALL 8 params + enabled every time (whole-state, like the mixer). Control names + ranges cross-checked against the Orion Studio Synergy Core user manual p.50 and antelopeaudio.com/products/auraverb (facts only). No 0x73 readback -- BUT there IS a dedicated readback: frame.readback category 0x0a (decoded + hardware-confirmed 2026-09-03, see readback.categories.0x0a and protocol.parse_auraverb_record). CLI `auraverb` now live-reads that and does a verified read-modify-write; the old CLI cache is kept only as an offline fallback. defaults[] = the device power-on values seen frozen in macos-auraverb-on-off. build_auraverb_command + CLI `auraverb`; 0x1d in constraints.allowed_opcodes (2026-08-31). The [22]=0x64 wet/mix constant is mirrored in the 0x0a readback and stayed 100 through the whole differential sweep -- consistent with a fixed 100%-wet lock, not a hidden 9th control.\",\"opcode\":\"0x1d\",\"opcode_name\":\"SET_AURAVERB\",\"opcode_offset\":4,\"param_id\":\"0xda\",\"param_id_offset\":16,\"param_offsets\":{\"color\":20,\"early_reflection_gain\":23,\"late_reflection_delay\":24,\"pre_delay\":21,\"reverb_level\":27,\"reverb_time\":26,\"richness\":25,\"room_size\":19},\"param_range\":[0,100],\"subcmd\":\"0x0b\",\"subcmd_offset\":17}",
-          "status": "unknown"
-        },
-        {
           "frame_id": "micmodeling_command",
           "id": "decode_micmodeling_command",
           "kind": "decoder",
@@ -723,8 +806,8 @@
         },
         {
           "id": "auraverb_command",
-          "kind": "decoder",
-          "metadata": "{\"defaults\":{\"color\":100,\"early_reflection_gain\":11,\"late_reflection_delay\":13,\"pre_delay\":0,\"reverb_level\":50,\"reverb_time\":66,\"richness\":24,\"room_size\":81},\"enabled_offset\":28,\"magic\":\"0x70\",\"magic_offset\":0,\"mix_offset\":18,\"mix_wet_constant\":100,\"mix_wet_offset\":22,\"notes\":\"Its own command shape (opcode 0x1d) -- the AuraVerb reverb on the Mix 1 window (a device-BUNDLED Synergy Core effect: always present, no per-plugin activation -- IN SCOPE, unlike the licensed AFX plugin chain). DSP PARAMS DECODED from macos-auraverb-ctl-color-predelay-earlyrefgaij-laterefdelay-richness-reverbtime-roomsize-reverblevel (2026-08-31, native macOS): the user swept each of the 8 AuraVerb controls one at a time. Frame offsets 16-28: [16]=0xda param_id; [17]=0x0b constant sub-cmd; [18]=0x00 constant (only Mix 1 captured -- likely the mix index, AuraVerb lives on a mix window); [19]=Room Size; [20]=Color; [21]=Pre-Delay (0-100 maps to 0-32 ms per the public manual); [22]=0x64 (100) constant, NEVER swept -- assumed the wet/mix amount locked at 100% (AuraVerb runs 100% wet as a mix send), could also be a 9th unexposed control; [23]=Early Reflection Gain; [24]=Late Reflection Delay; [25]=Richness; [26]=Reverb Time; [27]=Reverb Level; [28]=enabled (01 on / 00 off, from macos-auraverb-on-off). Every param is a plain 0-100 byte (UI drags land on even values, granularity 2, but odd values are presumably legal); Color reached exactly 0x64=100, the rest topped out at 0x62=98 only because the drag stopped short. The frame carries ALL 8 params + enabled every time (whole-state, like the mixer). Control names + ranges cross-checked against the Orion Studio Synergy Core user manual p.50 and antelopeaudio.com/products/auraverb (facts only). No 0x73 readback -- BUT there IS a dedicated readback: frame.readback category 0x0a (decoded + hardware-confirmed 2026-09-03, see readback.categories.0x0a and protocol.parse_auraverb_record). CLI `auraverb` now live-reads that and does a verified read-modify-write; the old CLI cache is kept only as an offline fallback. defaults[] = the device power-on values seen frozen in macos-auraverb-on-off. build_auraverb_command + CLI `auraverb`; 0x1d in constraints.allowed_opcodes (2026-08-31). The [22]=0x64 wet/mix constant is mirrored in the 0x0a readback and stayed 100 through the whole differential sweep -- consistent with a fixed 100%-wet lock, not a hidden 9th control.\",\"opcode\":\"0x1d\",\"opcode_name\":\"SET_AURAVERB\",\"opcode_offset\":4,\"param_id\":\"0xda\",\"param_id_offset\":16,\"param_offsets\":{\"color\":20,\"early_reflection_gain\":23,\"late_reflection_delay\":24,\"pre_delay\":21,\"reverb_level\":27,\"reverb_time\":26,\"richness\":25,\"room_size\":19},\"param_range\":[0,100],\"subcmd\":\"0x0b\",\"subcmd_offset\":17}",
+          "kind": "command",
+          "metadata": "{\"contract\":{\"enabled_offset\":28,\"evidence\":\"Full 320-byte OUT captures: macos-auraverb-on-off.pcapng SHA-256 f610bfa4277b9648b41db57d2bc2b174606be31b4894ef391fa7dff74944d928 frames 5824 at 3.449054 s and 8628 at 8.242198 s; parameter capture SHA-256 7c2a0985cd4f9e1d0f1f67fecbcb6fc7ca79fb88d7438032e314da011ed334c7 contains 1836 complete opcode-0x1d reports and isolated 0..100 pairs for all eight offsets. Independent full 320-byte IN reports from four macOS init captures produce report SHA-256 53c50af3011aa165b52ce10ffce4e4b9b3cce863a86f7561fab913b25283a6dd: exact header, 0x00 body header, three complete 11-byte blocks plus a fourth block truncated to 9 bytes, then zero padding at report offsets 59..319. See docs/protocol/orion-auraverb-evidence.md.\",\"fields\":[{\"command_offset\":20,\"id\":0,\"name\":\"color\",\"readback_offset\":1},{\"command_offset\":21,\"id\":1,\"name\":\"pre_delay\",\"readback_offset\":2},{\"command_offset\":23,\"id\":2,\"name\":\"early_reflection_gain\",\"readback_offset\":4},{\"command_offset\":24,\"id\":3,\"name\":\"late_reflection_delay\",\"readback_offset\":5},{\"command_offset\":25,\"id\":4,\"name\":\"richness\",\"readback_offset\":6},{\"command_offset\":26,\"id\":5,\"name\":\"reverb_time\",\"readback_offset\":7},{\"command_offset\":19,\"id\":6,\"name\":\"room_size\",\"readback_offset\":0},{\"command_offset\":27,\"id\":7,\"name\":\"reverb_level\",\"readback_offset\":8}],\"fixed_tail_offset\":59,\"operation\":\"0xda\",\"range\":[0,100],\"readback_block_offset\":1,\"readback_block_size\":11,\"readback_body_header\":0,\"readback_category\":\"0x0a\",\"readback_header\":[\"0x75\",0,0,0,\"0x40\",\"0x01\",0,0,\"0x0a\",0,0,0,0,0,0,0],\"readback_index\":0,\"readback_record_size\":43,\"status\":\"confirmed\",\"target\":0,\"terminator_constant\":\"0xff\",\"terminator_offset\":10,\"wet_constant\":100,\"wet_offset\":22},\"defaults\":{\"color\":100,\"early_reflection_gain\":11,\"late_reflection_delay\":13,\"pre_delay\":0,\"reverb_level\":50,\"reverb_time\":66,\"richness\":24,\"room_size\":81},\"enabled_offset\":28,\"magic\":\"0x70\",\"magic_offset\":0,\"mix_offset\":18,\"mix_wet_constant\":100,\"mix_wet_offset\":22,\"notes\":\"Its own command shape (opcode 0x1d) -- the AuraVerb reverb on the Mix 1 window (a device-BUNDLED Synergy Core effect: always present, no per-plugin activation -- IN SCOPE, unlike the licensed AFX plugin chain). DSP PARAMS DECODED from macos-auraverb-ctl-color-predelay-earlyrefgaij-laterefdelay-richness-reverbtime-roomsize-reverblevel (2026-08-31, native macOS): the user swept each of the 8 AuraVerb controls one at a time. Frame offsets 16-28: [16]=0xda param_id; [17]=0x0b constant sub-cmd; [18]=0x00 constant (only Mix 1 captured -- likely the mix index, AuraVerb lives on a mix window); [19]=Room Size; [20]=Color; [21]=Pre-Delay (0-100 maps to 0-32 ms per the public manual); [22]=0x64 (100) constant, NEVER swept -- assumed the wet/mix amount locked at 100% (AuraVerb runs 100% wet as a mix send), could also be a 9th unexposed control; [23]=Early Reflection Gain; [24]=Late Reflection Delay; [25]=Richness; [26]=Reverb Time; [27]=Reverb Level; [28]=enabled (01 on / 00 off, from macos-auraverb-on-off). Every param is a plain 0-100 byte (UI drags land on even values, granularity 2, but odd values are presumably legal); Color reached exactly 0x64=100, the rest topped out at 0x62=98 only because the drag stopped short. The frame carries ALL 8 params + enabled every time (whole-state, like the mixer). Control names + ranges cross-checked against the Orion Studio Synergy Core user manual p.50 and antelopeaudio.com/products/auraverb (facts only). No 0x73 readback -- BUT there IS a dedicated readback: frame.readback category 0x0a (decoded + hardware-confirmed 2026-09-03, see readback.categories.0x0a and protocol.parse_auraverb_record). CLI `auraverb` now live-reads that and does a verified read-modify-write; the old CLI cache is kept only as an offline fallback. defaults[] = the device power-on values seen frozen in macos-auraverb-on-off. build_auraverb_command + CLI `auraverb`; 0x1d in constraints.allowed_opcodes (2026-08-31). The [22]=0x64 wet/mix constant is mirrored in the 0x0a readback and stayed 100 through the whole differential sweep -- consistent with a fixed 100%-wet lock, not a hidden 9th control.\",\"opcode\":\"0x1d\",\"opcode_name\":\"SET_AURAVERB\",\"opcode_offset\":4,\"param_id\":\"0xda\",\"param_id_offset\":16,\"param_offsets\":{\"color\":20,\"early_reflection_gain\":23,\"late_reflection_delay\":24,\"pre_delay\":21,\"reverb_level\":27,\"reverb_time\":26,\"richness\":25,\"room_size\":19},\"param_range\":[0,100],\"runtime_operations\":[{\"offset\":0,\"op\":\"fixed_byte\",\"value\":\"0x70\"},{\"offset\":4,\"op\":\"fixed_byte\",\"value\":\"0x1d\"},{\"offset\":16,\"op\":\"fixed_byte\",\"value\":\"0xda\"},{\"offset\":17,\"op\":\"fixed_byte\",\"value\":\"0x0b\"},{\"field\":\"target\",\"offset\":18,\"op\":\"scalar\",\"width\":1},{\"field\":\"field_6\",\"offset\":19,\"op\":\"scalar\",\"width\":1},{\"field\":\"field_0\",\"offset\":20,\"op\":\"scalar\",\"width\":1},{\"field\":\"field_1\",\"offset\":21,\"op\":\"scalar\",\"width\":1},{\"offset\":22,\"op\":\"fixed_byte\",\"value\":100},{\"field\":\"field_2\",\"offset\":23,\"op\":\"scalar\",\"width\":1},{\"field\":\"field_3\",\"offset\":24,\"op\":\"scalar\",\"width\":1},{\"field\":\"field_4\",\"offset\":25,\"op\":\"scalar\",\"width\":1},{\"field\":\"field_5\",\"offset\":26,\"op\":\"scalar\",\"width\":1},{\"field\":\"field_7\",\"offset\":27,\"op\":\"scalar\",\"width\":1},{\"field\":\"enabled\",\"offset\":28,\"op\":\"scalar\",\"width\":1}],\"runtime_status\":\"confirmed\",\"subcmd\":\"0x0b\",\"subcmd_offset\":17}",
           "operations": [
             {
               "offset": 0,
@@ -748,15 +831,69 @@
             },
             {
               "endian": "not_applicable",
-              "field": "mix",
+              "field": "target",
               "offset": 18,
               "op": "scalar",
               "width": 1
             },
             {
               "endian": "not_applicable",
-              "field": "mix_wet",
+              "field": "field_6",
+              "offset": 19,
+              "op": "scalar",
+              "width": 1
+            },
+            {
+              "endian": "not_applicable",
+              "field": "field_0",
+              "offset": 20,
+              "op": "scalar",
+              "width": 1
+            },
+            {
+              "endian": "not_applicable",
+              "field": "field_1",
+              "offset": 21,
+              "op": "scalar",
+              "width": 1
+            },
+            {
               "offset": 22,
+              "op": "fixed_byte",
+              "value": 100
+            },
+            {
+              "endian": "not_applicable",
+              "field": "field_2",
+              "offset": 23,
+              "op": "scalar",
+              "width": 1
+            },
+            {
+              "endian": "not_applicable",
+              "field": "field_3",
+              "offset": 24,
+              "op": "scalar",
+              "width": 1
+            },
+            {
+              "endian": "not_applicable",
+              "field": "field_4",
+              "offset": 25,
+              "op": "scalar",
+              "width": 1
+            },
+            {
+              "endian": "not_applicable",
+              "field": "field_5",
+              "offset": 26,
+              "op": "scalar",
+              "width": 1
+            },
+            {
+              "endian": "not_applicable",
+              "field": "field_7",
+              "offset": 27,
               "op": "scalar",
               "width": 1
             },
@@ -769,7 +906,7 @@
             }
           ],
           "report_size": 320,
-          "status": "unknown"
+          "status": "confirmed"
         },
         {
           "id": "surround_global_command",
@@ -3714,7 +3851,7 @@
       "provenance": {
         "generator_version": "1.4.2",
         "source_path": "profiles/orion_studio_sc.json",
-        "source_sha256": "9e76a4e4b77279961741c8c1ebf7ed01b3f3aff3d9325b3d9b9ed53966d6193f"
+        "source_sha256": "65b4ab9d64af22f3d44930045ba3473413729715061d698590900d5063fafb02"
       },
       "readback": {
         "category_counts": [

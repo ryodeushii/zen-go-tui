@@ -945,6 +945,87 @@ class GeneratorTests(unittest.TestCase):
             self.assertIsNone(params[name]["id"])
             self.assertIn("id", json.loads(params[name]["metadata"]))
 
+    def test_auraverb_contract_is_exact_finite_and_orion_only(self) -> None:
+        orion = generator.load_profile(ORION_PROFILE, ORION_PROFILE.parent)
+        normalized = generator._normalized_profile_record(orion)
+        contract = normalized["auraverb"]
+        self.assertEqual(contract["command_frame_id"], "auraverb_command")
+        self.assertEqual((contract["operation"], contract["target"]), (0xDA, 0))
+        self.assertEqual((contract["readback_category"], contract["readback_index"]), (0x0A, 0))
+        self.assertEqual(
+            contract["readback_header"],
+            [0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x0A, 0, 0, 0, 0, 0, 0, 0],
+        )
+        self.assertEqual(
+            (
+                contract["readback_body_header"],
+                contract["readback_block_offset"],
+                contract["readback_block_size"],
+                contract["readback_record_size"],
+                contract["fixed_tail_offset"],
+            ),
+            (0, 1, 11, 43, 59),
+        )
+        self.assertEqual((contract["wet_offset"], contract["wet_constant"]), (22, 100))
+        self.assertEqual(
+            (contract["terminator_offset"], contract["terminator_constant"]),
+            (10, 0xFF),
+        )
+        self.assertEqual(contract["range"], [0, 100])
+        self.assertEqual(
+            contract["fields"],
+            [
+                {"id": 0, "name": "color", "command_offset": 20, "readback_offset": 1},
+                {"id": 1, "name": "pre_delay", "command_offset": 21, "readback_offset": 2},
+                {"id": 2, "name": "early_reflection_gain", "command_offset": 23, "readback_offset": 4},
+                {"id": 3, "name": "late_reflection_delay", "command_offset": 24, "readback_offset": 5},
+                {"id": 4, "name": "richness", "command_offset": 25, "readback_offset": 6},
+                {"id": 5, "name": "reverb_time", "command_offset": 26, "readback_offset": 7},
+                {"id": 6, "name": "room_size", "command_offset": 19, "readback_offset": 0},
+                {"id": 7, "name": "reverb_level", "command_offset": 27, "readback_offset": 8},
+            ],
+        )
+        frame = next(frame for frame in normalized["frames"] if frame["id"] == "auraverb_command")
+        self.assertEqual((frame["kind"], frame["status"]), ("command", "confirmed"))
+
+        zen = generator.load_profile(
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "zen_go_sc.json",
+            ORION_PROFILE.parent,
+        )
+        self.assertIsNone(generator._normalized_profile_record(zen)["auraverb"])
+
+    def test_auraverb_contract_mutations_fail_closed(self) -> None:
+        data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        del data["frame"]["auraverb_command"]["contract"]
+        profile = generator.normalize_profile(data, path=ORION_PROFILE)
+        self.assertIsNone(generator._normalized_profile_record(profile)["auraverb"])
+
+        for mutate in (
+            lambda contract: contract.__setitem__("target", 1),
+            lambda contract: contract.__setitem__("readback_record_size", 44),
+            lambda contract: contract.__setitem__("fixed_tail_offset", 60),
+            lambda contract: contract.__setitem__("wet_constant", 99),
+            lambda contract: contract.__setitem__("terminator_constant", 0),
+            lambda contract: contract.__setitem__("range", [0, 101]),
+            lambda contract: contract["fields"][1].__setitem__("command_offset", 20),
+            lambda contract: contract["fields"][7].__setitem__("id", 6),
+            lambda contract: contract["readback_header"].__setitem__(8, 0x1B),
+        ):
+            invalid = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+            mutate(invalid["frame"]["auraverb_command"]["contract"])
+            with self.assertRaises(generator.ProfileError):
+                generator.normalize_profile(invalid, path=ORION_PROFILE)
+
+        invalid = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        invalid["constraints"]["allowed_opcodes"].remove("0x1d")
+        with self.assertRaises(generator.ProfileError):
+            generator.normalize_profile(invalid, path=ORION_PROFILE)
+
+        wrong_identity = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        wrong_identity["device"]["pid"] = "0xa015"
+        normalized = generator.normalize_profile(wrong_identity, path=ORION_PROFILE)
+        self.assertIsNone(generator._normalized_profile_record(normalized)["auraverb"])
+
     def test_surround_global_contract_is_exact_finite_and_orion_only(self) -> None:
         orion = generator.load_profile(ORION_PROFILE, ORION_PROFILE.parent)
         normalized = generator._normalized_profile_record(orion)
@@ -1446,20 +1527,19 @@ class GeneratorTests(unittest.TestCase):
             "Confirmed",
         )
 
-    def test_orion_auraverb_and_micmodeling_never_promote(self) -> None:
+    def test_orion_micmodeling_never_promotes_without_a_finite_contract(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
-        for frame_id in ("auraverb_command", "micmodeling_command"):
-            data["frame"][frame_id]["runtime_status"] = "confirmed"
-            data["frame"][frame_id]["notes"] = "future confirmed mapping"
-            profile = generator.normalize_profile(data, path=path)
-            self.assertNotEqual(
-                generator._status_variant(
-                    generator._effective_frame_status(profile, frame_id, profile.frame[frame_id])
-                ),
-                "Confirmed",
-                frame_id,
-            )
+        frame_id = "micmodeling_command"
+        data["frame"][frame_id]["runtime_status"] = "confirmed"
+        data["frame"][frame_id]["notes"] = "future confirmed mapping"
+        profile = generator.normalize_profile(data, path=path)
+        self.assertNotEqual(
+            generator._status_variant(
+                generator._effective_frame_status(profile, frame_id, profile.frame[frame_id])
+            ),
+            "Confirmed",
+        )
 
     def test_orion_inferred_semantics_are_unique_without_renaming_lookups(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"

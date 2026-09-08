@@ -38,6 +38,8 @@ pub struct RuntimeProfile {
     #[serde(default)]
     pub state_report: Option<RuntimeStateReport>,
     #[serde(default)]
+    pub auraverb: Option<RuntimeAuraVerbContract>,
+    #[serde(default)]
     pub surround_global: Option<RuntimeSurroundGlobalContract>,
     #[serde(default)]
     pub link_domains: Vec<RuntimeLinkDomain>,
@@ -154,6 +156,37 @@ pub struct FaderSemantics {
     pub max: i32,
     pub direction: FaderDirection,
     pub unity: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeAuraVerbField {
+    pub id: u16,
+    pub name: String,
+    pub command_offset: u16,
+    pub readback_offset: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeAuraVerbContract {
+    pub command_frame_id: String,
+    pub operation: u16,
+    pub target: u16,
+    pub readback_category: u8,
+    pub readback_index: u8,
+    pub readback_header: [u8; 16],
+    pub readback_body_header: u8,
+    pub readback_block_offset: u16,
+    pub readback_block_size: u16,
+    pub readback_record_size: u16,
+    pub fixed_tail_offset: u16,
+    pub wet_offset: u16,
+    pub wet_constant: u8,
+    pub enabled_offset: u16,
+    pub terminator_offset: u16,
+    pub terminator_constant: u8,
+    pub fields: Vec<RuntimeAuraVerbField>,
+    pub range: (u8, u8),
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1649,6 +1682,9 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
         }
     }
 
+    if let Some(contract) = &profile.auraverb {
+        validate_auraverb(profile_id, entry_index, profile, contract)?;
+    }
     if let Some(contract) = &profile.surround_global {
         validate_surround_global(profile_id, entry_index, profile, contract)?;
     }
@@ -1673,6 +1709,201 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
         validate_readback(profile_id, entry_index, profile, readback)?;
     }
     Ok(())
+}
+
+pub(crate) fn validate_auraverb_contract(
+    profile_id: &str,
+    profile: &RuntimeProfile,
+    contract: &RuntimeAuraVerbContract,
+) -> Result<(), String> {
+    const READBACK_HEADER: [u8; 16] = [0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x0a, 0, 0, 0, 0, 0, 0, 0];
+    const EXPECTED_FIELDS: [(u16, &str, u16, u16); 8] = [
+        (0, "color", 20, 1),
+        (1, "pre_delay", 21, 2),
+        (2, "early_reflection_gain", 23, 4),
+        (3, "late_reflection_delay", 24, 5),
+        (4, "richness", 25, 6),
+        (5, "reverb_time", 26, 7),
+        (6, "room_size", 19, 0),
+        (7, "reverb_level", 27, 8),
+    ];
+    if profile_id != "orion_studio_3"
+        || (profile.identity.vid, profile.identity.pid) != (0x23e5, 0xa221)
+    {
+        return Err("AuraVerb contract is restricted to the canonical Orion identity".into());
+    }
+    if profile.transport.report_size != Some(320)
+        || contract.command_frame_id != "auraverb_command"
+        || (contract.operation, contract.target) != (0xda, 0)
+        || (contract.readback_category, contract.readback_index) != (0x0a, 0)
+        || contract.readback_header != READBACK_HEADER
+        || (
+            contract.readback_body_header,
+            contract.readback_block_offset,
+        ) != (0, 1)
+        || (contract.readback_block_size, contract.readback_record_size) != (11, 43)
+        || contract.fixed_tail_offset != 59
+        || (contract.wet_offset, contract.wet_constant) != (22, 100)
+        || contract.enabled_offset != 28
+        || (contract.terminator_offset, contract.terminator_constant) != (10, 0xff)
+        || contract.range != (0, 100)
+        || contract.evidence.trim().is_empty()
+    {
+        return Err("AuraVerb contract differs from the exact captured geometry".into());
+    }
+    if contract.fields.len() != EXPECTED_FIELDS.len()
+        || contract
+            .fields
+            .iter()
+            .zip(EXPECTED_FIELDS)
+            .any(|(actual, expected)| {
+                (
+                    actual.id,
+                    actual.name.as_str(),
+                    actual.command_offset,
+                    actual.readback_offset,
+                ) != expected
+            })
+    {
+        return Err("AuraVerb fields differ from the exact captured order".into());
+    }
+    let frame = profile
+        .frames
+        .iter()
+        .find(|frame| frame.id == contract.command_frame_id)
+        .ok_or_else(|| "AuraVerb command frame is absent".to_owned())?;
+    let expected_operations = vec![
+        FrameOperation::FixedByte {
+            offset: 0,
+            value: 0x70,
+        },
+        FrameOperation::FixedByte {
+            offset: 4,
+            value: 0x1d,
+        },
+        FrameOperation::FixedByte {
+            offset: 16,
+            value: 0xda,
+        },
+        FrameOperation::FixedByte {
+            offset: 17,
+            value: 0x0b,
+        },
+        FrameOperation::Scalar {
+            field: "target".into(),
+            offset: 18,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "field_6".into(),
+            offset: 19,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "field_0".into(),
+            offset: 20,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "field_1".into(),
+            offset: 21,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::FixedByte {
+            offset: 22,
+            value: 100,
+        },
+        FrameOperation::Scalar {
+            field: "field_2".into(),
+            offset: 23,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "field_3".into(),
+            offset: 24,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "field_4".into(),
+            offset: 25,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "field_5".into(),
+            offset: 26,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "field_7".into(),
+            offset: 27,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "enabled".into(),
+            offset: 28,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+    ];
+    if !frame.kind.eq_ignore_ascii_case("command")
+        || !is_confirmed(&frame.status)
+        || frame.operations != expected_operations
+    {
+        return Err("AuraVerb command frame differs from the exact captured contract".into());
+    }
+    let allowed = profile.constraints.iter().find(|constraint| {
+        constraint.name == "allowed_opcodes" && is_confirmed(&constraint.status)
+    });
+    if allowed.is_none_or(|constraint| !constraint.values.contains(&0x1d)) {
+        return Err("opcode 0x1d is not in the finite allowed command set".into());
+    }
+    let readback = profile
+        .readback
+        .as_ref()
+        .ok_or_else(|| "AuraVerb readback definition is absent".to_owned())?;
+    if readback.response_magic != READBACK_HEADER[0]
+        || readback.response_discriminator_offset != 1
+        || readback.response_discriminator != 0
+        || readback.category_offset != 8
+        || readback.index_offset != 12
+        || readback.data_offset != 16
+        || readback
+            .category_counts
+            .iter()
+            .find(|bound| bound.category == 0x0a)
+            .is_none_or(|bound| bound.count != 1)
+        || !readback
+            .safe_queries
+            .iter()
+            .any(|query| (query.category, query.index) == (0x0a, 0))
+    {
+        return Err("AuraVerb readback is not the exact bounded category-0x0a contract".into());
+    }
+    Ok(())
+}
+
+fn validate_auraverb(
+    profile_id: &str,
+    entry_index: usize,
+    profile: &RuntimeProfile,
+    contract: &RuntimeAuraVerbContract,
+) -> Result<(), ProfileLoadError> {
+    validate_auraverb_contract(profile_id, profile, contract).map_err(|detail| {
+        ProfileLoadError::InvalidReportGeometry {
+            profile_id: profile_id.to_owned(),
+            field: format!("profiles[{entry_index}].auraverb"),
+            detail,
+        }
+    })
 }
 
 pub(crate) fn validate_surround_global_contract(

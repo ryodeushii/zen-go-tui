@@ -9,13 +9,13 @@ use antelope_protocol::{
     CandidatePreampMeter, FaderDirection, FaderSemantics, FrameEndian, FrameOperation,
     MixerReadbackLayout, ParamReadbackField, ParamReference, ProfileLoadError, ProfilePack,
     QueryRequest, ReadbackCategory, ReadbackDefinition as RuntimeReadbackDefinition,
-    RuntimeAddressSpace, RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry,
-    RuntimeFrame, RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability,
-    RuntimeInputControlKind, RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping,
-    RuntimeMeterTarget, RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile,
-    RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup, RuntimeRoutingReadbackSourceDomain,
-    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeSurroundFormat,
-    RuntimeSurroundGlobalContract, RuntimeTransport,
+    RuntimeAddressSpace, RuntimeAuraVerbContract, RuntimeAuraVerbField, RuntimeConstraint,
+    RuntimeDecoder, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeHazard, RuntimeIdentity,
+    RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind, RuntimeLinkDomain,
+    RuntimeLinkDomainKind, RuntimeMeterMapping, RuntimeMeterTarget, RuntimeMixer, RuntimeOutput,
+    RuntimeParam, RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
+    RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain, RuntimeStateReport,
+    RuntimeSurroundFormat, RuntimeSurroundGlobalContract, RuntimeTransport,
 };
 use std::collections::HashSet;
 
@@ -314,6 +314,36 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                         caveat: meter.caveat.into(),
                     })
                     .collect(),
+            }),
+            auraverb: definition.auraverb.map(|contract| RuntimeAuraVerbContract {
+                command_frame_id: contract.command_frame_id.into(),
+                operation: contract.operation,
+                target: contract.target,
+                readback_category: contract.readback_category,
+                readback_index: contract.readback_index,
+                readback_header: contract.readback_header,
+                readback_body_header: contract.readback_body_header,
+                readback_block_offset: contract.readback_block_offset,
+                readback_block_size: contract.readback_block_size,
+                readback_record_size: contract.readback_record_size,
+                fixed_tail_offset: contract.fixed_tail_offset,
+                wet_offset: contract.wet_offset,
+                wet_constant: contract.wet_constant,
+                enabled_offset: contract.enabled_offset,
+                terminator_offset: contract.terminator_offset,
+                terminator_constant: contract.terminator_constant,
+                fields: contract
+                    .fields
+                    .iter()
+                    .map(|field| RuntimeAuraVerbField {
+                        id: field.id,
+                        name: field.name.into(),
+                        command_offset: field.command_offset,
+                        readback_offset: field.readback_offset,
+                    })
+                    .collect(),
+                range: contract.range,
+                evidence: contract.evidence.into(),
             }),
             surround_global: definition.surround_global.map(|contract| {
                 RuntimeSurroundGlobalContract {

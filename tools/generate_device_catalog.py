@@ -713,6 +713,7 @@ def normalize_profile(
     # values that cannot fit generated Rust types fail as ProfileError before
     # rendering or catalog classification.
     _build_frames(normalized)
+    _auraverb_contract(normalized)
     _surround_global_contract(normalized)
     _build_params(normalized)
     _build_constraints(normalized)
@@ -809,7 +810,9 @@ def _effective_frame_status(profile: NormalizedProfile, frame_id: str, frame: Ma
         "state_report",
         "readback",
     }
-    if _is_orion(profile) and frame_id in {"auraverb_command", "micmodeling_command"}:
+    if _is_orion(profile) and frame_id == "auraverb_command":
+        return "confirmed" if _auraverb_contract(profile) is not None else "unknown"
+    if _is_orion(profile) and frame_id == "micmodeling_command":
         return "unknown"
     if frame_id == "surround_global_command":
         return "confirmed" if _surround_global_contract(profile) is not None else "unknown"
@@ -5365,6 +5368,137 @@ def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | N
     return readback, [{"query_id": item["category"], "sub_id": item["index"]} for item in safe_queries]
 
 
+def _auraverb_contract(profile: NormalizedProfile) -> dict[str, Any] | None:
+    """Compile only the captured Orion Mix-1 AuraVerb complete-state contract."""
+
+    frame = profile.frame.get("auraverb_command")
+    if frame is None or not _is_orion(profile):
+        return None
+    if not isinstance(frame, Mapping):
+        raise ProfileError("frame.auraverb_command must be an object")
+    contract = frame.get("contract")
+    if not isinstance(contract, Mapping):
+        return None
+    context = "frame.auraverb_command.contract"
+    if _normalized_status(str(contract.get("status", ""))) != "confirmed":
+        return None
+    evidence = contract.get("evidence")
+    if not isinstance(evidence, str) or not evidence.strip():
+        raise ProfileError(f"{context}.evidence must be non-empty")
+
+    exact_frame = {"magic_offset": 0, "magic": 0x70, "opcode_offset": 4, "opcode": 0x1D,
+                   "param_id_offset": 16, "param_id": 0xDA, "subcmd_offset": 17,
+                   "subcmd": 0x0B, "mix_offset": 18, "mix_wet_offset": 22,
+                   "mix_wet_constant": 100, "enabled_offset": 28}
+    for field, expected in exact_frame.items():
+        if parse_int(frame.get(field), f"frame.auraverb_command.{field}") != expected:
+            raise ProfileError(f"frame.auraverb_command.{field} must be {expected:#x}")
+
+    allowed = profile.constraints.get("allowed_opcodes")
+    if not isinstance(allowed, list) or 0x1D not in {
+        parse_int(value, "constraints.allowed_opcodes") for value in allowed
+    }:
+        raise ProfileError(f"{context} requires opcode 0x1d in allowed_opcodes")
+
+    expected_operations = [
+        {"op": "fixed_byte", "offset": 0, "value": 0x70},
+        {"op": "fixed_byte", "offset": 4, "value": 0x1D},
+        {"op": "fixed_byte", "offset": 16, "value": 0xDA},
+        {"op": "fixed_byte", "offset": 17, "value": 0x0B},
+        {"op": "scalar", "field": "target", "offset": 18, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "field_6", "offset": 19, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "field_0", "offset": 20, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "field_1", "offset": 21, "width": 1, "endian": "not_applicable"},
+        {"op": "fixed_byte", "offset": 22, "value": 100},
+        {"op": "scalar", "field": "field_2", "offset": 23, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "field_3", "offset": 24, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "field_4", "offset": 25, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "field_5", "offset": 26, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "field_7", "offset": 27, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "enabled", "offset": 28, "width": 1, "endian": "not_applicable"},
+    ]
+    if _frame_operations(profile, "auraverb_command", frame) != expected_operations:
+        raise ProfileError(f"{context} requires the exact captured frame operations")
+
+    scalar = lambda name: _checked_u16(contract.get(name), f"{context}.{name}")
+    operation = scalar("operation")
+    target = scalar("target")
+    readback_category = _checked_u8(contract.get("readback_category"), f"{context}.readback_category")
+    readback_index = _checked_u8(contract.get("readback_index"), f"{context}.readback_index")
+    raw_header = contract.get("readback_header")
+    if not isinstance(raw_header, list):
+        raise ProfileError(f"{context}.readback_header must be an array")
+    readback_header = [_checked_u8(value, f"{context}.readback_header[{index}]") for index, value in enumerate(raw_header)]
+    expected_header = [0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x0A, 0, 0, 0, 0, 0, 0, 0]
+    body_header = _checked_u8(contract.get("readback_body_header"), f"{context}.readback_body_header")
+    block_offset = scalar("readback_block_offset")
+    block_size = scalar("readback_block_size")
+    record_size = scalar("readback_record_size")
+    fixed_tail_offset = scalar("fixed_tail_offset")
+    wet_offset = scalar("wet_offset")
+    wet_constant = _checked_u8(contract.get("wet_constant"), f"{context}.wet_constant")
+    enabled_offset = scalar("enabled_offset")
+    terminator_offset = scalar("terminator_offset")
+    terminator_constant = _checked_u8(contract.get("terminator_constant"), f"{context}.terminator_constant")
+    if (profile.transport.report_size, operation, target, readback_category, readback_index,
+        readback_header, body_header, block_offset, block_size, record_size, fixed_tail_offset,
+        wet_offset, wet_constant, enabled_offset, terminator_offset, terminator_constant) != (
+        320, 0xDA, 0, 0x0A, 0, expected_header, 0, 1, 11, 43, 59, 22, 100, 28, 10, 0xFF
+    ):
+        raise ProfileError(f"{context} differs from the exact captured report geometry")
+
+    expected_fields = [
+        (0, "color", 20, 1), (1, "pre_delay", 21, 2),
+        (2, "early_reflection_gain", 23, 4), (3, "late_reflection_delay", 24, 5),
+        (4, "richness", 25, 6), (5, "reverb_time", 26, 7),
+        (6, "room_size", 19, 0), (7, "reverb_level", 27, 8),
+    ]
+    raw_fields = contract.get("fields")
+    if not isinstance(raw_fields, list) or len(raw_fields) != len(expected_fields):
+        raise ProfileError(f"{context}.fields must contain the exact eight fields")
+    fields = []
+    for index, raw in enumerate(raw_fields):
+        if not isinstance(raw, Mapping):
+            raise ProfileError(f"{context}.fields[{index}] must be an object")
+        fields.append({
+            "id": _checked_u16(raw.get("id"), f"{context}.fields[{index}].id"),
+            "name": str(raw.get("name", "")),
+            "command_offset": _checked_u16(raw.get("command_offset"), f"{context}.fields[{index}].command_offset"),
+            "readback_offset": _checked_u16(raw.get("readback_offset"), f"{context}.fields[{index}].readback_offset"),
+        })
+    if [(item["id"], item["name"], item["command_offset"], item["readback_offset"]) for item in fields] != expected_fields:
+        raise ProfileError(f"{context}.fields differ from the captured field order")
+    raw_range = contract.get("range")
+    if not isinstance(raw_range, list) or len(raw_range) != 2:
+        raise ProfileError(f"{context}.range must contain two bounds")
+    value_range = [_checked_u8(value, f"{context}.range") for value in raw_range]
+    if value_range != [0, 100]:
+        raise ProfileError(f"{context}.range must equal 0..100")
+
+    readback = profile.frame.get("readback")
+    counts = readback.get("category_counts") if isinstance(readback, Mapping) else None
+    geometry = (
+        parse_int(readback.get("response_magic"), "frame.readback.response_magic"),
+        parse_int(readback.get("response_discriminator_offset"), "frame.readback.response_discriminator_offset"),
+        parse_int(readback.get("response_discriminator"), "frame.readback.response_discriminator"),
+        parse_int(readback.get("category_offset"), "frame.readback.category_offset"),
+        parse_int(readback.get("index_offset"), "frame.readback.index_offset"),
+        parse_int(readback.get("data_offset"), "frame.readback.data_offset"),
+    ) if isinstance(readback, Mapping) else None
+    if not isinstance(counts, Mapping) or parse_int(counts.get("0x0a"), "frame.readback.category_counts.0x0a") != 1 or geometry != (0x75, 1, 0, 8, 12, 16):
+        raise ProfileError(f"{context} requires the exact bounded category-0x0a readback")
+    return {
+        "command_frame_id": "auraverb_command", "operation": operation, "target": target,
+        "readback_category": readback_category, "readback_index": readback_index,
+        "readback_header": readback_header, "readback_body_header": body_header,
+        "readback_block_offset": block_offset, "readback_block_size": block_size,
+        "readback_record_size": record_size, "fixed_tail_offset": fixed_tail_offset,
+        "wet_offset": wet_offset, "wet_constant": wet_constant, "enabled_offset": enabled_offset,
+        "terminator_offset": terminator_offset, "terminator_constant": terminator_constant,
+        "fields": fields, "range": value_range, "evidence": evidence,
+    }
+
+
 def _surround_global_contract(profile: NormalizedProfile) -> dict[str, Any] | None:
     """Compile the finite complete-state Surround global contract, if declared."""
 
@@ -5622,6 +5756,7 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
             else None
         ),
         "meter_mappings": _meter_mappings(profile),
+        "auraverb": _auraverb_contract(profile),
         "surround_global": _surround_global_contract(profile),
         "frames": [
             {
@@ -6020,7 +6155,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         "    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition,",
         "    SafeQueryDefinition, MixerReadbackLayoutDefinition, StateReportDefinition,",
         "    ByteEqualsPredicateDefinition, CandidatePreampMeterDefinition, MeterMappingDefinition, MeterTargetDefinition,",
-        "    SurroundFormatDefinition, SurroundGlobalContractDefinition,",
+        "    AuraVerbContractDefinition, AuraVerbFieldDefinition, SurroundFormatDefinition, SurroundGlobalContractDefinition,",
         "    FaderDirectionDefinition, FaderSemanticsDefinition,",
         "    Readiness, StartupQueryDefinition, Status, SupportLevel, TransportDefinition, TransportKind,",
         "};",
@@ -6039,6 +6174,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         link_domains = _build_link_domains(profile)
         routing_groups = _build_routing_groups(profile)
         frames = _build_frames(profile)
+        auraverb = _auraverb_contract(profile)
         surround_global = _surround_global_contract(profile)
         decoders = _build_decoders(frames)
         params = _build_params(profile)
@@ -6366,6 +6502,30 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             )
             state_report_name = f"Some({slug}_STATE_REPORT)"
 
+        if auraverb is None:
+            auraverb_name = "None"
+        else:
+            lines.append(f"static {slug}_AURAVERB_FIELDS: &[AuraVerbFieldDefinition] = &[")
+            for field in auraverb["fields"]:
+                lines.append(
+                    "    AuraVerbFieldDefinition { "
+                    f"id: {field['id']}u16, name: {_rust_string(field['name'])}, "
+                    f"command_offset: {field['command_offset']}u16, readback_offset: {field['readback_offset']}u16 }},"
+                )
+            lines.append("];\n")
+            lines.append(
+                f"static {slug}_AURAVERB: AuraVerbContractDefinition = AuraVerbContractDefinition {{ "
+                f"command_frame_id: {_rust_string(auraverb['command_frame_id'])}, operation: {auraverb['operation']}u16, target: {auraverb['target']}u16, "
+                f"readback_category: {auraverb['readback_category']}u8, readback_index: {auraverb['readback_index']}u8, "
+                f"readback_header: [{', '.join(str(value) + 'u8' for value in auraverb['readback_header'])}], "
+                f"readback_body_header: {auraverb['readback_body_header']}u8, readback_block_offset: {auraverb['readback_block_offset']}u16, "
+                f"readback_block_size: {auraverb['readback_block_size']}u16, readback_record_size: {auraverb['readback_record_size']}u16, fixed_tail_offset: {auraverb['fixed_tail_offset']}u16, "
+                f"wet_offset: {auraverb['wet_offset']}u16, wet_constant: {auraverb['wet_constant']}u8, enabled_offset: {auraverb['enabled_offset']}u16, "
+                f"terminator_offset: {auraverb['terminator_offset']}u16, terminator_constant: {auraverb['terminator_constant']}u8, "
+                f"fields: {slug}_AURAVERB_FIELDS, range: ({auraverb['range'][0]}u8, {auraverb['range'][1]}u8), evidence: {_rust_string(auraverb['evidence'])} }};"
+            )
+            auraverb_name = f"Some({slug}_AURAVERB)"
+
         if surround_global is None:
             surround_global_name = "None"
         else:
@@ -6463,6 +6623,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 "meter_mappings": f"{slug}_METER_MAPPINGS",
                 "startup_queries": f"{slug}_STARTUP_QUERIES",
                 "state_report": state_report_name,
+                "auraverb": auraverb_name,
                 "surround_global": surround_global_name,
                 "readback": readback_name,
                 "raw": f"{slug}_RAW_PROFILE",
@@ -6518,7 +6679,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             f"            frames: {item['frames']}, decoders: {item['decoders']}, params: {item['params']}, constraints: {item['constraints']}, hazards: {item['hazards']}, meter_mappings: {item['meter_mappings']},"
         )
         lines.append(
-            f"            startup_queries: {item['startup_queries']}, state_report: {item['state_report']}, surround_global: {item['surround_global']}, readback: {item['readback']},"
+            f"            startup_queries: {item['startup_queries']}, state_report: {item['state_report']}, auraverb: {item['auraverb']}, surround_global: {item['surround_global']}, readback: {item['readback']},"
         )
         lines.append(
             f"            status: Status::{_status_variant(status)}, status_text: {_rust_string(status)}, "

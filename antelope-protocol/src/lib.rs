@@ -26,12 +26,13 @@
 
 pub mod driver;
 pub use driver::{
-    Action, CommandBatch, ControlValue, DeviceDefinition, DeviceDriver, DeviceEvent,
-    DriverDefinition, DriverError, DynamicDeviceState, DynamicGlobalState, DynamicInputState,
-    DynamicMeterState, DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState,
-    DynamicRoutingGroup, DynamicStatePatch, GlobalControl, InputAddress, InputControl,
-    MeterInvalidationTarget, MixerAddress, MixerControl, OutputAddress, OutputControl,
-    OutputTrimAddress, RoutingSource, SurroundGlobalControl, SurroundGlobalState, WholeStateField,
+    Action, AuraVerbParameter, AuraVerbState, CommandBatch, ControlValue, DeviceDefinition,
+    DeviceDriver, DeviceEvent, DriverDefinition, DriverError, DynamicDeviceState,
+    DynamicGlobalState, DynamicInputState, DynamicMeterState, DynamicMixerStrip,
+    DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup, DynamicStatePatch, GlobalControl,
+    InputAddress, InputControl, MeterInvalidationTarget, MixerAddress, MixerControl, OutputAddress,
+    OutputControl, OutputTrimAddress, RoutingSource, SurroundGlobalControl, SurroundGlobalState,
+    WholeStateField,
 };
 mod encoder;
 mod frame;
@@ -61,14 +62,14 @@ pub use profile::{
     load_profile_pack, load_profile_pack_file, CandidatePreampMeter, FaderDirection,
     FaderSemantics, FrameEndian, FrameOperation, MixerReadbackLayout, ParamReadbackField,
     ParamReference, ProfileLoadError, ProfilePack, ReadbackCategory, ReadbackDefinition,
-    RuntimeAddressSpace, RuntimeByteEqualsPredicate, RuntimeConstraint, RuntimeDecoder,
-    RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeHazard, RuntimeIdentity, RuntimeInput,
-    RuntimeInputCapability, RuntimeInputControlKind, RuntimeLinkDomain, RuntimeLinkDomainKind,
-    RuntimeMeterMapping, RuntimeMeterTarget, RuntimeMixer, RuntimeOutput, RuntimeParam,
-    RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
-    RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain, RuntimeStateReport,
-    RuntimeSurroundFormat, RuntimeSurroundGlobalContract, RuntimeTransport, SafeQuery,
-    PROFILE_PACK_SCHEMA_VERSION,
+    RuntimeAddressSpace, RuntimeAuraVerbContract, RuntimeAuraVerbField, RuntimeByteEqualsPredicate,
+    RuntimeConstraint, RuntimeDecoder, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
+    RuntimeHazard, RuntimeIdentity, RuntimeInput, RuntimeInputCapability, RuntimeInputControlKind,
+    RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping, RuntimeMeterTarget,
+    RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile, RuntimeProvenance, RuntimeReadiness,
+    RuntimeRoutingGroup, RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain,
+    RuntimeStateReport, RuntimeSurroundFormat, RuntimeSurroundGlobalContract, RuntimeTransport,
+    SafeQuery, PROFILE_PACK_SCHEMA_VERSION,
 };
 pub use query::{control_panel_startup_queries, DeviceMetadata, QueryRequest, QueryResponse};
 

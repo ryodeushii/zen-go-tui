@@ -2,12 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use antelope_protocol::{
-    DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState, GlobalControl,
-    InputAddress, InputControl, MixerAddress, MixerChannelState, MixerControl, OutputAddress,
-    OutputControl, OutputMode, OutputState, OutputTarget, OutputTrimAddress, PreampState,
-    ProfileDriver, RoutingSource, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind,
-    RuntimeLinkDomainKind, RuntimeProfile, RuntimeReadiness, SampleRate, Surface,
-    SurroundGlobalState,
+    AuraVerbState, DeviceMetadata, DynamicInputState, DynamicMixerSurface, DynamicOutputState,
+    GlobalControl, InputAddress, InputControl, MixerAddress, MixerChannelState, MixerControl,
+    OutputAddress, OutputControl, OutputMode, OutputState, OutputTarget, OutputTrimAddress,
+    PreampState, ProfileDriver, RoutingSource, RuntimeDriverKind, RuntimeEntry,
+    RuntimeInputControlKind, RuntimeLinkDomainKind, RuntimeProfile, RuntimeReadiness, SampleRate,
+    Surface, SurroundGlobalState,
 };
 
 use super::types::{
@@ -90,6 +90,33 @@ impl AppSettings {
             0x0f => -15,
             0x14 => -20,
             _ => -3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuraVerbFreshness {
+    AwaitingReadback,
+    Authoritative,
+    PendingReadback,
+    Stale,
+}
+
+#[derive(Debug, Clone)]
+pub struct AuraVerbCache {
+    /// Latest confirmed Mix-1 device state; never replaced by delayed unmatched replies.
+    pub state: Option<AuraVerbState>,
+    /// Complete state expected from the latest successful whole-frame write.
+    pub pending_expected: Option<AuraVerbState>,
+    pub freshness: AuraVerbFreshness,
+}
+
+impl Default for AuraVerbCache {
+    fn default() -> Self {
+        Self {
+            state: None,
+            pending_expected: None,
+            freshness: AuraVerbFreshness::AwaitingReadback,
         }
     }
 }
