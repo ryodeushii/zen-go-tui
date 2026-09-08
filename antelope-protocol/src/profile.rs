@@ -38,6 +38,8 @@ pub struct RuntimeProfile {
     #[serde(default)]
     pub state_report: Option<RuntimeStateReport>,
     #[serde(default)]
+    pub surround_global: Option<RuntimeSurroundGlobalContract>,
+    #[serde(default)]
     pub link_domains: Vec<RuntimeLinkDomain>,
     pub routing_groups: Vec<RuntimeRoutingGroup>,
     pub frames: Vec<RuntimeFrame>,
@@ -152,6 +154,38 @@ pub struct FaderSemantics {
     pub max: i32,
     pub direction: FaderDirection,
     pub unity: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSurroundFormat {
+    pub name: String,
+    pub flags_a: u8,
+    pub flags_b: u8,
+    pub writable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSurroundGlobalContract {
+    pub command_frame_id: String,
+    pub readback_category: u8,
+    pub readback_index: u8,
+    pub readback_header: [u8; 16],
+    pub payload_offset: u16,
+    /// Captured meaningful command bytes. The remainder begins at `fixed_tail_offset`
+    /// and is fixed zero padding, never propagated as mutable state.
+    pub template_size: u16,
+    pub fixed_tail_offset: u16,
+    pub flags_a_offset: u16,
+    pub flags_b_offset: u16,
+    pub flags_a_mask: u8,
+    pub flags_b_mask: u8,
+    pub formats: Vec<RuntimeSurroundFormat>,
+    pub delay_offset: u16,
+    pub delay_range: (u16, u16),
+    pub level_offset: u16,
+    pub level_range: (u16, u16),
+    pub mask_offsets: [u16; 3],
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1615,6 +1649,10 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
         }
     }
 
+    if let Some(contract) = &profile.surround_global {
+        validate_surround_global(profile_id, entry_index, profile, contract)?;
+    }
+
     if selectable_profile {
         let readback =
             profile
@@ -1635,6 +1673,170 @@ fn validate_entry(entry: &RuntimeEntry, entry_index: usize) -> Result<(), Profil
         validate_readback(profile_id, entry_index, profile, readback)?;
     }
     Ok(())
+}
+
+pub(crate) fn validate_surround_global_contract(
+    profile_id: &str,
+    profile: &RuntimeProfile,
+    contract: &RuntimeSurroundGlobalContract,
+) -> Result<(), String> {
+    const READBACK_HEADER: [u8; 16] = [
+        0x75, 0x00, 0x00, 0x00, 0x40, 0x01, 0x00, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00,
+    ];
+    if profile_id != "orion_studio_3"
+        || (profile.identity.vid, profile.identity.pid) != (0x23e5, 0xa221)
+    {
+        return Err(
+            "Surround global contract is restricted to the canonical Orion identity".into(),
+        );
+    }
+    if profile.transport.report_size != Some(320)
+        || contract.command_frame_id != "surround_global_command"
+        || (contract.readback_category, contract.readback_index) != (0x1b, 0)
+        || contract.readback_header != READBACK_HEADER
+        || (
+            contract.payload_offset,
+            contract.template_size,
+            contract.fixed_tail_offset,
+        ) != (18, 151, 169)
+        || (contract.flags_a_offset, contract.flags_b_offset) != (18, 19)
+        || (contract.flags_a_mask, contract.flags_b_mask) != (0x5f, 0x7f)
+        || contract.delay_offset != 20
+        || contract.delay_range != (6, 45)
+        || contract.level_offset != 22
+        || contract.level_range != (0, 760)
+        || contract.mask_offsets != [25, 27, 29]
+        || contract.evidence.trim().is_empty()
+    {
+        return Err("Surround global contract differs from the exact captured geometry".into());
+    }
+    let expected_formats = [("2.0", 0x02, 0x9f, true), ("2.1", 0x03, 0x82, false)];
+    if contract.formats.len() != expected_formats.len()
+        || contract
+            .formats
+            .iter()
+            .zip(expected_formats)
+            .any(|(actual, expected)| {
+                (
+                    actual.name.as_str(),
+                    actual.flags_a,
+                    actual.flags_b,
+                    actual.writable,
+                ) != expected
+            })
+    {
+        return Err("Surround formats differ from the exact captured read/write contract".into());
+    }
+    let mut spans = vec![
+        (contract.flags_a_offset, 1_u16),
+        (contract.flags_b_offset, 1),
+        (contract.delay_offset, 1),
+        (contract.level_offset, 2),
+        (contract.mask_offsets[0], 2),
+        (contract.mask_offsets[1], 2),
+        (contract.mask_offsets[2], 2),
+    ];
+    spans.sort_unstable();
+    if spans.iter().any(|(offset, width)| {
+        *offset < contract.payload_offset
+            || u32::from(*offset) + u32::from(*width) > u32::from(contract.fixed_tail_offset)
+    }) || spans
+        .windows(2)
+        .any(|pair| pair[0].0 + pair[0].1 > pair[1].0)
+    {
+        return Err("Surround fields overlap or leave the meaningful captured body".into());
+    }
+    let allowed = profile.constraints.iter().find(|constraint| {
+        constraint.name == "allowed_opcodes" && is_confirmed(&constraint.status)
+    });
+    let launcher_only = profile.constraints.iter().find(|constraint| {
+        constraint.name == "observed_opcodes_launcher_only" && is_confirmed(&constraint.status)
+    });
+    if allowed.is_none_or(|constraint| !constraint.values.contains(&0xab))
+        || launcher_only.is_some_and(|constraint| constraint.values.contains(&0xab))
+    {
+        return Err("opcode 0xab is not in the finite allowed command set".into());
+    }
+    let frame = profile
+        .frames
+        .iter()
+        .find(|frame| frame.id == contract.command_frame_id)
+        .ok_or_else(|| "Surround command frame is absent".to_owned())?;
+    let expected_operations = vec![
+        FrameOperation::FixedByte {
+            offset: 0,
+            value: 0x70,
+        },
+        FrameOperation::FixedByte {
+            offset: 4,
+            value: 0xab,
+        },
+        FrameOperation::FixedByte {
+            offset: 16,
+            value: 0xeb,
+        },
+        FrameOperation::FixedByte {
+            offset: 17,
+            value: 0x99,
+        },
+        FrameOperation::Scalar {
+            field: "global_delay".into(),
+            offset: 20,
+            width: 1,
+            endian: FrameEndian::NotApplicable,
+        },
+        FrameOperation::Scalar {
+            field: "global_level".into(),
+            offset: 22,
+            width: 2,
+            endian: FrameEndian::Little,
+        },
+    ];
+    if !frame.kind.eq_ignore_ascii_case("command")
+        || !is_confirmed(&frame.status)
+        || frame.operations != expected_operations
+    {
+        return Err("Surround command frame differs from the exact captured contract".into());
+    }
+    let readback = profile
+        .readback
+        .as_ref()
+        .ok_or_else(|| "Surround readback definition is absent".to_owned())?;
+    if readback.response_magic != READBACK_HEADER[0]
+        || readback.response_discriminator_offset != 1
+        || readback.response_discriminator != READBACK_HEADER[1]
+        || readback.category_offset != 8
+        || readback.index_offset != 12
+        || readback.data_offset != 16
+        || readback
+            .category_counts
+            .iter()
+            .find(|bound| bound.category == 0x1b)
+            .is_none_or(|bound| bound.count != 1)
+        || !readback
+            .safe_queries
+            .iter()
+            .any(|query| (query.category, query.index) == (0x1b, 0))
+    {
+        return Err("Surround readback is not the exact bounded category-0x1b contract".into());
+    }
+    Ok(())
+}
+
+fn validate_surround_global(
+    profile_id: &str,
+    entry_index: usize,
+    profile: &RuntimeProfile,
+    contract: &RuntimeSurroundGlobalContract,
+) -> Result<(), ProfileLoadError> {
+    validate_surround_global_contract(profile_id, profile, contract).map_err(|detail| {
+        ProfileLoadError::InvalidReportGeometry {
+            profile_id: profile_id.to_owned(),
+            field: format!("profiles[{entry_index}].surround_global"),
+            detail,
+        }
+    })
 }
 
 fn validate_operation(

@@ -309,3 +309,10 @@ tshark -r "$D/antelope-orion-mix2-ch1-32-oscillator1khz-4secpauses.pcapng" \
   -e frame.number -e frame.time_relative -e usb.src -e usb.dst \
   -e usb.endpoint_address -e usb.data_len -e usbhid.data -e usb.capdata
 ```
+
+### Surround first-slice meter boundary
+
+The first functional Surround slice adds no meter ownership. The `0x75/0x1f`
+pairs at @32/@48 remain route-correlated for channels 1–2 only, and the
+selector-dependent `0x73` bank remains scoped to its existing Mix 2 mapping.
+No Surround output, mix, or 16-channel meter map is inferred from those bytes.

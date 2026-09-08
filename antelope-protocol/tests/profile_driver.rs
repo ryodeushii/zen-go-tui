@@ -5,8 +5,8 @@ use antelope_protocol::{
     MixerAddress, MixerControl, OutputAddress, OutputControl, OutputTrimAddress,
     ParamReadbackField, ProfileDriver, QueryRequest, RoutingSource, RuntimeByteEqualsPredicate,
     RuntimeConstraint, RuntimeDriverKind, RuntimeEntry, RuntimeFrame, RuntimeMeterMapping,
-    RuntimeMeterTarget, RuntimeReadiness, RuntimeRoutingReadbackSourceDomain, WholeStateField,
-    ZenGoDriver,
+    RuntimeMeterTarget, RuntimeReadiness, RuntimeRoutingReadbackSourceDomain,
+    SurroundGlobalControl, WholeStateField, ZenGoDriver,
 };
 
 fn stored_orion_entry() -> RuntimeEntry {
@@ -48,6 +48,14 @@ fn canonical_orion_entry() -> RuntimeEntry {
     .into_iter()
     .find(|entry| entry.profile.identity.pid == 0xa221)
     .expect("canonical Orion profile")
+}
+
+fn surround_readback_from_command(command: &[u8]) -> Vec<u8> {
+    assert_eq!(command.len(), 320);
+    let mut report = vec![0_u8; 320];
+    report[..16].copy_from_slice(&[0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x1b, 0, 0, 0, 0, 0, 0, 0]);
+    report[16..318].copy_from_slice(&command[18..320]);
+    report
 }
 
 fn state_meter_fixture_entry() -> RuntimeEntry {
@@ -116,6 +124,7 @@ fn non_orion_fixture_entry() -> RuntimeEntry {
     entry.id = "synthetic_other_profile".into();
     entry.profile.identity.vid = 0x1234;
     entry.profile.identity.pid = 0x5678;
+    entry.profile.surround_global = None;
     // This synthetic profile changes bus parameters to generic output scope,
     // so it cannot retain Orion's strictly bus-scoped MONO capability.
     entry
@@ -944,6 +953,241 @@ fn profile_driver_encodes_all_bounded_output_trim_targets() {
 }
 
 #[test]
+fn canonical_surround_global_contract_decodes_raw_20_pair_and_rebuilds_captured_frame() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical driver");
+    let captured = hex_fixture(include_str!(
+        "fixtures/orion/surround_global_20_eq_post.hex"
+    ));
+    let captured_pre = hex_fixture(include_str!("fixtures/orion/surround_global_20_eq_pre.hex"));
+    let readback = hex_fixture(include_str!(
+        "fixtures/orion/surround_global_20_readback.hex"
+    ));
+    let differences = captured
+        .iter()
+        .zip(&captured_pre)
+        .enumerate()
+        .filter_map(|(offset, (post, pre))| (post != pre).then_some((offset, post ^ pre)))
+        .collect::<Vec<_>>();
+    assert_eq!(differences, vec![(19, 0x80)]);
+    assert_eq!(readback[16..318], captured[18..320]);
+    let state = match driver.decode(&readback).expect("decode").expect("event") {
+        DeviceEvent::QueryReply {
+            query_id: 0x1b,
+            sub_id: 0,
+            patch: Some(DynamicStatePatch::SurroundGlobal(state)),
+            ..
+        } => state,
+        other => panic!("unexpected event {other:?}"),
+    };
+    assert_eq!(state.format_name.as_deref(), Some("2.0"));
+    assert_eq!((state.flags_a, state.flags_b), (0x02, 0x9f));
+    assert_eq!((state.delay_tenths_ms, state.level_raw), (6, 600));
+    assert_eq!(state.template, captured[18..169]);
+    assert!(state.writable);
+
+    let batch = driver
+        .encode(Action::SetSurroundGlobal {
+            template: state.template,
+            control: SurroundGlobalControl::Level,
+            value: 0,
+        })
+        .expect("captured-bounds level write");
+    let mut expected = captured;
+    expected[22..24].copy_from_slice(&0_u16.to_le_bytes());
+    assert_eq!(batch.frames, vec![expected]);
+    assert_eq!(batch.refresh_requests, vec![QueryRequest::new(0x1b, 0)]);
+}
+
+#[test]
+fn surround_global_20_write_preserves_meaningful_reserved_bytes_and_fixes_captured_tail() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical driver");
+    let mut captured = hex_fixture(include_str!(
+        "fixtures/orion/surround_global_20_eq_post.hex"
+    ));
+    captured[19] = 0x1f; // The raw post/pre pair proves only this 0x80 toggle.
+    captured[100] = 0xa5;
+    let state = match driver
+        .decode(&surround_readback_from_command(&captured))
+        .expect("decode")
+        .expect("event")
+    {
+        DeviceEvent::QueryReply {
+            patch: Some(DynamicStatePatch::SurroundGlobal(state)),
+            ..
+        } => state,
+        other => panic!("unexpected event {other:?}"),
+    };
+    assert_eq!(state.format_name.as_deref(), Some("2.0"));
+    let frame = driver
+        .encode(Action::SetSurroundGlobal {
+            template: state.template,
+            control: SurroundGlobalControl::Delay,
+            value: 45,
+        })
+        .expect("delay write")
+        .frames
+        .remove(0);
+    assert_eq!(frame[100], 0xa5);
+    assert_eq!(frame[20], 45);
+    assert!(frame[169..].iter().all(|byte| *byte == 0));
+
+    let mut unexpected_tail = surround_readback_from_command(&captured);
+    unexpected_tail[319] = 0x5a;
+    assert!(driver.decode(&unexpected_tail).is_err());
+}
+
+#[test]
+fn surround_global_21_full_export_is_read_only_and_unknown_states_fail_closed() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical driver");
+    let exported = hex_fixture(include_str!("fixtures/orion/surround_global_21_bm_on.hex"));
+    let state = match driver
+        .decode(&surround_readback_from_command(&exported))
+        .expect("user-supplied full export decodes as read-only evidence")
+        .expect("event")
+    {
+        DeviceEvent::QueryReply {
+            patch: Some(DynamicStatePatch::SurroundGlobal(state)),
+            ..
+        } => state,
+        other => panic!("unexpected event {other:?}"),
+    };
+    assert_eq!(state.format_name.as_deref(), Some("2.1"));
+    assert!(!state.writable);
+    assert!(driver
+        .encode(Action::SetSurroundGlobal {
+            template: state.template,
+            control: SurroundGlobalControl::Level,
+            value: 600,
+        })
+        .is_err());
+
+    let mut unknown = hex_fixture(include_str!(
+        "fixtures/orion/surround_global_20_eq_post.hex"
+    ));
+    unknown[18] = 0x04;
+    let unknown_state = match driver
+        .decode(&surround_readback_from_command(&unknown))
+        .expect("unknown format remains displayable")
+        .expect("event")
+    {
+        DeviceEvent::QueryReply {
+            patch: Some(DynamicStatePatch::SurroundGlobal(state)),
+            ..
+        } => state,
+        other => panic!("unexpected event {other:?}"),
+    };
+    assert_eq!(unknown_state.format_name, None);
+    assert!(!unknown_state.writable);
+
+    let known = hex_fixture(include_str!(
+        "fixtures/orion/surround_global_20_eq_post.hex"
+    ));
+    for (control, value) in [
+        (SurroundGlobalControl::Delay, 46),
+        (SurroundGlobalControl::Level, 761),
+    ] {
+        assert!(driver
+            .encode(Action::SetSurroundGlobal {
+                template: known[18..169].to_vec(),
+                control,
+                value,
+            })
+            .is_err());
+    }
+    assert!(driver.decode(&vec![0x75; 319]).is_err());
+}
+
+#[test]
+fn surround_global_readback_requires_every_captured_header_constant_only_for_its_family() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical driver");
+    let captured = hex_fixture(include_str!(
+        "fixtures/orion/surround_global_20_readback.hex"
+    ));
+    for offset in (2..=7).chain(9..=11).chain(13..=15) {
+        let mut mutated = captured.clone();
+        mutated[offset] ^= 0x01;
+        assert!(driver.decode(&mutated).is_err(), "header offset {offset}");
+    }
+
+    let mut other_family = captured;
+    other_family[4] ^= 0x01;
+    other_family[8] = 0x1a;
+    assert!(driver
+        .decode(&other_family)
+        .expect("other readback family")
+        .is_some());
+}
+
+#[test]
+fn surround_capability_is_profile_derived_and_rejects_mutated_contract() {
+    let pack = load_profile_pack(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/device/generated_profiles.json"
+    )))
+    .expect("generated pack");
+    let zen = pack
+        .profiles
+        .iter()
+        .find(|entry| entry.profile.identity.pid == 0xa015)
+        .expect("Zen profile");
+    assert!(zen.profile.surround_global.is_none());
+
+    let mutations: [fn(&mut RuntimeEntry); 6] = [
+        |entry: &mut RuntimeEntry| entry.id = "unknown_orion_clone".into(),
+        |entry: &mut RuntimeEntry| {
+            entry
+                .profile
+                .surround_global
+                .as_mut()
+                .unwrap()
+                .template_size = 150
+        },
+        |entry: &mut RuntimeEntry| {
+            entry
+                .profile
+                .surround_global
+                .as_mut()
+                .unwrap()
+                .level_range
+                .1 = 761
+        },
+        |entry: &mut RuntimeEntry| {
+            entry.profile.surround_global.as_mut().unwrap().delay_offset = 22
+        },
+        |entry: &mut RuntimeEntry| {
+            entry.profile.surround_global.as_mut().unwrap().formats[1].writable = true
+        },
+        |entry: &mut RuntimeEntry| {
+            entry
+                .profile
+                .surround_global
+                .as_mut()
+                .unwrap()
+                .readback_header[4] = 0
+        },
+    ];
+    for mutate in mutations {
+        let mut orion = canonical_orion_entry();
+        mutate(&mut orion);
+        assert!(ProfileDriver::new(orion).is_err());
+    }
+
+    let mut pack_json: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/device/generated_profiles.json"
+    )))
+    .expect("pack JSON");
+    let orion = pack_json["profiles"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|entry| entry["id"] == "orion_studio_3")
+        .unwrap();
+    orion["surround_global"]["level_range"][1] = 761.into();
+    assert!(load_profile_pack(&serde_json::to_vec(&pack_json).unwrap()).is_err());
+}
+
+#[test]
 fn profile_driver_encodes_every_confirmed_finite_orion_family() {
     let driver = profile_driver_from_fixture();
     for action in required_orion_actions() {
@@ -1742,7 +1986,12 @@ fn canonical_orion_truncated_state_error_carries_only_declared_strip_invalidatio
 
 #[test]
 fn truncated_profile_without_gated_strip_mappings_keeps_plain_error() {
-    let driver = ProfileDriver::new(state_meter_fixture_entry()).expect("state meter fixture");
+    let mut entry = state_meter_fixture_entry();
+    entry
+        .profile
+        .meter_mappings
+        .retain(|mapping| mapping.target != RuntimeMeterTarget::MixerStrip);
+    let driver = ProfileDriver::new(entry).expect("state meter fixture");
     let frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
     assert!(matches!(
         driver.decode(&frame[..156]),

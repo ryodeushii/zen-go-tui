@@ -713,6 +713,7 @@ def normalize_profile(
     # values that cannot fit generated Rust types fail as ProfileError before
     # rendering or catalog classification.
     _build_frames(normalized)
+    _surround_global_contract(normalized)
     _build_params(normalized)
     _build_constraints(normalized)
     _build_hazards(normalized)
@@ -810,6 +811,8 @@ def _effective_frame_status(profile: NormalizedProfile, frame_id: str, frame: Ma
     }
     if _is_orion(profile) and frame_id in {"auraverb_command", "micmodeling_command"}:
         return "unknown"
+    if frame_id == "surround_global_command":
+        return "confirmed" if _surround_global_contract(profile) is not None else "unknown"
     if not _is_orion(profile) or frame_id not in allowlisted:
         return raw_status
     explicit_status = str(frame.get("status", ""))
@@ -5362,6 +5365,164 @@ def _readback_definition(profile: NormalizedProfile) -> tuple[dict[str, Any] | N
     return readback, [{"query_id": item["category"], "sub_id": item["index"]} for item in safe_queries]
 
 
+def _surround_global_contract(profile: NormalizedProfile) -> dict[str, Any] | None:
+    """Compile the finite complete-state Surround global contract, if declared."""
+
+    frame = profile.frame.get("surround_global_command")
+    if frame is None:
+        return None
+    if not _is_orion(profile):
+        return None
+    if not isinstance(frame, Mapping):
+        raise ProfileError("frame.surround_global_command must be an object")
+    contract = frame.get("contract")
+    if not isinstance(contract, Mapping):
+        return None
+    context = "frame.surround_global_command.contract"
+    if _normalized_status(str(contract.get("status", ""))) != "confirmed":
+        return None
+    evidence = contract.get("evidence")
+    if not isinstance(evidence, str) or not evidence.strip():
+        raise ProfileError(f"{context}.evidence must be non-empty")
+
+    exact = {
+        "magic_offset": 0,
+        "magic": 0x70,
+        "opcode_offset": 4,
+        "opcode": 0xab,
+    }
+    for field, expected in exact.items():
+        if parse_int(frame.get(field), f"frame.surround_global_command.{field}") != expected:
+            raise ProfileError(
+                f"frame.surround_global_command.{field} must be {expected:#x}"
+            )
+    allowed = profile.constraints.get("allowed_opcodes")
+    launcher_only = profile.constraints.get("observed_opcodes_launcher_only", [])
+    if not isinstance(allowed, list) or 0xab not in {
+        parse_int(value, "constraints.allowed_opcodes") for value in allowed
+    }:
+        raise ProfileError(f"{context} requires opcode 0xab in allowed_opcodes")
+    if not isinstance(launcher_only, list) or 0xab in {
+        parse_int(value, "constraints.observed_opcodes_launcher_only")
+        for value in launcher_only
+    }:
+        raise ProfileError(f"{context} cannot retain opcode 0xab as launcher-only")
+
+    operations = _frame_operations(profile, "surround_global_command", frame)
+    required_operations = [
+        {"op": "fixed_byte", "offset": 0, "value": 0x70},
+        {"op": "fixed_byte", "offset": 4, "value": 0xab},
+        {"op": "fixed_byte", "offset": 16, "value": 0xeb},
+        {"op": "fixed_byte", "offset": 17, "value": 0x99},
+        {"op": "scalar", "field": "global_delay", "offset": 20, "width": 1, "endian": "not_applicable"},
+        {"op": "scalar", "field": "global_level", "offset": 22, "width": 2, "endian": "little"},
+    ]
+    if operations != required_operations:
+        raise ProfileError(f"{context} requires the exact captured frame operations")
+
+    report_size = profile.transport.report_size
+    payload_offset = _checked_u16(contract.get("readback_payload_offset"), f"{context}.readback_payload_offset")
+    template_size = _checked_u16(contract.get("template_size"), f"{context}.template_size")
+    fixed_tail_offset = _checked_u16(contract.get("fixed_tail_offset"), f"{context}.fixed_tail_offset")
+    if report_size != 320 or (payload_offset, template_size, fixed_tail_offset) != (18, 151, 169):
+        raise ProfileError(f"{context} requires the captured 151-byte body and fixed tail")
+    readback_category = _checked_u8(contract.get("readback_category"), f"{context}.readback_category")
+    readback_index = _checked_u8(contract.get("readback_index"), f"{context}.readback_index")
+    raw_header = contract.get("readback_header")
+    if not isinstance(raw_header, list):
+        raise ProfileError(f"{context}.readback_header must be an array")
+    readback_header = [
+        _checked_u8(value, f"{context}.readback_header[{index}]")
+        for index, value in enumerate(raw_header)
+    ]
+    expected_header = [0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x1b, 0, 0, 0, 0, 0, 0, 0]
+    readback = profile.frame.get("readback")
+    counts = readback.get("category_counts") if isinstance(readback, Mapping) else None
+    readback_geometry = (
+        parse_int(readback.get("response_magic"), "frame.readback.response_magic"),
+        parse_int(readback.get("response_discriminator_offset"), "frame.readback.response_discriminator_offset"),
+        parse_int(readback.get("response_discriminator"), "frame.readback.response_discriminator"),
+        parse_int(readback.get("category_offset"), "frame.readback.category_offset"),
+        parse_int(readback.get("index_offset"), "frame.readback.index_offset"),
+        parse_int(readback.get("data_offset"), "frame.readback.data_offset"),
+    ) if isinstance(readback, Mapping) else None
+    if (
+        not isinstance(counts, Mapping)
+        or parse_int(counts.get("0x1b"), "frame.readback.category_counts.0x1b") != 1
+        or (readback_category, readback_index) != (0x1b, 0)
+        or readback_header != expected_header
+        or readback_geometry != (0x75, 1, 0, 8, 12, 16)
+    ):
+        raise ProfileError(f"{context} requires the exact captured category 0x1b readback")
+
+    flags_a_offset = _checked_u16(contract.get("flags_a_offset"), f"{context}.flags_a_offset")
+    flags_b_offset = _checked_u16(contract.get("flags_b_offset"), f"{context}.flags_b_offset")
+    flags_a_mask = _checked_u8(contract.get("flags_a_mask"), f"{context}.flags_a_mask")
+    flags_b_mask = _checked_u8(contract.get("flags_b_mask"), f"{context}.flags_b_mask")
+    delay_offset = _checked_u16(contract.get("delay_offset"), f"{context}.delay_offset")
+    level_offset = _checked_u16(contract.get("level_offset"), f"{context}.level_offset")
+    raw_mask_offsets = contract.get("mask_offsets")
+    if not isinstance(raw_mask_offsets, list):
+        raise ProfileError(f"{context}.mask_offsets must be an array")
+    mask_offsets = [
+        _checked_u16(value, f"{context}.mask_offsets[{index}]")
+        for index, value in enumerate(raw_mask_offsets)
+    ]
+    if (payload_offset, flags_a_offset, flags_b_offset, delay_offset, level_offset, flags_a_mask, flags_b_mask, mask_offsets) != (18, 18, 19, 20, 22, 0x5f, 0x7f, [25, 27, 29]):
+        raise ProfileError(f"{context} offsets/masks differ from captured layout")
+    spans = sorted([(flags_a_offset, 1), (flags_b_offset, 1), (delay_offset, 1), (level_offset, 2), *[(offset, 2) for offset in mask_offsets]])
+    if any(offset < payload_offset or offset + width > fixed_tail_offset for offset, width in spans) or any(left[0] + left[1] > right[0] for left, right in zip(spans, spans[1:])):
+        raise ProfileError(f"{context} fields overlap or leave the meaningful body")
+
+    def finite_range(name: str, expected: tuple[int, int]) -> list[int]:
+        raw = contract.get(name)
+        if not isinstance(raw, list) or len(raw) != 2:
+            raise ProfileError(f"{context}.{name} must contain two bounds")
+        result = [_checked_u16(value, f"{context}.{name}") for value in raw]
+        if tuple(result) != expected:
+            raise ProfileError(f"{context}.{name} must equal captured bounds {expected}")
+        return result
+
+    formats = contract.get("formats")
+    if not isinstance(formats, list) or len(formats) != 2:
+        raise ProfileError(f"{context}.formats must contain exact 2.0 and 2.1 records")
+    compiled_formats = []
+    for index, item in enumerate(formats):
+        if not isinstance(item, Mapping):
+            raise ProfileError(f"{context}.formats[{index}] must be an object")
+        compiled_formats.append({
+            "name": str(item.get("name", "")),
+            "flags_a": _checked_u8(item.get("flags_a"), f"{context}.formats[{index}].flags_a"),
+            "flags_b": _checked_u8(item.get("flags_b"), f"{context}.formats[{index}].flags_b"),
+            "writable": item.get("writable"),
+        })
+    if compiled_formats != [
+        {"name": "2.0", "flags_a": 0x02, "flags_b": 0x9f, "writable": True},
+        {"name": "2.1", "flags_a": 0x03, "flags_b": 0x82, "writable": False},
+    ]:
+        raise ProfileError(f"{context}.formats differ from captured formats")
+    return {
+        "command_frame_id": "surround_global_command",
+        "readback_category": readback_category,
+        "readback_index": readback_index,
+        "readback_header": readback_header,
+        "payload_offset": payload_offset,
+        "template_size": template_size,
+        "fixed_tail_offset": fixed_tail_offset,
+        "flags_a_offset": flags_a_offset,
+        "flags_b_offset": flags_b_offset,
+        "flags_a_mask": flags_a_mask,
+        "flags_b_mask": flags_b_mask,
+        "formats": compiled_formats,
+        "delay_offset": delay_offset,
+        "delay_range": finite_range("delay_range", (6, 45)),
+        "level_offset": level_offset,
+        "level_range": finite_range("level_range", (0, 760)),
+        "mask_offsets": mask_offsets,
+        "evidence": evidence,
+    }
+
+
 def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
     readiness = classify_readiness(profile)
     spaces = _build_address_spaces(profile)
@@ -5461,6 +5622,7 @@ def _normalized_profile_record(profile: NormalizedProfile) -> dict[str, Any]:
             else None
         ),
         "meter_mappings": _meter_mappings(profile),
+        "surround_global": _surround_global_contract(profile),
         "frames": [
             {
                 "id": frame["id"],
@@ -5858,6 +6020,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         "    ParamValueDefinition, ParamValueType, Provenance, ReadbackCategoryDefinition, ReadbackDefinition,",
         "    SafeQueryDefinition, MixerReadbackLayoutDefinition, StateReportDefinition,",
         "    ByteEqualsPredicateDefinition, CandidatePreampMeterDefinition, MeterMappingDefinition, MeterTargetDefinition,",
+        "    SurroundFormatDefinition, SurroundGlobalContractDefinition,",
         "    FaderDirectionDefinition, FaderSemanticsDefinition,",
         "    Readiness, StartupQueryDefinition, Status, SupportLevel, TransportDefinition, TransportKind,",
         "};",
@@ -5876,6 +6039,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
         link_domains = _build_link_domains(profile)
         routing_groups = _build_routing_groups(profile)
         frames = _build_frames(profile)
+        surround_global = _surround_global_contract(profile)
         decoders = _build_decoders(frames)
         params = _build_params(profile)
         constraints = _build_constraints(profile)
@@ -6202,6 +6366,32 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             )
             state_report_name = f"Some({slug}_STATE_REPORT)"
 
+        if surround_global is None:
+            surround_global_name = "None"
+        else:
+            lines.append(f"static {slug}_SURROUND_FORMATS: &[SurroundFormatDefinition] = &[")
+            for format_record in surround_global["formats"]:
+                lines.append(
+                    "    SurroundFormatDefinition { "
+                    f"name: {_rust_string(format_record['name'])}, flags_a: {format_record['flags_a']}u8, "
+                    f"flags_b: {format_record['flags_b']}u8, writable: {str(format_record['writable']).lower()} }},"
+                )
+            lines.append("];\n")
+            lines.append(
+                f"static {slug}_SURROUND_GLOBAL: SurroundGlobalContractDefinition = SurroundGlobalContractDefinition {{ "
+                f"command_frame_id: {_rust_string(surround_global['command_frame_id'])}, "
+                f"readback_category: {surround_global['readback_category']}u8, readback_index: {surround_global['readback_index']}u8, "
+                f"readback_header: [{', '.join(str(value) + 'u8' for value in surround_global['readback_header'])}], "
+                f"payload_offset: {surround_global['payload_offset']}u16, template_size: {surround_global['template_size']}u16, fixed_tail_offset: {surround_global['fixed_tail_offset']}u16, "
+                f"flags_a_offset: {surround_global['flags_a_offset']}u16, flags_b_offset: {surround_global['flags_b_offset']}u16, "
+                f"flags_a_mask: {surround_global['flags_a_mask']}u8, flags_b_mask: {surround_global['flags_b_mask']}u8, formats: {slug}_SURROUND_FORMATS, "
+                f"delay_offset: {surround_global['delay_offset']}u16, delay_range: ({surround_global['delay_range'][0]}u16, {surround_global['delay_range'][1]}u16), "
+                f"level_offset: {surround_global['level_offset']}u16, level_range: ({surround_global['level_range'][0]}u16, {surround_global['level_range'][1]}u16), "
+                f"mask_offsets: [{', '.join(str(offset) + 'u16' for offset in surround_global['mask_offsets'])}], "
+                f"evidence: {_rust_string(surround_global['evidence'])} }};"
+            )
+            surround_global_name = f"Some({slug}_SURROUND_GLOBAL)"
+
         readback = runtime_record["readback"]
         if readback is None:
             readback_name = "None"
@@ -6273,6 +6463,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
                 "meter_mappings": f"{slug}_METER_MAPPINGS",
                 "startup_queries": f"{slug}_STARTUP_QUERIES",
                 "state_report": state_report_name,
+                "surround_global": surround_global_name,
                 "readback": readback_name,
                 "raw": f"{slug}_RAW_PROFILE",
             }
@@ -6327,7 +6518,7 @@ def render_catalog(profiles: Sequence[NormalizedProfile]) -> str:
             f"            frames: {item['frames']}, decoders: {item['decoders']}, params: {item['params']}, constraints: {item['constraints']}, hazards: {item['hazards']}, meter_mappings: {item['meter_mappings']},"
         )
         lines.append(
-            f"            startup_queries: {item['startup_queries']}, state_report: {item['state_report']}, readback: {item['readback']},"
+            f"            startup_queries: {item['startup_queries']}, state_report: {item['state_report']}, surround_global: {item['surround_global']}, readback: {item['readback']},"
         )
         lines.append(
             f"            status: Status::{_status_variant(status)}, status_text: {_rust_string(status)}, "

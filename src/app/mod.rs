@@ -76,6 +76,8 @@ pub struct AppState {
     /// Explicit profile-owned meter lanes; these are not inferred physical outputs.
     pub meters: Vec<antelope_protocol::DynamicMeterState>,
     pub routing: Vec<DynamicRoutingGroup>,
+    /// Present only when the active profile has a validated Surround global contract.
+    pub surround_global: Option<SurroundGlobalCache>,
     pub ui: UiState,
     pub popup: PopupState,
     pub raw_view: RawViewState,
@@ -276,6 +278,10 @@ impl AppState {
                 })
                 .collect(),
             routing: Vec::new(),
+            surround_global: profile
+                .surround_global
+                .as_ref()
+                .map(|_| SurroundGlobalCache::default()),
             mixer_send_surfaces: profile
                 .mixers
                 .iter()
@@ -2080,6 +2086,43 @@ impl AppState {
                 changed
             }
             DynamicStatePatch::Routing(group) => self.merge_routing_group(group),
+            DynamicStatePatch::SurroundGlobal(state) => {
+                let Some(cache) = self.surround_global.as_mut() else {
+                    return false;
+                };
+                match cache.freshness {
+                    SurroundFreshness::PendingReadback => {
+                        if cache.pending_expected.as_ref() != Some(&state) {
+                            return false;
+                        }
+                        cache.state = Some(state);
+                        cache.pending_expected = None;
+                        cache.freshness = SurroundFreshness::Authoritative;
+                        true
+                    }
+                    SurroundFreshness::AwaitingReadback | SurroundFreshness::Authoritative => {
+                        let recognized = state.format_name.is_some();
+                        let changed = cache.state.as_ref() != Some(&state)
+                            || cache.freshness
+                                != if recognized {
+                                    SurroundFreshness::Authoritative
+                                } else {
+                                    SurroundFreshness::Stale
+                                };
+                        if recognized || cache.state.is_none() {
+                            cache.state = Some(state);
+                        }
+                        cache.pending_expected = None;
+                        cache.freshness = if recognized {
+                            SurroundFreshness::Authoritative
+                        } else {
+                            SurroundFreshness::Stale
+                        };
+                        changed
+                    }
+                    SurroundFreshness::Stale => false,
+                }
+            }
             DynamicStatePatch::Globals(globals) => {
                 if !globals.iter().all(|global| {
                     self.globals
@@ -2399,6 +2442,9 @@ impl AppState {
     pub fn mark_disconnected(&mut self) {
         self.device.connection.connected = false;
         self.device.connection.last_frame_type = Some("disconnected");
+        if let Some(cache) = self.surround_global.as_mut() {
+            cache.freshness = SurroundFreshness::Stale;
+        }
     }
 
     pub fn cycle_focus(&mut self) {

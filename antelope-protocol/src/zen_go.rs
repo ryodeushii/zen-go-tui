@@ -771,7 +771,8 @@ impl DeviceDriver for ZenGoDriver {
             | Action::SetInput { .. }
             | Action::SetOutput { .. }
             | Action::SetOutputTrim { .. }
-            | Action::SetWholeState { .. } => {
+            | Action::SetWholeState { .. }
+            | Action::SetSurroundGlobal { .. } => {
                 return Err(DriverError::UnsupportedAction(
                     "control is unavailable on Zen Go".into(),
                 ))

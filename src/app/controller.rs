@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use anyhow::{bail, Result};
 use ratatui::layout::Rect;
@@ -11,6 +14,7 @@ use antelope_protocol::{
     GlobalControl, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
     MixerSurface, OutputAddress, OutputControl, OutputMode, OutputTrimAddress, PanState,
     PreampMode, QueryRequest, RoutingSource, RuntimeEntry, SampleRate, Surface,
+    SurroundGlobalControl,
 };
 
 use super::picker::{
@@ -24,6 +28,7 @@ use super::types::{
 use super::AppState;
 
 pub(crate) const MAX_FRAMES_PER_POLL: usize = 32;
+const SURROUND_READBACK_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PollWritePolicy {
@@ -75,6 +80,7 @@ pub struct Controller {
     /// stays locked for the session because snapshots have no freshness correlation.
     pending_output_modes: HashMap<OutputAddress, PendingOutputMode>,
     clock_readback_revision: u64,
+    surround_readback_deadline: Option<Instant>,
 }
 
 impl Controller {
@@ -96,6 +102,7 @@ impl Controller {
                 queued_mutations: Vec::new(),
                 pending_output_modes: HashMap::new(),
                 clock_readback_revision: 0,
+                surround_readback_deadline: None,
             });
         };
         Self::new_for_entry(transport, driver, entry)
@@ -127,6 +134,7 @@ impl Controller {
             queued_mutations: Vec::new(),
             pending_output_modes: HashMap::new(),
             clock_readback_revision: 0,
+            surround_readback_deadline: None,
         })
     }
 
@@ -1249,6 +1257,12 @@ impl Controller {
             Intent::CycleRawMapScope { forward } => self.handle_cycle_raw_map_scope(forward),
             Intent::ScrollRawDump { increase, page } => self.handle_scroll_raw_dump(increase, page),
             Intent::SelectOutput(index) => self.handle_output_select(index),
+            Intent::SetSurroundGlobalLevel(value) => {
+                self.handle_set_surround_global(SurroundGlobalControl::Level, value)?
+            }
+            Intent::SetSurroundGlobalDelay(value) => {
+                self.handle_set_surround_global(SurroundGlobalControl::Delay, u16::from(value))?
+            }
             Intent::AdjustOutputLevel { index, increase } => {
                 self.handle_output_adjust(index, increase, pending)?
             }
@@ -1384,6 +1398,54 @@ impl Controller {
         Ok(())
     }
 
+    fn handle_set_surround_global(
+        &mut self,
+        control: SurroundGlobalControl,
+        value: u16,
+    ) -> Result<()> {
+        self.expire_surround_readback();
+        let template =
+            self.state
+                .surround_global
+                .as_ref()
+                .and_then(|cache| match cache.freshness {
+                    super::SurroundFreshness::Authoritative => cache.state.as_ref(),
+                    super::SurroundFreshness::PendingReadback => cache.pending_expected.as_ref(),
+                    super::SurroundFreshness::AwaitingReadback
+                    | super::SurroundFreshness::Stale => None,
+                })
+                .filter(|state| state.writable)
+                .map(|state| state.template.clone())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                    "Surround global write requires authoritative or pending captured 2.0 state"
+                )
+                })?;
+        let expected = self
+            .driver
+            .expected_surround_global_state(&template, control, value)?;
+        let batch = self.driver.encode(Action::SetSurroundGlobal {
+            template,
+            control,
+            value,
+        })?;
+        self.flush_commands()?;
+        if let Err(error) = self.write_batch(batch) {
+            if let Some(cache) = self.state.surround_global.as_mut() {
+                cache.freshness = super::SurroundFreshness::Stale;
+            }
+            self.surround_readback_deadline = None;
+            return Err(error);
+        }
+        if let Some(cache) = self.state.surround_global.as_mut() {
+            cache.pending_expected = Some(expected);
+            cache.freshness = super::SurroundFreshness::PendingReadback;
+            self.surround_readback_deadline = Some(Instant::now() + SURROUND_READBACK_TIMEOUT);
+        }
+        self.state.ui.last_message = format!("Sent Surround {control:?} {value}");
+        Ok(())
+    }
+
     fn clock_source_readback(event: &DeviceEvent) -> Option<i32> {
         let globals = match event {
             DeviceEvent::Snapshot { state, .. } => &state.globals,
@@ -1444,6 +1506,26 @@ impl Controller {
         }
     }
 
+    // An expired Surround transaction locks writes until a fresh Controller/device session.
+    // Late replies cannot safely restore authority because the protocol has no transaction ID.
+    fn expire_surround_readback(&mut self) -> bool {
+        let expired = self
+            .surround_readback_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        if !expired {
+            return false;
+        }
+        self.surround_readback_deadline = None;
+        let Some(cache) = self.state.surround_global.as_mut() else {
+            return false;
+        };
+        if cache.freshness != super::SurroundFreshness::PendingReadback {
+            return false;
+        }
+        cache.freshness = super::SurroundFreshness::Stale;
+        true
+    }
+
     pub fn poll_device(&mut self, timeout: Duration) -> Result<bool> {
         self.poll_device_with_policy(timeout, PollWritePolicy::FlushPending)
     }
@@ -1469,7 +1551,7 @@ impl Controller {
         }
 
         let mut next_timeout = timeout;
-        let mut state_dirty = false;
+        let mut state_dirty = self.expire_surround_readback();
 
         for _ in 0..MAX_FRAMES_PER_POLL {
             let Some(bytes) = self.transport.read(next_timeout)? else {
@@ -1506,6 +1588,11 @@ impl Controller {
                     state_dirty |= self.confirm_pending_write();
                 }
                 state_dirty |= self.state.observe_event(event);
+                if self.state.surround_global.as_ref().is_some_and(|cache| {
+                    cache.freshness != super::SurroundFreshness::PendingReadback
+                }) {
+                    self.surround_readback_deadline = None;
+                }
                 if self.state.device.status.clock_source == clock_source_readback
                     && clock_source_readback.is_some()
                 {
@@ -1517,6 +1604,7 @@ impl Controller {
             }
         }
 
+        state_dirty |= self.expire_surround_readback();
         Ok(state_dirty)
     }
 
@@ -3678,6 +3766,7 @@ mod correction_tests {
     };
 
     use super::*;
+    use crate::app::SurroundFreshness;
     use crate::transport::{MockTransport, Transport};
 
     struct AcceptingDriver {
@@ -4023,16 +4112,290 @@ mod correction_tests {
         }
     }
 
-    fn orion_controller(transport: MockTransport) -> Controller {
-        let entry = crate::device::ProfileCatalog::builtin()
+    fn orion_entry() -> RuntimeEntry {
+        crate::device::ProfileCatalog::builtin()
             .entries()
             .iter()
             .find(|entry| entry.id == "orion_studio_3")
             .expect("Orion profile")
-            .clone();
+            .clone()
+    }
+
+    fn orion_controller(transport: MockTransport) -> Controller {
+        let entry = orion_entry();
         let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
         Controller::new_for_entry(Box::new(transport), Box::new(driver), &entry)
             .expect("Orion controller")
+    }
+
+    fn hex_bytes(text: &str) -> Vec<u8> {
+        let compact = text
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .collect::<String>();
+        compact
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("ASCII hex"), 16)
+                    .expect("Surround fixture hex")
+            })
+            .collect()
+    }
+
+    fn surround_fixture() -> (Vec<u8>, Vec<u8>) {
+        (
+            hex_bytes(include_str!(
+                "../../antelope-protocol/tests/fixtures/orion/surround_global_20_eq_post.hex"
+            )),
+            hex_bytes(include_str!(
+                "../../antelope-protocol/tests/fixtures/orion/surround_global_20_readback.hex"
+            )),
+        )
+    }
+
+    fn surround_readback(command: &[u8]) -> Vec<u8> {
+        let mut readback = vec![0_u8; 320];
+        readback[..16]
+            .copy_from_slice(&[0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x1b, 0, 0, 0, 0, 0, 0, 0]);
+        readback[16..318].copy_from_slice(&command[18..]);
+        readback
+    }
+
+    #[test]
+    fn surround_rapid_writes_ignore_old_and_out_of_order_readbacks_until_complete_match() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        assert!(controller
+            .apply_intent(Intent::SetSurroundGlobalLevel(0), Rect::default())
+            .is_err());
+
+        let (captured, old_readback) = surround_fixture();
+        transport.push_read(old_readback.clone());
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("read authoritative Surround state");
+
+        controller
+            .apply_intent(Intent::SetSurroundGlobalLevel(0), Rect::default())
+            .expect("first complete-state write");
+        let first_writes = transport.take_writes();
+        assert_eq!(first_writes.len(), 2);
+        let first_command = first_writes[0].clone();
+        assert_eq!(&first_command[22..24], &0_u16.to_le_bytes());
+
+        controller
+            .apply_intent(Intent::SetSurroundGlobalDelay(45), Rect::default())
+            .expect("rapid write uses latest complete expected state");
+        let second_writes = transport.take_writes();
+        assert_eq!(second_writes.len(), 2);
+        let latest_command = second_writes[0].clone();
+        assert_eq!(latest_command[20], 45);
+        assert_eq!(&latest_command[22..24], &0_u16.to_le_bytes());
+
+        let cache = controller.state.surround_global.as_ref().unwrap();
+        assert_eq!(cache.freshness, SurroundFreshness::PendingReadback);
+        assert_eq!(cache.state.as_ref().unwrap().level_raw, 600);
+        let optimistic = cache.pending_expected.as_ref().unwrap();
+        assert_eq!((optimistic.level_raw, optimistic.delay_tenths_ms), (0, 45));
+
+        for delayed in [old_readback, surround_readback(&first_command)] {
+            transport.push_read(delayed);
+            controller
+                .poll_device_without_writes(Duration::ZERO)
+                .expect("ignore delayed readback");
+            let cache = controller.state.surround_global.as_ref().unwrap();
+            assert_eq!(cache.freshness, SurroundFreshness::PendingReadback);
+            assert_eq!(cache.state.as_ref().unwrap().level_raw, 600);
+            assert_eq!(cache.pending_expected.as_ref().unwrap().delay_tenths_ms, 45);
+        }
+
+        transport.push_read(surround_readback(&latest_command));
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .expect("latest complete confirmation");
+        let cache = controller.state.surround_global.as_ref().unwrap();
+        assert_eq!(cache.freshness, SurroundFreshness::Authoritative);
+        assert_eq!(
+            (
+                cache.state.as_ref().unwrap().level_raw,
+                cache.state.as_ref().unwrap().delay_tenths_ms
+            ),
+            (0, 45)
+        );
+        assert!(cache.pending_expected.is_none());
+        assert_ne!(latest_command, captured);
+    }
+
+    #[test]
+    fn surround_write_rejects_expired_pending_state_before_polling() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let (_, readback) = surround_fixture();
+        transport.push_read(readback.clone());
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        controller
+            .apply_intent(Intent::SetSurroundGlobalLevel(0), Rect::default())
+            .unwrap();
+        transport.take_writes();
+
+        controller.surround_readback_deadline = Some(Instant::now() - Duration::from_millis(1));
+        assert!(controller
+            .apply_intent(Intent::SetSurroundGlobalDelay(45), Rect::default())
+            .is_err());
+        assert!(transport.take_writes().is_empty());
+        assert!(controller.surround_readback_deadline.is_none());
+        let cache = controller.state.surround_global.as_ref().unwrap();
+        assert_eq!(cache.freshness, SurroundFreshness::Stale);
+        assert_eq!(cache.pending_expected.as_ref().unwrap().level_raw, 0);
+
+        transport.push_read(readback);
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            controller.state.surround_global.as_ref().unwrap().freshness,
+            SurroundFreshness::Stale
+        );
+        assert!(controller
+            .apply_intent(Intent::SetSurroundGlobalDelay(45), Rect::default())
+            .is_err());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn surround_pending_timeout_and_disconnect_fail_closed_without_losing_states() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let (_, readback) = surround_fixture();
+        transport.push_read(readback.clone());
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        controller
+            .apply_intent(Intent::SetSurroundGlobalLevel(0), Rect::default())
+            .unwrap();
+        transport.take_writes();
+
+        controller.surround_readback_deadline = Some(Instant::now() - Duration::from_millis(1));
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        let cache = controller.state.surround_global.as_ref().unwrap();
+        assert_eq!(cache.freshness, SurroundFreshness::Stale);
+        assert_eq!(cache.state.as_ref().unwrap().level_raw, 600);
+        assert_eq!(cache.pending_expected.as_ref().unwrap().level_raw, 0);
+        transport.push_read(readback.clone());
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            controller.state.surround_global.as_ref().unwrap().freshness,
+            SurroundFreshness::Stale
+        );
+        assert!(controller
+            .apply_intent(Intent::SetSurroundGlobalDelay(45), Rect::default())
+            .is_err());
+
+        let mut disconnected = orion_controller(transport.clone());
+        transport.push_read(readback);
+        disconnected
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        disconnected
+            .apply_intent(Intent::SetSurroundGlobalLevel(0), Rect::default())
+            .unwrap();
+        let writes = transport.take_writes();
+        disconnected.state.mark_disconnected();
+        transport.push_read(surround_readback(&writes[0]));
+        disconnected
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        assert_eq!(
+            disconnected
+                .state
+                .surround_global
+                .as_ref()
+                .unwrap()
+                .freshness,
+            SurroundFreshness::Stale
+        );
+        assert_eq!(
+            disconnected
+                .state
+                .surround_global
+                .as_ref()
+                .unwrap()
+                .state
+                .as_ref()
+                .unwrap()
+                .level_raw,
+            600
+        );
+    }
+
+    #[test]
+    fn unknown_surround_readback_never_grants_write_authority() {
+        let transport = MockTransport::default();
+        let mut controller = orion_controller(transport.clone());
+        let (mut command, _) = surround_fixture();
+        command[18] = 0x04;
+        transport.push_read(surround_readback(&command));
+        controller
+            .poll_device_without_writes(Duration::ZERO)
+            .unwrap();
+        let cache = controller.state.surround_global.as_ref().unwrap();
+        assert_eq!(cache.freshness, SurroundFreshness::Stale);
+        assert_eq!(cache.state.as_ref().unwrap().format_name, None);
+        assert!(controller
+            .apply_intent(Intent::SetSurroundGlobalLevel(0), Rect::default())
+            .is_err());
+        assert!(transport.take_writes().is_empty());
+    }
+
+    #[test]
+    fn failed_surround_write_marks_cache_stale_and_never_confirms_requested_value() {
+        let entry = orion_entry();
+        let driver = ProfileDriver::new(entry.clone()).expect("Orion profile driver");
+        let transport = FailingTransport::default();
+        let mut controller =
+            Controller::new_for_entry(Box::new(transport.clone()), Box::new(driver), &entry)
+                .expect("Orion controller");
+        let (_, readback) = surround_fixture();
+        let event = controller
+            .driver
+            .decode(&readback)
+            .expect("decode")
+            .expect("event");
+        assert!(controller.state.observe_event(event));
+
+        assert!(controller
+            .apply_intent(Intent::SetSurroundGlobalLevel(0), Rect::default())
+            .is_err());
+        let cache = controller
+            .state
+            .surround_global
+            .as_ref()
+            .expect("capability");
+        assert_eq!(cache.freshness, SurroundFreshness::Stale);
+        assert_eq!(
+            cache.state.as_ref().expect("old state retained").level_raw,
+            600
+        );
+        assert_eq!(transport.take_writes().len(), 1);
+    }
+
+    #[test]
+    fn zen_profile_has_no_surround_global_capability() {
+        let catalog = crate::device::ProfileCatalog::builtin();
+        let zen = catalog
+            .entries()
+            .iter()
+            .find(|entry| entry.id == "zen_go_sc")
+            .expect("Zen profile");
+        assert!(AppState::from_entry(zen).surround_global.is_none());
     }
 
     #[test]

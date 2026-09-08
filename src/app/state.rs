@@ -7,6 +7,7 @@ use antelope_protocol::{
     OutputControl, OutputMode, OutputState, OutputTarget, OutputTrimAddress, PreampState,
     ProfileDriver, RoutingSource, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind,
     RuntimeLinkDomainKind, RuntimeProfile, RuntimeReadiness, SampleRate, Surface,
+    SurroundGlobalState,
 };
 
 use super::types::{FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate};
@@ -86,6 +87,33 @@ impl AppSettings {
             0x0f => -15,
             0x14 => -20,
             _ => -3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurroundFreshness {
+    AwaitingReadback,
+    Authoritative,
+    PendingReadback,
+    Stale,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurroundGlobalCache {
+    /// Latest confirmed device state; never replaced by an unmatched delayed reply.
+    pub state: Option<SurroundGlobalState>,
+    /// Complete meaningful state expected from the latest successful write.
+    pub pending_expected: Option<SurroundGlobalState>,
+    pub freshness: SurroundFreshness,
+}
+
+impl Default for SurroundGlobalCache {
+    fn default() -> Self {
+        Self {
+            state: None,
+            pending_expected: None,
+            freshness: SurroundFreshness::AwaitingReadback,
         }
     }
 }

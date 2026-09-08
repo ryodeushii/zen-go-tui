@@ -8,11 +8,12 @@ use crate::driver::{
     DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState, DynamicRoutingGroup,
     DynamicStatePatch, GlobalControl, InputAddress, InputControl, MeterInvalidationTarget,
     MixerAddress, OutputAddress, OutputControl, OutputTrimAddress, RoutingSource,
+    SurroundGlobalControl, SurroundGlobalState,
 };
 use crate::profile::{
-    FrameOperation, ParamReadbackField, RuntimeDriverKind, RuntimeEntry, RuntimeFrame,
-    RuntimeInputControlKind, RuntimeLinkDomainKind, RuntimeMeterTarget, RuntimeParam,
-    RuntimeProfile, RuntimeReadiness,
+    validate_surround_global_contract, FrameOperation, ParamReadbackField, RuntimeDriverKind,
+    RuntimeEntry, RuntimeFrame, RuntimeInputControlKind, RuntimeLinkDomainKind, RuntimeMeterTarget,
+    RuntimeParam, RuntimeProfile, RuntimeReadiness,
 };
 use crate::profile_codec;
 use crate::types::PanState;
@@ -1065,6 +1066,10 @@ impl ProfileDriver {
             canonical_orion_identity,
         };
         driver.validate_capabilities()?;
+        if let Some(contract) = &driver.profile.surround_global {
+            validate_surround_global_contract(&driver.definition.id, &driver.profile, contract)
+                .map_err(DriverError::InvalidAction)?;
+        }
         driver.validate_output_mono_capability()?;
         let zero_report = vec![0; report_size];
         driver.decode_state(&zero_report)?;
@@ -1857,6 +1862,137 @@ impl ProfileDriver {
         Ok(CommandBatch {
             frames: vec![bytes],
             refresh_requests: Vec::new(),
+        })
+    }
+
+    fn decode_surround_global_template(
+        &self,
+        template: &[u8],
+    ) -> Result<SurroundGlobalState, DriverError> {
+        let contract = self.profile.surround_global.as_ref().ok_or_else(|| {
+            DriverError::UnsupportedAction("profile has no Surround global contract".into())
+        })?;
+        if template.len() != usize::from(contract.template_size) {
+            return Err(DriverError::InvalidAction(format!(
+                "Surround global template length {} does not match {}",
+                template.len(),
+                contract.template_size
+            )));
+        }
+        let relative = |offset: u16, width: usize| -> Result<usize, DriverError> {
+            let offset = offset.checked_sub(contract.payload_offset).ok_or_else(|| {
+                DriverError::InvalidAction("Surround field precedes template".into())
+            })?;
+            let offset = usize::from(offset);
+            (offset + width <= template.len())
+                .then_some(offset)
+                .ok_or_else(|| DriverError::InvalidAction("Surround field exceeds template".into()))
+        };
+        let flags_a = template[relative(contract.flags_a_offset, 1)?];
+        let flags_b = template[relative(contract.flags_b_offset, 1)?];
+        let delay_tenths_ms = template[relative(contract.delay_offset, 1)?];
+        let level_offset = relative(contract.level_offset, 2)?;
+        let level_raw = u16::from_le_bytes([template[level_offset], template[level_offset + 1]]);
+        let format = contract.formats.iter().find(|format| {
+            (flags_a & contract.flags_a_mask) == (format.flags_a & contract.flags_a_mask)
+                && (flags_b & contract.flags_b_mask) == (format.flags_b & contract.flags_b_mask)
+        });
+        let format_name = format.map(|format| format.name.clone());
+        let mask_word = |full_offset: u16| -> Result<u16, DriverError> {
+            let offset = relative(full_offset, 2)?;
+            Ok(u16::from_le_bytes([template[offset], template[offset + 1]]))
+        };
+        let writable = format.is_some_and(|format| format.writable)
+            && (contract.delay_range.0..=contract.delay_range.1)
+                .contains(&u16::from(delay_tenths_ms))
+            && (contract.level_range.0..=contract.level_range.1).contains(&level_raw);
+        Ok(SurroundGlobalState {
+            format_name,
+            flags_a,
+            flags_b,
+            delay_tenths_ms,
+            level_raw,
+            mask_words: [
+                mask_word(contract.mask_offsets[0])?,
+                mask_word(contract.mask_offsets[1])?,
+                mask_word(contract.mask_offsets[2])?,
+            ],
+            template: template.to_vec(),
+            writable,
+        })
+    }
+
+    fn expected_surround_global(
+        &self,
+        template: &[u8],
+        control: SurroundGlobalControl,
+        value: u16,
+    ) -> Result<SurroundGlobalState, DriverError> {
+        let current = self.decode_surround_global_template(template)?;
+        if !current.writable {
+            return Err(DriverError::InvalidAction(
+                "Surround global state is not captured writable 2.0 state".into(),
+            ));
+        }
+        let contract = self
+            .profile
+            .surround_global
+            .as_ref()
+            .expect("decoded contract");
+        let (offset, range) = match control {
+            SurroundGlobalControl::Delay => (contract.delay_offset, contract.delay_range),
+            SurroundGlobalControl::Level => (contract.level_offset, contract.level_range),
+        };
+        if !(range.0..=range.1).contains(&value) {
+            return Err(DriverError::InvalidAction(format!(
+                "Surround {control:?} value {value} outside {}..={}",
+                range.0, range.1
+            )));
+        }
+        let relative_offset = usize::from(offset - contract.payload_offset);
+        let mut expected_template = template.to_vec();
+        match control {
+            SurroundGlobalControl::Delay => {
+                expected_template[relative_offset] = u8::try_from(value).map_err(|_| {
+                    DriverError::InvalidAction("Surround delay exceeds byte".into())
+                })?;
+            }
+            SurroundGlobalControl::Level => {
+                expected_template[relative_offset..relative_offset + 2]
+                    .copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        self.decode_surround_global_template(&expected_template)
+    }
+
+    fn encode_surround_global(
+        &self,
+        template: Vec<u8>,
+        control: SurroundGlobalControl,
+        value: u16,
+    ) -> Result<CommandBatch, DriverError> {
+        let expected = self.expected_surround_global(&template, control, value)?;
+        let contract = self
+            .profile
+            .surround_global
+            .as_ref()
+            .expect("decoded contract");
+        let frame = self.frame(&contract.command_frame_id)?;
+        let mut bytes = profile_codec::allocate(&self.profile, frame)?;
+        let payload_offset = usize::from(contract.payload_offset);
+        let meaningful_end = payload_offset + expected.template.len();
+        bytes[payload_offset..meaningful_end].copy_from_slice(&expected.template);
+        for operation in &frame.operations {
+            if let FrameOperation::FixedByte { offset, value } = operation {
+                bytes[usize::from(*offset)] = *value;
+            }
+        }
+        Ok(CommandBatch {
+            frames: vec![bytes],
+            refresh_requests: vec![QueryRequest::new(
+                contract.readback_category,
+                contract.readback_index,
+            )],
         })
     }
 
@@ -2915,7 +3051,21 @@ impl DeviceDriver for ProfileDriver {
                 enabled,
                 fields,
             } => self.encode_whole_state(operation, target, enabled, fields),
+            Action::SetSurroundGlobal {
+                template,
+                control,
+                value,
+            } => self.encode_surround_global(template, control, value),
         }
+    }
+
+    fn expected_surround_global_state(
+        &self,
+        template: &[u8],
+        control: SurroundGlobalControl,
+        value: u16,
+    ) -> Result<SurroundGlobalState, DriverError> {
+        self.expected_surround_global(template, control, value)
     }
 
     fn decode(&self, bytes: &[u8]) -> Result<Option<DeviceEvent>, DriverError> {
@@ -3038,16 +3188,48 @@ impl DeviceDriver for ProfileDriver {
                     "inbound readback category {category:#04x} index {index} outside count {count}"
                 )));
             }
+            let body = bytes[usize::from(readback.data_offset)..].to_vec();
             let patch = if category == self.mixer_readback_category {
                 Some(DynamicStatePatch::Mixer(self.decode_mixer(bytes, index)?))
             } else if category == self.routing_readback_category {
                 Some(DynamicStatePatch::Routing(
                     self.decode_routing(bytes, index)?,
                 ))
+            } else if self
+                .profile
+                .surround_global
+                .as_ref()
+                .is_some_and(|contract| {
+                    category == contract.readback_category && index == contract.readback_index
+                })
+            {
+                let contract = self
+                    .profile
+                    .surround_global
+                    .as_ref()
+                    .expect("matched contract");
+                let expected_body_size =
+                    profile_codec::report_size(&self.profile)? - usize::from(readback.data_offset);
+                let template_size = usize::from(contract.template_size);
+                if body.len() != expected_body_size {
+                    return Err(DriverError::InvalidAction(
+                        "Surround global readback is not a complete report body".into(),
+                    ));
+                }
+                if bytes[..contract.readback_header.len()] != contract.readback_header
+                    || body[template_size..].iter().any(|byte| *byte != 0)
+                {
+                    return Err(DriverError::InvalidAction(
+                        "Surround global readback header or fixed zero tail differs from capture"
+                            .into(),
+                    ));
+                }
+                Some(DynamicStatePatch::SurroundGlobal(
+                    self.decode_surround_global_template(&body[..template_size])?,
+                ))
             } else {
                 None
             };
-            let body = bytes[usize::from(readback.data_offset)..].to_vec();
             return Ok(Some(DeviceEvent::QueryReply {
                 query_id: category,
                 sub_id: index,

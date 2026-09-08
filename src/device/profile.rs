@@ -14,7 +14,8 @@ use antelope_protocol::{
     RuntimeInputControlKind, RuntimeLinkDomain, RuntimeLinkDomainKind, RuntimeMeterMapping,
     RuntimeMeterTarget, RuntimeMixer, RuntimeOutput, RuntimeParam, RuntimeProfile,
     RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup, RuntimeRoutingReadbackSourceDomain,
-    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeTransport,
+    RuntimeRoutingSourceDomain, RuntimeStateReport, RuntimeSurroundFormat,
+    RuntimeSurroundGlobalContract, RuntimeTransport,
 };
 use std::collections::HashSet;
 
@@ -313,6 +314,37 @@ fn convert_entry(entry: &DeviceEntry) -> RuntimeEntry {
                         caveat: meter.caveat.into(),
                     })
                     .collect(),
+            }),
+            surround_global: definition.surround_global.map(|contract| {
+                RuntimeSurroundGlobalContract {
+                    command_frame_id: contract.command_frame_id.into(),
+                    readback_category: contract.readback_category,
+                    readback_index: contract.readback_index,
+                    readback_header: contract.readback_header,
+                    payload_offset: contract.payload_offset,
+                    template_size: contract.template_size,
+                    fixed_tail_offset: contract.fixed_tail_offset,
+                    flags_a_offset: contract.flags_a_offset,
+                    flags_b_offset: contract.flags_b_offset,
+                    flags_a_mask: contract.flags_a_mask,
+                    flags_b_mask: contract.flags_b_mask,
+                    formats: contract
+                        .formats
+                        .iter()
+                        .map(|format| RuntimeSurroundFormat {
+                            name: format.name.into(),
+                            flags_a: format.flags_a,
+                            flags_b: format.flags_b,
+                            writable: format.writable,
+                        })
+                        .collect(),
+                    delay_offset: contract.delay_offset,
+                    delay_range: contract.delay_range,
+                    level_offset: contract.level_offset,
+                    level_range: contract.level_range,
+                    mask_offsets: contract.mask_offsets,
+                    evidence: contract.evidence.into(),
+                }
             }),
             link_domains: definition
                 .link_domains

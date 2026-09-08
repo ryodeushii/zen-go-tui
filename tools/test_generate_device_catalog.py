@@ -945,6 +945,67 @@ class GeneratorTests(unittest.TestCase):
             self.assertIsNone(params[name]["id"])
             self.assertIn("id", json.loads(params[name]["metadata"]))
 
+    def test_surround_global_contract_is_exact_finite_and_orion_only(self) -> None:
+        orion = generator.load_profile(ORION_PROFILE, ORION_PROFILE.parent)
+        normalized = generator._normalized_profile_record(orion)
+        contract = normalized["surround_global"]
+        self.assertEqual(contract["command_frame_id"], "surround_global_command")
+        self.assertEqual((contract["readback_category"], contract["readback_index"]), (0x1b, 0))
+        self.assertEqual((contract["payload_offset"], contract["template_size"]), (18, 151))
+        self.assertEqual(contract["fixed_tail_offset"], 169)
+        self.assertEqual(
+            contract["readback_header"],
+            [0x75, 0, 0, 0, 0x40, 0x01, 0, 0, 0x1B, 0, 0, 0, 0, 0, 0, 0],
+        )
+        self.assertEqual((contract["flags_a_mask"], contract["flags_b_mask"]), (0x5F, 0x7F))
+        self.assertEqual(contract["delay_range"], [6, 45])
+        self.assertEqual(contract["level_range"], [0, 760])
+        self.assertEqual(contract["mask_offsets"], [25, 27, 29])
+        self.assertEqual(
+            contract["formats"],
+            [
+                {"name": "2.0", "flags_a": 0x02, "flags_b": 0x9f, "writable": True},
+                {"name": "2.1", "flags_a": 0x03, "flags_b": 0x82, "writable": False},
+            ],
+        )
+        zen = generator.load_profile(
+            REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "zen_go_sc.json",
+            ORION_PROFILE.parent,
+        )
+        self.assertIsNone(generator._normalized_profile_record(zen)["surround_global"])
+
+    def test_surround_global_contract_mutations_fail_closed(self) -> None:
+        data = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        del data["frame"]["surround_global_command"]["contract"]
+        profile = generator.normalize_profile(data, path=ORION_PROFILE)
+        self.assertIsNone(generator._normalized_profile_record(profile)["surround_global"])
+
+        for mutate in (
+            lambda contract: contract.__setitem__("template_size", 150),
+            lambda contract: contract.__setitem__("fixed_tail_offset", 170),
+            lambda contract: contract.__setitem__("delay_offset", 22),
+            lambda contract: contract.__setitem__("delay_range", [0, 255]),
+            lambda contract: contract.__setitem__("level_range", [0, 761]),
+            lambda contract: contract.__setitem__("flags_a_mask", "0xff"),
+            lambda contract: contract.__setitem__("flags_b_mask", "0xff"),
+            lambda contract: contract["formats"][1].__setitem__("writable", True),
+            lambda contract: contract["readback_header"].__setitem__(4, 0),
+        ):
+            invalid = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+            mutate(invalid["frame"]["surround_global_command"]["contract"])
+            with self.assertRaises(generator.ProfileError):
+                generator.normalize_profile(invalid, path=ORION_PROFILE)
+
+        invalid = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        invalid["constraints"]["allowed_opcodes"].remove("0xab")
+        with self.assertRaises(generator.ProfileError):
+            generator.normalize_profile(invalid, path=ORION_PROFILE)
+
+        wrong_identity = json.loads(ORION_PROFILE.read_text(encoding="utf-8"))
+        wrong_identity["device"]["pid"] = "0xa015"
+        normalized = generator.normalize_profile(wrong_identity, path=ORION_PROFILE)
+        self.assertIsNone(generator._normalized_profile_record(normalized)["surround_global"])
+
     def test_clock_sources_preserve_profile_owned_values_and_internal_semantics(self) -> None:
         orion = {
             param["name"]: param

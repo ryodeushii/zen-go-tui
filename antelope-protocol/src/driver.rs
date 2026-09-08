@@ -60,6 +60,27 @@ pub struct WholeStateField {
     pub value: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SurroundGlobalControl {
+    Delay,
+    Level,
+}
+
+/// Recognized category-0x1b state plus the captured 151-byte meaningful template.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurroundGlobalState {
+    pub format_name: Option<String>,
+    pub flags_a: u8,
+    pub flags_b: u8,
+    pub delay_tenths_ms: u8,
+    pub level_raw: u16,
+    /// Raw words at captured frame offsets 25, 27, and 29. Only the first word's
+    /// active-speaker semantics are fully confirmed; none are actionable here.
+    pub mask_words: [u16; 3],
+    pub template: Vec<u8>,
+    pub writable: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlValue {
     Bool(bool),
@@ -223,6 +244,7 @@ pub enum DynamicStatePatch {
     Mixers(Vec<DynamicMixerSurface>),
     Routing(DynamicRoutingGroup),
     Globals(Vec<DynamicGlobalState>),
+    SurroundGlobal(SurroundGlobalState),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -312,6 +334,12 @@ pub enum Action {
         enabled: bool,
         fields: Vec<WholeStateField>,
     },
+    /// Read-modify-write of the complete profile-defined Surround global frame.
+    SetSurroundGlobal {
+        template: Vec<u8>,
+        control: SurroundGlobalControl,
+        value: u16,
+    },
     Query(QueryRequest),
 }
 
@@ -334,5 +362,15 @@ pub trait DeviceDriver: Send {
     fn definition(&self) -> &DriverDefinition;
     fn startup_requests(&self) -> &[QueryRequest];
     fn encode(&self, action: Action) -> Result<CommandBatch, DriverError>;
+    fn expected_surround_global_state(
+        &self,
+        _template: &[u8],
+        _control: SurroundGlobalControl,
+        _value: u16,
+    ) -> Result<SurroundGlobalState, DriverError> {
+        Err(DriverError::UnsupportedAction(
+            "driver has no Surround global contract".into(),
+        ))
+    }
     fn decode(&self, bytes: &[u8]) -> Result<Option<DeviceEvent>, DriverError>;
 }

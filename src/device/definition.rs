@@ -560,6 +560,38 @@ pub struct StateReportDefinition {
     pub candidate_preamp_meters: &'static [CandidatePreampMeterDefinition],
 }
 
+/// One exact captured Surround format signature after non-format bits are masked out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurroundFormatDefinition {
+    pub name: &'static str,
+    pub flags_a: u8,
+    pub flags_b: u8,
+    pub writable: bool,
+}
+
+/// Finite complete-state contract for the Surround global frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurroundGlobalContractDefinition {
+    pub command_frame_id: &'static str,
+    pub readback_category: u8,
+    pub readback_index: u8,
+    pub readback_header: [u8; 16],
+    pub payload_offset: u16,
+    pub template_size: u16,
+    pub fixed_tail_offset: u16,
+    pub flags_a_offset: u16,
+    pub flags_b_offset: u16,
+    pub flags_a_mask: u8,
+    pub flags_b_mask: u8,
+    pub formats: &'static [SurroundFormatDefinition],
+    pub delay_offset: u16,
+    pub delay_range: (u16, u16),
+    pub level_offset: u16,
+    pub level_range: (u16, u16),
+    pub mask_offsets: [u16; 3],
+    pub evidence: &'static str,
+}
+
 /// Optional generic readback layout retained in the built-in artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReadbackDefinition {
@@ -595,6 +627,7 @@ pub struct DeviceDefinition {
     pub meter_mappings: &'static [MeterMappingDefinition],
     pub state_report: Option<StateReportDefinition>,
     pub startup_queries: &'static [StartupQueryDefinition],
+    pub surround_global: Option<SurroundGlobalContractDefinition>,
     pub readback: Option<ReadbackDefinition>,
     pub status: Status,
     pub status_text: &'static str,

@@ -335,6 +335,11 @@ fn promoted_orion_fixture_matches_current_generated_runtime_fields() {
         generated.profile.state_report
     );
     assert_field!(
+        "profile.surround_global",
+        fixture.profile.surround_global,
+        generated.profile.surround_global
+    );
+    assert_field!(
         "profile.link_domains",
         fixture.profile.link_domains,
         generated.profile.link_domains

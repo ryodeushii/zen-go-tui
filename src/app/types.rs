@@ -85,6 +85,10 @@ pub enum Intent {
         increase: bool,
     },
 
+    // Capture-backed Surround global controls (no page binding until the next cycle).
+    SetSurroundGlobalLevel(u16),
+    SetSurroundGlobalDelay(u8),
+
     // Output controls
     AdjustOutputLevel {
         index: usize,
@@ -301,6 +305,8 @@ impl Intent {
                 | Self::PickClockSource(_)
                 | Self::PickBrightness(_)
                 | Self::PickOutputTrim { .. }
+                | Self::SetSurroundGlobalLevel(_)
+                | Self::SetSurroundGlobalDelay(_)
                 | Self::SetTalkbackButton(_)
                 | Self::PickTalkbackSource(_)
                 | Self::PickTalkbackGain(_)

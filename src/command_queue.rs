@@ -42,6 +42,7 @@ fn coalesce_key_for_command(command: &Action) -> Option<CoalesceKey> {
         | Action::SetRouting { .. }
         | Action::SetRoutingGroup { .. }
         | Action::SetWholeState { .. }
+        | Action::SetSurroundGlobal { .. }
         | Action::Query(_) => None,
     }
 }

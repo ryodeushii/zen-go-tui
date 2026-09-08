@@ -31,7 +31,7 @@ pub use driver::{
     DynamicMeterState, DynamicMixerStrip, DynamicMixerSurface, DynamicOutputState,
     DynamicRoutingGroup, DynamicStatePatch, GlobalControl, InputAddress, InputControl,
     MeterInvalidationTarget, MixerAddress, MixerControl, OutputAddress, OutputControl,
-    OutputTrimAddress, RoutingSource, WholeStateField,
+    OutputTrimAddress, RoutingSource, SurroundGlobalControl, SurroundGlobalState, WholeStateField,
 };
 mod encoder;
 mod frame;
@@ -67,7 +67,8 @@ pub use profile::{
     RuntimeMeterMapping, RuntimeMeterTarget, RuntimeMixer, RuntimeOutput, RuntimeParam,
     RuntimeProfile, RuntimeProvenance, RuntimeReadiness, RuntimeRoutingGroup,
     RuntimeRoutingReadbackSourceDomain, RuntimeRoutingSourceDomain, RuntimeStateReport,
-    RuntimeTransport, SafeQuery, PROFILE_PACK_SCHEMA_VERSION,
+    RuntimeSurroundFormat, RuntimeSurroundGlobalContract, RuntimeTransport, SafeQuery,
+    PROFILE_PACK_SCHEMA_VERSION,
 };
 pub use query::{control_panel_startup_queries, DeviceMetadata, QueryRequest, QueryResponse};
 
