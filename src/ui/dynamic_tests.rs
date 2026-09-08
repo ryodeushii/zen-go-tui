@@ -1913,7 +1913,7 @@ fn orion_renders_a_rich_card_for_each_physical_preamp_only() {
 }
 
 #[test]
-fn orion_physical_meter_source_is_unavailable_without_fabricated_values() {
+fn orion_physical_meter_samples_are_unknown_before_first_report() {
     let state = orion_ui_state();
     assert!(state.input_spaces[0]
         .inputs

@@ -106,6 +106,34 @@ fn controller_for_profile(entry: RuntimeEntry) -> Controller {
 }
 
 #[test]
+fn orion_physical_meter_snapshot_updates_channels_one_and_twelve_independently() {
+    let entry = canonical_orion_entry();
+    let driver = ProfileDriver::new(entry.clone()).expect("canonical Orion driver");
+    let mut state = AppState::from_entry(&entry);
+    assert!(state
+        .inputs_for_space("physical_inputs")
+        .iter()
+        .all(|input| input.meter.is_none()));
+
+    let mut frame = vec![0; 320];
+    frame[0] = 0x73;
+    frame[221..233].fill(96);
+    frame[221] = 0;
+    frame[232] = 48;
+    let event = driver
+        .decode(&frame)
+        .expect("valid state report")
+        .expect("state snapshot");
+    assert!(state.observe_event(event));
+
+    let physical = state.inputs_for_space("physical_inputs");
+    assert_eq!(physical.len(), 12);
+    assert_eq!(physical[0].meter, Some(0));
+    assert_eq!(physical[1].meter, Some(96));
+    assert_eq!(physical[11].meter, Some(48));
+}
+
+#[test]
 fn orion_physical_gain_intent_validates_the_current_mode_range() {
     let entry = canonical_orion_entry();
     let mut controller = controller_for_profile(entry);

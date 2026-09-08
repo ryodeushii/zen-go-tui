@@ -439,9 +439,16 @@ impl ProfileDriver {
         Self::validate_settings_contract(profile, &frame_index).is_ok()
     }
 
+    fn is_canonical_orion(entry: &RuntimeEntry) -> bool {
+        entry.id == "orion_studio_3"
+            && entry.profile.identity.vid == 0x23e5
+            && entry.profile.identity.pid == 0xa221
+    }
+
     fn validate_declared_state_meter_layout(
         profile: &RuntimeProfile,
         frame: &RuntimeFrame,
+        require_confirmed_orion_layout: bool,
     ) -> Result<bool, DriverError> {
         let mut indexed = frame
             .operations
@@ -453,6 +460,12 @@ impl ProfileDriver {
                 _ => None,
             });
         let Some(operation) = indexed.next() else {
+            if require_confirmed_orion_layout {
+                return Err(DriverError::InvalidAction(
+                    "canonical Orion state report requires the confirmed physical meter mapping"
+                        .into(),
+                ));
+            }
             if frame.operations.iter().any(|operation| {
                 matches!(
                     operation,
@@ -467,15 +480,29 @@ impl ProfileDriver {
         };
         if indexed.next().is_some() {
             return Err(DriverError::InvalidAction(
-                "state physical meter mapping is ambiguous".into(),
+                "state physical meter layout is ambiguous".into(),
             ));
         }
         let FrameOperation::Indexed {
-            width, max_index, ..
+            base,
+            stride,
+            width,
+            max_index,
+            ..
         } = operation
         else {
             unreachable!("filtered state meter operation is indexed");
         };
+        // RuntimeFrame.metadata is provenance text, not an executable contract.
+        // Validate the compiled operation at the constructor trust boundary.
+        if require_confirmed_orion_layout
+            && (*base != 221 || *stride != 1 || *width != 1 || *max_index != Some(11))
+        {
+            return Err(DriverError::InvalidAction(
+                "canonical Orion physical meter layout must be base 221, stride 1, width 1, count 12"
+                    .into(),
+            ));
+        }
         let physical_space = profile
             .address_spaces
             .iter()
@@ -508,6 +535,7 @@ impl ProfileDriver {
     }
 
     pub fn new(entry: RuntimeEntry) -> Result<Self, DriverError> {
+        let canonical_orion_identity = Self::is_canonical_orion(&entry);
         if entry.readiness != RuntimeReadiness::Supported {
             return Err(DriverError::UnsupportedAction(format!(
                 "profile {} readiness is {:?}",
@@ -615,7 +643,11 @@ impl ProfileDriver {
             .get("state_report")
             .and_then(|index| entry.profile.frames.get(*index))
         {
-            Some(frame) => Self::validate_declared_state_meter_layout(&entry.profile, frame)?,
+            Some(frame) => Self::validate_declared_state_meter_layout(
+                &entry.profile,
+                frame,
+                canonical_orion_identity,
+            )?,
             None => false,
         };
         let meter_frame_is_confirmed = frame_index
@@ -735,9 +767,6 @@ impl ProfileDriver {
         let meter_mapping_valid = meter_magic == Some(readback.response_magic)
             && meter_discriminator.is_some()
             && meter_discriminator != Some(readback.response_discriminator);
-        let canonical_orion_identity = entry.id == "orion_studio_3"
-            && entry.profile.identity.vid == 0x23e5
-            && entry.profile.identity.pid == 0xa221;
         let readback_magic_valid = readback_magic == Some(readback.response_magic)
             || profile_codec::scalar_offset(
                 &entry.profile.frames[*frame_index.get("readback").expect("required frame")],

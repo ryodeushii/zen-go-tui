@@ -50,22 +50,7 @@ fn canonical_orion_entry() -> RuntimeEntry {
 }
 
 fn state_meter_fixture_entry() -> RuntimeEntry {
-    let mut entry = fixture_entry();
-    entry
-        .profile
-        .frames
-        .iter_mut()
-        .find(|frame| frame.id == "state_report")
-        .expect("state report")
-        .operations
-        .push(FrameOperation::Indexed {
-            base: 157,
-            stride: 1,
-            index_field: "physical_meter".into(),
-            width: 1,
-            max_index: Some(11),
-        });
-    entry
+    fixture_entry()
 }
 
 fn confirmed_meter_fixture_entry() -> RuntimeEntry {
@@ -1618,7 +1603,7 @@ fn confirmed_meter_report_path_still_decodes_all_physical_meters() {
 }
 
 #[test]
-fn canonical_orion_profile_driver_exposes_approved_provisional_output_lanes() {
+fn canonical_orion_profile_driver_decodes_all_physical_and_provisional_output_meters() {
     let entry = canonical_orion_entry();
     assert_eq!(
         entry
@@ -1656,6 +1641,8 @@ fn canonical_orion_profile_driver_exposes_approved_provisional_output_lanes() {
     for (offset, value) in [157, 158, 159, 160, 177, 178].into_iter().zip(1_u8..=6) {
         state_frame[offset] = value;
     }
+    let physical_values = [0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90, 96];
+    state_frame[221..233].copy_from_slice(&physical_values);
     let DeviceEvent::Snapshot { state, .. } = driver
         .decode(&state_frame)
         .unwrap()
@@ -1663,11 +1650,19 @@ fn canonical_orion_profile_driver_exposes_approved_provisional_output_lanes() {
     else {
         panic!("snapshot")
     };
-    assert!(state
-        .inputs
-        .iter()
-        .filter(|input| input.address.space == 0)
-        .all(|input| input.meter.is_none()));
+    assert_eq!(
+        state
+            .inputs
+            .iter()
+            .filter(|input| input.address.space == 0)
+            .map(|input| (input.address.index, input.meter))
+            .collect::<Vec<_>>(),
+        physical_values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| (u16::try_from(index).unwrap(), Some(value)))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         state
             .meters
@@ -1686,9 +1681,30 @@ fn canonical_orion_profile_driver_exposes_approved_provisional_output_lanes() {
 }
 
 #[test]
-fn meter_source_does_not_require_state_physical_meter_layout() {
-    let driver = ProfileDriver::new(confirmed_meter_fixture_entry())
-        .expect("meter source without state meter");
+fn canonical_orion_old_157_mirror_does_not_drive_physical_meters() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    frame[157..169].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    frame[221..233].fill(96);
+
+    let DeviceEvent::Snapshot { state, .. } = driver.decode(&frame).unwrap().unwrap() else {
+        panic!("snapshot")
+    };
+    assert_eq!(
+        state
+            .inputs
+            .iter()
+            .filter(|input| input.address.space == 0)
+            .map(|input| input.meter)
+            .collect::<Vec<_>>(),
+        vec![Some(96); 12]
+    );
+}
+
+#[test]
+fn confirmed_meter_report_takes_precedence_over_state_physical_meter_layout() {
+    let driver =
+        ProfileDriver::new(confirmed_meter_fixture_entry()).expect("confirmed meter-report source");
     let state = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
     let DeviceEvent::Snapshot { state, .. } = driver.decode(&state).unwrap().unwrap() else {
         panic!("snapshot")
@@ -1751,9 +1767,9 @@ fn no_send_implicit_mixer_readback_decodes_three_byte_records_without_send() {
 }
 
 #[test]
-fn state_meter_layout_requires_finite_width_count_and_range() {
-    for mutation in 0..3 {
-        let mut entry = state_meter_fixture_entry();
+fn canonical_orion_state_meter_requires_exact_confirmed_geometry() {
+    for mutation in 0..5 {
+        let mut entry = canonical_orion_entry();
         let state = entry
             .profile
             .frames
@@ -1762,9 +1778,10 @@ fn state_meter_layout_requires_finite_width_count_and_range() {
             .unwrap();
         let FrameOperation::Indexed {
             base,
+            stride,
+            index_field,
             width,
             max_index,
-            ..
         } = state
             .operations
             .iter_mut()
@@ -1781,14 +1798,46 @@ fn state_meter_layout_requires_finite_width_count_and_range() {
         match mutation {
             0 => *width = 2,
             1 => *max_index = Some(10),
-            2 => *base = 319,
+            2 => *base = 220,
+            3 => *stride = 2,
+            4 => *index_field = "channel_meter".into(),
             _ => unreachable!(),
         }
         assert!(
             ProfileDriver::new(entry).is_err(),
-            "state meter mutation {mutation} must fail construction"
+            "canonical Orion state meter mutation {mutation} must fail construction"
         );
     }
+}
+
+#[test]
+fn canonical_orion_state_meter_rejects_truncated_channel_twelve() {
+    let driver = ProfileDriver::new(canonical_orion_entry()).expect("canonical Orion driver");
+    let mut frame = hex_fixture(include_str!("fixtures/orion/state_report_73.hex"));
+    frame.truncate(232);
+
+    assert!(driver.decode(&frame).is_err());
+}
+
+#[test]
+fn canonical_orion_state_meter_rejects_duplicate_physical_operation() {
+    let mut entry = canonical_orion_entry();
+    entry
+        .profile
+        .frames
+        .iter_mut()
+        .find(|frame| frame.id == "state_report")
+        .unwrap()
+        .operations
+        .push(FrameOperation::Indexed {
+            base: 221,
+            stride: 1,
+            index_field: "physical_meter".into(),
+            width: 1,
+            max_index: Some(11),
+        });
+
+    assert!(ProfileDriver::new(entry).is_err());
 }
 
 #[test]
@@ -1810,7 +1859,7 @@ fn malformed_declared_state_meter_is_rejected_even_with_meter_report_source() {
         });
     let error =
         ProfileDriver::new(entry).expect_err("malformed declared state meter must fail closed");
-    assert!(error.to_string().contains("physical meter layout"));
+    assert!(matches!(error, DriverError::InvalidAction(_)));
 }
 
 #[test]
@@ -2054,7 +2103,7 @@ fn constructor_rejects_missing_or_unsafe_startup_walk_before_io() {
 }
 
 #[test]
-fn constructor_rejects_missing_state_semantics_but_allows_unavailable_meter() {
+fn constructor_rejects_missing_state_semantics_and_canonical_orion_meter() {
     let mut entry = fixture_entry();
     entry
         .profile
@@ -2083,8 +2132,8 @@ fn constructor_rejects_missing_state_semantics_but_allows_unavailable_meter() {
             )
         });
     assert!(
-        ProfileDriver::new(entry).is_ok(),
-        "a missing physical meter mapping is an unavailable capability"
+        ProfileDriver::new(entry).is_err(),
+        "canonical Orion must retain its confirmed physical meter mapping"
     );
 }
 

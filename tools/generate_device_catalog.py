@@ -4527,6 +4527,13 @@ def _operation_max_index(
     """Return finite reachable index bound from confirmed normalized geometry."""
 
     field = index_field.lower()
+    if field == "physical_meter":
+        physical_space = next(
+            (space for space in _build_address_spaces(profile) if space["id"] == "physical_inputs"),
+            None,
+        )
+        if physical_space is not None and physical_space["count"] > 0:
+            return int(physical_space["count"]) - 1
     if "routing" in frame_id:
         destinations = frame.get("destination_channels")
         if isinstance(destinations, Mapping) and destinations:
@@ -4572,17 +4579,60 @@ def _pair_max_index(profile: NormalizedProfile, frame_id: str) -> int:
     return max(pair_counts) - 1
 
 
+def _validated_orion_physical_meter_operation(
+    profile: NormalizedProfile, frame_id: str, operation: Mapping[str, Any]
+) -> bool:
+    """Accept only the confirmed finite Orion 0x73 physical-preamp bank."""
+
+    if not _is_orion(profile) or frame_id != "state_report":
+        return False
+    state = profile.frame.get("state_report")
+    if not isinstance(state, Mapping):
+        return False
+    confirmed_indices = profile.channels.get("confirmed_indices")
+    contract_is_exact = (
+        state.get("channel_meter_base_offset") == 221
+        and state.get("physical_meter_base_offset") == 221
+        and state.get("physical_meter_stride") == 1
+        and state.get("physical_meter_count") == 12
+        and state.get("physical_meter_raw_range") == [0, 96]
+        and state.get("physical_meter_direction") == "inverted"
+        and _normalized_status(str(state.get("physical_meter_status", ""))) == "confirmed"
+        and bool(str(state.get("physical_meter_evidence", "")).strip())
+        and _count(
+            profile.channels,
+            ("count_confirmed", "count_assumed_total", "count"),
+            "channels",
+        )
+        == 12
+        and confirmed_indices == list(range(12))
+    )
+    return contract_is_exact and operation == {
+        "op": "indexed",
+        "base": 221,
+        "stride": 1,
+        "index_field": "physical_meter",
+        "width": 1,
+        "max_index": 11,
+    }
+
+
 def _obsolete_orion_channel_meter_operation(
     profile: NormalizedProfile, frame_id: str, operation: Mapping[str, Any]
 ) -> bool:
-    """Exclude the disproven Orion physical-preamp meter mapping from runtime data."""
+    """Suppress superseded Orion meter guesses, except the validated physical bank."""
 
     field = str(operation.get("field", ""))
     index_field = str(operation.get("index_field", ""))
+    is_meter_operation = (
+        field.startswith(("channel_meter", "physical_meter"))
+        or index_field in {"channel_meter", "physical_meter"}
+    )
     return (
         _is_orion(profile)
         and frame_id in {"state_report", "meter_report"}
-        and (field.startswith("channel_meter") or index_field in {"channel_meter", "physical_meter"})
+        and is_meter_operation
+        and not _validated_orion_physical_meter_operation(profile, frame_id, operation)
     )
 
 

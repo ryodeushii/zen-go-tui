@@ -854,11 +854,16 @@ class GeneratorTests(unittest.TestCase):
         )
         state_frame = next(frame for frame in normalized["frames"] if frame["id"] == "state_report")
         self.assertEqual(state_frame["status"], "confirmed")
-        self.assertFalse(
-            any(
-                operation.get("index_field") == "physical_meter"
-                for operation in state_frame["operations"]
-            )
+        self.assertIn(
+            {
+                "op": "indexed",
+                "base": 221,
+                "stride": 1,
+                "index_field": "physical_meter",
+                "width": 1,
+                "max_index": 11,
+            },
+            state_frame["operations"],
         )
         self.assertFalse(
             any(
@@ -1356,7 +1361,17 @@ class GeneratorTests(unittest.TestCase):
             self.assertEqual(len(names), len(set(names)), kind)
         names = {operation.get("field") for operation in operations}
         self.assertTrue({"gain_base", "status_base", "adat_gain_base", "spdif_gain_base"} <= names)
-        self.assertNotIn("physical_meter", {operation.get("index_field") for operation in operations})
+        self.assertIn(
+            {
+                "op": "indexed",
+                "base": 221,
+                "stride": 1,
+                "index_field": "physical_meter",
+                "width": 1,
+                "max_index": 11,
+            },
+            operations,
+        )
         self.assertIn("mask__2", names)
         self.assertIn("byte__2", names)
 
@@ -1431,7 +1446,7 @@ class GeneratorTests(unittest.TestCase):
         self.assertNotIn("frame.state_report lacks confirmed physical channel meter mapping", blockers)
         self.assertEqual(generator.classify_readiness(profile), generator.Readiness.SUPPORTED)
 
-    def test_orion_disproven_physical_meter_is_not_emitted(self) -> None:
+    def test_orion_emits_only_the_validated_physical_meter_bank(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
         data = json.loads(path.read_text())
         profile = generator.normalize_profile(data, path=path)
@@ -1446,7 +1461,17 @@ class GeneratorTests(unittest.TestCase):
             if operation.get("op") == "indexed"
             and operation.get("index_field") == "physical_meter"
         ]
-        self.assertEqual(state_meters, [])
+        self.assertEqual(
+            state_meters,
+            [{
+                "op": "indexed",
+                "base": 221,
+                "stride": 1,
+                "index_field": "physical_meter",
+                "width": 1,
+                "max_index": 11,
+            }],
+        )
         leaked_frames = {
             frame_id
             for frame_id, operations in operations_by_frame.items()
@@ -1454,6 +1479,49 @@ class GeneratorTests(unittest.TestCase):
             and any(operation.get("index_field") == "physical_meter" for operation in operations)
         }
         self.assertEqual(leaked_frames, set())
+
+    def test_orion_old_mirror_or_arbitrary_physical_meter_contract_is_not_emitted(self) -> None:
+        path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
+        for mutation in (
+            "old_channel_base",
+            "old_physical_base",
+            "wrong_count",
+            "wrong_range",
+            "unconfirmed",
+        ):
+            data = json.loads(path.read_text())
+            state = data["frame"]["state_report"]
+            if mutation == "old_channel_base":
+                state["channel_meter_base_offset"] = 157
+            elif mutation == "old_physical_base":
+                state["physical_meter_base_offset"] = 157
+            elif mutation == "wrong_count":
+                state["physical_meter_count"] = 11
+            elif mutation == "wrong_range":
+                state["physical_meter_raw_range"] = [0, 255]
+            else:
+                state["physical_meter_status"] = "observed"
+            profile = generator.normalize_profile(data, path=path)
+            operations = generator._frame_operations(profile, "state_report", profile.frame["state_report"])
+            self.assertFalse(
+                any(operation.get("index_field") == "physical_meter" for operation in operations),
+                mutation,
+            )
+
+        profile = generator.normalize_profile(json.loads(path.read_text()), path=path)
+        operations = generator._retain_meter_report_operations(
+            profile,
+            "state_report",
+            [{
+                "op": "indexed",
+                "base": 157,
+                "stride": 1,
+                "index_field": "physical_meter",
+                "width": 1,
+                "max_index": 11,
+            }],
+        )
+        self.assertEqual(operations, [])
 
     def test_orion_meter_omits_disproven_channel_mapping(self) -> None:
         path = REPO_ROOT / "modules" / "Antelope-Ctl" / "profiles" / "orion_studio_sc.json"
