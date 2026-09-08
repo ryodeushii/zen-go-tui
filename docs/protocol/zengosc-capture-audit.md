@@ -1,7 +1,7 @@
 # Zen Go SC capture-backed protocol audit
 
 Date: 2026-08-31  
-Scope: USBPcap captures in `antelope_pcap/`, compared with current capture-derived implementation.
+Scope: USBPcap captures in `antelope_pcap/zen go sc/`, compared with current capture-derived implementation.
 
 This is separate from `docs/protocol/zengosc-implementation-audit.md`. It records only evidence derived from captures and source-level coordinate checks. All protocol IDs, offsets, lengths, counts, widths, and values use hexadecimal notation.
 
@@ -82,12 +82,12 @@ The following captures were processed. Counts are data-bearing protocol packets 
 
 ### Recursive coverage
 
-The root table above is only the root scope. The following table covers every PCAPNG under `antelope_pcap/`, including all subdirectories: `0x7f` files, `0x0a` directories, and `0x7251d3e8` captured bytes (`~1.79 GiB`). Counts are data-bearing protocol frames after USBPcap header parsing.
+The root table above is only the Zen capture-directory root scope. The following table covers every PCAPNG under `antelope_pcap/zen go sc/`, including all subdirectories: `0x7f` files, `0x0a` directories, and `0x7251d3e8` captured bytes (`~1.79 GiB`). Counts are data-bearing protocol frames after USBPcap header parsing.
 
 | Scope | Files | PCAP bytes | Host `0x70` | Host `0x74` / device `0x75` | Device `0x73` / `0x83` | Scenario evidence |
 |---|---:|---:|---:|---:|---:|---|
 | root (`.`) | `0x0e` | `0x10b39338` | `0x741` | `0x38` / `0x38` | `0x12a50` / `0x12a4b` | enumeration, output, mixer, sample/clock, DSP |
-| `channel_assignments` | `0x14` | `0x14c91884` | `0xb7` | `—` / `—` | `0x10ca8` / `0x10cab` | assignment banks, source substitutions, surface propagation |
+| `channel_assignments` | `0x14` | `0x14c91884` | `0xb7` | `0x2e` / `0x2e` | `0x10ca8` / `0x10cab` | assignment banks, source substitutions, surface propagation |
 | `metering` | `0x17` | `0x7727b6c` | `0x27c` | `—` / `—` | `0x8b5f` / `0x8b66` | isolated CH01..CH16, mix/output, preamp meters |
 | `mixer` | `0x17` | `0x171dabbc` | `0x2ac` | `—` / `—` | `0xc312` / `0xc315` | faders, pan, mute, solo, links, surfaces |
 | `mixer_levels` | `0x06` | `0x5e45db8` | `0x42` | `0x114` / `0x114` | `0x28a3` / `0x28a2` | max/min and isolated level readback |
@@ -96,7 +96,11 @@ The root table above is only the root scope. The following table covers every PC
 | `mutes/no signal` | `0x07` | `0x66ca23c` | `—` | `—` / `—` | `0x1473` / `0x1473` | Mix 1/Mix 2 CH01/02 mute baselines |
 | `mutes/with signal` | `0x07` | `0x67670dc` | `—` | `—` / `—` | `0x15db` / `0x15db` | Mix 1/Mix 2 CH01/02 mute with signal |
 | `preamps` | `0x0b` | `0xba46abc` | `0x1c4` | `—` / `—` | `0x8b68` / `0x8b66` | A1/A2 mode, per-mode gain, phantom, phase |
-| **recursive total** | **`0x7f`** | **`0x7251d3e8`** | **—** | **—** | **—** | **all captures processed** |
+| **recursive total** | **`0x7f`** | **`0x7251d3e8`** | **`0xfc3`** | **`0x455` / `0x455`** | **`0x4da01` / `0x4da05`** | **all captures processed** |
+
+A complete 2026 corpus scan corrected the old recursive query total from `0x427` to `0x455`.
+The earlier table omitted `0x2e` request/reply pairs from `channel_assignments/control panel open.pcapng`.
+The correction is traceable to the [complete capture-family inventory](capture-family-inventory.md) and its 127-file Zen aggregate.
 
 ## Confirmed frame and report grammar
 

@@ -4,10 +4,10 @@ This note records the finite evidence used by the Rust AuraVerb backend. It does
 
 ## Sources and report inventory
 
-The OUT evidence is from these raw macOS captures:
+The OUT evidence is from these paths relative to the capture checkout root:
 
-- `/home/ryodeushii/repos/zen-go-tui/antelope_pcap/orion 3/macos-captures/macos-auraverb-on-off.pcapng`, SHA-256 `f610bfa4277b9648b41db57d2bc2b174606be31b4894ef391fa7dff74944d928`;
-- `/home/ryodeushii/repos/zen-go-tui/antelope_pcap/orion 3/macos-captures/macos-auraverb-ctl-color-predelay-earlyrefgaij-laterefdelay-richness-reverbtime-roomsize-reverblevel.pcapng`, SHA-256 `7c2a0985cd4f9e1d0f1f67fecbcb6fc7ca79fb88d7438032e314da011ed334c7`.
+- `antelope_pcap/orion 3/macos-captures/macos-auraverb-on-off.pcapng`, SHA-256 `f610bfa4277b9648b41db57d2bc2b174606be31b4894ef391fa7dff74944d928`
+- `antelope_pcap/orion 3/macos-captures/macos-auraverb-ctl-color-predelay-earlyrefgaij-laterefdelay-richness-reverbtime-roomsize-reverblevel.pcapng`, SHA-256 `7c2a0985cd4f9e1d0f1f67fecbcb6fc7ca79fb88d7438032e314da011ed334c7`
 
 `tshark` extraction found two and 1,836 complete 320-byte AuraVerb OUT reports, respectively. Every report has `0x70` at report offset 0, opcode `0x1d` at offset 4, parameter ID `0xda` at offset 16, subcommand `0x0b` at offset 17, and captured Mix-1 target `0` at offset 18. Parameter offsets are Room Size 19, Color 20, PreDelay 21, Early Reflection Gain 23, Late Reflection Delay 24, Richness 25, Reverb Time 26, and Reverb Level 27. Offset 22 is always 100. Offset 28 is enable. Offsets 29–319 are zero in all 1,838 matching reports.
 
@@ -16,8 +16,8 @@ Across the 1,836-report sweep, only offsets 19, 20, 21, 23, 24, 25, 26, and 27 v
 | Field | Offset | 0 frame / time / report SHA-256 | 100 frame / time / report SHA-256 |
 |---|---:|---|---|
 | Room Size | 19 | 87346 / 154.895661 s / `5b2c63bcdb6205ec1dc4f1d14c00e866cd24c7d16ee0ce186f9f8732efeff07b` | 89622 / 159.380078 s / `25b08c9f1249eb3d57c872829547df2517b6ef3da7629006a782c4ceddbab8ec` |
-| Color | 20 | 4685 / 5.568133 s / `f393fdf0aa9612351c8115560064fc7f1f714d6ad17687877a5c744f4658652` | 2418 / 3.024066 s / `58ea3358e58bad167c08b7b9d2a39373911ed34108de1da605fb9f6b2467f7b7` |
-| PreDelay | 21 | 4685 / 5.568133 s / `f393fdf0aa9612351c8115560064fc7f1f714d6ad17687877a5c744f4658652` | 20521 / 33.364718 s / `5d84d14c1472083dfd50b4ac81cf95c86f4012586bb56c0b940cdae6261ac893` |
+| Color | 20 | 4685 / 5.568133 s / `f393fdf0aa9612351c8115560064fc7f1f714ad6ad17687877a5c744f4658652` | 2418 / 3.024066 s / `58ea3358e58bad167c08b7b9d2a39373911ed34108de1da605fb9f6b2467f7b7` |
+| PreDelay | 21 | 4685 / 5.568133 s / `f393fdf0aa9612351c8115560064fc7f1f714ad6ad17687877a5c744f4658652` | 20521 / 33.364718 s / `5d84d14c1472083dfd50b4ac81cf95c86f4012586bb56c0b940cdae6261ac893` |
 | Early Reflection Gain | 23 | 31226 / 52.285126 s / `e39d220d4695cd94568692717b61f9bc2473652f41194282c0383069b8ebfe2f` | 33102 / 55.905205 s / `e841aaecc02d4572cf7e5ec995ccfaffb07e4941e1b2d2cb5a310f93028a843e` |
 | Late Reflection Delay | 24 | 42934 / 72.793567 s / `29da64dc8026cfa0e0a13e517ca56facf7cf2dcb54659e88c38f84101cb84742` | 44854 / 76.501675 s / `364d367efcbfeb4c889c7dd5da364fa698afaa100ab079678afed7ba34215263` |
 | Richness | 25 | 60812 / 104.282243 s / `e9334dd6cc5a1723386c6aa84390c525eebf7300fff8c669aeaf1be442e1ae1c` | 62824 / 108.334329 s / `bc717e85c27347b7220f00ae338840a299c4a42939b4d5fc54777add653acb93` |
@@ -55,7 +55,7 @@ Only Orion Studio SC identity `0x23e5:0xa221`, operation `0xda`, target 0/Mix 1,
 
 Category `0x0a` replies carry no transaction ID. A pending write accepts only an exact complete-state match; delayed mismatches do not replace authoritative or pending state. Timeout, disconnect, or failed I/O makes the session stale and fail-closed. Authority is recovered only by constructing a fresh controller/device session and receiving a valid actual readback.
 
-The Zen Go canonical profile contains no AuraVerb command contract, and no AuraVerb/reverb-named capture exists under `/home/ryodeushii/repos/zen-go-tui/antelope_pcap/zen go sc/`. Its manual documents product availability, but that does not establish Orion wire compatibility, so Zen remains absent from this backend capability.
+The Zen Go canonical profile contains no AuraVerb command contract. No AuraVerb-named capture exists under `antelope_pcap/zen go sc/` relative to the capture checkout root. The Zen Go manual documents AuraVerb availability, but it does not establish Orion wire compatibility. Zen therefore remains absent from this backend capability. [Todo 52](zen-go-auraverb-capture-guide.md) records the required Zen capture procedure.
 
 ## TUI boundary
 

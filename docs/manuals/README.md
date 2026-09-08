@@ -12,4 +12,4 @@ Official support pages:
 - [Zen Go Synergy Core User Manual](https://support.antelopeaudio.com/en/support/solutions/articles/42000083291-zen-go-synergy-core-user-manual)
 - [Synergy Core Native and Realtime Effects User Manual](https://support.antelopeaudio.com/en/support/solutions/articles/42000017423-antelope-audio-synergy-core-native-and-realtime-effects-user-manual)
 
-Protocol conclusions from these manuals and captures are recorded in [`docs/protocol/zengosc-capture-audit.md`](../protocol/zengosc-capture-audit.md) and [`docs/protocol/zengosc-implementation-audit.md`](../protocol/zengosc-implementation-audit.md). Official AFX report descriptions do not replace capture evidence for current Zen Go HID byte mappings.
+Protocol conclusions from these manuals and captures are listed in the [protocol evidence index](../protocol/README.md). The [Zen capture guide](../protocol/zen-go-auraverb-capture-guide.md) covers AuraVerb, brightness, and output trim. Official AFX report descriptions do not replace capture evidence for current Zen Go HID byte mappings.
