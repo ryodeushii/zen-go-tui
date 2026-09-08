@@ -1,8 +1,8 @@
 use ratatui::layout::Rect;
 
 use crate::app::{
-    AppState, AssignmentPickerState, Intent, RawMapScope, RawPacketTab, SelectorPopupKind,
-    SelectorPopupState, SurroundControlFocus, UiPage, QUERY_REPLY_VISIBLE_COUNT,
+    AppState, AssignmentPickerState, AuraVerbControlFocus, Intent, RawMapScope, RawPacketTab,
+    SelectorPopupKind, SelectorPopupState, SurroundControlFocus, UiPage, QUERY_REPLY_VISIBLE_COUNT,
 };
 use crate::device::DevicePickerState;
 #[cfg(test)]
@@ -187,6 +187,10 @@ fn intent_is_available(state: &AppState, intent: &Intent) -> bool {
             .ui_profile
             .supports_global(GlobalControl::TalkbackGain),
         Intent::SelectSurface(_) => state.ui_profile.supports_global(GlobalControl::Surface),
+        Intent::SetAuraVerbEnabled(_) => state.auraverb_controls_enabled(),
+        Intent::SetAuraVerbParameter { value, .. } => {
+            state.auraverb_controls_enabled() && *value <= 100
+        }
         Intent::SetSurroundGlobalLevel(value) => {
             state.surround_controls_enabled()
                 && state
@@ -287,8 +291,10 @@ fn mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -> Optio
         return Some(Intent::SelectUiPage(page));
     }
 
-    if state.active_ui_page() == UiPage::Surround {
-        return surround_page_mouse_action(chunks[1], state, point);
+    match state.active_ui_page() {
+        UiPage::AuraVerb => return auraverb_page_mouse_action(chunks[1], state, point),
+        UiPage::Surround => return surround_page_mouse_action(chunks[1], state, point),
+        UiPage::Mixer => {}
     }
 
     let page = mixer_page_layout(chunks[1]);
@@ -327,9 +333,16 @@ fn slider_mouse_action_unchecked(area: Rect, state: &AppState, x: u16, y: u16) -
 
     let point = (x, y);
     let chunks = root_chunks(area);
-    if state.active_ui_page() == UiPage::Surround {
-        let focus = state.ui.surround_drag?;
-        return surround_set_action(chunks[1], state, focus, x);
+    match state.active_ui_page() {
+        UiPage::AuraVerb => {
+            let focus = state.ui.auraverb_drag?;
+            return auraverb_set_action(chunks[1], state, focus, x);
+        }
+        UiPage::Surround => {
+            let focus = state.ui.surround_drag?;
+            return surround_set_action(chunks[1], state, focus, x);
+        }
+        UiPage::Mixer => {}
     }
     let page = mixer_page_layout(chunks[1]);
     let main = mixer_main_layout_for_state(page[0], state);
@@ -374,6 +387,34 @@ fn slider_wheel_action_unchecked(
     }
 
     let chunks = root_chunks(area);
+    if state.active_ui_page() == UiPage::AuraVerb {
+        let geometry = auraverb_page_geometry(chunks[1], state);
+        if let Some(control) = geometry
+            .cards
+            .iter()
+            .find(|control| contains_point(control.card, point))
+        {
+            if let AuraVerbControlFocus::Parameter(parameter) = control.focus {
+                if contains_point(control.action, point) {
+                    if !state.auraverb_controls_enabled() {
+                        return None;
+                    }
+                    let value = state.displayed_auraverb_state()?.value(parameter);
+                    return Some(Intent::SetAuraVerbParameter {
+                        parameter,
+                        value: if increase {
+                            value.saturating_add(1)
+                        } else {
+                            value.saturating_sub(1)
+                        }
+                        .min(100),
+                    });
+                }
+            }
+        }
+        return contains_point(geometry.controls, point)
+            .then_some(Intent::ScrollAuraVerbPage { down: !increase });
+    }
     if state.active_ui_page() == UiPage::Surround {
         let focus = surround_control_at(chunks[1], state, point)?;
         let (level_range, delay_range) = state.surround_control_ranges()?;
@@ -404,6 +445,88 @@ fn slider_wheel_action_unchecked(
     output_list_slider_wheel_action(page[1], state, point, increase)
         .or_else(|| mixer_list_slider_wheel_action(mixer_sections[1], state, point, increase))
         .or_else(|| preamp_slider_wheel_action(main[0], state, point, increase))
+}
+
+fn scaled_auraverb_value(track: Rect, x: u16) -> u8 {
+    if track.width <= 1 {
+        return 0;
+    }
+    let position = x
+        .clamp(track.x, track.right().saturating_sub(1))
+        .saturating_sub(track.x);
+    u8::try_from(
+        u32::from(position)
+            .saturating_mul(100)
+            .saturating_add(u32::from(track.width.saturating_sub(1)) / 2)
+            / u32::from(track.width.saturating_sub(1)),
+    )
+    .unwrap_or(100)
+}
+
+fn auraverb_set_action(
+    area: Rect,
+    state: &AppState,
+    focus: AuraVerbControlFocus,
+    x: u16,
+) -> Option<Intent> {
+    if !state.auraverb_controls_enabled() {
+        return None;
+    }
+    let parameter = match focus {
+        AuraVerbControlFocus::Parameter(parameter) => parameter,
+        AuraVerbControlFocus::Enabled => return None,
+    };
+    let control = auraverb_page_geometry(area, state)
+        .cards
+        .into_iter()
+        .find(|control| control.focus == focus)?;
+    (control.action.width > 0).then_some(Intent::SetAuraVerbParameter {
+        parameter,
+        value: scaled_auraverb_value(control.action, x),
+    })
+}
+
+pub fn auraverb_drag_target(
+    area: Rect,
+    state: &AppState,
+    x: u16,
+    y: u16,
+) -> Option<AuraVerbControlFocus> {
+    if any_modal_popup_open(state)
+        || state.popup.raw_view_open
+        || state.active_ui_page() != UiPage::AuraVerb
+        || !state.auraverb_controls_enabled()
+    {
+        return None;
+    }
+    let point = (x, y);
+    auraverb_page_geometry(root_chunks(area)[1], state)
+        .cards
+        .into_iter()
+        .find(|control| {
+            matches!(control.focus, AuraVerbControlFocus::Parameter(_))
+                && contains_point(control.action, point)
+        })
+        .map(|control| control.focus)
+}
+
+fn auraverb_page_mouse_action(area: Rect, state: &AppState, point: (u16, u16)) -> Option<Intent> {
+    let control = auraverb_page_geometry(area, state)
+        .cards
+        .into_iter()
+        .find(|control| contains_point(control.card, point))?;
+    if contains_point(control.action, point) && state.auraverb_controls_enabled() {
+        return match control.focus {
+            AuraVerbControlFocus::Parameter(_) => {
+                auraverb_set_action(area, state, control.focus, point.0)
+            }
+            AuraVerbControlFocus::Enabled => Some(Intent::SetAuraVerbEnabled(
+                !state.displayed_auraverb_state()?.enabled,
+            )),
+        };
+    }
+    (control.focus != state.ui.auraverb_focus)
+        .then_some(Intent::SelectAuraVerbControl(control.focus))
 }
 
 fn scaled_surround_value(track: Rect, x: u16, range: (u16, u16)) -> u16 {

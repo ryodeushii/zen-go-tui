@@ -11,8 +11,8 @@ use antelope_protocol::{
 };
 
 use super::types::{
-    FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate, SurroundControlFocus,
-    UiPage,
+    AuraVerbControlFocus, FocusArea, PeakHoldDuration, RawMapScope, RawPacketTab, RefreshRate,
+    SurroundControlFocus, UiPage,
 };
 use super::{
     AssignmentPickerState, ProfileEditorState, QueryReplyLogEntry, RoutingEditorState,
@@ -803,6 +803,11 @@ impl Default for UiProfileState {
 pub struct UiState {
     pub focus: FocusArea,
     pub page: UiPage,
+    pub auraverb_focus: AuraVerbControlFocus,
+    /// Logical row at the top of the responsive AuraVerb control viewport.
+    pub auraverb_scroll: usize,
+    /// Set only for a pointer press that began on an enabled visible AuraVerb track.
+    pub auraverb_drag: Option<AuraVerbControlFocus>,
     pub surround_focus: SurroundControlFocus,
     /// Set only for a pointer press that began on an enabled Surround track.
     pub surround_drag: Option<SurroundControlFocus>,
@@ -968,6 +973,9 @@ impl Default for UiState {
         Self {
             focus: FocusArea::Outputs,
             page: UiPage::Mixer,
+            auraverb_focus: AuraVerbControlFocus::ALL[0],
+            auraverb_scroll: 0,
+            auraverb_drag: None,
             surround_focus: SurroundControlFocus::Level,
             surround_drag: None,
             last_message:

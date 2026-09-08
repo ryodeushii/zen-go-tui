@@ -260,6 +260,13 @@ pub enum Intent {
     CycleSurroundFocus {
         forward: bool,
     },
+    SelectAuraVerbControl(AuraVerbControlFocus),
+    CycleAuraVerbFocus {
+        forward: bool,
+    },
+    ScrollAuraVerbPage {
+        down: bool,
+    },
     MovePopupSelection(bool),
     ProfileEditorChar(String),
     ProfileEditorBackspace,
@@ -554,7 +561,35 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiPage {
     Mixer,
+    AuraVerb,
     Surround,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuraVerbControlFocus {
+    Parameter(AuraVerbParameter),
+    Enabled,
+}
+
+impl AuraVerbControlFocus {
+    pub const ALL: [Self; 9] = [
+        Self::Parameter(AuraVerbParameter::Color),
+        Self::Parameter(AuraVerbParameter::PreDelay),
+        Self::Parameter(AuraVerbParameter::EarlyReflectionGain),
+        Self::Parameter(AuraVerbParameter::LateReflectionDelay),
+        Self::Parameter(AuraVerbParameter::Richness),
+        Self::Parameter(AuraVerbParameter::ReverbTime),
+        Self::Parameter(AuraVerbParameter::RoomSize),
+        Self::Parameter(AuraVerbParameter::ReverbLevel),
+        Self::Enabled,
+    ];
+
+    pub fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

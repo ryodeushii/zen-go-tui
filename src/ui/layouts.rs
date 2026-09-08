@@ -2,7 +2,8 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::{Block, Borders};
 
 use crate::app::{
-    AppState, RawMapScope, RawPacketTab, SurroundControlFocus, UiPage, MIXER_STRIP_PAGE_SIZE,
+    AppState, AuraVerbControlFocus, RawMapScope, RawPacketTab, SurroundControlFocus, UiPage,
+    MIXER_STRIP_PAGE_SIZE,
 };
 use antelope_protocol::{
     meter_display_db, FaderDirection, FaderSemantics, InputAddress, InputControl, MixerAddress,
@@ -61,20 +62,161 @@ pub(crate) fn page_tab_areas(area: Rect, state: &AppState) -> Vec<(UiPage, Rect)
     if bar.height == 0 {
         return Vec::new();
     }
-    let mut tabs = vec![(UiPage::Mixer, Rect::new(bar.x, bar.y, 12.min(bar.width), 1))];
-    if state.surround_page_available() {
-        let x = bar.x.saturating_add(12);
-        tabs.push((
-            UiPage::Surround,
-            Rect::new(
-                x.min(bar.right()),
-                bar.y,
-                15.min(bar.right().saturating_sub(x)),
-                1,
-            ),
-        ));
+    let mut tabs = Vec::new();
+    let mut x = bar.x;
+    for (page, width, available) in [
+        (UiPage::Mixer, 12, true),
+        (UiPage::AuraVerb, 15, state.auraverb_page_available()),
+        (UiPage::Surround, 15, state.surround_page_available()),
+    ] {
+        if !available {
+            continue;
+        }
+        let width = width.min(bar.right().saturating_sub(x));
+        tabs.push((page, Rect::new(x.min(bar.right()), bar.y, width, 1)));
+        x = x.saturating_add(width);
     }
     tabs
+}
+
+pub(crate) const AURAVERB_CARD_HEIGHT: u16 = 4;
+const AURAVERB_WIDE_MIN_WIDTH: u16 = 72;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AuraVerbControlGeometry {
+    pub focus: AuraVerbControlFocus,
+    pub card: Rect,
+    pub action: Rect,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AuraVerbPageGeometry {
+    pub status: Rect,
+    pub controls: Rect,
+    pub columns: usize,
+    pub total_rows: usize,
+    pub visible_rows: usize,
+    pub viewport_start: usize,
+    pub cards: Vec<AuraVerbControlGeometry>,
+}
+
+fn auraverb_viewport(area: Rect, state: &AppState) -> (Rect, Rect, usize, usize, usize, usize) {
+    let status = Rect::new(area.x, area.y, area.width, 3.min(area.height));
+    let controls = Rect::new(
+        area.x,
+        status.bottom(),
+        area.width,
+        area.bottom().saturating_sub(status.bottom()),
+    );
+    let columns = if area.width >= AURAVERB_WIDE_MIN_WIDTH {
+        2
+    } else {
+        1
+    };
+    let total_rows = AuraVerbControlFocus::ALL.len().div_ceil(columns);
+    let visible_rows = usize::from(controls.height / AURAVERB_CARD_HEIGHT).min(total_rows);
+    let max_start = total_rows.saturating_sub(visible_rows);
+    let focus_row = state.ui.auraverb_focus.index() / columns;
+    let mut start = state.ui.auraverb_scroll.min(max_start);
+    if visible_rows > 0 {
+        if focus_row < start {
+            start = focus_row;
+        } else if focus_row >= start + visible_rows {
+            start = focus_row + 1 - visible_rows;
+        }
+    }
+    (status, controls, columns, total_rows, visible_rows, start)
+}
+
+pub(crate) fn auraverb_page_geometry(area: Rect, state: &AppState) -> AuraVerbPageGeometry {
+    let (status, controls, columns, total_rows, visible_rows, viewport_start) =
+        auraverb_viewport(area, state);
+    let mut cards = Vec::new();
+    if visible_rows > 0 {
+        let gap = usize::from(columns > 1);
+        let column_width = usize::from(area.width).saturating_sub(gap) / columns;
+        for row in viewport_start..(viewport_start + visible_rows).min(total_rows) {
+            for column in 0..columns {
+                let index = row * columns + column;
+                let Some(focus) = AuraVerbControlFocus::ALL.get(index).copied() else {
+                    continue;
+                };
+                let x_offset = column * (column_width + gap);
+                let card = Rect::new(
+                    area.x.saturating_add(x_offset as u16),
+                    controls.y.saturating_add(
+                        ((row - viewport_start) as u16).saturating_mul(AURAVERB_CARD_HEIGHT),
+                    ),
+                    if column + 1 == columns {
+                        area.width.saturating_sub(x_offset as u16)
+                    } else {
+                        column_width as u16
+                    },
+                    AURAVERB_CARD_HEIGHT,
+                );
+                let action = if card.width >= 5 {
+                    match focus {
+                        AuraVerbControlFocus::Parameter(_) => Rect::new(
+                            card.x.saturating_add(2),
+                            card.y.saturating_add(2),
+                            card.width.saturating_sub(4),
+                            1,
+                        ),
+                        AuraVerbControlFocus::Enabled => Rect::new(
+                            card.x.saturating_add(2),
+                            card.y.saturating_add(1),
+                            card.width.saturating_sub(4).min(16),
+                            1,
+                        ),
+                    }
+                } else {
+                    Rect::new(card.x, card.y, 0, 0)
+                };
+                cards.push(AuraVerbControlGeometry {
+                    focus,
+                    card,
+                    action,
+                });
+            }
+        }
+    }
+    AuraVerbPageGeometry {
+        status,
+        controls,
+        columns,
+        total_rows,
+        visible_rows,
+        viewport_start,
+        cards,
+    }
+}
+
+pub fn ensure_auraverb_focus_visible(area: Rect, state: &mut AppState) {
+    let page = root_chunks(area)[1];
+    let (_, _, columns, total_rows, visible_rows, start) = auraverb_viewport(page, state);
+    state.ui.auraverb_scroll = start.min(total_rows.saturating_sub(visible_rows));
+    if visible_rows == 0 {
+        state.ui.auraverb_drag = None;
+    }
+    debug_assert!(columns > 0);
+}
+
+pub fn scroll_auraverb_page(area: Rect, state: &mut AppState, down: bool) {
+    let page = root_chunks(area)[1];
+    let (_, _, columns, total_rows, visible_rows, start) = auraverb_viewport(page, state);
+    if visible_rows == 0 || visible_rows >= total_rows {
+        return;
+    }
+    let max_start = total_rows - visible_rows;
+    let next = if down {
+        start.saturating_add(1).min(max_start)
+    } else {
+        start.saturating_sub(1)
+    };
+    state.ui.auraverb_scroll = next;
+    let focus_index = (next * columns).min(AuraVerbControlFocus::ALL.len() - 1);
+    state.ui.auraverb_focus = AuraVerbControlFocus::ALL[focus_index];
+    state.ui.auraverb_drag = None;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

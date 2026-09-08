@@ -40,6 +40,8 @@ pub enum AppKeyCode {
     Right,
     PageUp,
     PageDown,
+    Home,
+    End,
     Enter,
     Esc,
     F(u8),
@@ -336,6 +338,8 @@ fn normalize_key(key: KeyEvent) -> AppKeyEvent {
         KeyCode::Right => AppKeyCode::Right,
         KeyCode::PageUp => AppKeyCode::PageUp,
         KeyCode::PageDown => AppKeyCode::PageDown,
+        KeyCode::Home => AppKeyCode::Home,
+        KeyCode::End => AppKeyCode::End,
         KeyCode::Enter => AppKeyCode::Enter,
         KeyCode::Esc => AppKeyCode::Esc,
         KeyCode::F(number) => AppKeyCode::F(number),
@@ -941,6 +945,22 @@ mod tests {
             normalize_key(terminput::KeyEvent::new(terminput::KeyCode::PageDown)),
             AppKeyEvent {
                 code: AppKeyCode::PageDown,
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Press,
+            }
+        );
+        assert_eq!(
+            normalize_key(terminput::KeyEvent::new(terminput::KeyCode::Home)),
+            AppKeyEvent {
+                code: AppKeyCode::Home,
+                modifiers: AppModifiers::default(),
+                kind: AppKeyEventKind::Press,
+            }
+        );
+        assert_eq!(
+            normalize_key(terminput::KeyEvent::new(terminput::KeyCode::End)),
+            AppKeyEvent {
+                code: AppKeyCode::End,
                 modifiers: AppModifiers::default(),
                 kind: AppKeyEventKind::Press,
             }

@@ -6,8 +6,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragra
 use ratatui::Frame;
 
 use crate::app::{
-    AppState, FocusArea, ProfileEditorMode, RawMapScope, RawPacketTab, RefreshRate,
-    SelectorPopupKind, SurroundControlFocus, SurroundFreshness, UiPage,
+    AppState, AuraVerbControlFocus, AuraVerbFreshness, FocusArea, ProfileEditorMode, RawMapScope,
+    RawPacketTab, RefreshRate, SelectorPopupKind, SurroundControlFocus, SurroundFreshness, UiPage,
 };
 use crate::device::DevicePickerState;
 use crate::terminal;
@@ -120,6 +120,7 @@ pub fn draw(frame: &mut Frame<'_>, state: &AppState) {
     draw_page_bar(frame, area, state);
     match state.active_ui_page() {
         UiPage::Mixer => draw_mixer_page(frame, chunks[1], state),
+        UiPage::AuraVerb => draw_auraverb_page(frame, chunks[1], state),
         UiPage::Surround => draw_surround_page(frame, chunks[1], state),
     }
     draw_routing_popup(frame, frame.area(), state);
@@ -186,6 +187,7 @@ fn draw_page_bar(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         }
         let label = match page {
             UiPage::Mixer => " F1 Mixer ",
+            UiPage::AuraVerb => " F2 AuraVerb ",
             UiPage::Surround => " F3 Surround ",
         };
         let style = if page == active {
@@ -207,6 +209,115 @@ fn draw_mixer_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
 
     draw_mixer_main(frame, main[1], state);
     draw_output_panel(frame, sections[1], state);
+}
+
+fn auraverb_parameter_label(parameter: antelope_protocol::AuraVerbParameter) -> &'static str {
+    use antelope_protocol::AuraVerbParameter::*;
+    match parameter {
+        Color => "Color",
+        PreDelay => "PreDelay",
+        EarlyReflectionGain => "Early Reflection Gain",
+        LateReflectionDelay => "Late Reflection Delay",
+        Richness => "Richness",
+        ReverbTime => "Reverb Time",
+        RoomSize => "Room Size",
+        ReverbLevel => "Reverb Level",
+    }
+}
+
+fn draw_auraverb_page(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    let geometry = auraverb_page_geometry(area, state);
+    let Some(cache) = state.auraverb.as_ref() else {
+        return;
+    };
+    let freshness = match cache.freshness {
+        AuraVerbFreshness::AwaitingReadback => "WAITING FOR READBACK",
+        AuraVerbFreshness::Authoritative => "AUTHORITATIVE",
+        AuraVerbFreshness::PendingReadback => "PENDING READBACK",
+        AuraVerbFreshness::Stale => "STALE / SESSION LOCKED",
+    };
+    let enabled = state.auraverb_controls_enabled();
+    let viewport = if geometry.visible_rows == 0 {
+        " | CONTROLS HIDDEN: RESIZE".to_string()
+    } else if geometry.visible_rows < geometry.total_rows {
+        format!(
+            " | {}-{}/{}",
+            geometry.viewport_start + 1,
+            (geometry.viewport_start + geometry.visible_rows).min(geometry.total_rows),
+            geometry.total_rows
+        )
+    } else {
+        String::new()
+    };
+    let status = if geometry.visible_rows == 0 {
+        format!("CONTROLS HIDDEN: RESIZE | {freshness} | NO WRITES")
+    } else {
+        format!(
+            "MIXER 1 SEND FX | {freshness} | {}{viewport}",
+            if enabled {
+                "WRITES ENABLED"
+            } else {
+                "NO WRITES"
+            }
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(status).block(panel_block("AuraVerb", Color::LightMagenta, true)),
+        geometry.status,
+    );
+
+    let Some(display) = state.displayed_auraverb_state() else {
+        return;
+    };
+    for control in geometry.cards {
+        let focused = state.ui.auraverb_focus == control.focus;
+        let border = if focused {
+            Color::LightCyan
+        } else {
+            Color::DarkGray
+        };
+        match control.focus {
+            AuraVerbControlFocus::Parameter(parameter) => {
+                let value = display.value(parameter);
+                frame.render_widget(
+                    panel_block(auraverb_parameter_label(parameter), border, focused),
+                    control.card,
+                );
+                let inner = inner_area(control.card);
+                if inner.height > 0 {
+                    frame.render_widget(
+                        Paragraph::new(format!("raw {value} / 100")).style(if enabled {
+                            strong_style(Color::LightCyan)
+                        } else {
+                            subdued_style()
+                        }),
+                        Rect::new(inner.x, inner.y, inner.width, 1),
+                    );
+                }
+                frame.render_widget(
+                    Paragraph::new(surround_track_line(
+                        u16::from(value),
+                        (0, 100),
+                        control.action.width,
+                        enabled,
+                    )),
+                    control.action,
+                );
+            }
+            AuraVerbControlFocus::Enabled => {
+                frame.render_widget(panel_block("Enabled", border, focused), control.card);
+                let label = if display.enabled { "[ ON ]" } else { "[ OFF ]" };
+                frame.render_widget(
+                    Paragraph::new(label).style(if enabled {
+                        strong_style(Color::LightGreen)
+                    } else {
+                        subdued_style()
+                    }),
+                    control.action,
+                );
+            }
+        }
+    }
 }
 
 fn surround_track_line(value: u16, range: (u16, u16), width: u16, enabled: bool) -> Line<'static> {

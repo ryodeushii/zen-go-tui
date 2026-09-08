@@ -4,13 +4,16 @@ use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+#[cfg(test)]
+use antelope_protocol::AuraVerbParameter;
 use antelope_protocol::{
     Action, ControlValue, GlobalControl, InputControl, MixerAddress, MixerAssignment, PreampMode,
     SampleRate,
 };
 use zen_go_tui::app::{
-    is_surround_write_unavailable, Controller, FocusArea, Intent, PeakHoldDuration, RefreshRate,
-    SelectorPopupKind, SelectorPopupState, SurroundControlFocus, UiPage,
+    is_auraverb_write_unavailable, is_surround_write_unavailable, AuraVerbControlFocus, Controller,
+    FocusArea, Intent, PeakHoldDuration, RefreshRate, SelectorPopupKind, SelectorPopupState,
+    SurroundControlFocus, UiPage,
 };
 use zen_go_tui::device::{DeviceCandidate, DevicePickerState, RuntimeDeviceState};
 use zen_go_tui::settings;
@@ -261,6 +264,8 @@ pub fn refresh_after_reconnect_if_needed(
     }
 }
 
+const AURAVERB_INTERACTION_UNAVAILABLE_MESSAGE: &str =
+    "AuraVerb controls are read-only until a fresh device session provides authoritative Mix-1 readback";
 const SURROUND_INTERACTION_UNAVAILABLE_MESSAGE: &str =
     "Surround controls are read-only until a fresh device session provides authoritative readback";
 
@@ -270,12 +275,18 @@ fn apply_interaction_intent(
     area: ratatui::layout::Rect,
 ) -> Result<()> {
     match controller.apply_intent(intent, area) {
+        Err(error) if is_auraverb_write_unavailable(&error) => {
+            controller.state.ui.auraverb_drag = None;
+            controller.state.ui.last_message = AURAVERB_INTERACTION_UNAVAILABLE_MESSAGE.to_string();
+            Ok(())
+        }
         Err(error) if is_surround_write_unavailable(&error) => {
             controller.state.ui.surround_drag = None;
             controller.state.ui.last_message = SURROUND_INTERACTION_UNAVAILABLE_MESSAGE.to_string();
             Ok(())
         }
         Err(error) => {
+            controller.state.ui.auraverb_drag = None;
             controller.state.ui.surround_drag = None;
             Err(error)
         }
@@ -781,6 +792,13 @@ pub fn handle_key_press(
             controller.apply_intent(Intent::SelectUiPage(UiPage::Mixer), area)?;
             Ok(())
         }
+        AppKeyCode::F(2)
+            if page_navigation_available(&controller.state)
+                && controller.state.auraverb_page_available() =>
+        {
+            controller.apply_intent(Intent::SelectUiPage(UiPage::AuraVerb), area)?;
+            Ok(())
+        }
         AppKeyCode::F(3)
             if page_navigation_available(&controller.state)
                 && controller.state.surround_page_available() =>
@@ -808,6 +826,14 @@ pub fn handle_key_press(
             controller.apply_intent(Intent::RefreshQueriedState, area)?;
             Ok(())
         }
+        AppKeyCode::Tab if auraverb_page_input_active(&controller.state) => {
+            controller.apply_intent(Intent::CycleAuraVerbFocus { forward: true }, area)?;
+            Ok(())
+        }
+        AppKeyCode::BackTab if auraverb_page_input_active(&controller.state) => {
+            controller.apply_intent(Intent::CycleAuraVerbFocus { forward: false }, area)?;
+            Ok(())
+        }
         AppKeyCode::Tab if surround_page_input_active(&controller.state) => {
             controller.apply_intent(Intent::CycleSurroundFocus { forward: true }, area)?;
             Ok(())
@@ -822,8 +848,53 @@ pub fn handle_key_press(
         }
         AppKeyCode::BackTab => Ok(()),
         AppKeyCode::Char('?') => {
+            controller.state.ui.auraverb_drag = None;
             controller.state.ui.surround_drag = None;
             controller.state.toggle_hotkeys_popup();
+            Ok(())
+        }
+        AppKeyCode::Left | AppKeyCode::Down if auraverb_page_input_active(&controller.state) => {
+            if let Some(intent) = auraverb_adjust_intent(&controller.state, -1) {
+                apply_interaction_intent(controller, intent, area)?;
+            }
+            Ok(())
+        }
+        AppKeyCode::Right | AppKeyCode::Up if auraverb_page_input_active(&controller.state) => {
+            if let Some(intent) = auraverb_adjust_intent(&controller.state, 1) {
+                apply_interaction_intent(controller, intent, area)?;
+            }
+            Ok(())
+        }
+        AppKeyCode::PageUp if auraverb_page_input_active(&controller.state) => {
+            if let Some(intent) = auraverb_adjust_intent(&controller.state, 10) {
+                apply_interaction_intent(controller, intent, area)?;
+            }
+            Ok(())
+        }
+        AppKeyCode::PageDown if auraverb_page_input_active(&controller.state) => {
+            if let Some(intent) = auraverb_adjust_intent(&controller.state, -10) {
+                apply_interaction_intent(controller, intent, area)?;
+            }
+            Ok(())
+        }
+        AppKeyCode::Home if auraverb_page_input_active(&controller.state) => {
+            if let Some(intent) = auraverb_bound_intent(&controller.state, false) {
+                apply_interaction_intent(controller, intent, area)?;
+            }
+            Ok(())
+        }
+        AppKeyCode::End if auraverb_page_input_active(&controller.state) => {
+            if let Some(intent) = auraverb_bound_intent(&controller.state, true) {
+                apply_interaction_intent(controller, intent, area)?;
+            }
+            Ok(())
+        }
+        AppKeyCode::Enter | AppKeyCode::Char(' ')
+            if auraverb_page_input_active(&controller.state) =>
+        {
+            if let Some(intent) = auraverb_toggle_intent(&controller.state) {
+                apply_interaction_intent(controller, intent, area)?;
+            }
             Ok(())
         }
         AppKeyCode::Left | AppKeyCode::Down if surround_page_input_active(&controller.state) => {
@@ -839,7 +910,10 @@ pub fn handle_key_press(
             Ok(())
         }
         AppKeyCode::Char('m' | 'd' | 'o' | 'a' | 'l' | '[' | ']' | '3')
-            if controller.state.active_ui_page() == UiPage::Surround =>
+            if matches!(
+                controller.state.active_ui_page(),
+                UiPage::AuraVerb | UiPage::Surround
+            ) =>
         {
             Ok(())
         }
@@ -1119,23 +1193,11 @@ fn open_device_selector_for_runtime(
     controller: &mut Controller,
     active_candidate: Option<&DeviceCandidate>,
 ) {
+    controller.state.ui.auraverb_drag = None;
     controller.state.ui.surround_drag = None;
     if let Err(error) = runtime.open_selector_for(active_candidate.cloned()) {
         controller.state.ui.last_message = format!("Device selector unavailable: {error}");
     }
-}
-
-fn handle_device_selector_hotkey(
-    runtime: &mut RuntimeDeviceState,
-    controller: &mut Controller,
-    active_candidate: Option<&DeviceCandidate>,
-    key: AppKeyCode,
-) -> bool {
-    if key != AppKeyCode::F(2) {
-        return false;
-    }
-    open_device_selector_for_runtime(runtime, controller, active_candidate);
-    true
 }
 
 fn handle_device_selector_header_mouse(
@@ -1195,17 +1257,6 @@ fn app_loop_inner(
                                     }
                                     DeviceSelectorAction::Continue => {}
                                 }
-                                needs_redraw = true;
-                                continue;
-                            }
-
-                            if handle_device_selector_hotkey(
-                                runtime,
-                                controller,
-                                active_candidate,
-                                key.code,
-                            ) {
-                                controller.release_talkback_if_held()?;
                                 needs_redraw = true;
                                 continue;
                             }
@@ -1295,6 +1346,7 @@ fn app_loop_inner(
                         needs_redraw = true;
                     }
                     zen_go_tui::terminal::AppInputEvent::FocusLost => {
+                        controller.state.ui.auraverb_drag = None;
                         controller.state.ui.surround_drag = None;
                         if let Err(error) = controller.release_talkback_if_held() {
                             if is_device_error(&error) {
@@ -1380,6 +1432,48 @@ fn page_navigation_available(state: &zen_go_tui::app::AppState) -> bool {
         && state.popup.routing_source_picker.is_none()
         && !state.popup.routing_open
         && !state.popup.options_open
+}
+
+fn auraverb_page_input_active(state: &zen_go_tui::app::AppState) -> bool {
+    page_navigation_available(state) && state.active_ui_page() == UiPage::AuraVerb
+}
+
+fn auraverb_adjust_intent(state: &zen_go_tui::app::AppState, delta: i16) -> Option<Intent> {
+    if !state.auraverb_controls_enabled() {
+        return None;
+    }
+    let AuraVerbControlFocus::Parameter(parameter) = state.ui.auraverb_focus else {
+        return None;
+    };
+    let current = i16::from(state.displayed_auraverb_state()?.value(parameter));
+    Some(Intent::SetAuraVerbParameter {
+        parameter,
+        value: u8::try_from((current + delta).clamp(0, 100)).ok()?,
+    })
+}
+
+fn auraverb_bound_intent(state: &zen_go_tui::app::AppState, maximum: bool) -> Option<Intent> {
+    if !state.auraverb_controls_enabled() {
+        return None;
+    }
+    let AuraVerbControlFocus::Parameter(parameter) = state.ui.auraverb_focus else {
+        return None;
+    };
+    Some(Intent::SetAuraVerbParameter {
+        parameter,
+        value: if maximum { 100 } else { 0 },
+    })
+}
+
+fn auraverb_toggle_intent(state: &zen_go_tui::app::AppState) -> Option<Intent> {
+    if !state.auraverb_controls_enabled()
+        || state.ui.auraverb_focus != AuraVerbControlFocus::Enabled
+    {
+        return None;
+    }
+    Some(Intent::SetAuraVerbEnabled(
+        !state.displayed_auraverb_state()?.enabled,
+    ))
 }
 
 fn surround_page_input_active(state: &zen_go_tui::app::AppState) -> bool {
@@ -1614,9 +1708,16 @@ pub fn handle_mouse_event(
 ) -> Result<()> {
     match mouse.kind {
         AppMouseEventKind::Down(AppMouseButton::Left) => {
-            let drag = ui::surround_drag_target(area, &controller.state, mouse.column, mouse.row);
-            controller.state.ui.surround_drag = drag;
-            if let Some(focus) = drag {
+            let aura_drag =
+                ui::auraverb_drag_target(area, &controller.state, mouse.column, mouse.row);
+            controller.state.ui.auraverb_drag = aura_drag;
+            if let Some(focus) = aura_drag {
+                controller.state.ui.auraverb_focus = focus;
+            }
+            let surround_drag =
+                ui::surround_drag_target(area, &controller.state, mouse.column, mouse.row);
+            controller.state.ui.surround_drag = surround_drag;
+            if let Some(focus) = surround_drag {
                 controller.state.ui.surround_focus = focus;
             }
             if let Some(action) = ui::mouse_action(area, &controller.state, mouse.column, mouse.row)
@@ -1625,6 +1726,7 @@ pub fn handle_mouse_event(
             }
         }
         AppMouseEventKind::Up(AppMouseButton::Left) => {
+            controller.state.ui.auraverb_drag = None;
             controller.state.ui.surround_drag = None;
             controller.release_talkback_if_held()?;
         }
@@ -1634,6 +1736,7 @@ pub fn handle_mouse_event(
             {
                 apply_interaction_intent(controller, action, area)?;
             } else {
+                controller.state.ui.auraverb_drag = None;
                 controller.state.ui.surround_drag = None;
             }
         }
@@ -1850,7 +1953,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_selector_activation_ignores_raw_view_header_click_but_keeps_visible_title_and_f2() {
+    fn runtime_selector_activation_ignores_raw_view_and_modal_header_clicks() {
         let area = ratatui::layout::Rect::new(0, 0, 120, 50);
         let mut devices = RuntimeDeviceState::mock(zen_go_tui::device::ProfileCatalog::builtin())
             .expect("mock runtime devices");
@@ -1904,13 +2007,7 @@ mod tests {
         ));
         assert!(devices.selector().is_none());
 
-        assert!(handle_device_selector_hotkey(
-            &mut devices,
-            &mut controller,
-            None,
-            AppKeyCode::F(2),
-        ));
-        assert!(devices.selector().is_some());
+        assert!(devices.selector().is_none());
     }
 
     #[test]
@@ -1975,6 +2072,26 @@ mod tests {
         Controller::new_for_entry(transport, Box::new(driver), &entry).expect("controller")
     }
 
+    fn auraverb_readback_fixture() -> Vec<u8> {
+        include_str!(
+            "../antelope-protocol/tests/fixtures/orion/auraverb/readback_mix1_poweroff_on2.hex"
+        )
+        .split_whitespace()
+        .map(|byte| u8::from_str_radix(byte, 16).expect("AuraVerb fixture byte"))
+        .collect()
+    }
+
+    fn authoritative_auraverb_controller() -> (Controller, MockTransport) {
+        let transport = MockTransport::default();
+        let mut controller = orion_settings_controller(Box::new(transport.clone()));
+        transport.push_read(auraverb_readback_fixture());
+        assert!(controller
+            .poll_device(Duration::ZERO)
+            .expect("AuraVerb readback"));
+        transport.take_writes();
+        (controller, transport)
+    }
+
     fn surround_readback_fixture() -> Vec<u8> {
         include_str!("../antelope-protocol/tests/fixtures/orion/surround_global_20_readback.hex")
             .split_whitespace()
@@ -2007,6 +2124,312 @@ mod tests {
         fn read(&self, _timeout: Duration) -> Result<Option<Vec<u8>>> {
             Ok(self.read.lock().expect("disconnect read lock").take())
         }
+    }
+
+    #[test]
+    fn auraverb_keyboard_covers_all_fields_toggle_bounds_focus_scroll_and_fkeys() {
+        let area = ratatui::layout::Rect::new(0, 0, 60, 30);
+        let (mut controller, transport) = authoritative_auraverb_controller();
+        let initial = controller
+            .state
+            .displayed_auraverb_state()
+            .expect("authoritative AuraVerb")
+            .clone();
+
+        handle_key_press(&mut controller, key(AppKeyCode::F(2)), area).expect("F2 AuraVerb");
+        assert_eq!(controller.state.ui.page, UiPage::AuraVerb);
+        assert_eq!(
+            controller.state.ui.auraverb_focus,
+            AuraVerbControlFocus::ALL[0]
+        );
+        for expected in AuraVerbControlFocus::ALL.into_iter().skip(1) {
+            handle_key_press(&mut controller, key(AppKeyCode::Tab), area).expect("AuraVerb Tab");
+            assert_eq!(controller.state.ui.auraverb_focus, expected);
+        }
+        assert!(controller.state.ui.auraverb_scroll > 0);
+        handle_key_press(&mut controller, key(AppKeyCode::BackTab), area)
+            .expect("AuraVerb BackTab");
+        assert_eq!(
+            controller.state.ui.auraverb_focus,
+            AuraVerbControlFocus::Parameter(AuraVerbParameter::ReverbLevel)
+        );
+
+        for (code, expected) in [
+            (
+                AppKeyCode::Up,
+                initial.reverb_level.saturating_add(1).min(100),
+            ),
+            (
+                AppKeyCode::PageUp,
+                initial.reverb_level.saturating_add(11).min(100),
+            ),
+            (AppKeyCode::Home, 0),
+            (AppKeyCode::End, 100),
+        ] {
+            handle_key_press(&mut controller, key(code), area).expect("AuraVerb adjustment");
+            assert_eq!(
+                controller
+                    .state
+                    .displayed_auraverb_state()
+                    .expect("pending AuraVerb")
+                    .reverb_level,
+                expected
+            );
+        }
+        assert!(!transport.take_writes().is_empty());
+
+        controller.state.ui.auraverb_focus = AuraVerbControlFocus::Enabled;
+        let before_toggle = controller
+            .state
+            .displayed_auraverb_state()
+            .expect("pending before toggle")
+            .clone();
+        handle_key_press(&mut controller, key(AppKeyCode::Enter), area)
+            .expect("toggle AuraVerb enabled");
+        let after_toggle = controller
+            .state
+            .displayed_auraverb_state()
+            .expect("pending after toggle");
+        assert_eq!(after_toggle.enabled, !before_toggle.enabled);
+        for parameter in AuraVerbParameter::ALL {
+            assert_eq!(
+                after_toggle.value(parameter),
+                before_toggle.value(parameter)
+            );
+        }
+        assert!(!transport.take_writes().is_empty());
+
+        handle_key_press(&mut controller, key(AppKeyCode::F(1)), area).expect("F1 Mixer");
+        assert_eq!(controller.state.ui.page, UiPage::Mixer);
+        handle_key_press(&mut controller, key(AppKeyCode::F(3)), area).expect("F3 Surround");
+        assert_eq!(controller.state.ui.page, UiPage::Surround);
+
+        let transport = MockTransport::default();
+        let mut zen = Controller::new(
+            Box::new(transport),
+            Box::new(zen_go_tui::device::builtin_zen_go_driver().expect("Zen Go driver")),
+        )
+        .expect("Zen Go controller");
+        handle_key_press(&mut zen, key(AppKeyCode::F(2)), area).expect("unavailable F2");
+        assert_eq!(zen.state.ui.page, UiPage::Mixer);
+    }
+
+    #[test]
+    fn auraverb_ui_writes_preserve_peers_for_each_typed_field() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        for parameter in AuraVerbParameter::ALL {
+            let (mut controller, transport) = authoritative_auraverb_controller();
+            controller
+                .apply_intent(Intent::SelectUiPage(UiPage::AuraVerb), area)
+                .unwrap();
+            let before = controller
+                .state
+                .displayed_auraverb_state()
+                .expect("authoritative AuraVerb")
+                .clone();
+            controller.state.ui.auraverb_focus = AuraVerbControlFocus::Parameter(parameter);
+            handle_key_press(&mut controller, key(AppKeyCode::End), area)
+                .expect("typed field write");
+            let after = controller
+                .state
+                .displayed_auraverb_state()
+                .expect("pending AuraVerb");
+            for peer in AuraVerbParameter::ALL {
+                assert_eq!(
+                    after.value(peer),
+                    if peer == parameter {
+                        100
+                    } else {
+                        before.value(peer)
+                    },
+                    "peer mismatch after {parameter:?}"
+                );
+            }
+            assert_eq!(after.enabled, before.enabled);
+            assert_eq!(transport.take_writes().len(), 2);
+        }
+    }
+
+    #[test]
+    fn auraverb_freshness_race_is_consumed_but_range_and_io_errors_propagate() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let (mut stale, transport) = authoritative_auraverb_controller();
+        stale
+            .apply_intent(Intent::SelectUiPage(UiPage::AuraVerb), area)
+            .unwrap();
+        let intent = auraverb_adjust_intent(&stale.state, 1).expect("eligible intent");
+        stale.state.auraverb.as_mut().unwrap().freshness =
+            zen_go_tui::app::AuraVerbFreshness::Stale;
+        stale.state.ui.auraverb_drag =
+            Some(AuraVerbControlFocus::Parameter(AuraVerbParameter::Color));
+        apply_interaction_intent(&mut stale, intent, area).expect("typed stale rejection consumed");
+        assert!(transport.take_writes().is_empty());
+        assert!(stale.state.ui.auraverb_drag.is_none());
+        assert_eq!(
+            stale.state.ui.last_message,
+            AURAVERB_INTERACTION_UNAVAILABLE_MESSAGE
+        );
+
+        let (mut invalid, transport) = authoritative_auraverb_controller();
+        let error = apply_interaction_intent(
+            &mut invalid,
+            Intent::SetAuraVerbParameter {
+                parameter: AuraVerbParameter::Color,
+                value: 101,
+            },
+            area,
+        )
+        .expect_err("range error propagates");
+        assert!(!is_auraverb_write_unavailable(&error));
+        assert!(!is_device_error(&error));
+        assert!(transport.take_writes().is_empty());
+
+        let write_attempts = Arc::new(AtomicUsize::new(0));
+        let transport = DisconnectOnWriteTransport {
+            read: Mutex::new(Some(auraverb_readback_fixture())),
+            write_attempts: write_attempts.clone(),
+        };
+        let mut disconnected = orion_settings_controller(Box::new(transport));
+        disconnected.poll_device(Duration::ZERO).unwrap();
+        disconnected
+            .apply_intent(Intent::SelectUiPage(UiPage::AuraVerb), area)
+            .unwrap();
+        let error = handle_key_press(&mut disconnected, key(AppKeyCode::Up), area)
+            .expect_err("device error propagates");
+        assert!(is_device_error(&error));
+        assert!(!is_auraverb_write_unavailable(&error));
+        assert_eq!(write_attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn auraverb_modal_keyboard_and_mouse_events_do_not_leak() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        for overlay in ["raw", "routing", "assignment", "options"] {
+            let (mut controller, transport) = authoritative_auraverb_controller();
+            controller
+                .apply_intent(Intent::SelectUiPage(UiPage::AuraVerb), area)
+                .unwrap();
+            let point = (0..area.height)
+                .find_map(|y| {
+                    (0..area.width).find_map(|x| {
+                        ui::auraverb_drag_target(area, &controller.state, x, y)
+                            .is_some()
+                            .then_some((x, y))
+                    })
+                })
+                .expect("visible AuraVerb track");
+            match overlay {
+                "raw" => controller
+                    .apply_intent(Intent::ToggleRawView, area)
+                    .unwrap(),
+                "routing" => controller
+                    .apply_intent(Intent::OpenRoutingPopup, area)
+                    .unwrap(),
+                "assignment" => {
+                    controller.state.popup.assignment_picker =
+                        Some(zen_go_tui::app::AssignmentPickerState { strip: 1 });
+                    controller.state.ui.auraverb_drag = None;
+                }
+                "options" => controller
+                    .apply_intent(Intent::OpenOptionsPopup, area)
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            let focus = controller.state.ui.auraverb_focus;
+            handle_key_press(&mut controller, key(AppKeyCode::Tab), area).unwrap();
+            handle_mouse_event(
+                area,
+                &mut controller,
+                AppMouseEvent {
+                    kind: AppMouseEventKind::ScrollUp,
+                    column: point.0,
+                    row: point.1,
+                    modifiers: AppModifiers::default(),
+                },
+            )
+            .unwrap();
+            assert_eq!(controller.state.ui.auraverb_focus, focus, "{overlay}");
+            assert!(controller.state.ui.auraverb_drag.is_none(), "{overlay}");
+            assert!(transport.take_writes().is_empty(), "{overlay}");
+        }
+    }
+
+    #[test]
+    fn auraverb_drag_lifetime_ends_on_release_page_modal_and_disconnect() {
+        let area = ratatui::layout::Rect::new(0, 0, 120, 30);
+        let (mut controller, transport) = authoritative_auraverb_controller();
+        controller
+            .apply_intent(Intent::SelectUiPage(UiPage::AuraVerb), area)
+            .unwrap();
+        let geometry = ui::auraverb_drag_target;
+        let (left, right, y) = (0..area.height)
+            .find_map(|y| {
+                let xs = (0..area.width)
+                    .filter(|x| geometry(area, &controller.state, *x, y).is_some())
+                    .collect::<Vec<_>>();
+                (!xs.is_empty()).then(|| (xs[0], *xs.last().unwrap(), y))
+            })
+            .expect("visible AuraVerb track");
+        let down = AppMouseEvent {
+            kind: AppMouseEventKind::Down(AppMouseButton::Left),
+            column: left,
+            row: y,
+            modifiers: AppModifiers::default(),
+        };
+        handle_mouse_event(area, &mut controller, down).expect("AuraVerb pointer down");
+        assert_eq!(
+            controller.state.ui.auraverb_drag,
+            Some(AuraVerbControlFocus::Parameter(AuraVerbParameter::Color))
+        );
+        handle_mouse_event(
+            area,
+            &mut controller,
+            AppMouseEvent {
+                kind: AppMouseEventKind::Drag(AppMouseButton::Left),
+                column: right,
+                ..down
+            },
+        )
+        .expect("AuraVerb drag");
+        assert_eq!(
+            controller
+                .state
+                .displayed_auraverb_state()
+                .expect("pending AuraVerb")
+                .color,
+            100
+        );
+        assert!(!transport.take_writes().is_empty());
+        handle_mouse_event(
+            area,
+            &mut controller,
+            AppMouseEvent {
+                kind: AppMouseEventKind::Up(AppMouseButton::Left),
+                ..down
+            },
+        )
+        .unwrap();
+        assert!(controller.state.ui.auraverb_drag.is_none());
+
+        controller.state.ui.auraverb_drag =
+            Some(AuraVerbControlFocus::Parameter(AuraVerbParameter::Color));
+        controller
+            .apply_intent(Intent::OpenOptionsPopup, area)
+            .unwrap();
+        assert!(controller.state.ui.auraverb_drag.is_none());
+        controller.state.popup.options_open = false;
+
+        controller.state.ui.auraverb_drag =
+            Some(AuraVerbControlFocus::Parameter(AuraVerbParameter::Color));
+        controller
+            .apply_intent(Intent::SelectUiPage(UiPage::Mixer), area)
+            .unwrap();
+        assert!(controller.state.ui.auraverb_drag.is_none());
+
+        controller.state.ui.auraverb_drag =
+            Some(AuraVerbControlFocus::Parameter(AuraVerbParameter::Color));
+        controller.state.mark_disconnected();
+        assert!(controller.state.ui.auraverb_drag.is_none());
     }
 
     #[test]

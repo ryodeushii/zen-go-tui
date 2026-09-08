@@ -25,8 +25,8 @@ use super::picker::{
 };
 use super::profile_editor::{ProfileEditorMode, ProfileEditorState};
 use super::types::{
-    FocusArea, Intent, PeakHoldDuration, PendingMutation, RawMapScope, RawPacketTab, RefreshRate,
-    SurroundControlFocus, UiPage,
+    AuraVerbControlFocus, FocusArea, Intent, PeakHoldDuration, PendingMutation, RawMapScope,
+    RawPacketTab, RefreshRate, SurroundControlFocus, UiPage,
 };
 use super::AppState;
 
@@ -1251,6 +1251,12 @@ impl Controller {
         let pending = intent.pending_mutation(&self.state);
         if !matches!(
             intent,
+            Intent::SetAuraVerbEnabled(_) | Intent::SetAuraVerbParameter { .. }
+        ) {
+            self.state.ui.auraverb_drag = None;
+        }
+        if !matches!(
+            intent,
             Intent::SetSurroundGlobalLevel(_) | Intent::SetSurroundGlobalDelay(_)
         ) {
             self.state.ui.surround_drag = None;
@@ -1448,6 +1454,11 @@ impl Controller {
             Intent::RefreshQueriedState => self.handle_refresh_queried_state()?,
             Intent::CycleFocus => self.handle_cycle_focus(),
             Intent::CycleSurroundFocus { forward } => self.handle_cycle_surround_focus(forward),
+            Intent::SelectAuraVerbControl(focus) => self.state.ui.auraverb_focus = focus,
+            Intent::CycleAuraVerbFocus { forward } => {
+                self.handle_cycle_auraverb_focus(forward, area)
+            }
+            Intent::ScrollAuraVerbPage { down } => self.handle_scroll_auraverb_page(down, area),
             Intent::MovePopupSelection(down) => self.handle_move_popup_selection(down),
             Intent::ProfileEditorChar(ch) => self.handle_profile_editor_char(ch),
             Intent::ProfileEditorBackspace => self.handle_profile_editor_backspace(),
@@ -1466,6 +1477,10 @@ impl Controller {
         enabled_change: Option<bool>,
     ) -> Result<()> {
         self.expire_auraverb_readback();
+        if !self.state.auraverb_controls_enabled() {
+            self.state.ui.auraverb_drag = None;
+            return Err(AuraVerbWriteUnavailable.into());
+        }
         let mut expected =
             self.state
                 .auraverb
@@ -1499,6 +1514,7 @@ impl Controller {
             if let Some(cache) = self.state.auraverb.as_mut() {
                 cache.freshness = super::AuraVerbFreshness::Stale;
             }
+            self.state.ui.auraverb_drag = None;
             self.auraverb_readback_deadline = None;
             return Err(error);
         }
@@ -1625,6 +1641,7 @@ impl Controller {
             return false;
         }
         self.auraverb_readback_deadline = None;
+        self.state.ui.auraverb_drag = None;
         let Some(cache) = self.state.auraverb.as_mut() else {
             return false;
         };
@@ -3707,13 +3724,25 @@ impl Controller {
     }
 
     fn handle_select_ui_page(&mut self, page: UiPage) {
-        self.state.ui.page = if page == UiPage::Surround && !self.state.surround_page_available() {
-            self.state.ui.last_message =
-                "Surround is unavailable for the active device profile".to_string();
+        let unavailable = match page {
+            UiPage::AuraVerb => !self.state.auraverb_page_available(),
+            UiPage::Surround => !self.state.surround_page_available(),
+            UiPage::Mixer => false,
+        };
+        self.state.ui.page = if unavailable {
+            self.state.ui.last_message = format!(
+                "{} is unavailable for the active device profile",
+                match page {
+                    UiPage::AuraVerb => "AuraVerb",
+                    UiPage::Surround => "Surround",
+                    UiPage::Mixer => "Mixer",
+                }
+            );
             UiPage::Mixer
         } else {
             self.state.ui.last_message = match page {
                 UiPage::Mixer => "Mixer page selected".to_string(),
+                UiPage::AuraVerb => "AuraVerb Mix-1 SEND FX page selected".to_string(),
                 UiPage::Surround => "Surround page selected".to_string(),
             };
             page
@@ -3730,6 +3759,22 @@ impl Controller {
             SurroundControlFocus::Level => SurroundControlFocus::Delay,
             SurroundControlFocus::Delay => SurroundControlFocus::Level,
         };
+    }
+
+    fn handle_cycle_auraverb_focus(&mut self, forward: bool, area: Rect) {
+        let current = self.state.ui.auraverb_focus.index();
+        let last = AuraVerbControlFocus::ALL.len() - 1;
+        let next = if forward {
+            (current + 1) % AuraVerbControlFocus::ALL.len()
+        } else {
+            current.checked_sub(1).unwrap_or(last)
+        };
+        self.state.ui.auraverb_focus = AuraVerbControlFocus::ALL[next];
+        crate::ui::ensure_auraverb_focus_visible(area, &mut self.state);
+    }
+
+    fn handle_scroll_auraverb_page(&mut self, down: bool, area: Rect) {
+        crate::ui::scroll_auraverb_page(area, &mut self.state, down);
     }
 
     fn handle_move_popup_selection(&mut self, down: bool) {

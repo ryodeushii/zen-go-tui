@@ -125,9 +125,10 @@ Saved-state TOML profiles contain user control snapshots. They are not normalize
 ## Keyboard controls
 
 - `F1` — show the Mixer page
-- `F2` — open the device selector (there is no AuraVerb placeholder page)
+- `F2` — show AuraVerb only when the active profile has the validated Orion Mix-1 AuraVerb contract
 - `F3` — show Surround only when the active profile has a validated Surround capability
-- `Tab` / `Shift+Tab` — move forward/backward between level and delay on Surround; `Tab` keeps its existing Mixer focus cycle
+- click the device name in the header to open the device selector
+- `Tab` / `Shift+Tab` — move forward/backward through AuraVerb controls or between level and delay on Surround; `Tab` keeps its existing Mixer focus cycle
 - `Tab` — cycle focus between status, outputs, mixer, preamp on the Mixer page
 - `Left` / `Right` — select output or mixer channel
 - `Up` / `Down` — adjust the focused output level, mixer fader, or preamp gain
@@ -151,6 +152,14 @@ Saved-state TOML profiles contain user control snapshots. They are not normalize
 - `q` — quit
 
 Clock-source choices and the current label come from the active device profile. Orion exposes its seven confirmed labels; Zen Go intentionally shows `Raw 0` through `Raw 2` as label-unconfirmed rather than guessing their names. Clock-source and sample-rate changes are disruptive, and a host audio stream can cause Orion to ignore them; stop the host audio stack before changing either setting.
+
+## AuraVerb page
+
+AuraVerb appears between Mixer and Surround only when the active profile has the validated Orion Mix-1 contract. Zen Go has no AuraVerb wire capability, so it has no AuraVerb tab or `F2` page. The page is explicitly the Mixer 1 SEND FX context; it does not add a mix selector, presets, or send-routing controls.
+
+The page exposes Enabled plus eight capture-backed raw `0..100` parameters: Color, PreDelay, Early Reflection Gain, Late Reflection Delay, Richness, Reverb Time, Room Size, and Reverb Level. Values remain raw because the backend does not establish engineering-unit conversions for the full set.
+
+Authoritative and complete pending state is editable. Missing, awaiting, stale, disconnected, or timed-out state is read-only and never displayed as a fabricated zero. Every edit composes a complete state from authoritative or latest pending values. `Tab` / `Shift+Tab` traverses all nine controls; arrows adjust a focused parameter by 1, `PageUp` / `PageDown` by 10, and `Home` / `End` select 0 / 100. `Space` or `Enter` toggles only when Enabled has focus. The responsive layout uses two columns when wide and one column when narrow; focus and pointer hit-testing share its scrolling viewport.
 
 ## Surround page
 

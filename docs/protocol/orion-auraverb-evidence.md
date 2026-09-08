@@ -56,3 +56,7 @@ Only Orion Studio SC identity `0x23e5:0xa221`, operation `0xda`, target 0/Mix 1,
 Category `0x0a` replies carry no transaction ID. A pending write accepts only an exact complete-state match; delayed mismatches do not replace authoritative or pending state. Timeout, disconnect, or failed I/O makes the session stale and fail-closed. Authority is recovered only by constructing a fresh controller/device session and receiving a valid actual readback.
 
 The Zen Go canonical profile contains no AuraVerb command contract, and no AuraVerb/reverb-named capture exists under `/home/ryodeushii/repos/zen-go-tui/antelope_pcap/zen go sc/`. Its manual documents product availability, but that does not establish Orion wire compatibility, so Zen remains absent from this backend capability.
+
+## TUI boundary
+
+The capability-gated `F2` page exposes only Mix 1 Enabled plus the eight fields above. It labels every parameter as raw `0..100`; the evidence does not establish engineering-unit conversions for the complete set. The UI contains no mix selector, preset manager, or new send-routing controls. It renders authoritative or latest complete pending state, never substitutes zero for missing state, and consumes only the typed stale/freshness rejection at an interaction race; encoding range and transport errors continue to propagate.

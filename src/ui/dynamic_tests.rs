@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
 use antelope_protocol::{
-    DeviceEvent, DynamicMeterState, DynamicRoutingGroup, DynamicStatePatch, InputAddress,
-    InputControl, MixerAddress, MixerAssignment, MixerControl, OutputControl, RoutingSource,
-    RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind, RuntimeMeterTarget, RuntimeReadiness,
-    SurroundGlobalState,
+    AuraVerbParameter, AuraVerbState, DeviceEvent, DynamicMeterState, DynamicRoutingGroup,
+    DynamicStatePatch, InputAddress, InputControl, MixerAddress, MixerAssignment, MixerControl,
+    OutputControl, RoutingSource, RuntimeDriverKind, RuntimeEntry, RuntimeInputControlKind,
+    RuntimeMeterTarget, RuntimeReadiness, SurroundGlobalState,
 };
 use ratatui::{
     backend::TestBackend,
@@ -16,7 +16,10 @@ use ratatui::{
 };
 
 use crate::{
-    app::{AppState, Intent, SurroundControlFocus, SurroundFreshness, SurroundGlobalCache, UiPage},
+    app::{
+        AppState, AuraVerbCache, AuraVerbControlFocus, AuraVerbFreshness, Intent,
+        SurroundControlFocus, SurroundFreshness, SurroundGlobalCache, UiPage,
+    },
     device::{DeviceCandidate, DevicePickerState, ProfileCatalog},
 };
 
@@ -44,6 +47,29 @@ fn discrete_4_ui_state() -> AppState {
 
 fn zen_go_ui_state() -> AppState {
     AppState::from_entry(&entry("zen_go_sc"))
+}
+
+fn auraverb_ui_state(freshness: AuraVerbFreshness) -> AppState {
+    let mut state = orion_ui_state();
+    state.ui.page = UiPage::AuraVerb;
+    state.device.connection.connected = true;
+    let aura = AuraVerbState {
+        color: 11,
+        pre_delay: 22,
+        early_reflection_gain: 33,
+        late_reflection_delay: 44,
+        richness: 55,
+        reverb_time: 66,
+        room_size: 77,
+        reverb_level: 88,
+        enabled: true,
+    };
+    state.auraverb = Some(AuraVerbCache {
+        state: Some(aura.clone()),
+        pending_expected: (freshness == AuraVerbFreshness::PendingReadback).then_some(aura),
+        freshness,
+    });
+    state
 }
 
 fn surround_ui_state(freshness: SurroundFreshness, writable: bool) -> AppState {
@@ -112,6 +138,265 @@ fn terminal_text(terminal: &Terminal<TestBackend>) -> String {
 }
 
 #[test]
+fn auraverb_navigation_is_capability_gated_ordered_and_falls_back_to_mixer() {
+    let area = Rect::new(0, 0, 120, 30);
+    let zen = zen_go_ui_state();
+    assert!(!zen.auraverb_page_available());
+    assert_eq!(super::layouts::page_tab_areas(area, &zen).len(), 1);
+
+    let mut orion = auraverb_ui_state(AuraVerbFreshness::Authoritative);
+    let tabs = super::layouts::page_tab_areas(area, &orion);
+    assert_eq!(
+        tabs.iter().map(|(page, _)| *page).collect::<Vec<_>>(),
+        vec![UiPage::Mixer, UiPage::AuraVerb, UiPage::Surround]
+    );
+    let aura_tab = tabs[1].1;
+    assert_eq!(
+        mouse_action(area, &orion, aura_tab.x, aura_tab.y),
+        Some(Intent::SelectUiPage(UiPage::AuraVerb))
+    );
+
+    orion.ui.auraverb_focus = AuraVerbControlFocus::Enabled;
+    orion.ui.auraverb_drag = Some(AuraVerbControlFocus::Parameter(AuraVerbParameter::Color));
+    orion.auraverb = None;
+    assert_eq!(orion.active_ui_page(), UiPage::Mixer);
+    orion.normalize_ui_page();
+    assert_eq!(orion.ui.page, UiPage::Mixer);
+    assert_eq!(orion.ui.auraverb_focus, AuraVerbControlFocus::ALL[0]);
+    assert!(orion.ui.auraverb_drag.is_none());
+
+    let mut terminal = test_terminal(area.width, area.height);
+    draw_page(&mut terminal, &zen);
+    let text = terminal_text(&terminal);
+    assert!(text.contains("F1 Mixer"), "{text}");
+    assert!(!text.contains("F2 AuraVerb"), "{text}");
+}
+
+#[test]
+fn auraverb_wide_narrow_and_freshness_views_use_one_shared_viewport() {
+    let wide_area = Rect::new(0, 0, 120, 30);
+    let state = auraverb_ui_state(AuraVerbFreshness::Authoritative);
+    let geometry =
+        super::layouts::auraverb_page_geometry(super::layouts::root_chunks(wide_area)[1], &state);
+    assert_eq!(geometry.columns, 2);
+    assert_eq!(geometry.cards.len(), AuraVerbControlFocus::ALL.len());
+
+    let mut terminal = test_terminal(wide_area.width, wide_area.height);
+    draw_page(&mut terminal, &state);
+    let text = terminal_text(&terminal);
+    for expected in [
+        "F2 AuraVerb",
+        "MIXER 1 SEND FX",
+        "AUTHORITATIVE",
+        "Color",
+        "raw 11 / 100",
+        "PreDelay",
+        "Early Reflection Gain",
+        "Late Reflection Delay",
+        "Richness",
+        "Reverb Time",
+        "Room Size",
+        "Reverb Level",
+        "[ ON ]",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    for unsupported in ["Preset", "Mix 2", "Routing", "milliseconds", "seconds"] {
+        assert!(
+            !text.contains(unsupported),
+            "unexpected {unsupported}: {text}"
+        );
+    }
+
+    let narrow_area = Rect::new(0, 0, 60, 30);
+    let mut narrow_state = state.clone();
+    narrow_state.ui.auraverb_focus = AuraVerbControlFocus::Enabled;
+    let narrow = super::layouts::auraverb_page_geometry(
+        super::layouts::root_chunks(narrow_area)[1],
+        &narrow_state,
+    );
+    assert_eq!(narrow.columns, 1);
+    assert!(narrow.viewport_start > 0);
+    assert!(narrow
+        .cards
+        .iter()
+        .any(|control| control.focus == AuraVerbControlFocus::Enabled));
+    let first_visible = narrow.cards[0];
+    assert_eq!(
+        slider_wheel_action(
+            narrow_area,
+            &narrow_state,
+            first_visible.action.x,
+            first_visible.action.y,
+            true,
+        ),
+        Some(Intent::SetAuraVerbParameter {
+            parameter: AuraVerbParameter::Richness,
+            value: 56,
+        })
+    );
+
+    let mut waiting = auraverb_ui_state(AuraVerbFreshness::AwaitingReadback);
+    waiting.auraverb.as_mut().unwrap().state = None;
+    let mut terminal = test_terminal(wide_area.width, wide_area.height);
+    draw_page(&mut terminal, &waiting);
+    let text = terminal_text(&terminal);
+    assert!(text.contains("WAITING FOR READBACK") && text.contains("NO WRITES"));
+    assert!(!text.contains("raw 0 / 100"), "{text}");
+}
+
+#[test]
+fn auraverb_mouse_drag_wheel_and_blank_scroll_share_visible_geometry() {
+    let area = Rect::new(0, 0, 120, 30);
+    let mut state = auraverb_ui_state(AuraVerbFreshness::Authoritative);
+    let geometry =
+        super::layouts::auraverb_page_geometry(super::layouts::root_chunks(area)[1], &state);
+    for parameter in AuraVerbParameter::ALL {
+        let control = geometry
+            .cards
+            .iter()
+            .find(|control| control.focus == AuraVerbControlFocus::Parameter(parameter))
+            .expect("visible AuraVerb field");
+        assert_eq!(
+            mouse_action(area, &state, control.action.x, control.action.y),
+            Some(Intent::SetAuraVerbParameter {
+                parameter,
+                value: 0,
+            })
+        );
+        assert_eq!(
+            mouse_action(
+                area,
+                &state,
+                control.action.right().saturating_sub(1),
+                control.action.y,
+            ),
+            Some(Intent::SetAuraVerbParameter {
+                parameter,
+                value: 100,
+            })
+        );
+    }
+    let enabled = geometry
+        .cards
+        .iter()
+        .find(|control| control.focus == AuraVerbControlFocus::Enabled)
+        .unwrap();
+    assert_eq!(
+        mouse_action(area, &state, enabled.action.x, enabled.action.y),
+        Some(Intent::SetAuraVerbEnabled(false))
+    );
+
+    let color = geometry.cards[0];
+    state.ui.auraverb_drag = Some(color.focus);
+    assert_eq!(
+        slider_mouse_action(area, &state, color.action.right(), color.action.y),
+        Some(Intent::SetAuraVerbParameter {
+            parameter: AuraVerbParameter::Color,
+            value: 100,
+        })
+    );
+    assert_eq!(
+        slider_wheel_action(area, &state, color.action.x, color.action.y, true),
+        Some(Intent::SetAuraVerbParameter {
+            parameter: AuraVerbParameter::Color,
+            value: 12,
+        })
+    );
+    let blank = (
+        geometry.controls.right().saturating_sub(1),
+        geometry.controls.bottom() - 1,
+    );
+    assert!(matches!(
+        slider_wheel_action(area, &state, blank.0, blank.1, false),
+        Some(Intent::ScrollAuraVerbPage { down: true })
+    ));
+
+    state.auraverb.as_mut().unwrap().freshness = AuraVerbFreshness::Stale;
+    assert!(mouse_action(area, &state, color.action.x, color.action.y).is_none());
+    assert!(slider_mouse_action(area, &state, color.action.x, color.action.y).is_none());
+    assert!(slider_wheel_action(area, &state, color.action.x, color.action.y, true).is_none());
+}
+
+#[test]
+fn exact_fit_auraverb_cards_allow_wheel_scrolling_outside_tracks() {
+    let area = Rect::new(0, 0, 60, 27);
+    let state = auraverb_ui_state(AuraVerbFreshness::Authoritative);
+    let geometry =
+        super::layouts::auraverb_page_geometry(super::layouts::root_chunks(area)[1], &state);
+    assert_eq!(geometry.controls.height, 20);
+    assert_eq!(geometry.cards.len(), 5);
+    for card in &geometry.cards {
+        assert_eq!(
+            slider_wheel_action(area, &state, card.card.x, card.card.y, false),
+            Some(Intent::ScrollAuraVerbPage { down: true })
+        );
+        assert_eq!(
+            slider_wheel_action(area, &state, card.card.x, card.card.y, true),
+            Some(Intent::ScrollAuraVerbPage { down: false })
+        );
+    }
+    let color = geometry.cards[0];
+    assert_eq!(
+        slider_wheel_action(area, &state, color.action.x, color.action.y, true),
+        Some(Intent::SetAuraVerbParameter {
+            parameter: AuraVerbParameter::Color,
+            value: 12,
+        })
+    );
+}
+
+#[test]
+fn very_short_auraverb_page_is_explicit_and_has_no_hidden_hotspots() {
+    let area = Rect::new(0, 0, 60, 4);
+    let state = auraverb_ui_state(AuraVerbFreshness::Authoritative);
+    let geometry =
+        super::layouts::auraverb_page_geometry(super::layouts::root_chunks(area)[1], &state);
+    assert_eq!(geometry.visible_rows, 0);
+    assert!(geometry.cards.is_empty());
+    let mut terminal = test_terminal(area.width, area.height);
+    draw_page(&mut terminal, &state);
+    assert!(terminal_text(&terminal).contains("CONTROLS HIDDEN: RESIZE"));
+    for y in 0..area.height {
+        for x in 0..area.width {
+            assert!(!matches!(
+                mouse_action(area, &state, x, y),
+                Some(Intent::SetAuraVerbEnabled(_) | Intent::SetAuraVerbParameter { .. })
+            ));
+        }
+    }
+}
+
+#[test]
+#[ignore = "writes mock TestBackend AuraVerb visual artifacts on demand"]
+fn capture_auraverb_visuals_from_mock_states() {
+    let visual_dir = std::path::Path::new("target/tui-visuals");
+    std::fs::create_dir_all(visual_dir).expect("create visual artifact directory");
+    let mut narrow = auraverb_ui_state(AuraVerbFreshness::PendingReadback);
+    narrow.ui.auraverb_focus = AuraVerbControlFocus::Enabled;
+    for (name, width, height, state) in [
+        (
+            "auraverb-wide.txt",
+            120,
+            30,
+            auraverb_ui_state(AuraVerbFreshness::Authoritative),
+        ),
+        ("auraverb-narrow.txt", 60, 30, narrow),
+        (
+            "auraverb-stale.txt",
+            120,
+            30,
+            auraverb_ui_state(AuraVerbFreshness::Stale),
+        ),
+    ] {
+        let mut terminal = test_terminal(width, height);
+        draw_page(&mut terminal, &state);
+        std::fs::write(visual_dir.join(name), terminal_text(&terminal))
+            .expect("write AuraVerb visual artifact");
+    }
+}
+
+#[test]
 fn surround_navigation_is_capability_gated_and_falls_back_to_mixer() {
     let area = Rect::new(0, 0, 120, 30);
     let zen = zen_go_ui_state();
@@ -124,8 +409,8 @@ fn surround_navigation_is_capability_gated_and_falls_back_to_mixer() {
 
     let mut orion = surround_ui_state(SurroundFreshness::Authoritative, true);
     let tabs = super::layouts::page_tab_areas(area, &orion);
-    assert_eq!(tabs.len(), 2);
-    let surround_tab = tabs[1].1;
+    assert_eq!(tabs.len(), 3);
+    let surround_tab = tabs[2].1;
     assert_eq!(
         mouse_action(area, &orion, surround_tab.x, surround_tab.y),
         Some(Intent::SelectUiPage(UiPage::Surround))
@@ -170,7 +455,7 @@ fn surround_wide_narrow_and_read_only_views_show_only_grounded_controls() {
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
     }
-    for unsupported in ["Aura", "Speaker", "EQ", "Bass", "Meter"] {
+    for unsupported in ["Speaker", "EQ", "Bass", "Meter"] {
         assert!(
             !text.contains(unsupported),
             "unexpected {unsupported}: {text}"

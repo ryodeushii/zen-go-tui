@@ -368,21 +368,55 @@ impl AppState {
         self.runtime_profile.as_ref()?.auraverb.as_ref()
     }
 
+    pub fn auraverb_page_available(&self) -> bool {
+        self.auraverb.is_some() && self.auraverb_contract().is_some()
+    }
+
+    pub fn displayed_auraverb_state(&self) -> Option<&antelope_protocol::AuraVerbState> {
+        let cache = self.auraverb.as_ref()?;
+        match cache.freshness {
+            AuraVerbFreshness::PendingReadback => cache.pending_expected.as_ref(),
+            AuraVerbFreshness::Authoritative
+            | AuraVerbFreshness::AwaitingReadback
+            | AuraVerbFreshness::Stale => cache.state.as_ref(),
+        }
+    }
+
+    pub fn auraverb_controls_enabled(&self) -> bool {
+        self.auraverb_page_available()
+            && self.ui_profile.actionable
+            && self.device.connection.connected
+            && self.auraverb.as_ref().is_some_and(|cache| {
+                matches!(
+                    cache.freshness,
+                    AuraVerbFreshness::Authoritative | AuraVerbFreshness::PendingReadback
+                ) && self.displayed_auraverb_state().is_some()
+            })
+    }
+
     pub fn surround_page_available(&self) -> bool {
         self.surround_global.is_some()
     }
 
     pub fn active_ui_page(&self) -> UiPage {
-        if self.ui.page == UiPage::Surround && !self.surround_page_available() {
-            UiPage::Mixer
-        } else {
-            self.ui.page
+        match self.ui.page {
+            UiPage::AuraVerb if !self.auraverb_page_available() => UiPage::Mixer,
+            UiPage::Surround if !self.surround_page_available() => UiPage::Mixer,
+            page => page,
         }
     }
 
     pub fn normalize_ui_page(&mut self) {
-        if self.ui.page == UiPage::Surround && !self.surround_page_available() {
+        let unavailable = match self.ui.page {
+            UiPage::AuraVerb => !self.auraverb_page_available(),
+            UiPage::Surround => !self.surround_page_available(),
+            UiPage::Mixer => false,
+        };
+        if unavailable {
             self.ui.page = UiPage::Mixer;
+            self.ui.auraverb_focus = AuraVerbControlFocus::ALL[0];
+            self.ui.auraverb_scroll = 0;
+            self.ui.auraverb_drag = None;
             self.ui.surround_drag = None;
         }
     }
@@ -2529,6 +2563,7 @@ impl AppState {
     pub fn mark_disconnected(&mut self) {
         self.device.connection.connected = false;
         self.device.connection.last_frame_type = Some("disconnected");
+        self.ui.auraverb_drag = None;
         self.ui.surround_drag = None;
         if let Some(cache) = self.auraverb.as_mut() {
             cache.freshness = AuraVerbFreshness::Stale;

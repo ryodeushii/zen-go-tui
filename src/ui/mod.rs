@@ -15,7 +15,8 @@ mod widgets;
 pub use crate::app::Intent;
 
 // Re-export public API
-pub use layouts::device_header_area;
+pub use layouts::{device_header_area, ensure_auraverb_focus_visible, scroll_auraverb_page};
+pub use mouse::auraverb_drag_target;
 pub use mouse::device_header_name_hit;
 pub use mouse::device_picker_activation_row;
 pub use mouse::mixer_strip_panel_contains;
